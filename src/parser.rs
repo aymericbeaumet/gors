@@ -20,8 +20,8 @@ pub fn parse(input: &str) -> Result<ast::File, ParseError> {
     })?;
 
     Ok(ast::File {
-        Name: ast::Ident {
-            Name: package_name.to_owned(),
+        name: ast::Ident {
+            name: package_name.to_owned(),
         },
     })
 }

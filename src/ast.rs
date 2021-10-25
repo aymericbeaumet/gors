@@ -1,11 +1,15 @@
+use serde::{Deserialize, Serialize};
+
 // https://pkg.go.dev/go/ast#File
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct File {
-    pub Name: Ident,
+    #[serde(rename = "Name")]
+    pub name: Ident,
 }
 
 // https://pkg.go.dev/go/ast#Ident
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Ident {
-    pub Name: String,
+    #[serde(rename = "Name")]
+    pub name: String,
 }

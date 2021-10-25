@@ -1,3 +1,5 @@
+use std::io::stdout;
+
 use clap::Parser;
 
 mod ast;
@@ -13,11 +15,11 @@ struct Opts {
 #[derive(Parser)]
 enum SubCommand {
     #[clap(about = "Transpile Go source code to Rust")]
-    Build(Build),
+    Parse(Parse),
 }
 
 #[derive(Parser)]
-struct Build {
+struct Parse {
     #[clap(name = "file", about = "The file to transpile")]
     filepath: String,
 }
@@ -26,13 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
-        SubCommand::Build(cmd) => build(cmd),
+        SubCommand::Parse(cmd) => parse(cmd),
     }
 }
 
-fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+fn parse(cmd: Parse) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(cmd.filepath)?;
     let file = parser::parse(&buffer)?;
-    println!("{:?}", file);
+    serde_json::to_writer(stdout(), &file).unwrap();
     Ok(())
 }
