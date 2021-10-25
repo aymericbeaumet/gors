@@ -1,5 +1,3 @@
-use std::io::stdout;
-
 use clap::Parser;
 
 mod ast;
@@ -35,6 +33,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn parse(cmd: Parse) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(cmd.filepath)?;
     let file = parser::parse(&buffer)?;
-    serde_json::to_writer(stdout(), &file).unwrap();
+    println!("{:?}", file);
     Ok(())
 }

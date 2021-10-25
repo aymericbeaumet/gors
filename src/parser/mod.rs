@@ -3,6 +3,11 @@
 use crate::ast;
 use nom::{bytes::complete::tag, IResult};
 
+use self::identifier::identifier;
+mod identifier;
+mod string;
+mod whitespace;
+
 #[derive(Debug)]
 pub struct ParseError {}
 
@@ -15,8 +20,9 @@ impl std::fmt::Display for ParseError {
 }
 
 pub fn parse(input: &str) -> Result<ast::File, ParseError> {
-    let (_, package_name) = package(input).map_err(|_| ParseError {
-        // TODO
+    let (_, package_name) = package(input).map_err(|err| {
+        println!("TODO: {:?}", err);
+        ParseError {}
     })?;
 
     Ok(ast::File {
@@ -27,6 +33,7 @@ pub fn parse(input: &str) -> Result<ast::File, ParseError> {
 }
 
 fn package(input: &str) -> IResult<&str, &str> {
-    let (input, _) = tag("package")(input)?;
-    Ok((input, "main"))
+    let (input, _) = whitespace::whitespace(tag("package"))(input)?;
+    let (input, name) = whitespace::whitespace(identifier)(input)?;
+    Ok((input, name))
 }
