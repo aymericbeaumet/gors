@@ -9,7 +9,10 @@ mod string;
 mod whitespace;
 
 #[derive(Debug)]
-pub struct ParseError {}
+pub enum ParseError {
+    Unexpected,
+    Remaining(String),
+}
 
 impl std::error::Error for ParseError {}
 
@@ -20,10 +23,14 @@ impl std::fmt::Display for ParseError {
 }
 
 pub fn parse(input: &str) -> Result<ast::File, ParseError> {
-    let (_, package_name) = package(input).map_err(|err| {
+    let (input, package_name) = package(input).map_err(|err| {
         println!("TODO: {:?}", err);
-        ParseError {}
+        ParseError::Unexpected
     })?;
+
+    if !input.is_empty() {
+        return Err(ParseError::Remaining(input.to_owned()));
+    }
 
     Ok(ast::File {
         name: ast::Ident {
