@@ -49,7 +49,7 @@ pub fn parse(input: &str) -> Result<ast::File, ParseError> {
 }
 
 fn package(input: &str) -> IResult<&str, &str> {
-    let (input, _) = whitespace::whitespace(tag("package"))(input)?;
-    let (input, name) = whitespace::whitespace(identifier)(input)?;
+    let (input, _) = whitespace::before_opt(tag("package"))(input)?;
+    let (input, name) = whitespace::before_req(identifier)(input)?;
     Ok((input, name))
 }

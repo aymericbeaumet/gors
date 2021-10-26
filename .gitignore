@@ -1,1 +1,3 @@
 /target
+*.goast
+*.gofmt

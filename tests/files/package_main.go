@@ -1,0 +1,12 @@
+
+package
+
+main
+
+func
+
+main(
+
+) {
+
+}

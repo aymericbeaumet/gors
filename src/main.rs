@@ -12,13 +12,13 @@ struct Opts {
 
 #[derive(Parser)]
 enum SubCommand {
-    #[clap(about = "Transpile Go source code to Rust")]
+    #[clap(about = "Parse Golang code and print the AST")]
     Parse(Parse),
 }
 
 #[derive(Parser)]
 struct Parse {
-    #[clap(name = "file", about = "The file to transpile")]
+    #[clap(name = "file", about = "The file to parse")]
     filepath: String,
 }
 
