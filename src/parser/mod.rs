@@ -1,11 +1,17 @@
 // https://golang.org/ref/spec
 
-use crate::ast;
-use nom::{bytes::complete::tag, IResult};
-
-mod identifier;
-mod string;
 mod whitespace;
+
+use crate::ast;
+use nom::{
+    branch::alt,
+    bytes::complete::tag,
+    character::complete::{alpha1, alphanumeric1},
+    combinator::recognize,
+    multi::many0,
+    sequence::pair,
+    IResult,
+};
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -33,22 +39,62 @@ impl std::fmt::Display for ParseError {
 }
 
 pub fn parse(input: &str) -> Result<ast::File, ParseError> {
-    let (input, package_name) =
-        package(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
+    let (input, name) = package(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
 
-    if !input.is_empty() {
+    let (input, decls) = decls(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
+
+    if !input.trim().is_empty() {
         return Err(ParseError::Remaining(input.to_owned()));
     }
 
-    Ok(ast::File {
-        name: ast::Ident {
-            name: package_name.to_owned(),
-        },
-    })
+    Ok(ast::File { name, decls })
 }
 
-fn package(input: &str) -> IResult<&str, &str> {
+fn package(input: &str) -> IResult<&str, ast::Ident> {
     let (input, _) = whitespace::before_opt(tag("package"))(input)?;
-    let (input, name) = whitespace::before_req(identifier::identifier)(input)?;
+    let (input, name) = whitespace::before_req(ident)(input)?;
     Ok((input, name))
+}
+
+fn decls(input: &str) -> IResult<&str, Vec<ast::Decl>> {
+    let (input, decl) = decl(input)?;
+    Ok((input, vec![decl]))
+}
+
+fn decl(input: &str) -> IResult<&str, ast::Decl> {
+    let (input, _) = whitespace::before_req(tag("func"))(input)?;
+    let (input, name) = whitespace::before_req(ident)(input)?;
+
+    let (input, _) = whitespace::before_opt(tag("("))(input)?;
+    // TODO: parse parameters
+    let (input, _) = whitespace::before_opt(tag(")"))(input)?;
+
+    let (input, _) = whitespace::before_opt(tag("{"))(input)?;
+    // TODO: parse body
+    let (input, _) = whitespace::before_opt(tag("}"))(input)?;
+
+    Ok((
+        input,
+        ast::Decl::FuncDecl(ast::FuncDecl {
+            name,
+            type_: ast::FuncType {
+                params: ast::FieldList {},
+            },
+            body: ast::BlockStmt {},
+        }),
+    ))
+}
+
+pub fn ident(input: &str) -> IResult<&str, ast::Ident> {
+    let (input, name) = recognize(pair(
+        alt((alpha1, tag("_"))),
+        many0(alt((alphanumeric1, tag("_")))),
+    ))(input)?;
+
+    Ok((
+        input,
+        ast::Ident {
+            name: name.to_owned(),
+        },
+    ))
 }
