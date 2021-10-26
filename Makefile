@@ -2,10 +2,11 @@
 all:
 
 .PHONY: test
-test: $(patsubst %.go,%.gofmt,$(wildcard ./tests/files/*.go)) $(patsubst %.go,%.goast,$(wildcard ./tests/files/*.go))
+test: $(patsubst %.go,%.ast,$(wildcard ./tests/files/*.go))
 
-%.goast: %.go
-	astextract $< > $@
+.PHONY: clean
+clean:
+	find . -name '*.ast' -exec rm -rf {} \;
 
-%.gofmt: %.go
-	gofmt -s $< > $@
+%.ast: %.go
+	GO111MODULE=off go run ./go-ast $< > $@
