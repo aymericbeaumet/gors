@@ -10,7 +10,7 @@ mod whitespace;
 
 #[derive(Debug)]
 pub enum ParseError {
-    Unexpected,
+    Unexpected(String),
     Remaining(String),
 }
 
@@ -18,15 +18,24 @@ impl std::error::Error for ParseError {}
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Parse Error")
+        match self {
+            ParseError::Unexpected(cause) => {
+                write!(f, "unexpected parsing error: {:?}", cause)
+            }
+            ParseError::Remaining(code) => {
+                write!(
+                    f,
+                    "remaining code after the parsing is finished: {:?}",
+                    code
+                )
+            }
+        }
     }
 }
 
 pub fn parse(input: &str) -> Result<ast::File, ParseError> {
-    let (input, package_name) = package(input).map_err(|err| {
-        println!("TODO: {:?}", err);
-        ParseError::Unexpected
-    })?;
+    let (input, package_name) =
+        package(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
 
     if !input.is_empty() {
         return Err(ParseError::Remaining(input.to_owned()));
