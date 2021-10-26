@@ -1,7 +1,8 @@
-use clap::Parser;
-
 mod ast;
 mod parser;
+
+use clap::Parser;
+use std::io;
 
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Aymeric Beaumet <hi@aymericbeaumet.com>")]
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn parse(cmd: Parse) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(cmd.filepath)?;
     let file = parser::parse(&buffer)?;
-    println!("{:?}", file);
-    Ok(())
+
+    let mut w = io::stdout();
+    ast::ser::to_writer(&mut w, &file)
 }
