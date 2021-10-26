@@ -3,7 +3,6 @@
 use crate::ast;
 use nom::{bytes::complete::tag, IResult};
 
-use self::identifier::identifier;
 mod identifier;
 mod string;
 mod whitespace;
@@ -50,6 +49,6 @@ pub fn parse(input: &str) -> Result<ast::File, ParseError> {
 
 fn package(input: &str) -> IResult<&str, &str> {
     let (input, _) = whitespace::before_opt(tag("package"))(input)?;
-    let (input, name) = whitespace::before_req(identifier)(input)?;
+    let (input, name) = whitespace::before_req(identifier::identifier)(input)?;
     Ok((input, name))
 }
