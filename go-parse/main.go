@@ -46,9 +46,10 @@ func main() {
 				panic(err)
 			}
 
-			var s scanner.Scanner
 			fset := token.NewFileSet()
 			file := fset.AddFile(filename, fset.Base(), len(src))
+
+			var s scanner.Scanner
 			s.Init(file, src, nil, scanner.ScanComments)
 
 			var tokens []*Token
