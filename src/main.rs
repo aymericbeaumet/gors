@@ -34,8 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn parse(cmd: Parse) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
     let file = parser::parse(&cmd.filepath, &buffer)?;
-
-    let mut w = io::stdout();
-    ast::ser::to_writer(&mut w, &file)?;
+    let mut writer = io::stdout();
+    ast::ser::to_writer(&mut writer, &file)?;
     Ok(())
 }

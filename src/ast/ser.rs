@@ -1,34 +1,36 @@
 use crate::ast;
 use std::io;
 
-struct Serializer<W> {
-    writer: W,
-    line: u32,
-    depth: u32,
-}
-
 enum Suffix {
     OpenBracket,
     Newline,
     CloseBracket,
 }
 
-impl<W: io::Write> Serializer<W> {
-    fn new(writer: W) -> Self {
+struct Serializer<'a, W> {
+    writer: W,
+    line: u32,
+    depth: u32,
+    root: &'a ast::File<'a>,
+}
+
+impl<'a, W: io::Write> Serializer<'a, W> {
+    fn new(writer: W, root: &'a ast::File) -> Self {
         Self {
             writer,
             line: 0,
             depth: 0,
+            root,
         }
     }
 
-    fn serialize_file(&mut self, value: &ast::File) -> io::Result<()> {
+    fn serialize(&mut self) -> io::Result<()> {
         self.prefix()?;
         write!(self.writer, "*ast.File")?;
         self.suffix(Suffix::OpenBracket)?;
 
         self.prefix()?;
-        write!(self.writer, "Package:")?;
+        write!(self.writer, "Package: {}", self.root.filename)?;
         self.suffix(Suffix::Newline)?;
 
         self.prefix()?;
@@ -39,7 +41,7 @@ impl<W: io::Write> Serializer<W> {
         write!(
             self.writer,
             "Decls: []ast.Decl (len = {})",
-            value.decls.len()
+            self.root.decls.len()
         )?;
         self.suffix(Suffix::OpenBracket)?;
 
@@ -78,7 +80,6 @@ impl<W: io::Write> Serializer<W> {
     }
 }
 
-pub fn to_writer<W: io::Write>(writer: W, value: &ast::File) -> io::Result<()> {
-    let mut ser = Serializer::new(writer);
-    ser.serialize_file(value)
+pub fn to_writer<W: io::Write>(writer: W, root: &ast::File) -> io::Result<()> {
+    Serializer::new(writer, root).serialize()
 }

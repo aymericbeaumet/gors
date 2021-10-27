@@ -24,10 +24,10 @@ impl std::error::Error for ParseError {}
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            ParseError::Unexpected(cause) => {
+            Self::Unexpected(cause) => {
                 write!(f, "unexpected parsing error: {:?}", cause)
             }
-            ParseError::Remaining(code) => {
+            Self::Remaining(code) => {
                 write!(
                     f,
                     "remaining code after the parsing is finished: {:?}",
@@ -38,17 +38,21 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-pub fn parse(filename: &str, src: &str) -> Result<ast::File, ParseError> {
-    let (input, name) = package(src).map_err(|err| ParseError::Unexpected(err.to_string()))?;
+impl From<nom::Err<nom::error::Error<&str>>> for ParseError {
+    fn from(err: nom::Err<nom::error::Error<&str>>) -> Self {
+        Self::Unexpected(err.to_string())
+    }
+}
 
-    let (input, decls) = decls(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
-
+pub fn parse<'a>(filename: &'a str, input: &str) -> Result<ast::File<'a>, ParseError> {
+    let (input, name) = package(input)?;
+    let (input, decls) = decls(input)?;
     if !input.trim().is_empty() {
         return Err(ParseError::Remaining(input.to_owned()));
     }
 
     Ok(ast::File {
-        filename: filename.to_owned(),
+        filename,
         name,
         decls,
     })

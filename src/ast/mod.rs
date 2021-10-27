@@ -2,8 +2,8 @@ pub mod ser;
 
 // https://pkg.go.dev/go/ast#File
 #[derive(Debug)]
-pub struct File {
-    pub filename: String,
+pub struct File<'a> {
+    pub filename: &'a str,
     pub name: Ident,
     pub decls: Vec<Decl>,
 }
