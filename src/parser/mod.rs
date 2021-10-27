@@ -38,8 +38,8 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-pub fn parse(input: &str) -> Result<ast::File, ParseError> {
-    let (input, name) = package(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
+pub fn parse(filename: &str, src: &str) -> Result<ast::File, ParseError> {
+    let (input, name) = package(src).map_err(|err| ParseError::Unexpected(err.to_string()))?;
 
     let (input, decls) = decls(input).map_err(|err| ParseError::Unexpected(err.to_string()))?;
 
@@ -47,7 +47,11 @@ pub fn parse(input: &str) -> Result<ast::File, ParseError> {
         return Err(ParseError::Remaining(input.to_owned()));
     }
 
-    Ok(ast::File { name, decls })
+    Ok(ast::File {
+        filename: filename.to_owned(),
+        name,
+        decls,
+    })
 }
 
 fn package(input: &str) -> IResult<&str, ast::Ident> {
