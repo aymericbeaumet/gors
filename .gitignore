@@ -1,2 +1,4 @@
 /target
-*.ast
+*.fmt.go
+*.go.tokens
+*.go.ast
