@@ -3,7 +3,7 @@ all:
 
 .PHONY: test
 test: gofmt
-	$(MAKE) go-parse-tokens go-parse-ast
+	$(MAKE) go-tokens go-ast
 
 .PHONY: clean
 clean:
@@ -12,17 +12,17 @@ clean:
 .PHONY: gofmt
 gofmt: $(patsubst %.raw.go,%.fmt.go,$(wildcard ./tests/files/*.raw.go))
 
-.PHONY: go-parse-tokens
-go-parse-tokens: $(patsubst %.go,%.go.tokens,$(wildcard ./tests/files/*.go))
+.PHONY: go-tokens
+go-tokens: $(patsubst %.go,%.go.tokens,$(wildcard ./tests/files/*.go))
 
-.PHONY: go-parse-ast
-go-parse-ast: $(patsubst %.go,%.go.ast,$(wildcard ./tests/files/*.go))
+.PHONY: go-ast
+go-ast: $(patsubst %.go,%.go.ast,$(wildcard ./tests/files/*.go))
 
 %.fmt.go: %.raw.go
 	gofmt -s $< > $@
 
 %.go.tokens: %.go
-	GO111MODULE=off go run ./go-parse tokens $< > $@
+	GO111MODULE=off go run ./go tokens $< > $@
 
 %.go.ast: %.go
-	GO111MODULE=off go run ./go-parse ast $< > $@
+	GO111MODULE=off go run ./go ast $< > $@

@@ -10,12 +10,6 @@ import (
 	"os"
 )
 
-type Token struct {
-	Position token.Position
-	Token    string
-	Literal  string
-}
-
 // ./go-parse ast|tokens <filename>
 func main() {
 	filename := os.Args[2]
@@ -52,16 +46,16 @@ func main() {
 			var s scanner.Scanner
 			s.Init(file, src, nil, scanner.ScanComments)
 
-			var tokens []*Token
+			var out [][]interface{}
 			for {
 				pos, tok, lit := s.Scan()
-				tokens = append(tokens, &Token{file.Position(pos), tok.String(), lit})
+				out = append(out, []interface{}{file.Position(pos), tok.String(), lit})
 				if tok == token.EOF {
 					break
 				}
 			}
 
-			if err := json.NewEncoder(os.Stdout).Encode(tokens); err != nil {
+			if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 				panic(err)
 			}
 		}

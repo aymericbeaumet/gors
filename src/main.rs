@@ -1,8 +1,7 @@
-mod ast;
-mod parser;
+mod scanner;
+mod token;
 
 use clap::Parser;
-use std::io;
 
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Aymeric Beaumet <hi@aymericbeaumet.com>")]
@@ -13,12 +12,12 @@ struct Opts {
 
 #[derive(Parser)]
 enum SubCommand {
-    #[clap(about = "Parse Golang code and print the AST")]
-    Parse(Parse),
+    #[clap(about = "Tokens Golang code and print the AST")]
+    Tokens(Tokens),
 }
 
 #[derive(Parser)]
-struct Parse {
+struct Tokens {
     #[clap(name = "file", about = "The file to parse")]
     filepath: String,
 }
@@ -27,14 +26,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
-        SubCommand::Parse(cmd) => parse(cmd),
+        SubCommand::Tokens(cmd) => tokens(cmd),
     }
 }
 
-fn parse(cmd: Parse) -> Result<(), Box<dyn std::error::Error>> {
+fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let file = parser::parse(&cmd.filepath, &buffer)?;
-    let mut writer = io::stdout();
-    ast::ser::to_writer(&mut writer, &file)?;
+    let tokens = scanner::scan(&cmd.filepath, &buffer)?;
+    let stdout = std::io::stdout();
+    serde_json::to_writer(&stdout, &tokens)?;
     Ok(())
 }
