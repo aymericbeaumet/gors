@@ -15,7 +15,8 @@ done
 
 # format/simplify all the samples files
 for i in .tests/samples/*; do
-  gofmt -s "$ROOT_DIR/$i" > "$ROOT_DIR/${i%.go}-fmt.go"
+  gofmt -s "$ROOT_DIR/$i" > "$ROOT_DIR/${i%.go}-gofmt.go"
+  goimports "$ROOT_DIR/$i" > "$ROOT_DIR/${i%.go}-goimports.go"
 done
 
 # generate tokens with the Go implementation + from the Rust implementation
