@@ -19,6 +19,7 @@ pub enum Token {
     IDENT(String),
     PACKAGE,
     KEYWORD(String),
+    STRING(String),
 
     LPAREN, // (
     LBRACK, // [
@@ -29,6 +30,7 @@ pub enum Token {
     RBRACE, // }
 
     SEMICOLON, // ;
+    PERIOD,    // .
 
     EOF,
 }
@@ -47,6 +49,7 @@ impl Serialize for Token {
             Token::IDENT(_) => "IDENT",
             Token::PACKAGE => "package",
             Token::KEYWORD(keyword) => keyword,
+            Token::STRING(_) => "STRING",
 
             Token::LPAREN => "(",
             Token::LBRACK => "[",
@@ -57,6 +60,7 @@ impl Serialize for Token {
             Token::RBRACE => "}",
 
             Token::SEMICOLON => ";",
+            Token::PERIOD => ".",
 
             Token::EOF => "EOF",
         })

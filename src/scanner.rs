@@ -21,6 +21,7 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
 #[derive(Debug)]
 pub enum ScannerError {
     UnexpectedToken(char),
+    UnterminatedString,
 }
 
 impl std::error::Error for ScannerError {}
@@ -126,11 +127,16 @@ impl<'a> Scanner<'a> {
                     return Ok((self.position(), Token::SEMICOLON, self.literal()));
                 }
 
+                '.' => {
+                    self.next();
+                    return Ok((self.position(), Token::PERIOD, String::from("")));
+                }
+
                 '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
                 '0'..='9' => return self.scan_int_or_float_or_imag(),
                 '\'' => return self.scan_rune(),
-                '"' => return self.scan_string(),
-
+                '"' => return self.scan_interpreted_string(),
+                '`' => return self.scan_raw_string(),
                 _ => return Err(ScannerError::UnexpectedToken(c)),
             };
         }
@@ -187,9 +193,45 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    fn scan_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
-        //self.asi = true
-        unimplemented!("")
+    // TODO: add support for utf8 / multiline strings
+    fn scan_interpreted_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            self.next();
+            if c == '"' {
+                self.asi = true;
+                let literal = self.literal();
+                return Ok((
+                    self.position(),
+                    Token::STRING(literal.to_owned()),
+                    literal.to_owned(),
+                ));
+            }
+        }
+
+        Err(ScannerError::UnterminatedString)
+    }
+
+    // https://golang.org/ref/spec#String_literals
+    // TODO: add support for utf8 / multiline strings
+    fn scan_raw_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            self.next();
+            if c == '`' {
+                self.asi = true;
+                let literal = self.literal();
+                return Ok((
+                    self.position(),
+                    Token::STRING(literal.to_owned()),
+                    literal.to_owned(),
+                ));
+            }
+        }
+
+        Err(ScannerError::UnterminatedString)
     }
 
     fn peek(&mut self) -> Option<char> {
