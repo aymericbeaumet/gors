@@ -31,6 +31,7 @@ impl fmt::Display for ScannerError {
     }
 }
 
+#[derive(Debug)]
 pub struct Scanner<'a> {
     filename: &'a str,
     buffer: Vec<char>,
@@ -53,7 +54,7 @@ impl<'a> Scanner<'a> {
             //
             offset: 0,
             line: 1,
-            column: 0,
+            column: 1,
             //
             start_offset: 0,
             start_line: 0,
@@ -134,6 +135,8 @@ impl<'a> Scanner<'a> {
             };
         }
 
+        self.start_offset += 1;
+        self.start_column += 1;
         Ok((self.position(), Token::EOF, String::from("")))
     }
 

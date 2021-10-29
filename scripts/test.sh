@@ -30,9 +30,9 @@ for i in ./*.go; do
 
   echo
   echo +----------------------------------------------------------------+
-  echo '|' diff "$go_tokens (<)" "$rust_tokens (>)"
+  echo "| $i"
   echo +----------------------------------------------------------------+
-  diff "$go_tokens" "$rust_tokens"
+  diff -u "$go_tokens" "$rust_tokens" && echo "CORRECT"
 done
 
 # TODO: AST
