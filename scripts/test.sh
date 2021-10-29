@@ -29,9 +29,9 @@ for i in ./*.go; do
   "$RUST_BIN" tokens "$i" > "$rust_tokens"
 
   echo
-  echo +---------
-  echo + diff "$go_tokens" "$rust_tokens"
-  echo +---------
+  echo +----------------------------------------------------------------+
+  echo '|' diff "$go_tokens (<)" "$rust_tokens (>)"
+  echo +----------------------------------------------------------------+
   diff "$go_tokens" "$rust_tokens"
 done
 
