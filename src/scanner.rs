@@ -6,8 +6,13 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
     let mut s = Scanner::new(filename, buffer.chars().collect());
     let mut out = vec![];
 
-    while let Some(token) = s.scan()? {
-        out.push(token)
+    loop {
+        let (pos, tok, lit) = s.scan()?;
+        let stop = tok == Token::EOF;
+        out.push((pos, tok, lit));
+        if stop {
+            break;
+        }
     }
 
     Ok(out)
@@ -34,6 +39,8 @@ pub struct Scanner<'a> {
     pos: usize,
     line: usize,
     column: usize,
+    //
+    asi: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -46,10 +53,15 @@ impl<'a> Scanner<'a> {
             pos: 0,
             line: 1,
             column: 0,
+            //
+            asi: false,
         }
     }
 
-    fn scan(&mut self) -> Result<Option<(Position, Token, String)>, ScannerError> {
+    fn scan(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        let asi = self.asi;
+        self.asi = false;
+
         while let Some(c) = self.peek() {
             self.start = self.pos;
 
@@ -63,45 +75,65 @@ impl<'a> Scanner<'a> {
                     self.line += 1;
                     self.column = 0;
                     self.next();
+                    if asi {
+                        return Ok((self.position(), Token::SEMICOLON, self.literal()));
+                    }
                     continue;
                 }
 
                 '(' => {
                     self.next();
-                    return Ok(Some(self.wrap(Token::LPAREN)));
+                    return Ok((self.position(), Token::LPAREN, String::from("")));
                 }
 
                 ')' => {
+                    self.asi = true;
                     self.next();
-                    return Ok(Some(self.wrap(Token::RPAREN)));
+                    return Ok((self.position(), Token::RPAREN, String::from("")));
+                }
+
+                '[' => {
+                    self.next();
+                    return Ok((self.position(), Token::LBRACK, String::from("")));
+                }
+
+                ']' => {
+                    self.asi = true;
+                    self.next();
+                    return Ok((self.position(), Token::RBRACK, String::from("")));
                 }
 
                 '{' => {
                     self.next();
-                    return Ok(Some(self.wrap(Token::LBRACE)));
+                    return Ok((self.position(), Token::LBRACE, String::from("")));
                 }
 
                 '}' => {
+                    self.asi = true;
                     self.next();
-                    return Ok(Some(self.wrap(Token::RBRACE)));
+                    return Ok((self.position(), Token::RBRACE, String::from("")));
+                }
+
+                ';' => {
+                    self.next();
+                    return Ok((self.position(), Token::SEMICOLON, self.literal()));
                 }
 
                 '_' | 'A'..='Z' | 'a'..='z' => return self.scan_keyword_or_identifier(),
-
                 '0'..='9' => return self.scan_int_or_float_or_imag(),
+                '\'' => return self.scan_rune(),
+                '"' => return self.scan_string(),
 
                 _ => return Err(ScannerError::UnexpectedToken(c)),
             };
         }
 
-        Ok(None)
+        Ok((self.position(), Token::EOF, String::from("")))
     }
 
     // https://golang.org/ref/spec#Keywords
     // https://golang.org/ref/spec#Identifiers
-    fn scan_keyword_or_identifier(
-        &mut self,
-    ) -> Result<Option<(Position, Token, String)>, ScannerError> {
+    fn scan_keyword_or_identifier(&mut self) -> Result<(Position, Token, String), ScannerError> {
         if let Some(c) = self.peek() {
             if is_letter(c) {
                 self.next();
@@ -116,21 +148,39 @@ impl<'a> Scanner<'a> {
 
         let (position, literal) = (self.position(), self.literal());
         if literal == "package" {
-            Ok(Some((position, Token::PACKAGE, literal)))
+            Ok((position, Token::PACKAGE, literal))
         } else if KEYWORDS.contains(&literal) {
-            Ok(Some((position, Token::KEYWORD, literal)))
+            if matches!(
+                literal.as_str(),
+                "break" | "continue" | "fallthrough" | "return"
+            ) {
+                self.asi = true
+            }
+            Ok((position, Token::KEYWORD(literal.to_owned()), literal))
         } else {
-            Ok(Some((position, Token::IDENT, literal)))
+            self.asi = true;
+            Ok((position, Token::IDENT(literal.to_owned()), literal))
         }
     }
 
     // https://golang.org/ref/spec#Integer_literals
     // https://golang.org/ref/spec#Floating-point_literals
     // https://golang.org/ref/spec#Imaginary_literals
-    fn scan_int_or_float_or_imag(
-        &mut self,
-    ) -> Result<Option<(Position, Token, String)>, ScannerError> {
-        Ok(None)
+    fn scan_int_or_float_or_imag(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        //self.asi = true
+        unimplemented!("")
+    }
+
+    // https://golang.org/ref/spec#Rune_literals
+    fn scan_rune(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        //self.asi = true
+        unimplemented!("")
+    }
+
+    // https://golang.org/ref/spec#String_literals
+    fn scan_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        //self.asi = true
+        unimplemented!("")
     }
 
     fn peek(&mut self) -> Option<char> {
@@ -140,10 +190,6 @@ impl<'a> Scanner<'a> {
     fn next(&mut self) {
         self.pos += 1;
         self.column += 1;
-    }
-
-    fn wrap(&self, token: Token) -> (Position, Token, String) {
-        (self.position(), token, self.literal())
     }
 
     fn position(&self) -> Position {

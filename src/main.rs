@@ -2,6 +2,7 @@ mod scanner;
 mod token;
 
 use clap::Parser;
+use std::io::Write;
 
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Aymeric Beaumet <hi@aymericbeaumet.com>")]
@@ -33,7 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
     let tokens = scanner::scan(&cmd.filepath, &buffer)?;
-    let stdout = std::io::stdout();
-    serde_json::to_writer(&stdout, &tokens)?;
+
+    let mut stdout = std::io::stdout();
+    for token in tokens {
+        serde_json::to_writer(&stdout, &token)?;
+        stdout.write(&[b'\n'])?;
+    }
+
     Ok(())
 }

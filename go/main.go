@@ -46,18 +46,16 @@ func main() {
 			var s scanner.Scanner
 			s.Init(file, src, nil, scanner.ScanComments)
 
-			var out [][]interface{}
 			for {
 				pos, tok, lit := s.Scan()
-				out = append(out, []interface{}{file.Position(pos), tok.String(), lit})
+				if err := json.NewEncoder(os.Stdout).Encode([]interface{}{file.Position(pos), tok.String(), lit}); err != nil {
+					panic(err)
+				}
 				if tok == token.EOF {
 					break
 				}
 			}
 
-			if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
-				panic(err)
-			}
 		}
 	}
 }
