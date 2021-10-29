@@ -1,4 +1,3 @@
+.tests/
+/go/go
 /target
-*.fmt.go
-*.go.tokens
-*.go.ast

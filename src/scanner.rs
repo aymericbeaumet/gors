@@ -35,11 +35,13 @@ pub struct Scanner<'a> {
     filename: &'a str,
     buffer: Vec<char>,
     //
-    start: usize,
-    pos: usize,
+    offset: usize,
     line: usize,
     column: usize,
     //
+    start_offset: usize,
+    start_line: usize,
+    start_column: usize,
     asi: bool,
 }
 
@@ -49,11 +51,13 @@ impl<'a> Scanner<'a> {
             filename,
             buffer,
             //
-            start: 0,
-            pos: 0,
+            offset: 0,
             line: 1,
             column: 0,
             //
+            start_offset: 0,
+            start_line: 0,
+            start_column: 0,
             asi: false,
         }
     }
@@ -63,7 +67,9 @@ impl<'a> Scanner<'a> {
         self.asi = false;
 
         while let Some(c) = self.peek() {
-            self.start = self.pos;
+            self.start_offset = self.offset;
+            self.start_line = self.line;
+            self.start_column = self.column;
 
             match c {
                 ' ' | '\t' | '\r' => {
@@ -119,7 +125,7 @@ impl<'a> Scanner<'a> {
                     return Ok((self.position(), Token::SEMICOLON, self.literal()));
                 }
 
-                '_' | 'A'..='Z' | 'a'..='z' => return self.scan_keyword_or_identifier(),
+                '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
                 '0'..='9' => return self.scan_int_or_float_or_imag(),
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_string(),
@@ -133,7 +139,7 @@ impl<'a> Scanner<'a> {
 
     // https://golang.org/ref/spec#Keywords
     // https://golang.org/ref/spec#Identifiers
-    fn scan_keyword_or_identifier(&mut self) -> Result<(Position, Token, String), ScannerError> {
+    fn scan_pkg_or_keyword_or_ident(&mut self) -> Result<(Position, Token, String), ScannerError> {
         if let Some(c) = self.peek() {
             if is_letter(c) {
                 self.next();
@@ -184,25 +190,25 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
-        self.buffer.get(self.pos).map(|c| *c)
+        self.buffer.get(self.offset).map(|c| *c)
     }
 
     fn next(&mut self) {
-        self.pos += 1;
+        self.offset += 1;
         self.column += 1;
     }
 
     fn position(&self) -> Position {
         Position {
             filename: self.filename.to_owned(),
-            offset: self.start,
-            line: self.line,
-            column: self.column,
+            offset: self.start_offset,
+            line: self.start_line,
+            column: self.start_column,
         }
     }
 
     fn literal(&self) -> String {
-        String::from_iter(self.buffer[self.start..self.pos].iter())
+        String::from_iter(self.buffer[self.start_offset..self.offset].iter())
     }
 }
 
