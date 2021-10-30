@@ -193,7 +193,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    // TODO: add support for utf8 / multiline strings
+    // TODO: add support for utf8 / multiline / escape
     fn scan_interpreted_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.next();
 
@@ -214,7 +214,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    // TODO: add support for utf8 / multiline strings
+    // TODO: add support for utf8 / multiline / escape
     fn scan_raw_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.next();
 

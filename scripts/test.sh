@@ -22,7 +22,6 @@ done
 # generate tokens with the Go implementation + from the Rust implementation
 cd "$ROOT_DIR/.tests/samples"
 for i in ./*.go; do
-
   go_tokens="${i%.go}.tokens-go"
   "$GO_BIN" tokens "$i" > "$go_tokens"
 
