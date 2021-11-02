@@ -1,7 +1,7 @@
 #!/bin/sh
 
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
-RUST_BIN='./target/debug/go2rust'
+RUST_BIN='./target/release/go2rust'
 GO_BIN='./go/go'
 
 # make sure our go reference repositories are up-to-date
