@@ -1,5 +1,5 @@
 use crate::token::{Position, Token};
-use phf::{phf_set, Set};
+use phf::{phf_map, Map};
 use std::fmt;
 
 pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String)>, ScannerError> {
@@ -90,6 +90,231 @@ impl<'a> Scanner<'a> {
                     continue;
                 }
 
+                '+' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::ADD_ASSIGN, String::from("")));
+                        }
+                        Some('+') => {
+                            self.next();
+                            return Ok((self.position(), Token::INC, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::ADD, String::from("")));
+                        }
+                    }
+                }
+
+                '-' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::SUB_ASSIGN, String::from("")));
+                        }
+                        Some('-') => {
+                            self.next();
+                            return Ok((self.position(), Token::DEC, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::SUB, String::from("")));
+                        }
+                    }
+                }
+
+                '*' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::MUL_ASSIGN, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::MUL, String::from("")));
+                        }
+                    }
+                }
+
+                '/' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::QUO_ASSIGN, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::QUO, String::from("")));
+                        }
+                    }
+                }
+
+                '%' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::REM_ASSIGN, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::REM, String::from("")));
+                        }
+                    }
+                }
+
+                '&' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::AND_ASSIGN, String::from("")));
+                        }
+                        Some('&') => {
+                            self.next();
+                            return Ok((self.position(), Token::LAND, String::from("")));
+                        }
+                        Some('^') => {
+                            self.next();
+                            match self.peek() {
+                                Some('=') => {
+                                    self.next();
+                                    return Ok((
+                                        self.position(),
+                                        Token::AND_NOT_ASSIGN,
+                                        String::from(""),
+                                    ));
+                                }
+                                _ => {
+                                    return Ok((self.position(), Token::AND_NOT, String::from("")));
+                                }
+                            }
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::AND, String::from("")));
+                        }
+                    }
+                }
+
+                '|' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::OR_ASSIGN, String::from("")));
+                        }
+                        Some('|') => {
+                            self.next();
+                            return Ok((self.position(), Token::LOR, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::OR, String::from("")));
+                        }
+                    }
+                }
+
+                '^' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::XOR_ASSIGN, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::XOR, String::from("")));
+                        }
+                    }
+                }
+
+                '<' => {
+                    self.next();
+                    match self.peek() {
+                        Some('<') => {
+                            self.next();
+                            match self.peek() {
+                                Some('=') => {
+                                    self.next();
+                                    return Ok((
+                                        self.position(),
+                                        Token::SHL_ASSIGN,
+                                        String::from(""),
+                                    ));
+                                }
+                                _ => {
+                                    return Ok((self.position(), Token::SHL, String::from("")));
+                                }
+                            }
+                        }
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::LEQ, String::from("")));
+                        }
+                        Some('-') => {
+                            self.next();
+                            return Ok((self.position(), Token::ARROW, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::LSS, String::from("")));
+                        }
+                    }
+                }
+
+                '>' => {
+                    self.next();
+                    match self.peek() {
+                        Some('>') => {
+                            self.next();
+                            match self.peek() {
+                                Some('=') => {
+                                    self.next();
+                                    return Ok((
+                                        self.position(),
+                                        Token::SHR_ASSIGN,
+                                        String::from(""),
+                                    ));
+                                }
+                                _ => {
+                                    return Ok((self.position(), Token::SHR, String::from("")));
+                                }
+                            }
+                        }
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::GEQ, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::GTR, String::from("")));
+                        }
+                    }
+                }
+
+                ':' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::DEFINE, String::from("")));
+                        }
+                        _ => return Ok((self.position(), Token::COLON, String::from(""))),
+                    }
+                }
+
+                '!' => {
+                    self.next();
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::NEQ, String::from("")));
+                        }
+                        _ => return Ok((self.position(), Token::NOT, String::from(""))),
+                    }
+                }
+
+                ',' => {
+                    self.next();
+                    return Ok((self.position(), Token::COMMA, String::from("")));
+                }
+
                 '(' => {
                     self.next();
                     return Ok((self.position(), Token::LPAREN, String::from("")));
@@ -130,12 +355,35 @@ impl<'a> Scanner<'a> {
 
                 '.' => {
                     self.next();
-                    return Ok((self.position(), Token::PERIOD, String::from("")));
+                    match self.peek() {
+                        Some('.') => {
+                            self.next();
+                            match self.peek() {
+                                Some('.') => {
+                                    return Ok((
+                                        self.position(),
+                                        Token::ELLIPSIS,
+                                        String::from(""),
+                                    ));
+                                }
+                                _ => return Ok((self.position(), Token::ILLEGAL, self.literal())),
+                            }
+                        }
+                        _ => return Ok((self.position(), Token::PERIOD, String::from(""))),
+                    }
                 }
 
                 '=' => {
                     self.next();
-                    return Ok((self.position(), Token::ASSIGN, String::from("")));
+                    match self.peek() {
+                        Some('=') => {
+                            self.next();
+                            return Ok((self.position(), Token::EQL, String::from("")));
+                        }
+                        _ => {
+                            return Ok((self.position(), Token::ASSIGN, String::from("")));
+                        }
+                    }
                 }
 
                 '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
@@ -168,19 +416,17 @@ impl<'a> Scanner<'a> {
         }
 
         let (position, literal) = (self.position(), self.literal());
-        if literal == "package" {
-            Ok((position, Token::PACKAGE, literal))
-        } else if KEYWORDS.contains(&literal) {
+        if let Some(&token) = KEYWORDS.get(&literal) {
             if matches!(
-                literal.as_str(),
-                "break" | "continue" | "fallthrough" | "return"
+                token,
+                Token::BREAK | Token::CONTINUE | Token::FALLTHROUGH | Token::RETURN
             ) {
                 self.asi = true
             }
-            Ok((position, Token::KEYWORD(literal.to_owned()), literal))
+            Ok((position, token, literal))
         } else {
             self.asi = true;
-            Ok((position, Token::IDENT(literal.to_owned()), literal))
+            Ok((position, Token::IDENT, literal))
         }
     }
 
@@ -198,16 +444,12 @@ impl<'a> Scanner<'a> {
         self.asi = true;
         self.next();
 
-        if let Some(c) = self.peek() {
+        if let Some(_) = self.peek() {
             self.next();
             if let Some(d) = self.peek() {
                 if d == '\'' {
                     self.next();
-                    return Ok((
-                        self.position(),
-                        Token::RUNE(c.to_owned()),
-                        self.literal().to_owned(),
-                    ));
+                    return Ok((self.position(), Token::CHAR, self.literal().to_owned()));
                 }
             }
         };
@@ -225,11 +467,7 @@ impl<'a> Scanner<'a> {
             self.next();
             if c == '"' {
                 let literal = self.literal();
-                return Ok((
-                    self.position(),
-                    Token::STRING(literal.to_owned()),
-                    literal.to_owned(),
-                ));
+                return Ok((self.position(), Token::STRING, literal.to_owned()));
             }
         }
 
@@ -246,11 +484,7 @@ impl<'a> Scanner<'a> {
             self.next();
             if c == '`' {
                 let literal = self.literal();
-                return Ok((
-                    self.position(),
-                    Token::STRING(literal.to_owned()),
-                    literal.to_owned(),
-                ));
+                return Ok((self.position(), Token::STRING, literal.to_owned()));
             }
         }
 
@@ -294,29 +528,34 @@ pub fn is_unicode_digit(c: char) -> bool {
 }
 
 // https://golang.org/ref/spec#Keywords
-static KEYWORDS: Set<&'static str> = phf_set! {
-  "break",
-  "case",
-  "chan",
-  "const",
-  "continue",
-  "default",
-  "defer",
-  "else",
-  "fallthrough",
-  "for",
-  "func",
-  "go",
-  "goto",
-  "if",
-  "import",
-  "interface",
-  "map",
-  "range",
-  "return",
-  "select",
-  "struct",
-  "switch",
-  "type",
-  "var",
+static KEYWORDS: Map<&'static str, Token> = phf_map! {
+  "break" => Token::BREAK,
+  "case" => Token::CASE,
+  "chan" => Token::CHAN,
+  "const" => Token::CONST,
+  "continue" => Token::CONTINUE,
+
+  "default" => Token::DEFAULT,
+  "defer" => Token::DEFER,
+  "else" => Token::ELSE,
+  "fallthrough" => Token::FALLTHROUGH,
+  "for" => Token::FOR,
+
+  "func" => Token::FUNC,
+  "go" => Token::GO,
+  "goto" => Token::GOTO,
+  "if" => Token::IF,
+  "import" => Token::IMPORT,
+
+  "interface" => Token::INTERFACE,
+  "map" => Token::MAP,
+  "package" => Token::PACKAGE,
+  "range" => Token::RANGE,
+  "return" => Token::RETURN,
+
+  "select" => Token::SELECT,
+  "struct" => Token::STRUCT,
+  "switch" => Token::SWITCH,
+  "type" => Token::TYPE,
+  "var" => Token::VAR,
 };

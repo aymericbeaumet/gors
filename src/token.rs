@@ -14,27 +14,105 @@ pub struct Position {
     pub column: usize,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Token {
-    IDENT(String),
-    PACKAGE,
-    KEYWORD(String),
-    STRING(String),
-    RUNE(char),
+    ILLEGAL,
+
+    EOF,
+    COMMENT,
+
+    IDENT,  // main
+    INT,    // 12345
+    FLOAT,  // 123.45
+    IMAG,   // 123.45i
+    CHAR,   // 'a'
+    STRING, // "abc"
+
+    ADD, // +
+    SUB, // -
+    MUL, // *
+    QUO, // /
+    REM, // %
+
+    AND,     // &
+    OR,      // |
+    XOR,     // ^
+    SHL,     // <<
+    SHR,     // >>
+    AND_NOT, // &^
+
+    ADD_ASSIGN, // +=
+    SUB_ASSIGN, // -=
+    MUL_ASSIGN, // *=
+    QUO_ASSIGN, // /=
+    REM_ASSIGN, // %=
+
+    AND_ASSIGN,     // &=
+    OR_ASSIGN,      // |=
+    XOR_ASSIGN,     // ^=
+    SHL_ASSIGN,     // <<=
+    SHR_ASSIGN,     // >>=
+    AND_NOT_ASSIGN, // &^=
+
+    LAND,  // &&
+    LOR,   // ||
+    ARROW, // <-
+    INC,   // ++
+    DEC,   // --
+
+    EQL,    // ==
+    LSS,    // <
+    GTR,    // >
+    ASSIGN, // =
+    NOT,    // !
+
+    NEQ,      // !=
+    LEQ,      // <=
+    GEQ,      // >=
+    DEFINE,   // :=
+    ELLIPSIS, // ...
 
     LPAREN, // (
     LBRACK, // [
     LBRACE, // {
+    COMMA,  // ,
+    PERIOD, // .
 
-    RPAREN, // )
-    RBRACK, // ]
-    RBRACE, // }
-
+    RPAREN,    // )
+    RBRACK,    // ]
+    RBRACE,    // }
     SEMICOLON, // ;
-    PERIOD,    // .
-    ASSIGN,    // =
+    COLON,     // :
 
-    EOF,
+    BREAK,
+    CASE,
+    CHAN,
+    CONST,
+    CONTINUE,
+
+    DEFAULT,
+    DEFER,
+    ELSE,
+    FALLTHROUGH,
+    FOR,
+
+    FUNC,
+    GO,
+    GOTO,
+    IF,
+    IMPORT,
+
+    INTERFACE,
+    MAP,
+    PACKAGE,
+    RANGE,
+    RETURN,
+
+    SELECT,
+    STRUCT,
+    SWITCH,
+    TYPE,
+    VAR,
 }
 
 // String returns the string corresponding to the token tok.
@@ -47,26 +125,106 @@ impl Serialize for Token {
     where
         S: Serializer,
     {
+        use Token::*;
+
         serializer.serialize_str(match self {
-            Token::IDENT(_) => "IDENT",
-            Token::PACKAGE => "package",
-            Token::KEYWORD(keyword) => keyword,
-            Token::STRING(_) => "STRING",
-            Token::RUNE(_) => "CHAR",
+            ILLEGAL => "ILLEGAL",
 
-            Token::LPAREN => "(",
-            Token::LBRACK => "[",
-            Token::LBRACE => "{",
+            EOF => "EOF",
+            COMMENT => "COMMENT",
 
-            Token::RPAREN => ")",
-            Token::RBRACK => "]",
-            Token::RBRACE => "}",
+            IDENT => "IDENT",
+            INT => "INT",
+            FLOAT => "FLOAT",
+            IMAG => "IMAG",
+            CHAR => "CHAR",
+            STRING => "STRING",
 
-            Token::SEMICOLON => ";",
-            Token::PERIOD => ".",
-            Token::ASSIGN => "=",
+            ADD => "+",
+            SUB => "-",
+            MUL => "*",
+            QUO => "/",
+            REM => "%",
 
-            Token::EOF => "EOF",
+            AND => "&",
+            OR => "|",
+            XOR => "^",
+            SHL => "<<",
+            SHR => ">>",
+            AND_NOT => "&^",
+
+            ADD_ASSIGN => "+=",
+            SUB_ASSIGN => "-=",
+            MUL_ASSIGN => "*=",
+            QUO_ASSIGN => "/=",
+            REM_ASSIGN => "%=",
+
+            AND_ASSIGN => "&=",
+            OR_ASSIGN => "|=",
+            XOR_ASSIGN => "^=",
+            SHL_ASSIGN => "<<=",
+            SHR_ASSIGN => ">>=",
+            AND_NOT_ASSIGN => "&^=",
+
+            LAND => "&&",
+            LOR => "||",
+            ARROW => "<-",
+            INC => "++",
+            DEC => "--",
+
+            EQL => "==",
+            LSS => "<",
+            GTR => ">",
+            ASSIGN => "=",
+            NOT => "!",
+
+            NEQ => "!=",
+            LEQ => "<=",
+            GEQ => ">=",
+            DEFINE => ":=",
+            ELLIPSIS => "...",
+
+            LPAREN => "(",
+            LBRACK => "[",
+            LBRACE => "{",
+            COMMA => ",",
+            PERIOD => ".",
+
+            RPAREN => ")",
+            RBRACK => "]",
+            RBRACE => "}",
+            SEMICOLON => ";",
+            COLON => ":",
+
+            BREAK => "break",
+            CASE => "case",
+            CHAN => "chan",
+            CONST => "const",
+            CONTINUE => "continue",
+
+            DEFAULT => "default",
+            DEFER => "defer",
+            ELSE => "else",
+            FALLTHROUGH => "fallthrough",
+            FOR => "for",
+
+            FUNC => "func",
+            GO => "go",
+            GOTO => "goto",
+            IF => "if",
+            IMPORT => "import",
+
+            INTERFACE => "interface",
+            MAP => "map",
+            PACKAGE => "package",
+            RANGE => "range",
+            RETURN => "return",
+
+            SELECT => "select",
+            STRUCT => "struct",
+            SWITCH => "switch",
+            TYPE => "type",
+            VAR => "var",
         })
     }
 }

@@ -1,7 +1,7 @@
 #!/bin/sh
 
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
-RUST_BIN="$ROOT_DIR/target/release/go2rust"
+RUST_BIN="$ROOT_DIR/target/debug/go2rust"
 GO_BIN="$ROOT_DIR/go/go"
 
 cd "$ROOT_DIR"

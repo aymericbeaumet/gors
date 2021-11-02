@@ -3,7 +3,7 @@ all: build test
 
 .PHONY: build
 build:
-	cargo build --release
+	cargo build
 	cd ./go && go build .
 
 .PHONY: test

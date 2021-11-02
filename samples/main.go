@@ -39,12 +39,95 @@ main(
 
 ) {
 
-   '0'
-'1';
+a
+'a'
+"b"; `b`
 
-  var a = "test";
+a + a
+a - a
+a * a
+a / a
+a % a
 
-  if true { fmt.Println("Hello, World!") }
+a & a
+a | a
+a ^ a
+a << a
+a >> a
+a &^ a
+
+a += a
+a -= a
+a *= a
+a /= a
+a %= a
+
+a &= a
+a -= a
+a ^= a
+a <<= a
+a >>= a
+a &^= a
+
+a && a
+a || a
+a <- a
+a++
+a--
+
+a == a
+a < a
+a > a
+a = a
+!a
+
+a != a
+a <= a
+a >= a
+a := a
+...
+
+(
+[
+{
+,
+.
+
+)
+]
+}
+;
+:
+
+break
+case
+chan
+const
+continue
+
+default
+defer
+else
+fallthrough
+for
+
+func
+go
+goto
+if
+import
+
+interface
+map
+package
+range
+return
+
+select
+struct
+switch
+type
+var
 
 };
 
