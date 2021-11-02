@@ -20,6 +20,7 @@ pub enum Token {
     PACKAGE,
     KEYWORD(String),
     STRING(String),
+    RUNE(char),
 
     LPAREN, // (
     LBRACK, // [
@@ -50,6 +51,7 @@ impl Serialize for Token {
             Token::PACKAGE => "package",
             Token::KEYWORD(keyword) => keyword,
             Token::STRING(_) => "STRING",
+            Token::RUNE(_) => "CHAR",
 
             Token::LPAREN => "(",
             Token::LBRACK => "[",

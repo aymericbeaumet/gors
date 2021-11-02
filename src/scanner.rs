@@ -21,6 +21,7 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
 #[derive(Debug)]
 pub enum ScannerError {
     UnexpectedToken(char),
+    UnterminatedChar,
     UnterminatedString,
 }
 
@@ -188,19 +189,35 @@ impl<'a> Scanner<'a> {
 
     // https://golang.org/ref/spec#Rune_literals
     fn scan_rune(&mut self) -> Result<(Position, Token, String), ScannerError> {
-        //self.asi = true
-        unimplemented!("")
+        self.asi = true;
+        self.next();
+
+        if let Some(c) = self.peek() {
+            self.next();
+            if let Some(d) = self.peek() {
+                if d == '\'' {
+                    self.next();
+                    return Ok((
+                        self.position(),
+                        Token::RUNE(c.to_owned()),
+                        self.literal().to_owned(),
+                    ));
+                }
+            }
+        };
+
+        Err(ScannerError::UnterminatedChar)
     }
 
     // https://golang.org/ref/spec#String_literals
     // TODO: add support for utf8 / multiline / escape
     fn scan_interpreted_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.asi = true;
         self.next();
 
         while let Some(c) = self.peek() {
             self.next();
             if c == '"' {
-                self.asi = true;
                 let literal = self.literal();
                 return Ok((
                     self.position(),
@@ -216,12 +233,12 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#String_literals
     // TODO: add support for utf8 / multiline / escape
     fn scan_raw_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.asi = true;
         self.next();
 
         while let Some(c) = self.peek() {
             self.next();
             if c == '`' {
-                self.asi = true;
                 let literal = self.literal();
                 return Ok((
                     self.position(),
