@@ -450,12 +450,12 @@ impl<'a> Scanner<'a> {
         self.asi = true;
         self.next();
 
-        if let Some(_) = self.peek() {
+        if self.peek().is_some() {
             self.next();
             if let Some(d) = self.peek() {
                 if d == '\'' {
                     self.next();
-                    return Ok((self.position(), Token::CHAR, self.literal().to_owned()));
+                    return Ok((self.position(), Token::CHAR, self.literal()));
                 }
             }
         };
@@ -472,8 +472,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.peek() {
             self.next();
             if c == '"' {
-                let literal = self.literal();
-                return Ok((self.position(), Token::STRING, literal.to_owned()));
+                return Ok((self.position(), Token::STRING, self.literal()));
             }
         }
 
@@ -489,8 +488,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.peek() {
             self.next();
             if c == '`' {
-                let literal = self.literal();
-                return Ok((self.position(), Token::STRING, literal.to_owned()));
+                return Ok((self.position(), Token::STRING, self.literal()));
             }
         }
 
@@ -498,7 +496,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
-        self.buffer.get(self.offset).map(|c| *c)
+        self.buffer.get(self.offset).copied()
     }
 
     fn next(&mut self) {
@@ -522,15 +520,12 @@ impl<'a> Scanner<'a> {
 
 // https://golang.org/ref/spec#Letters_and_digits
 pub fn is_letter(c: char) -> bool {
-    match c {
-        '_' | 'A'..='Z' | 'a'..='z' => true,
-        _ => false,
-    }
+    matches!(c, '_' | 'A'..='Z' | 'a'..='z')
 }
 
 // https://golang.org/ref/spec#Characters
 pub fn is_unicode_digit(c: char) -> bool {
-    return c >= '0' && c <= '9'; // TODO: unicode
+    ('0'..='9').contains(&c) // TODO: unicode
 }
 
 // https://golang.org/ref/spec#Keywords

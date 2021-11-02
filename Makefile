@@ -1,11 +1,16 @@
 .PHONY: all
-all: build test
+all: build lint test
 
 .PHONY: build
 build:
-	cargo build
-	cd ./go && go build .
+	cargo build --release
+
+.PHONY: lint
+lint:
+	cargo clippy
 
 .PHONY: test
-test: build
+test:
+	cargo build
+	cd ./go && go build .
 	./scripts/test.sh

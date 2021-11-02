@@ -41,7 +41,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = std::io::stdout();
     for token in tokens {
         serde_json::to_writer(&stdout, &token)?;
-        stdout.write(&[b'\n'])?;
+        stdout.write_all(&[b'\n'])?;
     }
 
     Ok(())
