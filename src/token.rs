@@ -5,7 +5,7 @@
 
 use serde::{Serialize, Serializer};
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Position {
     #[serde(rename = "Filename")]
     pub filename: String,

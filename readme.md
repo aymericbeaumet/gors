@@ -1,5 +1,4 @@
 ```
-brew install go@1.17 rustup-init
-go get golang.org/x/tools/cmd/goimports
+brew install go@1.17 rustup-init watchexec
 rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```

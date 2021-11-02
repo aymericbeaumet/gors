@@ -1,8 +1,11 @@
 #!/bin/sh
 
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
-RUST_BIN='./target/release/go2rust'
+RUST_BIN="./target/${1:=release}/go2rust"
 GO_BIN='./go/go'
+
+# fix root directory
+cd "$ROOT_DIR"
 
 # make sure our go reference repositories are up-to-date
 git submodule update --init

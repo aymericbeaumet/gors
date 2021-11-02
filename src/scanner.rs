@@ -443,7 +443,7 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Imaginary_literals
     fn scan_int_or_float_or_imag(&mut self) -> Result<(Position, Token, String), ScannerError> {
         //self.asi = true
-        unimplemented!("")
+        unimplemented!("{:?}", self.position())
     }
 
     // https://golang.org/ref/spec#Rune_literals
