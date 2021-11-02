@@ -1,12 +1,11 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod scanner;
 mod token;
 
 use clap::Parser;
-use mimalloc::MiMalloc;
 use std::io::Write;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Aymeric Beaumet <hi@aymericbeaumet.com>")]
