@@ -104,6 +104,7 @@ impl<'a> Scanner<'a> {
                             return Ok((self.position(), Token::ADD_ASSIGN, String::from("")));
                         }
                         Some('+') => {
+                            self.asi = true;
                             self.next();
                             return Ok((self.position(), Token::INC, String::from("")));
                         }
@@ -121,6 +122,7 @@ impl<'a> Scanner<'a> {
                             return Ok((self.position(), Token::SUB_ASSIGN, String::from("")));
                         }
                         Some('-') => {
+                            self.asi = true;
                             self.next();
                             return Ok((self.position(), Token::DEC, String::from("")));
                         }
@@ -366,6 +368,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             match self.peek() {
                                 Some('.') => {
+                                    self.next();
                                     return Ok((
                                         self.position(),
                                         Token::ELLIPSIS,
@@ -421,14 +424,13 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        let (position, literal) = (self.position(), self.literal());
+        let position = self.position();
+        let literal = self.literal();
         if let Some(&token) = KEYWORDS.get(&literal) {
-            if matches!(
+            self.asi = matches!(
                 token,
                 Token::BREAK | Token::CONTINUE | Token::FALLTHROUGH | Token::RETURN
-            ) {
-                self.asi = true
-            }
+            );
             Ok((position, token, literal))
         } else {
             self.asi = true;

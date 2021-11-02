@@ -11,6 +11,6 @@ lint:
 
 .PHONY: test
 test:
-	cargo build
-	cd ./go && go build .
-	./scripts/test.sh
+	@cargo build
+	@cd ./go && go build .
+	@./scripts/test.sh
