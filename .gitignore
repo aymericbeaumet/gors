@@ -1,3 +1,4 @@
+.repositories/
 .tests/
 /go/go
 /target

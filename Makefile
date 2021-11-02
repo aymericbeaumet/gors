@@ -10,7 +10,6 @@ lint:
 	cargo clippy
 
 .PHONY: test
-test:
-	@cargo build
+test: build
 	@cd ./go && go build .
 	@./scripts/test.sh

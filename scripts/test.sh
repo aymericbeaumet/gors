@@ -1,36 +1,33 @@
 #!/bin/sh
 
-ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
-RUST_BIN="$ROOT_DIR/target/debug/go2rust"
-GO_BIN="$ROOT_DIR/go/go"
+cd "$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
 
-cd "$ROOT_DIR"
+RUST_BIN='./target/debug/go2rust'
+GO_BIN='./go/go'
+
+# make sure our go reference repositories are up-to-date
+git submodule update --init
+
+# prepare the working directory
 rm -rf .tests
-mkdir -p .tests/samples
+mkdir .tests
 
-# add all the samples files
-for i in samples/*; do
-  ln -s "$ROOT_DIR/$i" "$ROOT_DIR/.tests/$i"
-done
-
-# format/simplify all the samples files
-for i in .tests/samples/*; do
-  gofmt -s "$ROOT_DIR/$i" > "$ROOT_DIR/${i%.go}-gofmt.go"
-  goimports "$ROOT_DIR/$i" > "$ROOT_DIR/${i%.go}-goimports.go"
-done
+# find all go files
+find . -name '*.go' > .tests/index
 
 # generate tokens with the Go implementation + from the Rust implementation
-cd "$ROOT_DIR/.tests/samples"
-for i in ./*.go; do
-  echo "$i"
+while read gofile; do
+  echo "$gofile"
 
-  go_tokens="${i%.go}.tokens-go"
-  "$GO_BIN" tokens "$i" > "$go_tokens"
+  go_tokens="${gofile%.go}"
+  go_tokens=".tests/${go_tokens//\//--}.tokens-go"
+  "$GO_BIN" tokens "$gofile" > "$go_tokens"
 
-  rust_tokens="${i%.go}.tokens-rust"
-  "$RUST_BIN" tokens "$i" > "$rust_tokens"
+  rust_tokens="${gofile%.go}"
+  rust_tokens=".tests/${rust_tokens//\//--}.tokens-rust"
+  "$RUST_BIN" tokens "$gofile" > "$rust_tokens"
 
-  git --no-pager diff --no-index "$go_tokens" "$rust_tokens"
-done
+  git --no-pager diff --no-index "$go_tokens" "$rust_tokens" || exit 1
+done < .tests/index
 
 # TODO: AST

@@ -1,0 +1,4 @@
+[submodule ".references/go"]
+	path = .repositories/go
+	url = https://github.com/golang/go.git
+	shallow = true
