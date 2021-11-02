@@ -525,7 +525,7 @@ pub fn is_letter(c: char) -> bool {
 
 // https://golang.org/ref/spec#Characters
 pub fn is_unicode_digit(c: char) -> bool {
-    ('0'..='9').contains(&c) // TODO: unicode
+    matches!(c, '0'..='9') // TODO: unicode
 }
 
 // https://golang.org/ref/spec#Keywords
