@@ -2,6 +2,8 @@ use crate::token::{Position, Token};
 use phf::{phf_map, Map};
 use std::fmt;
 
+// TODO: switch to an iterator
+// TODO: remove any allocation
 pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String)>, ScannerError> {
     let mut s = Scanner::new(filename, buffer.chars().collect());
     let mut out = vec![];
@@ -18,8 +20,10 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
     Ok(out)
 }
 
+// TODO: match the errors from the Go scanner
 #[derive(Debug)]
 pub enum ScannerError {
+    ForbiddenCharacter(char),
     UnexpectedToken(char),
     UnterminatedChar,
     UnterminatedString,
@@ -29,7 +33,7 @@ impl std::error::Error for ScannerError {}
 
 impl fmt::Display for ScannerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ScannerError")
+        write!(f, "scanner error: {:?}", self)
     }
 }
 
@@ -75,6 +79,8 @@ impl<'a> Scanner<'a> {
             self.start_column = self.column;
 
             match c {
+                '\0' => return Err(ScannerError::ForbiddenCharacter(c)),
+
                 ' ' | '\t' | '\r' => {
                     self.next();
                     continue;

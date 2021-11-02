@@ -85,49 +85,42 @@ a != a
 a <= a
 a >= a
 a := a
-...
+func (a ...int) { fmt.Println(a...) }
 
-(
-[
-{
-,
-.
+a[a]
+{}
+func(a int, b int) {}
 
-)
-]
-}
-;
-:
+go func() {
+	defer func() {}()
 
-break
-case
-chan
-const
-continue
+	const a = "Hello World"
+	type anon struct{}
+	var b = make(chan anon)
+	c := map[string]interface{}{}
 
-default
-defer
-else
-fallthrough
-for
+	switch a {
+		case "a":
+			break
+		case "b":
+			fallthrough
+		case "c":
+			goto End
+		case "d":
+			return
+		default:
+			panic("default")
+	}
+	End:
 
-func
-go
-goto
-if
-import
+	for range b {
+		continue
+	}
 
-interface
-map
-package
-range
-return
+	if true { } else { }
 
-select
-struct
-switch
-type
-var
+	select {}
+}()
 
 };
 

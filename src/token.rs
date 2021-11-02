@@ -1,5 +1,7 @@
 // https://cs.opensource.google/go/go/+/refs/tags/go1.17.2:src/go/token/token.go
 
+#![allow(non_camel_case_types)]
+
 use serde::{Serialize, Serializer};
 
 #[derive(Serialize)]

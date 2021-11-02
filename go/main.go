@@ -10,7 +10,7 @@ import (
 	"os"
 )
 
-// ./go-parse ast|tokens <filename>
+// ./go ast|tokens <filename>
 func main() {
 	filename := os.Args[2]
 
