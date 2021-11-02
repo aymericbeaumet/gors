@@ -26,6 +26,7 @@ pub enum ScannerError {
     ForbiddenCharacter(char),
     UnexpectedToken(char),
     UnterminatedChar,
+    UnterminatedComment,
     UnterminatedString,
 }
 
@@ -152,6 +153,8 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::QUO_ASSIGN, String::from("")));
                         }
+                        Some('/') => return self.scan_line_comment(),
+                        Some('*') => return self.scan_general_comment(),
                         _ => {
                             return Ok((self.position(), Token::QUO, String::from("")));
                         }
@@ -412,16 +415,13 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Keywords
     // https://golang.org/ref/spec#Identifiers
     fn scan_pkg_or_keyword_or_ident(&mut self) -> Result<(Position, Token, String), ScannerError> {
-        if let Some(c) = self.peek() {
-            if is_letter(c) {
-                self.next();
-                while let Some(c) = self.peek() {
-                    if !(is_letter(c) || is_unicode_digit(c)) {
-                        break;
-                    }
-                    self.next()
-                }
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !(is_letter(c) || is_unicode_digit(c)) {
+                break;
             }
+            self.next()
         }
 
         let position = self.position();
@@ -442,8 +442,73 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Floating-point_literals
     // https://golang.org/ref/spec#Imaginary_literals
     fn scan_int_or_float_or_imag(&mut self) -> Result<(Position, Token, String), ScannerError> {
-        //self.asi = true
-        unimplemented!("{:?}", self.position())
+        self.asi = true;
+
+        match self.peek() {
+            Some('0') => {
+                self.next();
+                match self.peek() {
+                    Some('1'..='9') => self.scan_decimal(),
+                    Some('b') => self.scan_binary(),
+                    Some('o') => self.scan_octal(),
+                    Some('x' | 'X') => self.scan_hexadecimal(),
+                    _ => return Ok((self.position(), Token::INT, self.literal())),
+                }
+            }
+            _ => self.scan_decimal(),
+        }
+    }
+
+    fn scan_decimal(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='9') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::INT, self.literal()))
+    }
+
+    fn scan_binary(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='1') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::INT, self.literal()))
+    }
+
+    fn scan_octal(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='7') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::INT, self.literal()))
+    }
+
+    fn scan_hexadecimal(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::INT, self.literal()))
     }
 
     // https://golang.org/ref/spec#Rune_literals
@@ -471,10 +536,17 @@ impl<'a> Scanner<'a> {
         self.asi = true;
         self.next();
 
+        let mut escaped = false;
         while let Some(c) = self.peek() {
             self.next();
-            if c == '"' {
-                return Ok((self.position(), Token::STRING, self.literal()));
+            match c {
+                '"' => {
+                    if !escaped {
+                        return Ok((self.position(), Token::STRING, self.literal()));
+                    }
+                }
+                '\\' => escaped = !escaped,
+                _ => escaped = false,
             }
         }
 
@@ -495,6 +567,39 @@ impl<'a> Scanner<'a> {
         }
 
         Err(ScannerError::UnterminatedString)
+    }
+
+    // https://golang.org/ref/spec#Comments
+    fn scan_general_comment(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if c == '*' {
+                self.next();
+
+                if let Some(c) = self.peek() {
+                    if c == '/' {
+                        return Ok((self.position(), Token::COMMENT, self.literal()));
+                    }
+                }
+            }
+        }
+
+        Err(ScannerError::UnterminatedComment)
+    }
+
+    // https://golang.org/ref/spec#Comments
+    fn scan_line_comment(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if c == '\n' {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::COMMENT, self.literal()))
     }
 
     fn peek(&mut self) -> Option<char> {
