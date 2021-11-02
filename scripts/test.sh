@@ -22,18 +22,11 @@ done
 # generate tokens with the Go implementation + from the Rust implementation
 cd "$ROOT_DIR/.tests/samples"
 for i in ./*.go; do
-  echo
-  echo +----------------------------------------------------------------------------------------------------+
-
   go_tokens="${i%.go}.tokens-go"
-  echo
-  echo go tokens:
-  time "$GO_BIN" tokens "$i" > "$go_tokens"
+  "$GO_BIN" tokens "$i" > "$go_tokens"
 
   rust_tokens="${i%.go}.tokens-rust"
-  echo
-  echo rust tokens:
-  time "$RUST_BIN" tokens "$i" > "$rust_tokens"
+  "$RUST_BIN" tokens "$i" > "$rust_tokens"
 
   echo
   git --no-pager diff --no-index "$go_tokens" "$rust_tokens" && echo "CORRECT"
