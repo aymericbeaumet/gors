@@ -16,7 +16,7 @@ struct Opts {
 
 #[derive(Parser)]
 enum SubCommand {
-    #[clap(about = "Tokens Golang code and print the AST")]
+    #[clap(about = "Parse Go code and print the tokens")]
     Tokens(Tokens),
 }
 
