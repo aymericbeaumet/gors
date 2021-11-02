@@ -32,6 +32,7 @@ pub enum Token {
 
     SEMICOLON, // ;
     PERIOD,    // .
+    ASSIGN,    // =
 
     EOF,
 }
@@ -63,6 +64,7 @@ impl Serialize for Token {
 
             Token::SEMICOLON => ";",
             Token::PERIOD => ".",
+            Token::ASSIGN => "=",
 
             Token::EOF => "EOF",
         })

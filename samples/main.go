@@ -39,8 +39,12 @@ main(
 
 ) {
 
-'0'
+   '0'
 '1';
+
+  var a = "test";
+
+  if true { fmt.Println("Hello, World!") }
 
 };
 

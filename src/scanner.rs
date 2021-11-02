@@ -133,6 +133,11 @@ impl<'a> Scanner<'a> {
                     return Ok((self.position(), Token::PERIOD, String::from("")));
                 }
 
+                '=' => {
+                    self.next();
+                    return Ok((self.position(), Token::ASSIGN, String::from("")));
+                }
+
                 '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
                 '0'..='9' => return self.scan_int_or_float_or_imag(),
                 '\'' => return self.scan_rune(),
