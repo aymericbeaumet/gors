@@ -16,7 +16,7 @@ test: ./go/go
 
 .PHONY: dev
 dev: ./go/go
-	@watchexec --restart --clear 'cargo build && cargo clippy && ./scripts/test.sh "debug"'
+	@watchexec --restart --clear 'cargo build && ./scripts/test.sh "debug"'
 
 ./go/go:
 	cd ./go && go build -o go .
