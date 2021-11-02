@@ -188,6 +188,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Rune_literals
+    // TODO: add support for utf8 / escape
     fn scan_rune(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.asi = true;
         self.next();
