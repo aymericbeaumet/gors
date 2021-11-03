@@ -11,6 +11,7 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
     loop {
         let (pos, tok, lit) = s.scan()?;
         let stop = tok == Token::EOF;
+        log::debug!("{:?} {:?} {:?}", pos, tok, lit);
         out.push((pos, tok, lit));
         if stop {
             break;
@@ -23,11 +24,11 @@ pub fn scan(filename: &str, buffer: &str) -> Result<Vec<(Position, Token, String
 // TODO: match the errors from the Go scanner
 #[derive(Debug)]
 pub enum ScannerError {
-    ForbiddenCharacter(char),
-    UnexpectedToken(char),
-    UnterminatedChar,
-    UnterminatedComment,
-    UnterminatedString,
+    ForbiddenCharacter(Position, char),
+    UnexpectedToken(Position, char),
+    UnterminatedChar(Position),
+    UnterminatedComment(Position),
+    UnterminatedString(Position),
 }
 
 impl std::error::Error for ScannerError {}
@@ -50,6 +51,7 @@ pub struct Scanner<'a> {
     start_offset: usize,
     start_line: usize,
     start_column: usize,
+    //
     asi: bool,
 }
 
@@ -66,6 +68,7 @@ impl<'a> Scanner<'a> {
             start_offset: 0,
             start_line: 0,
             start_column: 0,
+            //
             asi: false,
         }
     }
@@ -80,7 +83,7 @@ impl<'a> Scanner<'a> {
             self.start_column = self.column;
 
             match c {
-                '\0' => return Err(ScannerError::ForbiddenCharacter(c)),
+                '\0' => return Err(ScannerError::ForbiddenCharacter(self.position(), c)),
 
                 ' ' | '\t' | '\r' => {
                     self.next();
@@ -88,8 +91,7 @@ impl<'a> Scanner<'a> {
                 }
 
                 '\n' => {
-                    self.line += 1;
-                    self.column = 0;
+                    self.newline();
                     self.next();
                     if asi {
                         return Ok((self.position(), Token::SEMICOLON, self.literal()));
@@ -403,7 +405,7 @@ impl<'a> Scanner<'a> {
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_interpreted_string(),
                 '`' => return self.scan_raw_string(),
-                _ => return Err(ScannerError::UnexpectedToken(c)),
+                _ => return Err(ScannerError::UnexpectedToken(self.position(), c)),
             };
         }
 
@@ -527,7 +529,7 @@ impl<'a> Scanner<'a> {
             }
         };
 
-        Err(ScannerError::UnterminatedChar)
+        Err(ScannerError::UnterminatedChar(self.position()))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -550,7 +552,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        Err(ScannerError::UnterminatedString)
+        Err(ScannerError::UnterminatedString(self.position()))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -560,13 +562,20 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            self.next();
-            if c == '`' {
-                return Ok((self.position(), Token::STRING, self.literal()));
+            match c {
+                '\n' => {
+                    self.newline();
+                    self.next();
+                }
+                '`' => {
+                    self.next();
+                    return Ok((self.position(), Token::STRING, self.literal()));
+                }
+                _ => self.next(),
             }
         }
 
-        Err(ScannerError::UnterminatedString)
+        Err(ScannerError::UnterminatedString(self.position()))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -574,18 +583,25 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            if c == '*' {
-                self.next();
-
-                if let Some(c) = self.peek() {
-                    if c == '/' {
-                        return Ok((self.position(), Token::COMMENT, self.literal()));
+            match c {
+                '\n' => {
+                    self.newline();
+                    self.next();
+                }
+                '*' => {
+                    self.next();
+                    if let Some(c) = self.peek() {
+                        if c == '/' {
+                            self.next();
+                            return Ok((self.position(), Token::COMMENT, self.literal()));
+                        }
                     }
                 }
+                _ => self.next(),
             }
         }
 
-        Err(ScannerError::UnterminatedComment)
+        Err(ScannerError::UnterminatedComment(self.position()))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -622,6 +638,11 @@ impl<'a> Scanner<'a> {
 
     fn literal(&self) -> String {
         String::from_iter(self.buffer[self.start_offset..self.offset].iter())
+    }
+
+    fn newline(&mut self) {
+        self.line += 1;
+        self.column = 0;
     }
 }
 

@@ -27,6 +27,7 @@ struct Tokens {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    pretty_env_logger::init();
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
