@@ -44,10 +44,12 @@ pub struct Scanner<'a> {
     filename: &'a str,
     buffer: Vec<char>,
     //
-    offset: usize,
+    index: usize,  // chars index in the vec
+    offset: usize, // bytes index in the file
     line: usize,
     column: usize,
     //
+    start_index: usize,
     start_offset: usize,
     start_line: usize,
     start_column: usize,
@@ -61,10 +63,12 @@ impl<'a> Scanner<'a> {
             filename,
             buffer,
             //
+            index: 0,
             offset: 0,
             line: 1,
             column: 1,
             //
+            start_index: 0,
             start_offset: 0,
             start_line: 0,
             start_column: 0,
@@ -78,6 +82,7 @@ impl<'a> Scanner<'a> {
         self.asi = false;
 
         while let Some(c) = self.peek() {
+            self.start_index = self.index;
             self.start_offset = self.offset;
             self.start_line = self.line;
             self.start_column = self.column;
@@ -590,11 +595,9 @@ impl<'a> Scanner<'a> {
                 }
                 '*' => {
                     self.next();
-                    if let Some(c) = self.peek() {
-                        if c == '/' {
-                            self.next();
-                            return Ok((self.position(), Token::COMMENT, self.literal()));
-                        }
+                    if matches!(self.peek(), Some('/')) {
+                        self.next();
+                        return Ok((self.position(), Token::COMMENT, self.literal()));
                     }
                 }
                 _ => self.next(),
@@ -619,11 +622,12 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
-        self.buffer.get(self.offset).copied()
+        self.buffer.get(self.index).copied()
     }
 
     fn next(&mut self) {
-        self.offset += 1;
+        self.index += 1;
+        self.offset += self.peek().map(|c| c.len_utf8()).unwrap_or(1);
         self.column += 1;
     }
 
@@ -637,7 +641,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn literal(&self) -> String {
-        String::from_iter(self.buffer[self.start_offset..self.offset].iter())
+        String::from_iter(self.buffer[self.start_index..self.index].iter())
     }
 
     fn newline(&mut self) {
