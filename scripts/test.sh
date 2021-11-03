@@ -15,21 +15,23 @@ rm -rf "$ROOT_DIR/.tests"
 mkdir "$ROOT_DIR/.tests"
 
 # find all go files
-find . -name '*.go' | cut -c3- > ".tests/.index"
+find . -name '*.go' | cut -c3- > ".tests/_index"
 
 # generate tokens with the Go implementation + from the Rust implementation
-while read gofile; do
-  echo ">> $gofile"
+while read go_source; do
+  echo ">> $go_source"
 
-  ln -sf "$ROOT_DIR/$gofile" "$ROOT_DIR/.tests/${gofile//\//--}"
+  ln -sf "$ROOT_DIR/$go_source" "$ROOT_DIR/.tests/${go_source//\//--}"
 
-  go_tokens="$ROOT_DIR/.tests/${gofile//\//--}.tokens-go"
-  "$GO_BIN" tokens "$gofile" > "$go_tokens" || exit 1
+  go_tokens=".tests/${go_source//\//--}.tokens-go"
+  "$GO_BIN" tokens "$go_source" > "$go_tokens" || exit 1
 
-  rust_tokens="$ROOT_DIR/.tests/${gofile//\//--}.tokens-rust"
-  "$RUST_BIN" tokens "$gofile" > "$rust_tokens" || exit 2
+  rust_tokens=".tests/${go_source//\//--}.tokens-rust"
+  "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 2
 
-  git --no-pager diff --no-index "$go_tokens" "$rust_tokens" || exit 3
-done < .tests/.index
+  git diff --no-index "$go_tokens" "$rust_tokens" || exit 3
+
+  rm -f "$go_source" "$go_tokens" "$rust_tokens"
+done < .tests/_index
 
 # TODO: AST
