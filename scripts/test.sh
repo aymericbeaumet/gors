@@ -21,8 +21,6 @@ find . -name '*.go' | cut -c3- > ".tests/_index"
 while read go_source; do
   echo ">> $go_source"
 
-  ln -sf "$ROOT_DIR/$go_source" "$ROOT_DIR/.tests/${go_source//\//--}"
-
   go_tokens=".tests/${go_source//\//--}.tokens-go"
   "$GO_BIN" tokens "$go_source" > "$go_tokens" || exit 1
 
