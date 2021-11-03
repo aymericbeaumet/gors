@@ -116,9 +116,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::INC, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::ADD, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::ADD, String::from(""))),
                     }
                 }
 
@@ -134,9 +132,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::DEC, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::SUB, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::SUB, String::from(""))),
                     }
                 }
 
@@ -147,9 +143,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::MUL_ASSIGN, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::MUL, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::MUL, String::from(""))),
                     }
                 }
 
@@ -162,9 +156,7 @@ impl<'a> Scanner<'a> {
                         }
                         Some('/') => return self.scan_line_comment(),
                         Some('*') => return self.scan_general_comment(),
-                        _ => {
-                            return Ok((self.position(), Token::QUO, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::QUO, String::from(""))),
                     }
                 }
 
@@ -175,9 +167,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::REM_ASSIGN, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::REM, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::REM, String::from(""))),
                     }
                 }
 
@@ -204,13 +194,11 @@ impl<'a> Scanner<'a> {
                                     ));
                                 }
                                 _ => {
-                                    return Ok((self.position(), Token::AND_NOT, String::from("")));
+                                    return Ok((self.position(), Token::AND_NOT, String::from("")))
                                 }
                             }
                         }
-                        _ => {
-                            return Ok((self.position(), Token::AND, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::AND, String::from(""))),
                     }
                 }
 
@@ -225,9 +213,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::LOR, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::OR, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::OR, String::from(""))),
                     }
                 }
 
@@ -238,9 +224,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::XOR_ASSIGN, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::XOR, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::XOR, String::from(""))),
                     }
                 }
 
@@ -258,9 +242,7 @@ impl<'a> Scanner<'a> {
                                         String::from(""),
                                     ));
                                 }
-                                _ => {
-                                    return Ok((self.position(), Token::SHL, String::from("")));
-                                }
+                                _ => return Ok((self.position(), Token::SHL, String::from(""))),
                             }
                         }
                         Some('=') => {
@@ -271,9 +253,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::ARROW, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::LSS, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::LSS, String::from(""))),
                     }
                 }
 
@@ -300,9 +280,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::GEQ, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::GTR, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::GTR, String::from(""))),
                     }
                 }
 
@@ -399,9 +377,7 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::EQL, String::from("")));
                         }
-                        _ => {
-                            return Ok((self.position(), Token::ASSIGN, String::from("")));
-                        }
+                        _ => return Ok((self.position(), Token::ASSIGN, String::from(""))),
                     }
                 }
 
