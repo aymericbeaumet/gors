@@ -30,8 +30,6 @@ while read go_source; do
   "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 2
 
   git diff --no-index "$go_tokens" "$rust_tokens" || exit 3
-
-  rm -f "$go_source" "$go_tokens" "$rust_tokens"
 done < .tests/_index
 
 # TODO: AST
