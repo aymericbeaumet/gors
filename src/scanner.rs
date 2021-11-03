@@ -454,7 +454,7 @@ impl<'a> Scanner<'a> {
                     Some('b') => self.scan_binary(),
                     Some('o') => self.scan_octal(),
                     Some('x' | 'X') => self.scan_hexadecimal(),
-                    _ => return Ok((self.position(), Token::INT, self.literal())),
+                    _ => Ok((self.position(), Token::INT, self.literal())),
                 }
             }
             _ => self.scan_decimal(),
