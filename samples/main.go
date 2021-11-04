@@ -1,142 +1,125 @@
-
-
-package
-
-
-main
-
-
-import   "lib/math" 
-import m "lib/math"
-import . "lib/math"
-import _ "lib/math"
+package main
 
 import (
-    "lib/math" 
-  m "lib/math"
-  . "lib/math"
-  _ "lib/math"
+	"fmt"
+
+	. "lib/math"
+
+	_ "lib/math"
+
+	. "lib/math"
+
+	_ "lib/math"
+
+	. "lib/math"
+
+	_ "lib/math"
+
+	. "lib/math"
+
+	_ "lib/math"
 )
 
-import   `lib/math` 
-import m `lib/math`
-import . `lib/math`
-import _ `lib/math`
+func main() {
 
-import (
-    `lib/math` 
-  m `lib/math`
-  . `lib/math`
-  _ `lib/math`
-)
+	10
+	0b10
+	0b10
+	0o10
+	0o10
+	0x10
+	0x10
 
+	0b1_0
+	0b1_0
+	0o1_0
+	0o1_0
+	0x1_0
+	0x1_0
 
-func
+	a
 
+	'a'
+	'ä'
+	'本'
+	'\t'
+	'\000'
+	'\007'
+	'\377'
+	'\x07'
+	'\xff'
+	'\u12e4'
+	'\U00101234'
+	'\'' // rune literal containing single quote character
 
-main(
+	`abc` // same as "abc"
+	`\n
+\n` // same as "\\n\n\\n"
+	"\n"
+	"\"" // same as `"`
+	"Hello, world!\n"
+	"日本語"
+	"\u65e5本\U00008a9e"
+	"\xff\u00FF"
 
+	a + a
+	a - a
+	a * a
+	a / a
+	a % a
 
-) {
+	a & a
+	a | a
+	a ^ a
+	a << a
+	a >> a
+	a &^ a
 
-10
-0b10
-0B10
-0o10
-0O10
-0x10
-0X10
+	a += a
+	a -= a
+	a *= a
+	a /= a
+	a %= a
 
-10_
-0b1_0_
-0B1_0_
-0o1_0_
-0O1_0_
-0x1_0_
-0X1_0_
+	a &= a
+	a -= a
+	a ^= a
+	a <<= a
+	a >>= a
+	a &^= a
 
-a
+	a && a
+	a || a
+	a <- a
+	a++
+	a--
 
-'a'
-'ä'
-'本'
-'\t'
-'\000'
-'\007'
-'\377'
-'\x07'
-'\xff'
-'\u12e4'
-'\U00101234'
-'\''         // rune literal containing single quote character
+	a == a
+	a < a
+	a > a
+	a = a
+	!a
 
-`abc`                // same as "abc"
-`\n
-\n`                  // same as "\\n\n\\n"
-"\n"
-"\""                 // same as `"`
-"Hello, world!\n"
-"日本語"
-"\u65e5本\U00008a9e"
-"\xff\u00FF"
+	a != a
+	a <= a
+	a >= a
+	a := a
+	func(a ...int) { fmt.Println(a...) }
 
-a + a
-a - a
-a * a
-a / a
-a % a
+	a[a]
+	{
+	}
+	func(a int, b int) {}
 
-a & a
-a | a
-a ^ a
-a << a
-a >> a
-a &^ a
+	go func() {
+		defer func() {}()
 
-a += a
-a -= a
-a *= a
-a /= a
-a %= a
+		const a = "Hello World"
+		type anon struct{}
+		var b = make(chan anon)
+		c := map[string]interface{}{}
 
-a &= a
-a -= a
-a ^= a
-a <<= a
-a >>= a
-a &^= a
-
-a && a
-a || a
-a <- a
-a++
-a--
-
-a == a
-a < a
-a > a
-a = a
-!a
-
-a != a
-a <= a
-a >= a
-a := a
-func (a ...int) { fmt.Println(a...) }
-
-a[a]
-{}
-func(a int, b int) {}
-
-go func() {
-	defer func() {}()
-
-	const a = "Hello World"
-	type anon struct{}
-	var b = make(chan anon)
-	c := map[string]interface{}{}
-
-	switch a {
+		switch a {
 		case "a":
 			break
 		case "b":
@@ -147,18 +130,19 @@ go func() {
 			return
 		default:
 			panic("default")
-	}
+		}
 	End:
 
-	for range b {
-		continue
-	}
+		for range b {
+			continue
+		}
 
-	if true { } else { }
+		if true {
+		} else {
+		}
 
-	select {}
-}()
+		select {}
+	}()
 
-};
-
-
+	const EINVAL = 0 /* test #define */
+}
