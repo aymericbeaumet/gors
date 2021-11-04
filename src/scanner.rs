@@ -55,6 +55,7 @@ pub struct Scanner<'a> {
     start_column: usize,
     //
     asi: bool,
+    tmp: Option<(Position, Token, String)>,
 }
 
 impl<'a> Scanner<'a> {
@@ -74,12 +75,17 @@ impl<'a> Scanner<'a> {
             start_column: 0,
             //
             asi: false,
+            tmp: None,
         }
     }
 
     fn scan(&mut self) -> Result<(Position, Token, String), ScannerError> {
         let asi = self.asi;
         self.asi = false;
+
+        if let Some(tmp) = self.tmp.take() {
+            return Ok(tmp);
+        }
 
         while let Some(c) = self.peek() {
             self.start_index = self.index;
@@ -154,7 +160,14 @@ impl<'a> Scanner<'a> {
                             self.next();
                             return Ok((self.position(), Token::QUO_ASSIGN, String::from("")));
                         }
-                        Some('/') => return self.scan_line_comment(),
+                        Some('/') => {
+                            let out = self.scan_line_comment()?;
+                            if asi {
+                                self.tmp = Some(out);
+                                return Ok((self.position(), Token::SEMICOLON, String::from("\n")));
+                            }
+                            return Ok(out);
+                        }
                         Some('*') => return self.scan_general_comment(),
                         _ => return Ok((self.position(), Token::QUO, String::from(""))),
                     }
@@ -432,8 +445,8 @@ impl<'a> Scanner<'a> {
                 self.next();
                 match self.peek() {
                     Some('1'..='9') => self.scan_decimal(),
-                    Some('b') => self.scan_binary(),
-                    Some('o') => self.scan_octal(),
+                    Some('b' | 'B') => self.scan_binary(),
+                    Some('o' | 'O') => self.scan_octal(),
                     Some('x' | 'X') => self.scan_hexadecimal(),
                     _ => Ok((self.position(), Token::INT, self.literal())),
                 }
