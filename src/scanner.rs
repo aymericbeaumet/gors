@@ -650,9 +650,10 @@ impl<'a> Scanner<'a> {
     }
 
     fn next(&mut self) {
+        let utf8_len = self.peek().map(|c| c.len_utf8()).unwrap_or(1);
         self.index += 1;
-        self.offset += self.peek().map(|c| c.len_utf8()).unwrap_or(1);
-        self.column += 1;
+        self.offset += utf8_len;
+        self.column += utf8_len;
     }
 
     fn position(&self) -> Position {
