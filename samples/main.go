@@ -56,8 +56,29 @@ main(
 0X1_0_
 
 a
+
 'a'
-"b"; `b`
+'ä'
+'本'
+'\t'
+'\000'
+'\007'
+'\377'
+'\x07'
+'\xff'
+'\u12e4'
+'\U00101234'
+'\''         // rune literal containing single quote character
+
+`abc`                // same as "abc"
+`\n
+\n`                  // same as "\\n\n\\n"
+"\n"
+"\""                 // same as `"`
+"Hello, world!\n"
+"日本語"
+"\u65e5本\U00008a9e"
+"\xff\u00FF"
 
 a + a
 a - a

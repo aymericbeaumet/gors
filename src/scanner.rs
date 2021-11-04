@@ -1,3 +1,5 @@
+// https://golang.org/ref/spec#Lexical_elements
+
 use crate::token::{Position, Token};
 use phf::{phf_map, Map};
 use std::fmt;
@@ -540,26 +542,28 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Rune_literals
-    // TODO: add support for utf8 / escape
     fn scan_rune(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.asi = true;
         self.next();
 
-        if self.peek().is_some() {
+        if matches!(self.peek(), Some('\\')) {
             self.next();
-            if let Some(d) = self.peek() {
-                if d == '\'' {
-                    self.next();
-                    return Ok((self.position(), Token::CHAR, self.literal()));
-                }
+            if matches!(self.peek(), Some('\'')) {
+                self.next();
             }
-        };
+        }
+
+        while let Some(c) = self.peek() {
+            self.next();
+            if c == '\'' {
+                return Ok((self.position(), Token::CHAR, self.literal()));
+            }
+        }
 
         Err(ScannerError::UnterminatedChar(self.position()))
     }
 
     // https://golang.org/ref/spec#String_literals
-    // TODO: add support for utf8 / multiline / escape
     fn scan_interpreted_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.asi = true;
         self.next();
@@ -582,7 +586,6 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    // TODO: add support for utf8 / multiline / escape
     fn scan_raw_string(&mut self) -> Result<(Position, Token, String), ScannerError> {
         self.asi = true;
         self.next();
