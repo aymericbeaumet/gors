@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/scanner"
@@ -59,6 +60,9 @@ func main() {
 				}
 			}
 
+			if s.ErrorCount > 0 {
+				panic(fmt.Errorf("%d error(s) occured while scanning", s.ErrorCount))
+			}
 		}
 	}
 }
