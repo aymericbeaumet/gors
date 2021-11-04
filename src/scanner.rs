@@ -459,7 +459,10 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            if !matches!(c, '0'..='9') {
+            if c == '.' {
+                return self.scan_decimal_float();
+            }
+            if !matches!(c, '0'..='9' | '_') {
                 break;
             }
             self.next();
@@ -472,7 +475,7 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            if !matches!(c, '0'..='1') {
+            if !matches!(c, '0'..='1' | '_') {
                 break;
             }
             self.next();
@@ -485,7 +488,7 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            if !matches!(c, '0'..='7') {
+            if !matches!(c, '0'..='7' | '_') {
                 break;
             }
             self.next();
@@ -498,13 +501,42 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
-            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f') {
+            if c == '.' {
+                return self.scan_hexadecimal_float();
+            }
+            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
                 break;
             }
             self.next();
         }
 
         Ok((self.position(), Token::INT, self.literal()))
+    }
+
+    fn scan_decimal_float(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='9' | '_') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::FLOAT, self.literal()))
+    }
+
+    fn scan_hexadecimal_float(&mut self) -> Result<(Position, Token, String), ScannerError> {
+        self.next();
+
+        while let Some(c) = self.peek() {
+            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
+                break;
+            }
+            self.next();
+        }
+
+        Ok((self.position(), Token::FLOAT, self.literal()))
     }
 
     // https://golang.org/ref/spec#Rune_literals
