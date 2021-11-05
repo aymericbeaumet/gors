@@ -27,6 +27,10 @@ pub struct Scanner<'a> {
     filename: &'a str,
     buffer: &'a str,
     //
+    chars: std::str::Chars<'a>,
+    current_char: Option<char>,
+    current_char_len: usize,
+    //
     offset: usize,
     line: usize,
     column: usize,
@@ -35,17 +39,19 @@ pub struct Scanner<'a> {
     start_line: usize,
     start_column: usize,
     //
-    current_char: Option<char>,
-    current_char_len: usize,
     insert_semi: bool,
     pending: Option<(Pos, Token, &'a str)>,
 }
 
 impl<'a> Scanner<'a> {
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
-        Scanner {
+        let mut s = Scanner {
             filename,
             buffer,
+            //
+            chars: buffer.chars(),
+            current_char: None,
+            current_char_len: 0,
             //
             offset: 0,
             line: 1,
@@ -55,11 +61,11 @@ impl<'a> Scanner<'a> {
             start_line: 0,
             start_column: 0,
             //
-            current_char: None,
-            current_char_len: 0,
             insert_semi: false,
             pending: None,
-        }
+        };
+        s.next(); // read the first character
+        s
     }
 
     pub fn scan(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
@@ -629,8 +635,8 @@ impl<'a> Scanner<'a> {
         self.offset += self.current_char_len;
         self.column += self.current_char_len;
 
-        if let Some(c) = self.buffer[self.offset..].chars().next() {
-            self.current_char = Some(c);
+        self.current_char = self.chars.next();
+        if let Some(c) = self.current_char {
             self.current_char_len = c.len_utf8();
         }
     }
