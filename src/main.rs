@@ -51,9 +51,8 @@ struct Tokens {
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let filepath = &cmd.filepath;
     let buffer = std::fs::read_to_string(filepath)?;
-    let chars: Vec<_> = buffer.chars().collect();
 
-    let mut s = scanner::Scanner::new(filepath, &chars);
+    let mut s = scanner::Scanner::new(filepath, &buffer);
     let mut stdout = std::io::stdout();
 
     loop {
