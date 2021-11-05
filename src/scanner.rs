@@ -72,10 +72,6 @@ impl<'a> Scanner<'a> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
 
-        if let Some(pending) = self.pending.take() {
-            return Ok(pending);
-        }
-
         while let Some(c) = self.peek() {
             self.start_offset = self.offset;
             self.start_line = self.line;
@@ -86,18 +82,35 @@ impl<'a> Scanner<'a> {
 
                 ' ' | '\t' | '\r' => {
                     self.next();
-                    continue;
                 }
 
                 '\n' => {
                     self.newline();
                     self.next();
                     if insert_semi {
+                        if let Some(pending) = &self.pending {
+                            if pending.1 == Token::COMMENT {
+                                return Ok((pending.0.clone(), Token::SEMICOLON, self.literal()));
+                            }
+                        }
                         return Ok((self.pos(), Token::SEMICOLON, self.literal()));
                     }
-                    continue;
                 }
 
+                _ => break,
+            }
+        }
+
+        if let Some(pending) = self.pending.take() {
+            return Ok(pending);
+        }
+
+        while let Some(c) = self.peek() {
+            self.start_offset = self.offset;
+            self.start_line = self.line;
+            self.start_column = self.column;
+
+            match c {
                 '+' => {
                     self.next();
                     match self.peek() {
@@ -161,8 +174,9 @@ impl<'a> Scanner<'a> {
                             let out = self.scan_general_comment()?;
                             // "A general comment containing no newlines acts like a space."
                             if !out.2.contains("\n") {
+                                self.pending = Some(out);
                                 self.insert_semi = insert_semi;
-                                return Ok(out);
+                                return self.scan();
                             }
                             // "Any other comment acts like a newline."
                             if insert_semi {

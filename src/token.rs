@@ -5,7 +5,7 @@
 
 use serde::{Serialize, Serializer};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Pos {
     pub offset: usize,
     pub line: usize,
@@ -24,7 +24,7 @@ pub struct Position<'a> {
     pub column: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Token {
     ILLEGAL,
 
