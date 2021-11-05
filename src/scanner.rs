@@ -446,6 +446,10 @@ impl<'a> Scanner<'a> {
                     Some('b' | 'B') => self.scan_binary(),
                     Some('o' | 'O') => self.scan_octal(),
                     Some('x' | 'X') => self.scan_hexadecimal(),
+                    Some('i') => {
+                        self.next();
+                        Ok((self.pos(), Token::IMAG, self.literal()))
+                    }
                     _ => Ok((self.pos(), Token::INT, self.literal())),
                 }
             }
@@ -460,6 +464,10 @@ impl<'a> Scanner<'a> {
             if c == '.' {
                 return self.scan_decimal_float();
             }
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='9' | '_') {
                 break;
             }
@@ -473,6 +481,10 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='1' | '_') {
                 break;
             }
@@ -486,6 +498,10 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='7' | '_') {
                 break;
             }
@@ -502,6 +518,10 @@ impl<'a> Scanner<'a> {
             if c == '.' {
                 return self.scan_hexadecimal_float();
             }
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
                 break;
             }
@@ -515,6 +535,10 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='9' | '_') {
                 break;
             }
@@ -528,6 +552,10 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.peek() {
+            if c == 'i' {
+                self.next();
+                return Ok((self.pos(), Token::IMAG, self.literal()));
+            }
             if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
                 break;
             }
