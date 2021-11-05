@@ -438,131 +438,65 @@ impl<'a> Scanner<'a> {
     fn scan_int_or_float_or_imag(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
         self.insert_semi = true;
 
-        match self.peek() {
-            Some('0') => {
+        let mut token = Token::INT;
+        let (mut digits, mut exp) = ("_0123456789", "eE");
+
+        if matches!(self.peek(), Some('0')) {
+            self.next();
+            let (d, e) = match self.peek() {
+                Some('b' | 'B') => ("_01", ""),
+                Some('o' | 'O') => ("_01234567", ""),
+                Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
+                Some('0'..='9') => ("_0123456789", "eE"),
+                _ => return Ok((self.pos(), token, self.literal())),
+            };
+            digits = d;
+            exp = e;
+            self.next();
+        }
+
+        while let Some(c) = self.peek() {
+            if !digits.contains(c) {
+                break;
+            }
+            self.next();
+        }
+
+        if matches!(self.peek(), Some('.')) {
+            token = Token::FLOAT;
+            self.next();
+            while let Some(c) = self.peek() {
+                if !digits.contains(c) {
+                    break;
+                }
                 self.next();
-                match self.peek() {
-                    Some('1'..='9') => self.scan_decimal(),
-                    Some('b' | 'B') => self.scan_binary(),
-                    Some('o' | 'O') => self.scan_octal(),
-                    Some('x' | 'X') => self.scan_hexadecimal(),
-                    Some('i') => {
+            }
+        }
+
+        if !exp.is_empty() {
+            if let Some(c) = self.peek() {
+                if exp.contains(c) {
+                    token = Token::FLOAT;
+                    self.next();
+                    if matches!(self.peek(), Some('-' | '+')) {
                         self.next();
-                        Ok((self.pos(), Token::IMAG, self.literal()))
                     }
-                    _ => Ok((self.pos(), Token::INT, self.literal())),
+                    while let Some(c) = self.peek() {
+                        if !"0123456789".contains(c) {
+                            break;
+                        }
+                        self.next();
+                    }
                 }
             }
-            _ => self.scan_decimal(),
         }
-    }
 
-    fn scan_decimal(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == '.' {
-                return self.scan_decimal_float();
-            }
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='9' | '_') {
-                break;
-            }
+        if matches!(self.peek(), Some('i')) {
+            token = Token::IMAG;
             self.next();
         }
 
-        Ok((self.pos(), Token::INT, self.literal()))
-    }
-
-    fn scan_binary(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='1' | '_') {
-                break;
-            }
-            self.next();
-        }
-
-        Ok((self.pos(), Token::INT, self.literal()))
-    }
-
-    fn scan_octal(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='7' | '_') {
-                break;
-            }
-            self.next();
-        }
-
-        Ok((self.pos(), Token::INT, self.literal()))
-    }
-
-    fn scan_hexadecimal(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == '.' {
-                return self.scan_hexadecimal_float();
-            }
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
-                break;
-            }
-            self.next();
-        }
-
-        Ok((self.pos(), Token::INT, self.literal()))
-    }
-
-    fn scan_decimal_float(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='9' | '_') {
-                break;
-            }
-            self.next();
-        }
-
-        Ok((self.pos(), Token::FLOAT, self.literal()))
-    }
-
-    fn scan_hexadecimal_float(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
-        self.next();
-
-        while let Some(c) = self.peek() {
-            if c == 'i' {
-                self.next();
-                return Ok((self.pos(), Token::IMAG, self.literal()));
-            }
-            if !matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f' | '_') {
-                break;
-            }
-            self.next();
-        }
-
-        Ok((self.pos(), Token::FLOAT, self.literal()))
+        Ok((self.pos(), token, self.literal()))
     }
 
     // https://golang.org/ref/spec#Rune_literals
