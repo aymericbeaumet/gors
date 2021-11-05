@@ -5,10 +5,17 @@
 
 use serde::{Serialize, Serializer};
 
+#[derive(Debug)]
+pub struct Pos {
+    pub offset: usize,
+    pub line: usize,
+    pub column: usize,
+}
+
 #[derive(Debug, Serialize)]
-pub struct Position {
+pub struct Position<'a> {
     #[serde(rename = "Filename")]
-    pub filename: String,
+    pub filename: &'a str,
     #[serde(rename = "Offset")]
     pub offset: usize,
     #[serde(rename = "Line")]
