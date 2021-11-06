@@ -8,9 +8,12 @@ use std::fmt;
 #[derive(Debug)]
 pub enum ScannerError {
     ForbiddenCharacter(Pos, char),
+    HexadecimalNotFound(Pos),
+    OctalNotFound(Pos),
     UnexpectedToken(Pos, char),
-    UnterminatedChar(Pos),
     UnterminatedComment(Pos),
+    UnterminatedEscapedChar(Pos),
+    UnterminatedRune(Pos),
     UnterminatedString(Pos),
 }
 
@@ -504,21 +507,18 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        if matches!(self.peek(), Some('\\')) {
-            self.next();
-            if matches!(self.peek(), Some('\'')) {
-                self.next();
-            }
+        match self.peek() {
+            Some('\\') => self.require_escaped_char('\'')?,
+            Some(_) => self.next(),
+            _ => return Err(ScannerError::UnterminatedRune(self.pos())),
         }
 
-        while let Some(c) = self.peek() {
+        if matches!(self.peek(), Some('\'')) {
             self.next();
-            if c == '\'' {
-                return Ok((self.pos(), Token::CHAR, self.literal()));
-            }
+            return Ok((self.pos(), Token::CHAR, self.literal()));
         }
 
-        Err(ScannerError::UnterminatedChar(self.pos()))
+        Err(ScannerError::UnterminatedRune(self.pos()))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -526,17 +526,14 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        let mut escaped = false;
         while let Some(c) = self.peek() {
-            self.next();
             match c {
                 '"' => {
-                    if !escaped {
-                        return Ok((self.pos(), Token::STRING, self.literal()));
-                    }
+                    self.next();
+                    return Ok((self.pos(), Token::STRING, self.literal()));
                 }
-                '\\' => escaped = !escaped,
-                _ => escaped = false,
+                '\\' => self.require_escaped_char('"')?,
+                _ => self.next(),
             }
         }
 
@@ -641,6 +638,74 @@ impl<'a> Scanner<'a> {
 
     fn literal(&self) -> &'a str {
         &self.buffer[self.start_offset..self.offset]
+    }
+
+    fn require_escaped_char(&mut self, delim: char) -> Result<(), ScannerError> {
+        self.next();
+
+        let c = self
+            .peek()
+            .ok_or_else(|| ScannerError::UnterminatedEscapedChar(self.pos()))?;
+
+        match c {
+            'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' => self.next(),
+            'x' => {
+                self.next();
+                self.require_hex_digits(2)?
+            }
+            'u' => {
+                self.next();
+                self.require_hex_digits(4)?;
+            }
+            'U' => {
+                self.next();
+                self.require_hex_digits(8)?;
+            }
+            '0'..='7' => self.require_octal_digits(3)?,
+
+            _ => {
+                // TODO: use const generics over &str when available and include in match above
+                if c == delim {
+                    self.next();
+                } else {
+                    return Err(ScannerError::UnterminatedEscapedChar(self.pos()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn require_octal_digits(&mut self, count: usize) -> Result<(), ScannerError> {
+        for _ in 0..count {
+            let c = self
+                .peek()
+                .ok_or_else(|| ScannerError::OctalNotFound(self.pos()))?;
+
+            if !matches!(c, '0'..='7') {
+                return Err(ScannerError::OctalNotFound(self.pos()));
+            }
+
+            self.next();
+        }
+
+        Ok(())
+    }
+
+    fn require_hex_digits(&mut self, count: usize) -> Result<(), ScannerError> {
+        for _ in 0..count {
+            let c = self
+                .peek()
+                .ok_or_else(|| ScannerError::HexadecimalNotFound(self.pos()))?;
+
+            if !matches!(c, '0'..='9' | 'a'..='f' | 'A'..='F') {
+                return Err(ScannerError::HexadecimalNotFound(self.pos()));
+            }
+
+            self.next();
+        }
+
+        Ok(())
     }
 }
 
