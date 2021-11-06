@@ -370,6 +370,7 @@ impl<'a> Scanner<'a> {
                 '.' => {
                     self.next();
                     match self.peek() {
+                        Some('0'..='9') => return self.scan_int_or_float_or_imag(true),
                         Some('.') => {
                             self.next();
                             match self.peek() {
@@ -396,7 +397,7 @@ impl<'a> Scanner<'a> {
                 }
 
                 '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
-                '0'..='9' => return self.scan_int_or_float_or_imag(),
+                '0'..='9' => return self.scan_int_or_float_or_imag(false),
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_interpreted_string(),
                 '`' => return self.scan_raw_string(),
@@ -438,24 +439,41 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Integer_literals
     // https://golang.org/ref/spec#Floating-point_literals
     // https://golang.org/ref/spec#Imaginary_literals
-    fn scan_int_or_float_or_imag(&mut self) -> Result<(Pos, Token, &'a str), ScannerError> {
+    fn scan_int_or_float_or_imag(
+        &mut self,
+        preceding_dot: bool,
+    ) -> Result<(Pos, Token, &'a str), ScannerError> {
         self.insert_semi = true;
 
-        let mut token = Token::INT;
+        let mut token = if preceding_dot {
+            Token::FLOAT
+        } else {
+            Token::INT
+        };
         let (mut digits, mut exp) = ("_0123456789", "eE");
 
-        if matches!(self.peek(), Some('0')) {
-            self.next();
-            let (d, e) = match self.peek() {
-                Some('b' | 'B') => ("_01", ""),
-                Some('o' | 'O') => ("_01234567", ""),
-                Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
-                Some('0'..='9') => ("_0123456789", "eE"),
-                _ => return Ok((self.pos(), token, self.literal())),
-            };
-            digits = d;
-            exp = e;
-            self.next();
+        if !preceding_dot {
+            if matches!(self.peek(), Some('0')) {
+                self.next();
+                let (d, e) = match self.peek() {
+                    Some('b' | 'B') => ("_01", ""),
+                    Some('o' | 'O') => ("_01234567", ""),
+                    Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
+                    Some('0'..='9' | '_') => ("_0123456789", "eE"),
+                    Some('.') => {
+                        token = Token::FLOAT;
+                        ("_0123456789", "eE")
+                    }
+                    Some('i') => {
+                        self.next();
+                        return Ok((self.pos(), Token::IMAG, self.literal()));
+                    }
+                    _ => return Ok((self.pos(), token, self.literal())),
+                };
+                digits = d;
+                exp = e;
+                self.next();
+            }
         }
 
         while let Some(c) = self.peek() {
@@ -485,7 +503,7 @@ impl<'a> Scanner<'a> {
                         self.next();
                     }
                     while let Some(c) = self.peek() {
-                        if !"0123456789".contains(c) {
+                        if !"_0123456789".contains(c) {
                             break;
                         }
                         self.next();
