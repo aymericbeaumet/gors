@@ -14,7 +14,7 @@ git submodule update --init
 rm -rf "$ROOT_DIR/.tests"
 mkdir "$ROOT_DIR/.tests"
 
-# find all go files
+# find all go files in the reference repositories
 find . -name '*.go' | cut -c3- > ".tests/_index"
 
 # generate tokens with the Go implementation + from the Rust implementation
