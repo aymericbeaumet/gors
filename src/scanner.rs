@@ -7,10 +7,10 @@ use std::fmt;
 // TODO: match the errors from the Go scanner
 #[derive(Debug)]
 pub enum ScannerError {
-    ForbiddenCharacter(Pos, char),
+    ForbiddenCharacter(Pos),
     HexadecimalNotFound(Pos),
     OctalNotFound(Pos),
-    UnexpectedToken(Pos, char),
+    UnexpectedToken(Pos),
     UnterminatedComment(Pos),
     UnterminatedEscapedChar(Pos),
     UnterminatedRune(Pos),
@@ -81,7 +81,7 @@ impl<'a> Scanner<'a> {
             self.start_column = self.column;
 
             match c {
-                '\0' => return Err(ScannerError::ForbiddenCharacter(self.pos(), c)),
+                '\0' => return Err(ScannerError::ForbiddenCharacter(self.pos())),
 
                 ' ' | '\t' | '\r' => {
                     self.next();
@@ -401,7 +401,7 @@ impl<'a> Scanner<'a> {
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_interpreted_string(),
                 '`' => return self.scan_raw_string(),
-                _ => return Err(ScannerError::UnexpectedToken(self.pos(), c)),
+                _ => return Err(ScannerError::UnexpectedToken(self.pos())),
             };
         }
 
