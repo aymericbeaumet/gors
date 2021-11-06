@@ -22,12 +22,12 @@ while read go_source; do
   echo ">> $go_source"
 
   go_tokens=".tests/${go_source//\//--}.tokens-go"
-  "$GO_BIN" tokens "$go_source" > "$go_tokens" || exit 1
+  "$GO_BIN" tokens "$go_source" > "$go_tokens" || continue
 
   rust_tokens=".tests/${go_source//\//--}.tokens-rust"
-  "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 2
+  "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 1
 
-  git diff --no-index "$go_tokens" "$rust_tokens" || exit 3
+  git diff --no-index "$go_tokens" "$rust_tokens" || exit 2
 done < .tests/_index
 
 # TODO: AST
