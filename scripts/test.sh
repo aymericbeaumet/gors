@@ -10,18 +10,26 @@ cd "$ROOT_DIR"
 # make sure our go reference repositories are up-to-date
 git submodule update --init
 
+# read the last file tested (if any)
+last="$(cat .tests/_last)"
+
 # prepare the working directory
 rm -rf "$ROOT_DIR/.tests"
 mkdir "$ROOT_DIR/.tests"
 
 # find all go files in the reference repositories
-find . -name '*.go' | cut -c3- > ".tests/_index"
+if [ "$2" = 'last' ]; then
+  echo "$last" > .tests/_index
+else
+  find . -name '*.go' | cut -c3- > .tests/_index
+fi
 
 # generate tokens with the Go implementation + from the Rust implementation
 while read go_source; do
   go_tokens=".tests/${go_source//\//--}.tokens-go"
   "$GO_BIN" tokens "$go_source" > "$go_tokens" 2>/dev/null || continue
 
+  echo "$go_source" > .tests/_last
   echo ">> $go_source"
 
   rust_tokens=".tests/${go_source//\//--}.tokens-rust"
