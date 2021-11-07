@@ -405,6 +405,16 @@ impl<'a> Scanner<'a> {
             };
         }
 
+        if insert_semi {
+            self.start_offset = self.offset;
+            self.start_line = self.line;
+            self.start_column = self.column;
+            let out = Ok((self.pos(), Token::SEMICOLON, "\n"));
+            self.start_offset -= 1;
+            self.start_column -= 1;
+            return out;
+        }
+
         self.start_offset += 1;
         self.start_column += 1;
         Ok((self.pos(), Token::EOF, ""))
@@ -619,10 +629,18 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
+        log::trace!(
+            "self.peek() offset={} line={} column={} current_char={:?}",
+            self.offset,
+            self.line,
+            self.column,
+            self.current_char,
+        );
         self.current_char
     }
 
     fn next(&mut self) {
+        log::trace!("self.next()");
         self.offset += self.current_char_len;
         self.column += self.current_char_len;
 
