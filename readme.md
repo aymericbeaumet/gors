@@ -6,5 +6,6 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```
 make build
 make dev
-RUST_LOG=debug cargo run -- tokens .repositories/go/misc/cgo/gmp/gmp.go
+./go/go -- tokens .repositories/go/test/typeparam/issue47892.go
+RUST_LOG=trace cargo run -- tokens .repositories/go/test/typeparam/issue47892.go
 ```
