@@ -7,7 +7,6 @@ use std::fmt;
 // TODO: match the errors from the Go scanner
 #[derive(Debug)]
 pub enum ScannerError {
-    ForbiddenCharacter(Pos),
     HexadecimalNotFound(Pos),
     InvalidInt(Pos),
     OctalNotFound(Pos),
@@ -37,7 +36,6 @@ pub struct Scanner<'a> {
     offset: usize,
     line: usize,
     column: usize,
-    //
     start_offset: usize,
     start_line: usize,
     start_column: usize,
@@ -60,7 +58,6 @@ impl<'a> Scanner<'a> {
             offset: 0,
             line: 1,
             column: 1,
-            //
             start_offset: 0,
             start_line: 0,
             start_column: 0,
@@ -83,22 +80,19 @@ impl<'a> Scanner<'a> {
             self.start_column = self.column;
 
             match c {
-                '\0' => return Err(ScannerError::ForbiddenCharacter(self.pos())),
-
                 ' ' | '\t' | '\r' => {
                     self.next();
                 }
 
                 '\n' => {
-                    self.newline();
                     self.next();
                     if insert_semi {
                         if let Some(pending) = &self.pending {
                             if pending.1 == Token::COMMENT {
-                                return Ok((pending.0.clone(), Token::SEMICOLON, self.literal()));
+                                return Ok((pending.0, Token::SEMICOLON, "\n"));
                             }
                         }
-                        return Ok((self.pos(), Token::SEMICOLON, self.literal()));
+                        return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
                     }
                 }
 
@@ -110,25 +104,21 @@ impl<'a> Scanner<'a> {
             return Ok(pending);
         }
 
-        while let Some(c) = self.peek() {
-            self.start_offset = self.offset;
-            self.start_line = self.line;
-            self.start_column = self.column;
-
+        if let Some(c) = self.peek() {
             match c {
                 '+' => {
                     self.next();
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::ADD_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::ADD_ASSIGN, ""));
                         }
                         Some('+') => {
                             self.insert_semi = true;
                             self.next();
-                            return Ok((self.pos(), Token::INC, ""));
+                            return Ok((self.start_pos(), Token::INC, ""));
                         }
-                        _ => return Ok((self.pos(), Token::ADD, "")),
+                        _ => return Ok((self.start_pos(), Token::ADD, "")),
                     }
                 }
 
@@ -137,14 +127,14 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::SUB_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::SUB_ASSIGN, ""));
                         }
                         Some('-') => {
                             self.insert_semi = true;
                             self.next();
-                            return Ok((self.pos(), Token::DEC, ""));
+                            return Ok((self.start_pos(), Token::DEC, ""));
                         }
-                        _ => return Ok((self.pos(), Token::SUB, "")),
+                        _ => return Ok((self.start_pos(), Token::SUB, "")),
                     }
                 }
 
@@ -153,9 +143,9 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::MUL_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::MUL_ASSIGN, ""));
                         }
-                        _ => return Ok((self.pos(), Token::MUL, "")),
+                        _ => return Ok((self.start_pos(), Token::MUL, "")),
                     }
                 }
 
@@ -164,21 +154,21 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::QUO_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::QUO_ASSIGN, ""));
                         }
                         Some('/') => {
                             let out = self.scan_line_comment()?;
                             // "Any other comment acts like a newline."
                             if insert_semi {
                                 self.pending = Some(out);
-                                return Ok((self.pos(), Token::SEMICOLON, "\n"));
+                                return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
                             }
                             return Ok(out);
                         }
                         Some('*') => {
                             let out = self.scan_general_comment()?;
                             // "A general comment containing no newlines acts like a space."
-                            if !out.2.contains("\n") {
+                            if !out.2.contains('\n') {
                                 self.pending = Some(out);
                                 self.insert_semi = insert_semi;
                                 return self.scan();
@@ -186,11 +176,11 @@ impl<'a> Scanner<'a> {
                             // "Any other comment acts like a newline."
                             if insert_semi {
                                 self.pending = Some(out);
-                                return Ok((self.pos(), Token::SEMICOLON, "\n"));
+                                return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
                             }
                             return Ok(out);
                         }
-                        _ => return Ok((self.pos(), Token::QUO, "")),
+                        _ => return Ok((self.start_pos(), Token::QUO, "")),
                     }
                 }
 
@@ -199,9 +189,9 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::REM_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::REM_ASSIGN, ""));
                         }
-                        _ => return Ok((self.pos(), Token::REM, "")),
+                        _ => return Ok((self.start_pos(), Token::REM, "")),
                     }
                 }
 
@@ -210,23 +200,23 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::AND_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::AND_ASSIGN, ""));
                         }
                         Some('&') => {
                             self.next();
-                            return Ok((self.pos(), Token::LAND, ""));
+                            return Ok((self.start_pos(), Token::LAND, ""));
                         }
                         Some('^') => {
                             self.next();
                             match self.peek() {
                                 Some('=') => {
                                     self.next();
-                                    return Ok((self.pos(), Token::AND_NOT_ASSIGN, ""));
+                                    return Ok((self.start_pos(), Token::AND_NOT_ASSIGN, ""));
                                 }
-                                _ => return Ok((self.pos(), Token::AND_NOT, "")),
+                                _ => return Ok((self.start_pos(), Token::AND_NOT, "")),
                             }
                         }
-                        _ => return Ok((self.pos(), Token::AND, "")),
+                        _ => return Ok((self.start_pos(), Token::AND, "")),
                     }
                 }
 
@@ -235,13 +225,13 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::OR_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::OR_ASSIGN, ""));
                         }
                         Some('|') => {
                             self.next();
-                            return Ok((self.pos(), Token::LOR, ""));
+                            return Ok((self.start_pos(), Token::LOR, ""));
                         }
-                        _ => return Ok((self.pos(), Token::OR, "")),
+                        _ => return Ok((self.start_pos(), Token::OR, "")),
                     }
                 }
 
@@ -250,9 +240,9 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::XOR_ASSIGN, ""));
+                            return Ok((self.start_pos(), Token::XOR_ASSIGN, ""));
                         }
-                        _ => return Ok((self.pos(), Token::XOR, "")),
+                        _ => return Ok((self.start_pos(), Token::XOR, "")),
                     }
                 }
 
@@ -264,20 +254,20 @@ impl<'a> Scanner<'a> {
                             match self.peek() {
                                 Some('=') => {
                                     self.next();
-                                    return Ok((self.pos(), Token::SHL_ASSIGN, ""));
+                                    return Ok((self.start_pos(), Token::SHL_ASSIGN, ""));
                                 }
-                                _ => return Ok((self.pos(), Token::SHL, "")),
+                                _ => return Ok((self.start_pos(), Token::SHL, "")),
                             }
                         }
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::LEQ, ""));
+                            return Ok((self.start_pos(), Token::LEQ, ""));
                         }
                         Some('-') => {
                             self.next();
-                            return Ok((self.pos(), Token::ARROW, ""));
+                            return Ok((self.start_pos(), Token::ARROW, ""));
                         }
-                        _ => return Ok((self.pos(), Token::LSS, "")),
+                        _ => return Ok((self.start_pos(), Token::LSS, "")),
                     }
                 }
 
@@ -289,18 +279,18 @@ impl<'a> Scanner<'a> {
                             match self.peek() {
                                 Some('=') => {
                                     self.next();
-                                    return Ok((self.pos(), Token::SHR_ASSIGN, ""));
+                                    return Ok((self.start_pos(), Token::SHR_ASSIGN, ""));
                                 }
                                 _ => {
-                                    return Ok((self.pos(), Token::SHR, ""));
+                                    return Ok((self.start_pos(), Token::SHR, ""));
                                 }
                             }
                         }
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::GEQ, ""));
+                            return Ok((self.start_pos(), Token::GEQ, ""));
                         }
-                        _ => return Ok((self.pos(), Token::GTR, "")),
+                        _ => return Ok((self.start_pos(), Token::GTR, "")),
                     }
                 }
 
@@ -309,9 +299,9 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::DEFINE, ""));
+                            return Ok((self.start_pos(), Token::DEFINE, ""));
                         }
-                        _ => return Ok((self.pos(), Token::COLON, "")),
+                        _ => return Ok((self.start_pos(), Token::COLON, "")),
                     }
                 }
 
@@ -320,53 +310,53 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::NEQ, ""));
+                            return Ok((self.start_pos(), Token::NEQ, ""));
                         }
-                        _ => return Ok((self.pos(), Token::NOT, "")),
+                        _ => return Ok((self.start_pos(), Token::NOT, "")),
                     }
                 }
 
                 ',' => {
                     self.next();
-                    return Ok((self.pos(), Token::COMMA, ""));
+                    return Ok((self.start_pos(), Token::COMMA, ""));
                 }
 
                 '(' => {
                     self.next();
-                    return Ok((self.pos(), Token::LPAREN, ""));
+                    return Ok((self.start_pos(), Token::LPAREN, ""));
                 }
 
                 ')' => {
                     self.insert_semi = true;
                     self.next();
-                    return Ok((self.pos(), Token::RPAREN, ""));
+                    return Ok((self.start_pos(), Token::RPAREN, ""));
                 }
 
                 '[' => {
                     self.next();
-                    return Ok((self.pos(), Token::LBRACK, ""));
+                    return Ok((self.start_pos(), Token::LBRACK, ""));
                 }
 
                 ']' => {
                     self.insert_semi = true;
                     self.next();
-                    return Ok((self.pos(), Token::RBRACK, ""));
+                    return Ok((self.start_pos(), Token::RBRACK, ""));
                 }
 
                 '{' => {
                     self.next();
-                    return Ok((self.pos(), Token::LBRACE, ""));
+                    return Ok((self.start_pos(), Token::LBRACE, ""));
                 }
 
                 '}' => {
                     self.insert_semi = true;
                     self.next();
-                    return Ok((self.pos(), Token::RBRACE, ""));
+                    return Ok((self.start_pos(), Token::RBRACE, ""));
                 }
 
                 ';' => {
                     self.next();
-                    return Ok((self.pos(), Token::SEMICOLON, self.literal()));
+                    return Ok((self.start_pos(), Token::SEMICOLON, ";"));
                 }
 
                 '.' => {
@@ -378,12 +368,12 @@ impl<'a> Scanner<'a> {
                             match self.peek() {
                                 Some('.') => {
                                     self.next();
-                                    return Ok((self.pos(), Token::ELLIPSIS, ""));
+                                    return Ok((self.start_pos(), Token::ELLIPSIS, ""));
                                 }
-                                _ => return Ok((self.pos(), Token::ILLEGAL, self.literal())),
+                                _ => return Ok((self.start_pos(), Token::ILLEGAL, self.literal())),
                             }
                         }
-                        _ => return Ok((self.pos(), Token::PERIOD, "")),
+                        _ => return Ok((self.start_pos(), Token::PERIOD, "")),
                     }
                 }
 
@@ -392,9 +382,9 @@ impl<'a> Scanner<'a> {
                     match self.peek() {
                         Some('=') => {
                             self.next();
-                            return Ok((self.pos(), Token::EQL, ""));
+                            return Ok((self.start_pos(), Token::EQL, ""));
                         }
-                        _ => return Ok((self.pos(), Token::ASSIGN, "")),
+                        _ => return Ok((self.start_pos(), Token::ASSIGN, "")),
                     }
                 }
 
@@ -407,20 +397,10 @@ impl<'a> Scanner<'a> {
         }
 
         if insert_semi {
-            self.start_offset = self.offset;
-            self.start_line = self.line;
-            self.start_column = self.column;
-            let out = Ok((self.pos(), Token::SEMICOLON, "\n"));
-            self.start_offset -= 1;
-            self.start_column -= 1;
-            return out;
+            Ok((self.pos(), Token::SEMICOLON, "\n"))
+        } else {
+            Ok((self.pos(), Token::EOF, ""))
         }
-
-        self.start_offset += 1;
-        if !self.freeze_column {
-            self.start_column += 1;
-        }
-        Ok((self.pos(), Token::EOF, ""))
     }
 
     // https://golang.org/ref/spec#Keywords
@@ -435,9 +415,9 @@ impl<'a> Scanner<'a> {
             self.next()
         }
 
-        let pos = self.pos();
+        let pos = self.start_pos();
         let literal = self.literal();
-        if let Some(&token) = KEYWORDS.get(&literal) {
+        if let Some(&token) = KEYWORDS.get(literal) {
             self.insert_semi = matches!(
                 token,
                 Token::BREAK | Token::CONTINUE | Token::FALLTHROUGH | Token::RETURN
@@ -465,28 +445,26 @@ impl<'a> Scanner<'a> {
         };
         let (mut digits, mut exp) = ("_0123456789", "eE");
 
-        if !preceding_dot {
-            if matches!(self.peek(), Some('0')) {
-                self.next();
-                let (d, e) = match self.peek() {
-                    Some('b' | 'B') => ("_01", ""),
-                    Some('o' | 'O') => ("_01234567", ""),
-                    Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
-                    Some('0'..='9' | '_') => ("_0123456789", "eE"),
-                    Some('.') => {
-                        token = Token::FLOAT;
-                        ("_0123456789", "eE")
-                    }
-                    Some('i') => {
-                        self.next();
-                        return Ok((self.pos(), Token::IMAG, self.literal()));
-                    }
-                    _ => return Ok((self.pos(), token, self.literal())),
-                };
-                digits = d;
-                exp = e;
-                self.next();
-            }
+        if !preceding_dot && matches!(self.peek(), Some('0')) {
+            self.next();
+            let (d, e) = match self.peek() {
+                Some('b' | 'B') => ("_01", ""),
+                Some('o' | 'O') => ("_01234567", ""),
+                Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
+                Some('0'..='9' | '_') => ("_0123456789", "eE"),
+                Some('.') => {
+                    token = Token::FLOAT;
+                    ("_0123456789", "eE")
+                }
+                Some('i') => {
+                    self.next();
+                    return Ok((self.start_pos(), Token::IMAG, self.literal()));
+                }
+                _ => return Ok((self.start_pos(), token, self.literal())),
+            };
+            digits = d;
+            exp = e;
+            self.next();
         }
 
         while let Some(c) = self.peek() {
@@ -530,7 +508,7 @@ impl<'a> Scanner<'a> {
             self.next();
         }
 
-        Ok((self.pos(), token, self.literal()))
+        Ok((self.start_pos(), token, self.literal()))
     }
 
     // https://golang.org/ref/spec#Rune_literals
@@ -541,15 +519,15 @@ impl<'a> Scanner<'a> {
         match self.peek() {
             Some('\\') => self.require_escaped_char('\'')?,
             Some(_) => self.next(),
-            _ => return Err(ScannerError::UnterminatedRune(self.pos())),
+            _ => return Err(ScannerError::UnterminatedRune(self.start_pos())),
         }
 
         if matches!(self.peek(), Some('\'')) {
             self.next();
-            return Ok((self.pos(), Token::CHAR, self.literal()));
+            return Ok((self.start_pos(), Token::CHAR, self.literal()));
         }
 
-        Err(ScannerError::UnterminatedRune(self.pos()))
+        Err(ScannerError::UnterminatedRune(self.start_pos()))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -561,14 +539,14 @@ impl<'a> Scanner<'a> {
             match c {
                 '"' => {
                     self.next();
-                    return Ok((self.pos(), Token::STRING, self.literal()));
+                    return Ok((self.start_pos(), Token::STRING, self.literal()));
                 }
                 '\\' => self.require_escaped_char('"')?,
                 _ => self.next(),
             }
         }
 
-        Err(ScannerError::UnterminatedString(self.pos()))
+        Err(ScannerError::UnterminatedString(self.start_pos()))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -578,19 +556,15 @@ impl<'a> Scanner<'a> {
 
         while let Some(c) = self.peek() {
             match c {
-                '\n' => {
-                    self.newline();
-                    self.next();
-                }
                 '`' => {
                     self.next();
-                    return Ok((self.pos(), Token::STRING, self.literal()));
+                    return Ok((self.start_pos(), Token::STRING, self.literal()));
                 }
                 _ => self.next(),
             }
         }
 
-        Err(ScannerError::UnterminatedString(self.pos()))
+        Err(ScannerError::UnterminatedString(self.start_pos()))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -599,22 +573,18 @@ impl<'a> Scanner<'a> {
 
         while let Some(c) = self.peek() {
             match c {
-                '\n' => {
-                    self.newline();
-                    self.next();
-                }
                 '*' => {
                     self.next();
                     if matches!(self.peek(), Some('/')) {
                         self.next();
-                        return Ok((self.pos(), Token::COMMENT, self.literal()));
+                        return Ok((self.start_pos(), Token::COMMENT, self.literal()));
                     }
                 }
                 _ => self.next(),
             }
         }
 
-        Err(ScannerError::UnterminatedComment(self.pos()))
+        Err(ScannerError::UnterminatedComment(self.start_pos()))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -628,7 +598,7 @@ impl<'a> Scanner<'a> {
             self.next();
         }
 
-        let pos = self.pos();
+        let pos = self.start_pos();
         let lit = self.literal();
 
         // look for compiler directives
@@ -637,7 +607,7 @@ impl<'a> Scanner<'a> {
                 let line: usize = line_directive[i + 1..]
                     .trim_end()
                     .parse()
-                    .map_err(|_| ScannerError::InvalidInt(self.pos()))?;
+                    .map_err(|_| ScannerError::InvalidInt(self.start_pos()))?;
                 let line = line - 1; // because the trailing newline is going to increase the line count
                 self.line = line;
                 self.start_line = line;
@@ -649,35 +619,44 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
-        log::trace!(
-            "self.peek() offset={} line={} column={} current_char={:?}",
-            self.offset,
-            self.line,
-            self.column,
-            self.current_char,
-        );
+        log::trace!("self.peek()");
         self.current_char
     }
 
     fn next(&mut self) {
-        log::trace!("self.next()");
         self.offset += self.current_char_len;
         if !self.freeze_column {
             self.column += self.current_char_len;
         }
 
+        let last_char = self.current_char;
         self.current_char = self.chars.next();
         if let Some(c) = self.current_char {
             self.current_char_len = c.len_utf8();
+            if matches!(last_char, Some('\n')) {
+                self.line += 1;
+                self.column = if self.freeze_column { 0 } else { 1 };
+            }
         }
-    }
 
-    fn newline(&mut self) {
-        self.line += 1;
-        self.column = 0;
+        log::trace!(
+            "self.next() offset={} line={} column={} current_char={:?}",
+            self.offset,
+            self.line,
+            self.column,
+            self.current_char,
+        );
     }
 
     fn pos(&self) -> Pos {
+        Pos {
+            offset: self.offset,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn start_pos(&self) -> Pos {
         Pos {
             offset: self.start_offset,
             line: self.start_line,
@@ -703,7 +682,7 @@ impl<'a> Scanner<'a> {
 
         let c = self
             .peek()
-            .ok_or_else(|| ScannerError::UnterminatedEscapedChar(self.pos()))?;
+            .ok_or_else(|| ScannerError::UnterminatedEscapedChar(self.start_pos()))?;
 
         match c {
             'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' => self.next(),
@@ -720,13 +699,12 @@ impl<'a> Scanner<'a> {
                 self.require_hex_digits(8)?;
             }
             '0'..='7' => self.require_octal_digits(3)?,
-
             _ => {
                 // TODO: use const generics over &str when available and include in match above
                 if c == delim {
                     self.next();
                 } else {
-                    return Err(ScannerError::UnterminatedEscapedChar(self.pos()));
+                    return Err(ScannerError::UnterminatedEscapedChar(self.start_pos()));
                 }
             }
         }
@@ -738,10 +716,10 @@ impl<'a> Scanner<'a> {
         for _ in 0..count {
             let c = self
                 .peek()
-                .ok_or_else(|| ScannerError::OctalNotFound(self.pos()))?;
+                .ok_or_else(|| ScannerError::OctalNotFound(self.start_pos()))?;
 
             if !matches!(c, '0'..='7') {
-                return Err(ScannerError::OctalNotFound(self.pos()));
+                return Err(ScannerError::OctalNotFound(self.start_pos()));
             }
 
             self.next();
@@ -754,10 +732,10 @@ impl<'a> Scanner<'a> {
         for _ in 0..count {
             let c = self
                 .peek()
-                .ok_or_else(|| ScannerError::HexadecimalNotFound(self.pos()))?;
+                .ok_or_else(|| ScannerError::HexadecimalNotFound(self.start_pos()))?;
 
             if !matches!(c, '0'..='9' | 'a'..='f' | 'A'..='F') {
-                return Err(ScannerError::HexadecimalNotFound(self.pos()));
+                return Err(ScannerError::HexadecimalNotFound(self.start_pos()));
             }
 
             self.next();

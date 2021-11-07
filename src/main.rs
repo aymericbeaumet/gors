@@ -17,7 +17,7 @@ struct Opts {
 #[derive(Parser)]
 enum SubCommand {
     #[clap(about = "Parse Go code and print the AST")]
-    AST(AST),
+    Ast(Ast),
     #[clap(about = "Parse Go code and print the tokens")]
     Tokens(Tokens),
 }
@@ -27,18 +27,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let opts: Opts = Opts::parse();
     match opts.subcmd {
-        SubCommand::AST(cmd) => ast(cmd),
+        SubCommand::Ast(cmd) => ast(cmd),
         SubCommand::Tokens(cmd) => tokens(cmd),
     }
 }
 
 #[derive(Parser)]
-struct AST {
+struct Ast {
     #[clap(name = "file", about = "The file to parse")]
     filepath: String,
 }
 
-fn ast(_: AST) -> Result<(), Box<dyn std::error::Error>> {
+fn ast(_: Ast) -> Result<(), Box<dyn std::error::Error>> {
     unimplemented!()
 }
 
