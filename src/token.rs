@@ -13,9 +13,9 @@ pub struct Pos {
 }
 
 #[derive(Debug, Serialize)]
-pub struct Position<'a> {
+pub struct Position {
     #[serde(rename = "Filename")]
-    pub filename: &'a str,
+    pub filename: String,
     #[serde(rename = "Offset")]
     pub offset: usize,
     #[serde(rename = "Line")]

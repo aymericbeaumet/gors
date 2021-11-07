@@ -26,7 +26,8 @@ impl fmt::Display for ScannerError {
 
 #[derive(Debug)]
 pub struct Scanner<'a> {
-    filename: &'a str,
+    directory: &'a str,
+    file: &'a str,
     buffer: &'a str,
     //
     chars: std::str::Chars<'a>,
@@ -42,13 +43,16 @@ pub struct Scanner<'a> {
     //
     freeze_column: bool,
     insert_semi: bool,
-    pending: Option<(Pos, Token, &'a str)>,
+    pending_file_line: Option<(&'a str, usize)>,
+    pending_out: Option<(Pos, Token, &'a str)>,
 }
 
 impl<'a> Scanner<'a> {
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
+        let (directory, file) = filename.rsplit_once('/').unwrap();
         let mut s = Scanner {
-            filename,
+            directory,
+            file,
             buffer,
             //
             chars: buffer.chars(),
@@ -64,7 +68,8 @@ impl<'a> Scanner<'a> {
             //
             freeze_column: false,
             insert_semi: false,
-            pending: None,
+            pending_file_line: None,
+            pending_out: None,
         };
         s.next(); // read the first character
         s
@@ -87,9 +92,9 @@ impl<'a> Scanner<'a> {
                 '\n' => {
                     self.next();
                     if insert_semi {
-                        if let Some(pending) = &self.pending {
-                            if pending.1 == Token::COMMENT {
-                                return Ok((pending.0, Token::SEMICOLON, "\n"));
+                        if let Some(pending_out) = &self.pending_out {
+                            if pending_out.1 == Token::COMMENT {
+                                return Ok((pending_out.0, Token::SEMICOLON, "\n"));
                             }
                         }
                         return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
@@ -100,8 +105,8 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if let Some(pending) = self.pending.take() {
-            return Ok(pending);
+        if let Some(pending_out) = self.pending_out.take() {
+            return Ok(pending_out);
         }
 
         if let Some(c) = self.peek() {
@@ -160,7 +165,7 @@ impl<'a> Scanner<'a> {
                             let out = self.scan_line_comment()?;
                             // "Any other comment acts like a newline."
                             if insert_semi {
-                                self.pending = Some(out);
+                                self.pending_out = Some(out);
                                 return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
                             }
                             return Ok(out);
@@ -169,13 +174,13 @@ impl<'a> Scanner<'a> {
                             let out = self.scan_general_comment()?;
                             // "A general comment containing no newlines acts like a space."
                             if !out.2.contains('\n') {
-                                self.pending = Some(out);
+                                self.pending_out = Some(out);
                                 self.insert_semi = insert_semi;
                                 return self.scan();
                             }
                             // "Any other comment acts like a newline."
                             if insert_semi {
-                                self.pending = Some(out);
+                                self.pending_out = Some(out);
                                 return Ok((self.start_pos(), Token::SEMICOLON, "\n"));
                             }
                             return Ok(out);
@@ -603,14 +608,11 @@ impl<'a> Scanner<'a> {
 
         // look for compiler directives
         if let Some(line_directive) = lit.strip_prefix("//line ") {
-            if let Some(i) = line_directive.find(':') {
-                let line: usize = line_directive[i + 1..]
-                    .trim_end()
+            if let Some((file, line)) = line_directive.trim_end().split_once(':') {
+                let line: usize = line
                     .parse()
                     .map_err(|_| ScannerError::InvalidInt(self.start_pos()))?;
-                let line = line - 1; // because the trailing newline is going to increase the line count
-                self.line = line;
-                self.start_line = line;
+                self.pending_file_line = Some((file, line));
                 self.freeze_column = true;
             }
         }
@@ -636,6 +638,10 @@ impl<'a> Scanner<'a> {
             if matches!(last_char, Some('\n')) {
                 self.line += 1;
                 self.column = if self.freeze_column { 0 } else { 1 };
+                if let Some((file, line)) = self.pending_file_line.take() {
+                    self.file = file;
+                    self.line = line;
+                }
             }
         }
 
@@ -666,7 +672,7 @@ impl<'a> Scanner<'a> {
 
     pub fn position(&self, pos: &Pos) -> Position {
         Position {
-            filename: self.filename,
+            filename: format!("{}/{}", self.directory, self.file), // TODO: remove alloc?
             offset: pos.offset,
             line: pos.line,
             column: pos.column,
