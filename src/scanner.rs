@@ -9,6 +9,7 @@ use std::fmt;
 pub enum ScannerError {
     ForbiddenCharacter(Pos),
     HexadecimalNotFound(Pos),
+    InvalidInt(Pos),
     OctalNotFound(Pos),
     UnexpectedToken(Pos),
     UnterminatedComment(Pos),
@@ -42,6 +43,7 @@ pub struct Scanner<'a> {
     start_line: usize,
     start_column: usize,
     //
+    freeze_column: bool,
     insert_semi: bool,
     pending: Option<(Pos, Token, &'a str)>,
 }
@@ -64,6 +66,7 @@ impl<'a> Scanner<'a> {
             start_line: 0,
             start_column: 0,
             //
+            freeze_column: false,
             insert_semi: false,
             pending: None,
         };
@@ -416,7 +419,9 @@ impl<'a> Scanner<'a> {
         }
 
         self.start_offset += 1;
-        self.start_column += 1;
+        if !self.freeze_column {
+            self.start_column += 1;
+        }
         Ok((self.pos(), Token::EOF, ""))
     }
 
@@ -625,7 +630,24 @@ impl<'a> Scanner<'a> {
             self.next();
         }
 
-        Ok((self.pos(), Token::COMMENT, self.literal()))
+        let pos = self.pos();
+        let lit = self.literal();
+
+        // look for compiler directives
+        if let Some(line_directive) = lit.strip_prefix("//line ") {
+            if let Some(i) = line_directive.find(':') {
+                let line: usize = line_directive[i + 1..]
+                    .trim_end()
+                    .parse()
+                    .map_err(|_| ScannerError::InvalidInt(self.pos()))?;
+                let line = line - 1; // because the trailing newline is going to increase the line count
+                self.line = line;
+                self.start_line = line;
+                self.freeze_column = true;
+            }
+        }
+
+        Ok((pos, Token::COMMENT, self.literal()))
     }
 
     fn peek(&mut self) -> Option<char> {
@@ -642,7 +664,9 @@ impl<'a> Scanner<'a> {
     fn next(&mut self) {
         log::trace!("self.next()");
         self.offset += self.current_char_len;
-        self.column += self.current_char_len;
+        if !self.freeze_column {
+            self.column += self.current_char_len;
+        }
 
         self.current_char = self.chars.next();
         if let Some(c) = self.current_char {
