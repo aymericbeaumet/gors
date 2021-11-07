@@ -11,7 +11,6 @@ pub enum ScannerError {
     HexadecimalNotFound(Pos),
     InvalidInt(Pos),
     OctalNotFound(Pos),
-    UnexpectedToken(Pos),
     UnterminatedComment(Pos),
     UnterminatedEscapedChar(Pos),
     UnterminatedRune(Pos),
@@ -399,12 +398,11 @@ impl<'a> Scanner<'a> {
                     }
                 }
 
-                '_' | 'A'..='Z' | 'a'..='z' => return self.scan_pkg_or_keyword_or_ident(),
                 '0'..='9' => return self.scan_int_or_float_or_imag(false),
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_interpreted_string(),
                 '`' => return self.scan_raw_string(),
-                _ => return Err(ScannerError::UnexpectedToken(self.pos())),
+                _ => return self.scan_pkg_or_keyword_or_ident(),
             };
         }
 
