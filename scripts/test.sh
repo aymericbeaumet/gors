@@ -19,10 +19,10 @@ find . -name '*.go' | cut -c3- > ".tests/_index"
 
 # generate tokens with the Go implementation + from the Rust implementation
 while read go_source; do
-  echo ">> $go_source"
-
   go_tokens=".tests/${go_source//\//--}.tokens-go"
-  "$GO_BIN" tokens "$go_source" > "$go_tokens" || continue
+  "$GO_BIN" tokens "$go_source" > "$go_tokens" 2>/dev/null || continue
+
+  echo ">> $go_source"
 
   rust_tokens=".tests/${go_source//\//--}.tokens-rust"
   "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 1
