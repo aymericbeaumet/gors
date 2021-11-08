@@ -443,43 +443,42 @@ impl<'a> Scanner<'a> {
     ) -> Result<(Pos, Token, &'a str), ScannerError> {
         self.insert_semi = true;
 
-        let mut token = if preceding_dot {
-            Token::FLOAT
-        } else {
-            Token::INT
-        };
-        let (mut digits, mut exp) = ("_0123456789", "eE");
+        let mut token = Token::INT;
+        let mut digits = "_0123456789";
+        let mut exp = "eE";
 
-        if !preceding_dot && matches!(self.peek(), Some('0')) {
-            self.next();
-            let (d, e) = match self.peek() {
-                Some('b' | 'B') => ("_01", ""),
-                Some('o' | 'O') => ("_01234567", ""),
-                Some('x' | 'X') => ("_0123456789abcdefABCDEF", "pP"),
-                Some('0'..='9' | '_') => ("_0123456789", "eE"),
-                Some('.') => {
-                    token = Token::FLOAT;
-                    ("_0123456789", "eE")
-                }
-                Some('i') => {
-                    self.next();
-                    return Ok((self.start_pos(), Token::IMAG, self.literal()));
-                }
-                _ => return Ok((self.start_pos(), token, self.literal())),
-            };
-            digits = d;
-            exp = e;
-            self.next();
-        }
-
-        while let Some(c) = self.peek() {
-            if !digits.contains(c) {
-                break;
+        if !preceding_dot {
+            if matches!(self.peek(), Some('0')) {
+                self.next();
+                match self.peek() {
+                    Some('b' | 'B') => {
+                        digits = "_01";
+                        exp = "";
+                        self.next();
+                    }
+                    Some('o' | 'O') => {
+                        digits = "_01234567";
+                        exp = "";
+                        self.next();
+                    }
+                    Some('x' | 'X') => {
+                        digits = "_0123456789abcdefABCDEF";
+                        exp = "pP";
+                        self.next();
+                    }
+                    _ => {}
+                };
             }
-            self.next();
+
+            while let Some(c) = self.peek() {
+                if !digits.contains(c) {
+                    break;
+                }
+                self.next();
+            }
         }
 
-        if matches!(self.peek(), Some('.')) {
+        if preceding_dot || matches!(self.peek(), Some('.')) {
             token = Token::FLOAT;
             self.next();
             while let Some(c) = self.peek() {
