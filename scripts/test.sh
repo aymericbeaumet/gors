@@ -24,18 +24,23 @@ else
   find . -name '*.go' | cut -c3- > .tests/_index
 fi
 
+i=0
+total="$(wc -l < .tests/_index)"
+
 # generate tokens with the Go implementation + from the Rust implementation
 while read go_source; do
   go_tokens=".tests/${go_source//\//--}.tokens-go"
   "$GO_BIN" tokens "$go_source" > "$go_tokens" 2>/dev/null || continue
 
   echo "$go_source" > .tests/_last
-  echo ">> $go_source"
+  printf "\r%0.2d%% %s" "$((i*100/$total))" "$go_source"
 
   rust_tokens=".tests/${go_source//\//--}.tokens-rust"
   "$RUST_BIN" tokens "$go_source" > "$rust_tokens" || exit 1
 
   git diff --no-index "$go_tokens" "$rust_tokens" || exit 2
+
+  i=$((i+1))
 done < .tests/_index
 
 # TODO: AST
