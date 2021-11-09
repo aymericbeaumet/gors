@@ -629,34 +629,40 @@ impl<'a> Scanner<'a> {
     // https://pkg.go.dev/cmd/compile#hdr-Compiler_Directives
     fn directive(&mut self, input: &'a str, immediate: bool) {
         if let Some(line_directive) = input.strip_prefix("line ") {
-            if let Some((file, line)) = line_directive.split_once(':') {
-                self.pending_line_info = if let Some((line, col)) = line.split_once(':') {
+            self.pending_line_info = self.parse_line_directive(line_directive);
+            if immediate {
+                self.consume_pending_line_info();
+            }
+        }
+    }
+
+    fn parse_line_directive(
+        &mut self,
+        line_directive: &'a str,
+    ) -> Option<(Option<&'a str>, usize, Option<usize>, bool)> {
+        line_directive.rsplit_once(':').and_then(|(file, line)| {
+            let line = line.parse().unwrap();
+
+            if let Some((file, l)) = file.rsplit_once(':') {
+                if let Ok(l) = l.parse() {
                     //line :line:col
                     //line filename:line:col
                     /*line :line:col*/
                     /*line filename:line:col*/
                     let file = if !file.is_empty() { Some(file) } else { None };
-                    let line: usize = line.parse().unwrap();
-                    let col = Some(col.parse().unwrap());
+                    let col = Some(line);
+                    let line = l;
                     let hide_column = false;
-                    Some((file, line, col, hide_column))
-                } else {
-                    //line :line
-                    //line filename:line
-                    /*line :line*/
-                    /*line filename:line*/
-                    let file = Some(file);
-                    let line: usize = line.parse().unwrap();
-                    let col = None;
-                    let hide_column = true;
-                    Some((file, line, col, hide_column))
-                };
-
-                if immediate {
-                    self.consume_pending_line_info();
+                    return Some((file, line, col, hide_column));
                 }
             }
-        }
+
+            //line :line
+            //line filename:line
+            /*line :line*/
+            /*line filename:line*/
+            Some((Some(file), line, None, true))
+        })
     }
 
     fn consume_pending_line_info(&mut self) {
