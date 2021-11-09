@@ -43,9 +43,7 @@ pub struct Scanner<'a> {
     hide_column: bool,
     insert_semi: bool,
     //
-    pending_file: Option<&'a str>,
-    pending_line: Option<usize>,
-    pending_column: Option<usize>,
+    pending_line_info: Option<(Option<&'a str>, usize, Option<usize>, bool)>,
     pending_out: Option<(Position<'a>, Token, &'a str)>,
 }
 
@@ -71,9 +69,7 @@ impl<'a> Scanner<'a> {
             hide_column: false,
             insert_semi: false,
             //
-            pending_file: None,
-            pending_line: None,
-            pending_column: None,
+            pending_line_info: None,
             pending_out: None,
         };
         s.next(); // read the first character
@@ -83,16 +79,6 @@ impl<'a> Scanner<'a> {
     pub fn scan(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
-
-        if let Some(file) = self.pending_file.take() {
-            self.file = file;
-        }
-        if let Some(line) = self.pending_line.take() {
-            self.line = line;
-        }
-        if let Some(column) = self.pending_column.take() {
-            self.column = column;
-        }
 
         while let Some(c) = self.peek() {
             self.start_offset = self.offset;
@@ -634,37 +620,58 @@ impl<'a> Scanner<'a> {
 
         // look for compiler directives (at the beginning of line)
         if self.start_column == 1 {
-            self.directive(lit["//".len()..].trim_end(), true);
+            self.directive(lit["//".len()..].trim_end(), false);
         }
 
         Ok((pos, Token::COMMENT, self.literal()))
     }
 
-    fn directive(&mut self, input: &'a str, pending_until_newline: bool) {
+    // https://pkg.go.dev/cmd/compile#hdr-Compiler_Directives
+    fn directive(&mut self, input: &'a str, immediate: bool) {
         if let Some(line_directive) = input.strip_prefix("line ") {
             if let Some((file, line)) = line_directive.split_once(':') {
-                //let (file, line, column, hide_column) =
-                //if let Some((line, col)) = line.split_once(':') {
-                //let file = if !file.is_empty() { Some(file) } else { None };
-                //let line: usize = line.parse().unwrap();
-                //let col = Some(col.parse().unwrap());
-                //(file, line, col, false)
-                //} else {
-                //let file = Some(file);
-                //let line: usize = line.parse().unwrap();
-                //let col = None;
-                //(file, line, col, true)
-                //};
-                //
-                //if pending_until_newline {
-                //self.pending_line_info = (file, line, column, hide_column);
-                //} else {
-                //self.file = file;
-                //self.line = line;
-                //self.column = column;
-                //self.hide_column = hide_column
-                //}
+                self.pending_line_info = if let Some((line, col)) = line.split_once(':') {
+                    //line :line:col
+                    //line filename:line:col
+                    /*line :line:col*/
+                    /*line filename:line:col*/
+                    let file = if !file.is_empty() { Some(file) } else { None };
+                    let line: usize = line.parse().unwrap();
+                    let col = Some(col.parse().unwrap());
+                    let hide_column = false;
+                    Some((file, line, col, hide_column))
+                } else {
+                    //line :line
+                    //line filename:line
+                    /*line :line*/
+                    /*line filename:line*/
+                    let file = Some(file);
+                    let line: usize = line.parse().unwrap();
+                    let col = None;
+                    let hide_column = true;
+                    Some((file, line, col, hide_column))
+                };
+
+                if immediate {
+                    self.consume_pending_line_info();
+                }
             }
+        }
+    }
+
+    fn consume_pending_line_info(&mut self) {
+        if let Some(line_info) = self.pending_line_info.take() {
+            if let Some(file) = line_info.0 {
+                self.file = file;
+            }
+
+            self.line = line_info.1;
+
+            if let Some(column) = line_info.2 {
+                self.column = column;
+            }
+
+            self.hide_column = line_info.3;
         }
     }
 
@@ -684,6 +691,7 @@ impl<'a> Scanner<'a> {
             if matches!(last_char, Some('\n')) {
                 self.line += 1;
                 self.column = 1;
+                self.consume_pending_line_info();
             }
         }
 

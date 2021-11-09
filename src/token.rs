@@ -21,7 +21,13 @@ impl<'a> Serialize for Position<'a> {
         S: Serializer,
     {
         let mut map = serializer.serialize_map(Some(4))?;
-        map.serialize_entry("Filename", &[self.directory, "/", self.file].join(""))?; // TODO: remove alloc
+
+        if self.file.is_empty() {
+            map.serialize_entry("Filename", "")?;
+        } else {
+            // TODO: remove alloc
+            map.serialize_entry("Filename", &[self.directory, "/", self.file].join(""))?;
+        }
         map.serialize_entry("Offset", &self.offset)?;
         map.serialize_entry("Line", &self.line)?;
         map.serialize_entry("Column", &self.column)?;
