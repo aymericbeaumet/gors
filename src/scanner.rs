@@ -641,7 +641,7 @@ impl<'a> Scanner<'a> {
         &mut self,
         line_directive: &'a str,
     ) -> Option<(Option<&'a str>, usize, Option<usize>, bool)> {
-        line_directive.rsplit_once(':').and_then(|(file, line)| {
+        line_directive.rsplit_once(':').map(|(file, line)| {
             let line = line.parse().unwrap();
 
             if let Some((file, l)) = file.rsplit_once(':') {
@@ -654,7 +654,7 @@ impl<'a> Scanner<'a> {
                     let col = Some(line);
                     let line = l;
                     let hide_column = false;
-                    return Some((file, line, col, hide_column));
+                    return (file, line, col, hide_column);
                 }
             }
 
@@ -662,7 +662,7 @@ impl<'a> Scanner<'a> {
             //line filename:line
             /*line :line*/
             /*line filename:line*/
-            Some((Some(file), line, None, true))
+            (Some(file), line, None, true)
         })
     }
 

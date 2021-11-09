@@ -24,7 +24,7 @@ impl<'a> Serialize for Position<'a> {
 
         if self.file.is_empty() {
             map.serialize_entry("Filename", "")?;
-        } else if self.file.starts_with("/") {
+        } else if self.file.starts_with('/') {
             map.serialize_entry("Filename", self.file)?;
         } else {
             // TODO: remove alloc
