@@ -39,8 +39,6 @@ impl<'a> Serialize for Position<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Token {
-    ILLEGAL,
-
     EOF,
     COMMENT,
 
@@ -151,8 +149,6 @@ impl Serialize for Token {
         use Token::*;
 
         serializer.serialize_str(match self {
-            ILLEGAL => "ILLEGAL",
-
             EOF => "EOF",
             COMMENT => "COMMENT",
 

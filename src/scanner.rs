@@ -81,9 +81,7 @@ impl<'a> Scanner<'a> {
         self.insert_semi = false;
 
         while let Some(c) = self.peek() {
-            self.start_offset = self.offset;
-            self.start_line = self.line;
-            self.start_column = self.column;
+            self.reset_start();
 
             match c {
                 ' ' | '\t' | '\r' => {
@@ -366,17 +364,22 @@ impl<'a> Scanner<'a> {
                 }
 
                 '.' => {
+                    let pos = self.position();
                     self.next();
                     match self.peek() {
                         Some('0'..='9') => return self.scan_int_or_float_or_imag(true),
                         Some('.') => {
+                            self.reset_start();
                             self.next();
                             match self.peek() {
                                 Some('.') => {
                                     self.next();
-                                    return Ok((self.position(), Token::ELLIPSIS, ""));
+                                    return Ok((pos, Token::ELLIPSIS, ""));
                                 }
-                                _ => return Ok((self.position(), Token::ILLEGAL, self.literal())),
+                                _ => {
+                                    self.pending_out = Some(self.scan_int_or_float_or_imag(true)?);
+                                    return Ok((pos, Token::PERIOD, ""));
+                                }
                             }
                         }
                         _ => return Ok((self.position(), Token::PERIOD, "")),
@@ -402,9 +405,7 @@ impl<'a> Scanner<'a> {
             };
         }
 
-        self.start_offset = self.offset;
-        self.start_line = self.line;
-        self.start_column = self.column;
+        self.reset_start();
         if insert_semi {
             Ok((self.position(), Token::SEMICOLON, "\n"))
         } else {
@@ -722,6 +723,12 @@ impl<'a> Scanner<'a> {
                 self.start_column
             },
         }
+    }
+
+    fn reset_start(&mut self) {
+        self.start_offset = self.offset;
+        self.start_line = self.line;
+        self.start_column = self.column;
     }
 
     fn literal(&self) -> &'a str {
