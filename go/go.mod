@@ -1,3 +1,3 @@
-module github.com/aymericbeaumet/go2rust/go
+module github.com/aymericbeaumet/gors/go
 
 go 1.17

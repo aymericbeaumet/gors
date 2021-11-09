@@ -1,6 +1,3 @@
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 mod scanner;
 mod token;
 
@@ -58,7 +55,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (pos, tok, lit) = s.scan()?;
 
-        serde_json::to_writer(&stdout, &(s.position(&pos), tok, lit))?;
+        serde_json::to_writer(&stdout, &(pos, tok, lit))?;
         stdout.write_all(&[b'\n'])?;
 
         if tok == token::Token::EOF {

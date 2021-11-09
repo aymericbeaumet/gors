@@ -3,25 +3,30 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(non_camel_case_types)]
 
-use serde::{Serialize, Serializer};
+use serde::{ser::SerializeMap, Serialize, Serializer};
 
-#[derive(Debug, Clone, Copy)]
-pub struct Pos {
+#[derive(Clone, Copy, Debug)]
+pub struct Position<'a> {
+    pub directory: &'a str,
+    pub file: &'a str,
+
     pub offset: usize,
     pub line: usize,
     pub column: usize,
 }
 
-#[derive(Debug, Serialize)]
-pub struct Position {
-    #[serde(rename = "Filename")]
-    pub filename: String,
-    #[serde(rename = "Offset")]
-    pub offset: usize,
-    #[serde(rename = "Line")]
-    pub line: usize,
-    #[serde(rename = "Column")]
-    pub column: usize,
+impl<'a> Serialize for Position<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("Filename", &[self.directory, "/", self.file].join(""))?; // TODO: remove alloc
+        map.serialize_entry("Offset", &self.offset)?;
+        map.serialize_entry("Line", &self.line)?;
+        map.serialize_entry("Column", &self.column)?;
+        map.end()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

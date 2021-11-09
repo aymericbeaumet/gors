@@ -1,7 +1,7 @@
 #!/bin/sh
 
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
-RUST_BIN="./target/${1:=release}/go2rust"
+RUST_BIN="./target/${1:=release}/gors"
 GO_BIN='./go/go'
 
 # fix root directory
