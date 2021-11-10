@@ -1,19 +1,18 @@
 #!/bin/sh
 
-ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
+cd -- "$(dirname "$0")/.." >/dev/null 2>&1
+git submodule update --init
 RUST_BIN="./target/${1:=release}/gors"
 GO_BIN='./go/go'
-cd "$ROOT_DIR" # fix root directory
-git submodule update --init # make sure our go reference repositories are up-to-date
 
 # read the last file tested (if any)
 last="$(cat .tests/_last)"
 
 # prepare the working directory
-rm -rf "$ROOT_DIR/.tests"
-mkdir "$ROOT_DIR/.tests"
+rm -rf ".tests/"
+mkdir ".tests/"
 
-# find all go files in the reference repositories
+# define the go files we want to test against
 if [ "$2" = 'last' ]; then
   echo "$last" > .tests/_index
 else
@@ -22,10 +21,11 @@ else
   done
 fi
 
+# keep track of how far we are
 i=0
 total="$(wc -l < .tests/_index)"
 
-# generate tokens with the Go implementation + from the Rust implementation
+# compare tokens generated with the Go/Rust implementation
 while read go_source; do
   go_tokens=".tests/${go_source//\//--}.tokens-go"
   "$GO_BIN" tokens "$go_source" > "$go_tokens" 2>/dev/null || continue
@@ -42,5 +42,3 @@ while read go_source; do
 done < .tests/_index
 
 echo 'Done!'
-
-# TODO: AST
