@@ -645,29 +645,42 @@ impl<'a> Scanner<'a> {
         let mut in_comment = true;
 
         let mut i = self.offset;
-        let max = self.buffer.len() - 1;
+        let max = self.buffer.len();
         while i < max {
             let c = buffer[i] as char;
-            let n = buffer[i + 1] as char;
 
-            if !in_comment && c == '/' && n == '/' {
+            if i < max - 1 {
+                let n = buffer[i + 1] as char;
+
+                if !in_comment && c == '/' && n == '/' {
+                    return true;
+                }
+
+                if c == '/' && n == '*' {
+                    i += 2;
+                    in_comment = true;
+                    continue;
+                }
+
+                if c == '*' && n == '/' {
+                    i += 2;
+                    in_comment = false;
+                    continue;
+                }
+            }
+
+            if c == '\n' {
                 return true;
-            } else if c == '/' && n == '*' {
-                i += 1;
-                in_comment = true;
-            } else if c == '*' && n == '/' {
-                i += 1;
-                in_comment = false;
-            } else if c == '\n' {
-                return true;
-            } else if !in_comment && !matches!(c, ' ' | '\t' | '\r') {
+            }
+
+            if !in_comment && !matches!(c, ' ' | '\t' | '\r') {
                 return false;
             }
 
             i += 1;
         }
 
-        false
+        !in_comment
     }
 
     fn consume_pending_line_info(&mut self) {
