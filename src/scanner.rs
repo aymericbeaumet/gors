@@ -3,6 +3,7 @@
 use crate::token::{Position, Token};
 use phf::{phf_map, Map};
 use std::fmt;
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 // TODO: match the errors from the Go scanner
 #[derive(Debug)]
@@ -584,7 +585,7 @@ impl<'a> Scanner<'a> {
         self.next();
 
         while let Some(c) = self.current() {
-            if c == '\n' {
+            if is_newline(c) {
                 break;
             }
             self.next();
@@ -669,7 +670,7 @@ impl<'a> Scanner<'a> {
                 }
             }
 
-            if c == '\n' {
+            if is_newline(c) {
                 return true;
             }
 
@@ -705,6 +706,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
+        log::trace!("self.peek()");
         self.chars.peek().copied()
     }
 
@@ -795,7 +797,7 @@ impl<'a> Scanner<'a> {
         for _ in 0..count {
             let c = self.current().ok_or(ScannerError::OctalNotFound)?;
 
-            if !matches!(c, '0'..='7') {
+            if !is_octal_digit(c) {
                 return Err(ScannerError::OctalNotFound);
             }
 
@@ -809,7 +811,7 @@ impl<'a> Scanner<'a> {
         for _ in 0..count {
             let c = self.current().ok_or(ScannerError::HexadecimalNotFound)?;
 
-            if !matches!(c, '0'..='9' | 'a'..='f' | 'A'..='F') {
+            if !is_hex_digit(c) {
                 return Err(ScannerError::HexadecimalNotFound);
             }
 
@@ -821,16 +823,54 @@ impl<'a> Scanner<'a> {
 }
 
 // https://golang.org/ref/spec#Letters_and_digits
-pub fn is_letter(c: char) -> bool {
-    matches!(c, '_' | 'A'..='Z' | 'a'..='z')
+
+fn is_letter(c: char) -> bool {
+    c == '_' || is_unicode_letter(c)
+}
+
+//const fn is_decimal_digit(c: char) -> bool {
+//matches!(c, '0'..='9')
+//}
+
+//const fn is_binary_digit(c: char) -> bool {
+//matches!(c, '0'..='1')
+//}
+
+const fn is_octal_digit(c: char) -> bool {
+    matches!(c, '0'..='7')
+}
+
+const fn is_hex_digit(c: char) -> bool {
+    matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f')
 }
 
 // https://golang.org/ref/spec#Characters
-pub fn is_unicode_digit(c: char) -> bool {
-    matches!(c, '0'..='9') // TODO: unicode
+
+const fn is_newline(c: char) -> bool {
+    c == '\n'
+}
+
+//const fn is_unicode_char(c: char) -> bool {
+//c != '\n'
+//}
+
+fn is_unicode_letter(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    )
+}
+
+fn is_unicode_digit(c: char) -> bool {
+    get_general_category(c) == GeneralCategory::DecimalNumber
 }
 
 // https://golang.org/ref/spec#Keywords
+
 static KEYWORDS: Map<&'static str, Token> = phf_map! {
   "break" => Token::BREAK,
   "case" => Token::CASE,
