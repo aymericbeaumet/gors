@@ -3,12 +3,8 @@
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P)"
 RUST_BIN="./target/${1:=release}/gors"
 GO_BIN='./go/go'
-
-# fix root directory
-cd "$ROOT_DIR"
-
-# make sure our go reference repositories are up-to-date
-git submodule update --init
+cd "$ROOT_DIR" # fix root directory
+git submodule update --init # make sure our go reference repositories are up-to-date
 
 # read the last file tested (if any)
 last="$(cat .tests/_last)"
@@ -21,7 +17,9 @@ mkdir "$ROOT_DIR/.tests"
 if [ "$2" = 'last' ]; then
   echo "$last" > .tests/_index
 else
-  find tests .repositories -name '*.go' > .tests/_index
+  for dir in tests .repositories; do
+    find "$dir" -name '*.go' | sort > .tests/_index
+  done
 fi
 
 i=0

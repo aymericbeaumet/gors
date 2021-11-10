@@ -30,18 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Parser)]
-struct Ast {
-    #[clap(name = "file", about = "The file to parse")]
-    filepath: String,
-}
-
-fn ast(_: Ast) -> Result<(), Box<dyn std::error::Error>> {
-    unimplemented!()
-}
-
-#[derive(Parser)]
 struct Tokens {
-    #[clap(name = "file", about = "The file to parse")]
+    #[clap(name = "file", about = "The file to lex")]
     filepath: String,
 }
 
@@ -64,4 +54,14 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[derive(Parser)]
+struct Ast {
+    #[clap(name = "file", about = "The file to parse")]
+    filepath: String,
+}
+
+fn ast(_: Ast) -> Result<(), Box<dyn std::error::Error>> {
+    unimplemented!()
 }

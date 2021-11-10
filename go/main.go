@@ -16,24 +16,6 @@ func main() {
 	filename := os.Args[2]
 
 	switch os.Args[1] {
-	case "ast":
-		{
-			src, err := ioutil.ReadFile(filename)
-			if err != nil {
-				panic(err)
-			}
-
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors)
-			if err != nil {
-				panic(err)
-			}
-
-			if err := ast.Print(fset, file); err != nil {
-				panic(err)
-			}
-		}
-
 	case "tokens":
 		{
 			src, err := ioutil.ReadFile(filename)
@@ -62,6 +44,24 @@ func main() {
 
 			if s.ErrorCount > 0 {
 				panic(fmt.Errorf("%d error(s) occured while scanning", s.ErrorCount))
+			}
+		}
+
+	case "ast":
+		{
+			src, err := ioutil.ReadFile(filename)
+			if err != nil {
+				panic(err)
+			}
+
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors)
+			if err != nil {
+				panic(err)
+			}
+
+			if err := ast.Print(fset, file); err != nil {
+				panic(err)
 			}
 		}
 	}
