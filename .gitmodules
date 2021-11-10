@@ -7,3 +7,18 @@
 	path = .repositories/github.com/kubernetes/kubernetes
 	url = https://github.com/kubernetes/kubernetes.git
 	shallow = true
+
+[submodule ".repositories/github.com/moby/moby"]
+	path = .repositories/github.com/moby/moby
+	url = https://github.com/moby/moby.git
+	shallow = true
+
+[submodule ".repositories/github.com/gohugoio/hugo"]
+	path = .repositories/github.com/gohugoio/hugo
+	url = https://github.com/gohugoio/hugo.git
+	shallow = true
+
+[submodule ".repositories/github.com/gin-gonic/gin"]
+	path = .repositories/github.com/gin-gonic/gin
+	url = https://github.com/gin-gonic/gin.git
+	shallow = true
