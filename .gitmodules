@@ -1,4 +1,9 @@
-[submodule ".references/go"]
-	path = .repositories/go
+[submodule ".repositories/github.com/golang/go"]
+	path = .repositories/github.com/golang/go
 	url = https://github.com/golang/go.git
+	shallow = true
+
+[submodule ".repositories/github.com/kubernetes/kubernetes"]
+	path = .repositories/github.com/kubernetes/kubernetes
+	url = https://github.com/kubernetes/kubernetes.git
 	shallow = true
