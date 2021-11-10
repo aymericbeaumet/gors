@@ -21,7 +21,7 @@ mkdir "$ROOT_DIR/.tests"
 if [ "$2" = 'last' ]; then
   echo "$last" > .tests/_index
 else
-  find . -name '*.go' | cut -c3- > .tests/_index
+  find tests .repositories -name '*.go' > .tests/_index
 fi
 
 i=0
@@ -42,5 +42,7 @@ while read go_source; do
 
   i=$((i+1))
 done < .tests/_index
+
+echo 'Done!'
 
 # TODO: AST

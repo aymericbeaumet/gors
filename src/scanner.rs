@@ -29,7 +29,7 @@ pub struct Scanner<'a> {
     file: &'a str,
     buffer: &'a str,
     //
-    chars: std::str::Chars<'a>,
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
     current_char: Option<char>,
     current_char_len: usize,
     //
@@ -42,9 +42,7 @@ pub struct Scanner<'a> {
     //
     hide_column: bool,
     insert_semi: bool,
-    //
     pending_line_info: Option<(Option<&'a str>, usize, Option<usize>, bool)>,
-    pending_out: Option<(Position<'a>, Token, &'a str)>,
 }
 
 impl<'a> Scanner<'a> {
@@ -55,7 +53,7 @@ impl<'a> Scanner<'a> {
             file,
             buffer,
             //
-            chars: buffer.chars(),
+            chars: buffer.chars().peekable(),
             current_char: None,
             current_char_len: 0,
             //
@@ -68,9 +66,7 @@ impl<'a> Scanner<'a> {
             //
             hide_column: false,
             insert_semi: false,
-            //
             pending_line_info: None,
-            pending_out: None,
         };
         s.next(); // read the first character
         s
@@ -80,7 +76,7 @@ impl<'a> Scanner<'a> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             self.reset_start();
 
             match c {
@@ -91,11 +87,6 @@ impl<'a> Scanner<'a> {
                 '\n' => {
                     self.next();
                     if insert_semi {
-                        if let Some(pending_out) = &self.pending_out {
-                            if pending_out.1 == Token::COMMENT {
-                                return Ok((pending_out.0, Token::SEMICOLON, "\n"));
-                            }
-                        }
                         return Ok((self.position(), Token::SEMICOLON, "\n"));
                     }
                 }
@@ -104,15 +95,11 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if let Some(pending_out) = self.pending_out.take() {
-            return Ok(pending_out);
-        }
-
-        if let Some(c) = self.peek() {
+        if let Some(c) = self.current() {
             match c {
                 '+' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::ADD_ASSIGN, ""));
@@ -128,7 +115,7 @@ impl<'a> Scanner<'a> {
 
                 '-' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::SUB_ASSIGN, ""));
@@ -144,7 +131,7 @@ impl<'a> Scanner<'a> {
 
                 '*' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::MUL_ASSIGN, ""));
@@ -153,44 +140,33 @@ impl<'a> Scanner<'a> {
                     }
                 }
 
-                '/' => {
-                    self.next();
-                    match self.peek() {
-                        Some('=') => {
-                            self.next();
-                            return Ok((self.position(), Token::QUO_ASSIGN, ""));
-                        }
-                        Some('/') => {
-                            let out = self.scan_line_comment()?;
-                            // "Any other comment acts like a newline."
-                            if insert_semi {
-                                self.pending_out = Some(out);
-                                return Ok((self.position(), Token::SEMICOLON, "\n"));
-                            }
-                            return Ok(out);
-                        }
-                        Some('*') => {
-                            let out = self.scan_general_comment()?;
-                            // "A general comment containing no newlines acts like a space."
-                            if !out.2.contains('\n') {
-                                self.pending_out = Some(out);
-                                self.insert_semi = insert_semi;
-                                return self.scan();
-                            }
-                            // "Any other comment acts like a newline."
-                            if insert_semi {
-                                self.pending_out = Some(out);
-                                return Ok((self.position(), Token::SEMICOLON, "\n"));
-                            }
-                            return Ok(out);
-                        }
-                        _ => return Ok((self.position(), Token::QUO, "")),
+                '/' => match self.peek() {
+                    Some('=') => {
+                        self.next();
+                        self.next();
+                        return Ok((self.position(), Token::QUO_ASSIGN, ""));
                     }
-                }
+                    Some('/') => {
+                        if insert_semi {
+                            return Ok((self.position(), Token::SEMICOLON, "\n"));
+                        }
+                        return self.scan_line_comment();
+                    }
+                    Some('*') => {
+                        if insert_semi && self.find_line_end() {
+                            return Ok((self.position(), Token::SEMICOLON, "\n"));
+                        }
+                        return self.scan_general_comment();
+                    }
+                    _ => {
+                        self.next();
+                        return Ok((self.position(), Token::QUO, ""));
+                    }
+                },
 
                 '%' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::REM_ASSIGN, ""));
@@ -201,7 +177,7 @@ impl<'a> Scanner<'a> {
 
                 '&' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::AND_ASSIGN, ""));
@@ -212,7 +188,7 @@ impl<'a> Scanner<'a> {
                         }
                         Some('^') => {
                             self.next();
-                            match self.peek() {
+                            match self.current() {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::AND_NOT_ASSIGN, ""));
@@ -226,7 +202,7 @@ impl<'a> Scanner<'a> {
 
                 '|' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::OR_ASSIGN, ""));
@@ -241,7 +217,7 @@ impl<'a> Scanner<'a> {
 
                 '^' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::XOR_ASSIGN, ""));
@@ -252,10 +228,10 @@ impl<'a> Scanner<'a> {
 
                 '<' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('<') => {
                             self.next();
-                            match self.peek() {
+                            match self.current() {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::SHL_ASSIGN, ""));
@@ -277,10 +253,10 @@ impl<'a> Scanner<'a> {
 
                 '>' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('>') => {
                             self.next();
-                            match self.peek() {
+                            match self.current() {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::SHR_ASSIGN, ""));
@@ -300,7 +276,7 @@ impl<'a> Scanner<'a> {
 
                 ':' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::DEFINE, ""));
@@ -311,7 +287,7 @@ impl<'a> Scanner<'a> {
 
                 '!' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::NEQ, ""));
@@ -364,31 +340,24 @@ impl<'a> Scanner<'a> {
                 }
 
                 '.' => {
-                    let pos = self.position();
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('0'..='9') => return self.scan_int_or_float_or_imag(true),
-                        Some('.') => {
-                            self.reset_start();
-                            self.next();
-                            match self.peek() {
-                                Some('.') => {
-                                    self.next();
-                                    return Ok((pos, Token::ELLIPSIS, ""));
-                                }
-                                _ => {
-                                    self.pending_out = Some(self.scan_int_or_float_or_imag(true)?);
-                                    return Ok((pos, Token::PERIOD, ""));
-                                }
+                        Some('.') => match self.peek() {
+                            Some('.') => {
+                                self.next();
+                                self.next();
+                                return Ok((self.position(), Token::ELLIPSIS, ""));
                             }
-                        }
+                            _ => return Ok((self.position(), Token::PERIOD, "")),
+                        },
                         _ => return Ok((self.position(), Token::PERIOD, "")),
                     }
                 }
 
                 '=' => {
                     self.next();
-                    match self.peek() {
+                    match self.current() {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::EQL, ""));
@@ -420,7 +389,7 @@ impl<'a> Scanner<'a> {
     ) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
         self.next();
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             if !(is_letter(c) || is_unicode_digit(c)) {
                 break;
             }
@@ -429,16 +398,19 @@ impl<'a> Scanner<'a> {
 
         let pos = self.position();
         let literal = self.literal();
-        if let Some(&token) = KEYWORDS.get(literal) {
-            self.insert_semi = matches!(
-                token,
-                Token::BREAK | Token::CONTINUE | Token::FALLTHROUGH | Token::RETURN
-            );
-            Ok((pos, token, literal))
-        } else {
-            self.insert_semi = true;
-            Ok((pos, Token::IDENT, literal))
+
+        if literal.len() > 1 {
+            if let Some(&token) = KEYWORDS.get(literal) {
+                self.insert_semi = matches!(
+                    token,
+                    Token::BREAK | Token::CONTINUE | Token::FALLTHROUGH | Token::RETURN
+                );
+                return Ok((pos, token, literal));
+            }
         }
+
+        self.insert_semi = true;
+        Ok((pos, Token::IDENT, literal))
     }
 
     // https://golang.org/ref/spec#Integer_literals
@@ -455,9 +427,9 @@ impl<'a> Scanner<'a> {
         let mut exp = "eE";
 
         if !preceding_dot {
-            if matches!(self.peek(), Some('0')) {
+            if matches!(self.current(), Some('0')) {
                 self.next();
-                match self.peek() {
+                match self.current() {
                     Some('b' | 'B') => {
                         digits = "_01";
                         exp = "";
@@ -477,7 +449,7 @@ impl<'a> Scanner<'a> {
                 };
             }
 
-            while let Some(c) = self.peek() {
+            while let Some(c) = self.current() {
                 if !digits.contains(c) {
                     break;
                 }
@@ -485,10 +457,10 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if preceding_dot || matches!(self.peek(), Some('.')) {
+        if preceding_dot || matches!(self.current(), Some('.')) {
             token = Token::FLOAT;
             self.next();
-            while let Some(c) = self.peek() {
+            while let Some(c) = self.current() {
                 if !digits.contains(c) {
                     break;
                 }
@@ -497,14 +469,14 @@ impl<'a> Scanner<'a> {
         }
 
         if !exp.is_empty() {
-            if let Some(c) = self.peek() {
+            if let Some(c) = self.current() {
                 if exp.contains(c) {
                     token = Token::FLOAT;
                     self.next();
-                    if matches!(self.peek(), Some('-' | '+')) {
+                    if matches!(self.current(), Some('-' | '+')) {
                         self.next();
                     }
-                    while let Some(c) = self.peek() {
+                    while let Some(c) = self.current() {
                         if !"_0123456789".contains(c) {
                             break;
                         }
@@ -514,7 +486,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if matches!(self.peek(), Some('i')) {
+        if matches!(self.current(), Some('i')) {
             token = Token::IMAG;
             self.next();
         }
@@ -527,13 +499,13 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        match self.peek() {
+        match self.current() {
             Some('\\') => self.require_escaped_char('\'')?,
             Some(_) => self.next(),
             _ => return Err(ScannerError::UnterminatedRune),
         }
 
-        if matches!(self.peek(), Some('\'')) {
+        if matches!(self.current(), Some('\'')) {
             self.next();
             return Ok((self.position(), Token::CHAR, self.literal()));
         }
@@ -546,7 +518,7 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             match c {
                 '"' => {
                     self.next();
@@ -565,7 +537,7 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             match c {
                 '`' => {
                     self.next();
@@ -581,12 +553,13 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Comments
     fn scan_general_comment(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
         self.next();
+        self.next();
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             match c {
                 '*' => {
                     self.next();
-                    if matches!(self.peek(), Some('/')) {
+                    if matches!(self.current(), Some('/')) {
                         self.next();
 
                         let pos = self.position();
@@ -608,8 +581,9 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Comments
     fn scan_line_comment(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
         self.next();
+        self.next();
 
-        while let Some(c) = self.peek() {
+        while let Some(c) = self.current() {
             if c == '\n' {
                 break;
             }
@@ -666,6 +640,36 @@ impl<'a> Scanner<'a> {
         })
     }
 
+    fn find_line_end(&self) -> bool {
+        let buffer = self.buffer.as_bytes();
+        let mut in_comment = true;
+
+        let mut i = self.offset;
+        let max = self.buffer.len() - 1;
+        while i < max {
+            let c = buffer[i] as char;
+            let n = buffer[i + 1] as char;
+
+            if !in_comment && c == '/' && n == '/' {
+                return true;
+            } else if c == '/' && n == '*' {
+                i += 1;
+                in_comment = true;
+            } else if c == '*' && n == '/' {
+                i += 1;
+                in_comment = false;
+            } else if c == '\n' {
+                return true;
+            } else if !in_comment && !matches!(c, ' ' | '\t' | '\r') {
+                return false;
+            }
+
+            i += 1;
+        }
+
+        false
+    }
+
     fn consume_pending_line_info(&mut self) {
         if let Some(line_info) = self.pending_line_info.take() {
             if let Some(file) = line_info.0 {
@@ -682,9 +686,13 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn peek(&mut self) -> Option<char> {
-        log::trace!("self.peek()");
+    fn current(&mut self) -> Option<char> {
+        log::trace!("self.current()");
         self.current_char
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.chars.peek().copied()
     }
 
     fn next(&mut self) {
@@ -738,7 +746,9 @@ impl<'a> Scanner<'a> {
     fn require_escaped_char(&mut self, delim: char) -> Result<(), ScannerError> {
         self.next();
 
-        let c = self.peek().ok_or(ScannerError::UnterminatedEscapedChar)?;
+        let c = self
+            .current()
+            .ok_or(ScannerError::UnterminatedEscapedChar)?;
 
         match c {
             'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' => self.next(),
@@ -770,7 +780,7 @@ impl<'a> Scanner<'a> {
 
     fn require_octal_digits(&mut self, count: usize) -> Result<(), ScannerError> {
         for _ in 0..count {
-            let c = self.peek().ok_or(ScannerError::OctalNotFound)?;
+            let c = self.current().ok_or(ScannerError::OctalNotFound)?;
 
             if !matches!(c, '0'..='7') {
                 return Err(ScannerError::OctalNotFound);
@@ -784,7 +794,7 @@ impl<'a> Scanner<'a> {
 
     fn require_hex_digits(&mut self, count: usize) -> Result<(), ScannerError> {
         for _ in 0..count {
-            let c = self.peek().ok_or(ScannerError::HexadecimalNotFound)?;
+            let c = self.current().ok_or(ScannerError::HexadecimalNotFound)?;
 
             if !matches!(c, '0'..='9' | 'a'..='f' | 'A'..='F') {
                 return Err(ScannerError::HexadecimalNotFound);
