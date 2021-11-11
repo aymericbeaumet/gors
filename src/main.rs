@@ -32,16 +32,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Parser)]
+struct Ast {
+    #[clap(name = "file", about = "The file to parse")]
+    filepath: String,
+}
+
+fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
+    let buffer = std::fs::read_to_string(&cmd.filepath)?;
+    let file = parser::parse_file(&cmd.filepath, &buffer)?;
+    let mut stdout = std::io::stdout();
+
+    ast::fprint(&mut stdout, &file)?;
+
+    Ok(())
+}
+
+#[derive(Parser)]
 struct Tokens {
     #[clap(name = "file", about = "The file to lex")]
     filepath: String,
 }
 
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
-    let filepath = &cmd.filepath;
-    let buffer = std::fs::read_to_string(filepath)?;
-
-    let mut s = scanner::Scanner::new(filepath, &buffer);
+    let buffer = std::fs::read_to_string(&cmd.filepath)?;
+    let mut s = scanner::Scanner::new(&cmd.filepath, &buffer);
     let mut stdout = std::io::stdout();
 
     loop {
@@ -54,24 +68,6 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
-
-    Ok(())
-}
-
-#[derive(Parser)]
-struct Ast {
-    #[clap(name = "file", about = "The file to parse")]
-    filepath: String,
-}
-
-fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
-    let filepath = &cmd.filepath;
-    let buffer = std::fs::read_to_string(filepath)?;
-
-    let file = parser::parse_file(filepath, &buffer)?;
-    let mut stdout = std::io::stdout();
-
-    ast::fprint(&mut stdout, &ast::Node::File(file))?;
 
     Ok(())
 }
