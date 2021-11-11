@@ -1,3 +1,5 @@
+mod ast;
+mod parser;
 mod scanner;
 mod token;
 
@@ -62,6 +64,14 @@ struct Ast {
     filepath: String,
 }
 
-fn ast(_: Ast) -> Result<(), Box<dyn std::error::Error>> {
-    unimplemented!()
+fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
+    let filepath = &cmd.filepath;
+    let buffer = std::fs::read_to_string(filepath)?;
+
+    let file = parser::parse_file(filepath, &buffer)?;
+    let mut stdout = std::io::stdout();
+
+    ast::fprint(&mut stdout, &ast::Node::File(file))?;
+
+    Ok(())
 }
