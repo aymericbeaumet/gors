@@ -44,12 +44,24 @@ fn parse_source_file<'a>(s: &mut Scanner<'a>) -> ParserResult<ast::File<'a>> {
     Ok(ast::File {
         doc: None,
         package: package.0,
-        name: Some(ast::Ident {
+        name: ast::Ident {
             name_pos: package_name.0,
             name: package_name.2,
             obj: None,
-        }),
+        },
+        decls: vec![],
     })
+}
+
+// https://golang.org/ref/spec#Import_declarations
+//
+// ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
+// ImportSpec       = [ "." | PackageName ] ImportPath .
+// ImportPath       = string_lit .
+fn parse_import_decls<'a>(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
+    let mut out = vec![];
+
+    Ok(out)
 }
 
 fn expect<'a>(

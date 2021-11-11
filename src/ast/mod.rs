@@ -1,5 +1,5 @@
 mod printer;
-use crate::token::Position;
+use crate::token::{Position, Token};
 
 pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
@@ -11,16 +11,30 @@ pub struct CommentGroup {
     // List []*Comment // len(List) > 0
 }
 
+pub enum Decl<'a> {
+    GenDecl(GenDecl<'a>),
+}
+
 // https://pkg.go.dev/go/ast#File
 pub struct File<'a> {
     pub doc: Option<CommentGroup>, // associated documentation; or nil
     pub package: Position<'a>,     // position of "package" keyword
-    pub name: Option<Ident<'a>>,   // package name
-                                   //Decls      []Decl          // top-level declarations; or nil
+    pub name: Ident<'a>,           // package name
+    pub decls: Vec<GenDecl<'a>>,   // top-level declarations; or nil
                                    //Scope      *Scope          // package scope (this file only)
                                    //Imports    []*ImportSpec   // imports in this file
                                    //Unresolved []*Ident        // unresolved identifiers in this file
                                    //Comments   []*CommentGroup // list of all comments in the source file
+}
+
+// https://pkg.go.dev/go/ast#GenDecl
+pub struct GenDecl<'a> {
+    doc: Option<CommentGroup>, // associated documentation; or nil
+    tok_pos: Position<'a>,     // position of Tok
+    tok: Token,                // IMPORT, CONST, TYPE, or VAR
+    lparen: Position<'a>,      // position of '(', if any
+    //Specs  []Spec
+    rparen: Position<'a>, // position of ')', if any
 }
 
 // https://pkg.go.dev/go/ast#Ident
