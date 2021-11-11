@@ -6,7 +6,7 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ParserError {
-    UnexpectedToken(Token),
+    UnexpectedToken,
     ScannerError(ScannerError),
 }
 
@@ -28,49 +28,82 @@ impl fmt::Display for ParserError {
 
 pub fn parse_file<'a>(filepath: &'a str, buffer: &'a str) -> ParserResult<ast::File<'a>> {
     let mut s = Scanner::new(filepath, buffer);
-    parse_source_file(&mut s)
+    let mut p = Parser::new(s);
+    p.parse_file()
 }
 
-// https://golang.org/ref/spec#Source_file_organization
-//
-// SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
-// PackageClause = "package" PackageName .
-// PackageName   = identifier .
-fn parse_source_file<'a>(s: &mut Scanner<'a>) -> ParserResult<ast::File<'a>> {
-    let package = expect(s, Token::PACKAGE)?;
-    let package_name = expect(s, Token::IDENT)?;
-    expect(s, Token::SEMICOLON)?;
-
-    Ok(ast::File {
-        doc: None,
-        package: package.0,
-        name: ast::Ident {
-            name_pos: package_name.0,
-            name: package_name.2,
-            obj: None,
-        },
-        decls: vec![],
-    })
+struct Parser<'a> {
+    scanner: Scanner<'a>,
+    current: Option<(Position<'a>, Token, &'a str)>,
 }
 
-// https://golang.org/ref/spec#Import_declarations
-//
-// ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
-// ImportSpec       = [ "." | PackageName ] ImportPath .
-// ImportPath       = string_lit .
-fn parse_import_decls<'a>(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
-    let mut out = vec![];
-
-    Ok(out)
-}
-
-fn expect<'a>(
-    s: &mut Scanner<'a>,
-    expected: Token,
-) -> Result<(Position<'a>, Token, &'a str), ParserError> {
-    let (pos, tok, lit) = s.scan()?;
-    if tok != expected {
-        return Err(ParserError::UnexpectedToken(tok));
+impl<'a> Parser<'a> {
+    fn new(scanner: Scanner<'a>) -> Self {
+        Self {
+            scanner,
+            current: None,
+        }
     }
-    Ok((pos, tok, lit))
+
+    // https://golang.org/ref/spec#Source_file_organization
+    //
+    // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
+    // PackageClause = "package" PackageName .
+    // PackageName   = identifier .
+    fn parse_file(&mut self) -> ParserResult<ast::File<'a>> {
+        self.next()?;
+
+        let package = self.expect(Token::PACKAGE)?;
+        self.next()?;
+
+        let package_name = self.expect(Token::IDENT)?;
+        self.next()?;
+
+        self.expect(Token::SEMICOLON)?;
+
+        Ok(ast::File {
+            doc: None,
+            package: package.0,
+            name: ast::Ident {
+                name_pos: package_name.0,
+                name: package_name.2,
+                obj: None,
+            },
+            decls: vec![],
+        })
+    }
+
+    // https://golang.org/ref/spec#Import_declarations
+    //
+    // ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
+    // ImportSpec       = [ "." | PackageName ] ImportPath .
+    // ImportPath       = string_lit .
+    fn parse_import_decls(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
+        let mut out = vec![];
+
+        Ok(out)
+    }
+
+    // https://golang.org/ref/spec#Declarations_and_scope
+    // TopLevelDecl  = Declaration | FunctionDecl | MethodDecl .
+    // Declaration   = ConstDecl | TypeDecl | VarDecl .
+    fn parse_top_level_decls(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
+        let mut out = vec![];
+
+        Ok(out)
+    }
+
+    fn expect(&self, expected: Token) -> Result<(Position<'a>, Token, &'a str), ParserError> {
+        if let Some(current) = self.current {
+            if current.1 == expected {
+                return Ok(current);
+            }
+        }
+        return Err(ParserError::UnexpectedToken);
+    }
+
+    fn next(&mut self) -> Result<(), ParserError> {
+        self.current = Some(self.scanner.scan()?);
+        Ok(())
+    }
 }
