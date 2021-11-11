@@ -9,7 +9,6 @@ import (
 	"go/token"
 	"io/ioutil"
 	"os"
-	"reflect"
 )
 
 // ./go ast|tokens <filename>
@@ -61,12 +60,9 @@ func main() {
 				panic(err)
 			}
 
-			ast.Fprint(os.Stdout, fset, file, func(name string, value reflect.Value) bool {
-				if ast.NotNilFilter(name, value) {
-					return value.Type().String() != "*ast.Object"
-				}
-				return false
-			})
+			if err := ast.Fprint(os.Stdout, fset, file, nil); err != nil {
+				panic(err)
+			}
 		}
 	}
 }
