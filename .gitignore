@@ -1,4 +1,3 @@
 .repositories/
-.tests/
-/go/go
+/tests/go-cli/go-cli
 /target/

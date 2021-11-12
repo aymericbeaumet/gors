@@ -8,9 +8,8 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```
 
 ```
-make build
-make dev
-make dev-last
+ulimit -n 4096
+make lint test
 ```
 
 ## TODO
