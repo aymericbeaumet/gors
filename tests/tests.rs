@@ -36,18 +36,18 @@ fn run(command: &str) {
             )
         };
 
-    println!("DEV={}", is_dev);
+    println!("| dev mode? {}", is_dev);
 
     let root = env::var("CARGO_MANIFEST_DIR").unwrap();
     env::set_current_dir(Path::new(&root)).unwrap();
 
-    println!("Updating git submodules...");
+    println!("| updating git submodules...");
     exec("git", &["submodule", "update", "--init"]).unwrap();
 
-    println!("Building the Rust binary... ({:?})", rust_build_flags);
+    println!("| building the Rust binary... ({:?})", rust_build_flags);
     exec("cargo", &rust_build_flags).unwrap();
 
-    println!("Finding go files...");
+    println!("| finding go files...");
     let go_files: Vec<_> = glob(go_pattern)
         .unwrap()
         .map(|entry| entry.unwrap().to_str().unwrap().to_owned())
@@ -56,7 +56,7 @@ fn run(command: &str) {
     let total = go_files.len();
     let chunk_size = (total / thread_count) + 1;
     println!(
-        "Starting {} thread(s) to test on {} go files in chunks of {}",
+        "| starting {} thread(s) to test on {} go files in chunks of {}",
         thread_count, total, chunk_size,
     );
 
@@ -64,11 +64,19 @@ fn run(command: &str) {
         go_files.chunks(chunk_size).for_each(|go_files| {
             scope.spawn(move |_| {
                 for go_file in go_files {
+                    if is_dev {
+                        println!("> {}", go_file);
+                    }
+
                     match exec(go_bin, &[command, go_file]) {
                         Ok(go_output) => {
                             let rust_output = exec(rust_bin, &[command, go_file]).unwrap();
                             if go_output.stdout != rust_output.stdout {
-                                panic!("Rust/Go outputs diff on: {:?}", go_file)
+                                if is_dev {
+                                    // git diff
+                                } else {
+                                    panic!("Rust/Go outputs diff on: {:?}", go_file)
+                                }
                             }
                         }
                         Err(err) => println!("Skipping file: {}, because {:?}", go_file, err),
