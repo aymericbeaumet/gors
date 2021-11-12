@@ -1,9 +1,8 @@
 use crossbeam::thread;
+use glob::glob;
 use std::env;
 use std::path::Path;
 use std::process::{Command, Output};
-
-use glob::glob;
 
 #[test]
 fn test_lexer() {
@@ -26,7 +25,7 @@ fn test_lexer() {
     let total = go_files.len();
     let chunk_size = (total / parallelism) + 1;
     println!(
-        "Testing on {} go files in chunk of {} (parallelism={})",
+        "Testing on {} go files in chunks of {} (parallelism={})",
         total, chunk_size, parallelism,
     );
 
