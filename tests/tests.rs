@@ -21,12 +21,12 @@ fn test_lexer() {
         .map(|entry| entry.unwrap().to_str().unwrap().to_owned())
         .collect();
 
-    let parallelism = 8 * num_cpus::get();
+    let thread_count = 8 * num_cpus::get();
     let total = go_files.len();
-    let chunk_size = (total / parallelism) + 1;
+    let chunk_size = (total / thread_count) + 1;
     println!(
-        "Testing on {} go files in chunks of {} (parallelism={})",
-        total, chunk_size, parallelism,
+        "Starting {} threads to test on {} go files in chunks of {}",
+        thread_count, total, chunk_size,
     );
 
     thread::scope(|scope| {

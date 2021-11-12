@@ -8,7 +8,7 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```
 
 ```
-ulimit -n 4096
+ulimit -n 8192
 make lint test
 ```
 
