@@ -17,7 +17,11 @@ crossbeam = "0.8.1"
 glob = "0.3.0"
 num_cpus = "1.13.0"
 
+[profile.dev]
+opt-level = 0
+
 [profile.release]
 codegen-units = 1
 lto = "fat"
+opt-level = 3
 panic = "abort"

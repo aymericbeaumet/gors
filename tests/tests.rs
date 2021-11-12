@@ -6,26 +6,57 @@ use std::process::{Command, Output};
 
 #[test]
 fn test_lexer() {
+    run("tokens");
+}
+
+#[test]
+fn test_parser() {
+    run("ast");
+}
+
+fn run(command: &str) {
+    let (is_dev, rust_build_flags, go_pattern, go_bin, rust_bin, thread_count) =
+        if env::var("DEV").unwrap_or(String::from("dev")) == "true" {
+            (
+                true,
+                vec!["build"],
+                "tests/files/**/*.go",
+                "tests/go-cli/go-cli",
+                "target/debug/gors",
+                1,
+            )
+        } else {
+            (
+                false,
+                vec!["build", "--release"],
+                ".repositories/**/*.go",
+                "tests/go-cli/go-cli",
+                "target/release/gors",
+                8 * num_cpus::get(),
+            )
+        };
+
+    println!("DEV={}", is_dev);
+
     let root = env::var("CARGO_MANIFEST_DIR").unwrap();
     env::set_current_dir(Path::new(&root)).unwrap();
 
     println!("Updating git submodules...");
     exec("git", &["submodule", "update", "--init"]).unwrap();
 
-    println!("Building the Rust binary...");
-    exec("cargo", &["build", "--release"]).unwrap();
+    println!("Building the Rust binary... ({:?})", rust_build_flags);
+    exec("cargo", &rust_build_flags).unwrap();
 
     println!("Finding go files...");
-    let go_files: Vec<_> = glob(".repositories/**/*.go")
+    let go_files: Vec<_> = glob(go_pattern)
         .unwrap()
         .map(|entry| entry.unwrap().to_str().unwrap().to_owned())
         .collect();
 
-    let thread_count = 8 * num_cpus::get();
     let total = go_files.len();
     let chunk_size = (total / thread_count) + 1;
     println!(
-        "Starting {} threads to test on {} go files in chunks of {}",
+        "Starting {} thread(s) to test on {} go files in chunks of {}",
         thread_count, total, chunk_size,
     );
 
@@ -33,10 +64,9 @@ fn test_lexer() {
         go_files.chunks(chunk_size).for_each(|go_files| {
             scope.spawn(move |_| {
                 for go_file in go_files {
-                    match exec("./tests/go-cli/go-cli", &["tokens", go_file]) {
+                    match exec(go_bin, &[command, go_file]) {
                         Ok(go_output) => {
-                            let rust_output =
-                                exec("./target/release/gors", &["tokens", go_file]).unwrap();
+                            let rust_output = exec(rust_bin, &[command, go_file]).unwrap();
                             if go_output.stdout != rust_output.stdout {
                                 panic!("Rust/Go outputs diff on: {:?}", go_file)
                             }
