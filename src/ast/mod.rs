@@ -14,7 +14,15 @@ pub struct CommentGroup {
 }
 
 pub enum Decl<'a> {
+    FuncDecl(FuncDecl<'a>),
     GenDecl(GenDecl<'a>),
+}
+
+// https://pkg.go.dev/go/ast#FieldList
+pub struct FieldList {
+    //Opening token.Pos // position of opening parenthesis/brace, if any
+//List    []*Field  // field list; or nil
+//Closing token.Pos // position of closing parenthesis/brace, if any
 }
 
 // https://pkg.go.dev/go/ast#File
@@ -22,11 +30,27 @@ pub struct File<'a> {
     pub doc: Option<CommentGroup>,   // associated documentation; or nil
     pub package: Position<'a>,       // position of "package" keyword
     pub name: Ident<'a>,             // package name
-    pub decls: Vec<GenDecl<'a>>,     // top-level declarations; or nil
+    pub decls: Vec<Decl<'a>>,        // top-level declarations; or nil
     pub scope: Option<Scope>,        // package scope (this file only)
     pub imports: Vec<ImportSpec>,    // imports in this file
     pub unresolved: Vec<Ident<'a>>,  // unresolved identifiers in this file
     pub comments: Vec<CommentGroup>, // list of all comments in the source file
+}
+
+// https://pkg.go.dev/go/ast#FuncDecl
+pub struct FuncDecl<'a> {
+    //doc  *CommentGroup // associated documentation; or nil
+    //recv *FieldList    // receiver (methods); or nil (functions)
+    pub name: Ident<'a>, // function/method name
+    pub type_: FuncType, // function signature: type and value parameters, results, and position of "func" keyword
+                         //body *BlockStmt    // function body; or nil for external (non-Go) function
+}
+
+// https://pkg.go.dev/go/ast#FuncType
+pub struct FuncType {
+    //Func    token.Pos  // position of "func" keyword (token.NoPos if there is no "func")
+    pub params: FieldList, // (incoming) parameters; non-nil
+                           //results: FieldList, // (outgoing) results; or nil
 }
 
 // https://pkg.go.dev/go/ast#GenDecl

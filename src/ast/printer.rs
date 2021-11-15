@@ -100,14 +100,17 @@ impl<W: Write, T: Printable<W>> Printable<W> for Vec<T> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            p.write("nil")?;
-            p.newline()?;
+            write!(p.w, "[]ast.Decl (len = {})", self.len())?;
+            p.open_bracket()?;
+            p.close_bracket()?;
         }
         Ok(())
     }
 }
 
 impl<W: Write> Printable<W> for ast::CommentGroup {}
+
+impl<W: Write> Printable<W> for ast::Decl<'_> {}
 
 impl<W: Write> Printable<W> for ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {

@@ -39,7 +39,7 @@ struct Ast {
 
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let file = parser::parse_file(&cmd.filepath, &buffer)?;
+    let file = parser::parse_file(&cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
     let mut stdout = std::io::stdout();
 
     ast::fprint(&mut stdout, &file)?;

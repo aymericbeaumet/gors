@@ -6,31 +6,33 @@ use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug)]
-pub enum ParserError {
-    UnexpectedToken,
+pub enum ParserError<'a> {
+    UnexpectedToken((Position<'a>, Token, &'a str)),
+    UnexpectedEndOfFile,
     ScannerError(ScannerError),
 }
 
-impl std::error::Error for ParserError {}
+impl<'a> std::error::Error for ParserError<'a> {}
 
-impl From<ScannerError> for ParserError {
+impl<'a> From<ScannerError> for ParserError<'a> {
     fn from(e: ScannerError) -> Self {
         Self::ScannerError(e)
     }
 }
 
-pub type ParserResult<T> = Result<T, ParserError>;
+pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
 
-impl fmt::Display for ParserError {
+impl<'a> fmt::Display for ParserError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "scanner error: {:?}", self)
     }
 }
 
-pub fn parse_file<'a>(filepath: &'a str, buffer: &'a str) -> ParserResult<ast::File<'a>> {
-    let mut s = Scanner::new(filepath, buffer);
+pub fn parse_file<'a>(filepath: &'a str, buffer: &'a str) -> ParserResult<'a, ast::File<'a>> {
+    let s = Scanner::new(filepath, buffer);
     let mut p = Parser::new(s);
-    p.parse_file()
+    p.next()?;
+    p.source_file()
 }
 
 struct Parser<'a> {
@@ -46,72 +48,150 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // https://golang.org/ref/spec#Source_file_organization
-    //
     // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     // PackageClause = "package" PackageName .
     // PackageName   = identifier .
-    fn parse_file(&mut self) -> ParserResult<ast::File<'a>> {
-        self.next()?;
-
+    fn source_file(&mut self) -> ParserResult<'a, ast::File<'a>> {
         let package = self.expect(Token::PACKAGE)?;
         self.next()?;
 
-        let package_name = self.expect(Token::IDENT)?;
-        self.next()?;
+        let package_name = self.identifier()?;
 
         self.expect(Token::SEMICOLON)?;
+        self.next()?;
+
+        let imports = vec_until(|| match self.import_decl() {
+            Ok(Some(out)) => {
+                self.expect(Token::SEMICOLON)?;
+                self.next()?;
+                Ok(Some(out))
+            }
+            out => out,
+        })?;
+
+        let decls = vec_until(|| match self.top_level_decl() {
+            Ok(Some(out)) => {
+                self.expect(Token::SEMICOLON)?;
+                self.next()?;
+                Ok(Some(out))
+            }
+            out => out,
+        })?;
+
+        self.expect(Token::EOF)?;
 
         Ok(ast::File {
             doc: None,
             package: package.0,
-            name: ast::Ident {
-                name_pos: package_name.0,
-                name: package_name.2,
-                obj: None,
-            },
-            decls: vec![],
+            name: package_name,
+            decls,
             scope: Some(ast::Scope {
                 outer: Box::new(None),
                 objects: HashMap::new(),
             }),
-            imports: vec![],
+            imports,
             unresolved: vec![],
             comments: vec![],
         })
     }
 
-    // https://golang.org/ref/spec#Import_declarations
-    //
+    fn identifier(&mut self) -> ParserResult<'a, ast::Ident<'a>> {
+        let ident = self.expect(Token::IDENT)?;
+        self.next()?;
+
+        Ok(ast::Ident {
+            name_pos: ident.0,
+            name: ident.2,
+            obj: None,
+        })
+    }
+
     // ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
     // ImportSpec       = [ "." | PackageName ] ImportPath .
     // ImportPath       = string_lit .
-    fn parse_import_decls(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
-        let mut out = vec![];
-
-        Ok(out)
+    fn import_decl(&mut self) -> ParserResult<'a, Option<ast::ImportSpec>> {
+        Ok(None)
     }
 
-    // https://golang.org/ref/spec#Declarations_and_scope
     // TopLevelDecl  = Declaration | FunctionDecl | MethodDecl .
-    // Declaration   = ConstDecl | TypeDecl | VarDecl .
-    fn parse_top_level_decls(s: &mut Scanner<'a>) -> ParserResult<Vec<ast::Decl<'a>>> {
-        let mut out = vec![];
+    fn top_level_decl(&mut self) -> ParserResult<'a, Option<ast::Decl<'a>>> {
+        if let Some(func_decl) = self.function_decl()? {
+            return Ok(Some(ast::Decl::FuncDecl(func_decl)));
+        }
 
-        Ok(out)
+        Ok(None)
     }
 
-    fn expect(&self, expected: Token) -> Result<(Position<'a>, Token, &'a str), ParserError> {
+    // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
+    // FunctionName = identifier .
+    fn function_decl(&mut self) -> ParserResult<'a, Option<ast::FuncDecl<'a>>> {
+        if self.expect(Token::FUNC).is_err() {
+            return Ok(None);
+        }
+        self.next()?;
+
+        let function_name = self.identifier()?;
+        let signature = self.signature()?;
+
+        self.expect(Token::LBRACE)?;
+        self.next()?;
+
+        self.expect(Token::RBRACE)?;
+        self.next()?;
+
+        Ok(Some(ast::FuncDecl {
+            name: function_name,
+            type_: signature,
+        }))
+    }
+
+    // Signature    = Parameters [ Result ] .
+    // Result       = Parameters | Type .
+    fn signature(&mut self) -> ParserResult<'a, ast::FuncType> {
+        Ok(ast::FuncType {
+            params: self.parameters()?,
+        })
+    }
+
+    // Parameters     = "(" [ ParameterList [ "," ] ] ")" .
+    // ParameterList  = ParameterDecl { "," ParameterDecl } .
+    // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
+    fn parameters(&mut self) -> ParserResult<'a, ast::FieldList> {
+        self.expect(Token::LPAREN)?;
+        self.next()?;
+
+        self.expect(Token::RPAREN)?;
+        self.next()?;
+
+        Ok(ast::FieldList {})
+    }
+
+    // FunctionBody = Block .
+
+    fn expect(&self, expected: Token) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
         if let Some(current) = self.current {
             if current.1 == expected {
                 return Ok(current);
             }
+            return Err(ParserError::UnexpectedToken(current));
         }
-        Err(ParserError::UnexpectedToken)
+        Err(ParserError::UnexpectedEndOfFile)
     }
 
-    fn next(&mut self) -> Result<(), ParserError> {
+    fn next(&mut self) -> ParserResult<'a, ()> {
         self.current = Some(self.scanner.scan()?);
         Ok(())
     }
+}
+
+fn vec_until<'a, T>(
+    mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
+) -> ParserResult<'a, Vec<T>> {
+    let mut out = vec![];
+
+    while let Some(v) = func()? {
+        out.push(v);
+    }
+
+    Ok(out)
 }
