@@ -7,6 +7,7 @@ use std::env;
 use std::fmt;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 #[test]
 fn test_lexer() {
@@ -20,7 +21,7 @@ fn test_parser() {
 
 fn run(command: &str) {
     let (is_dev, go_patterns, rust_build_flags, rust_bin, go_bin, thread_count) =
-        if env::var("DEV").unwrap_or(String::from("false")) == "true" {
+        if std::option_env!("DEV").unwrap_or("false") == "true" {
             (
                 true,
                 vec!["tests/files/**/*.go"],
@@ -36,7 +37,7 @@ fn run(command: &str) {
                 vec!["build", "--release"],
                 "target/release/gors",
                 "tests/go-cli/go-cli",
-                8 * num_cpus::get(),
+                2 * num_cpus::get(),
             )
         };
 
@@ -74,16 +75,24 @@ fn run(command: &str) {
         thread_count, total, chunk_size,
     );
 
-    thread::scope(|scope| {
+    let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
+        let mut handles = vec![];
+
         go_files.chunks(chunk_size).for_each(|go_files| {
-            scope.spawn(move |_| {
+            handles.push(scope.spawn(move |_| {
+                let mut go_elapsed = Duration::new(0, 0);
+                let mut rust_elapsed = Duration::new(0, 0);
+
                 for go_file in go_files {
                     if is_dev {
                         println!("> {}", go_file);
                     }
 
-                    let go_output = exec(go_bin, &[command, go_file]).unwrap();
-                    let rust_output = exec(rust_bin, &[command, go_file]).unwrap();
+                    let (go_output, elapsed) = exec(go_bin, &[command, go_file]).unwrap();
+                    go_elapsed += elapsed;
+
+                    let (rust_output, elapsed) = exec(rust_bin, &[command, go_file]).unwrap();
+                    rust_elapsed += elapsed;
 
                     if go_output.stdout != rust_output.stdout {
                         print_diff(
@@ -93,20 +102,41 @@ fn run(command: &str) {
                         std::process::exit(1);
                     }
                 }
-            });
-        })
+
+                (go_elapsed, rust_elapsed)
+            }));
+        });
+
+        handles
+            .into_iter()
+            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, handle| {
+                let (g, r) = handle.join().unwrap();
+                (acc.0 + g, acc.1 + r)
+            })
     })
     .unwrap();
+
+    println!("");
+    println!("Total Elapsed Time:");
+    println!("- Go: {:?}", go_elapsed);
+    println!(
+        "- Rust: {:?} ({:+.2}%)",
+        rust_elapsed,
+        ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
+    );
+    println!("");
 }
 
-fn exec(bin: &str, args: &[&str]) -> Result<Output, Box<dyn std::error::Error>> {
+fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::error::Error>> {
+    let before = std::time::Instant::now();
     let output = Command::new(bin).args(args).output()?;
+    let after = std::time::Instant::now();
 
     if !output.status.success() {
         return Err(format!("{} {:?} exited with status {:?}", bin, args, output.status).into());
     }
 
-    Ok(output)
+    Ok((output, after.checked_duration_since(before).unwrap()))
 }
 
 // Some files cannot successfully be parsed by the Go compiler. So we exclude them from the
