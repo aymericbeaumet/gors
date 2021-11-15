@@ -21,11 +21,11 @@ test-parser: go-cli
 
 .PHONY: dev-lexer
 dev-lexer: go-cli
-	FAST_BUILD=true LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test lexer -- $(CARGO_TEST_BIN_ARGS)
+	watchexec --restart --clear 'FAST_BUILD=true LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test lexer -- $(CARGO_TEST_BIN_ARGS)'
 
 .PHONY: dev-parser
 dev-parser: go-cli
-	FAST_BUILD=true LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test parser -- $(CARGO_TEST_BIN_ARGS)
+	watchexec --restart --clear 'FAST_BUILD=true LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test parser -- $(CARGO_TEST_BIN_ARGS)'
 
 .PHONY: go-cli
 go-cli: tests/go-cli/go-cli

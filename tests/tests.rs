@@ -140,7 +140,10 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     let after = std::time::Instant::now();
 
     if !output.status.success() {
-        return Err(format!("{} {:?} exited with status {:?}", bin, args, output.status).into());
+        eprintln!("STATUS: {:?}", output.status.code().unwrap());
+        eprintln!("STDOUT: {:?}", std::str::from_utf8(&output.stdout).unwrap());
+        eprintln!("STDERR: {:?}", std::str::from_utf8(&output.stderr).unwrap());
+        return Err(format!("{} {:?} failed", bin, args,).into());
     }
 
     Ok((output, after.checked_duration_since(before).unwrap()))
