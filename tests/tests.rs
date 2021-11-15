@@ -43,7 +43,7 @@ fn run(command: &str) {
         }
     } else {
         Opts {
-            is_dev: true,
+            is_dev: false,
             print_files: false,
             input_patterns: &["tests/files/**/*.go", ".repositories/**/*.go"],
             rust_build_flags: &["build", "--release"],
