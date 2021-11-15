@@ -22,29 +22,32 @@ fn test_parser() {
 fn run(command: &str) {
     #[derive(Debug)]
     struct Opts<'a> {
-        print_files: bool,
-        input_patterns: &'a [&'a str],
-        rust_build_flags: &'a [&'a str],
-        rust_bin: &'a str,
         go_bin: &'a str,
+        input_patterns: &'a [&'a str],
+        print_files: bool,
+        rust_bin: &'a str,
+        rust_build_flags: &'a [&'a str],
         thread_count: usize,
     }
 
     let opts = Opts {
-        print_files: std::option_env!("VERBOSE").unwrap_or("false") == "true",
+        go_bin: "tests/go-cli/go-cli",
         input_patterns: match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => &["tests/files/**/*.go"],
             _ => &["tests/files/**/*.go", ".repositories/**/*.go"],
         },
-        rust_build_flags: match std::option_env!("FAST_BUILD") {
-            Some("true") => &["build"],
-            _ => &["build", "--release"],
+        print_files: match std::option_env!("PRINT_FILES") {
+            Some("true") => true,
+            _ => false,
         },
         rust_bin: match std::option_env!("FAST_BUILD") {
             Some("true") => "target/debug/gors",
             _ => "target/release/gors",
         },
-        go_bin: "tests/go-cli/go-cli",
+        rust_build_flags: match std::option_env!("FAST_BUILD") {
+            Some("true") => &["build"],
+            _ => &["build", "--release"],
+        },
         thread_count: match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => 1,
             _ => 2 * num_cpus::get(),
