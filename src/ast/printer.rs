@@ -80,6 +80,33 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
+impl<W: Write, T: Printable<W>> Printable<W> for std::collections::HashMap<String, T> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("map[string]*ast.Object (len = 0) {}")?;
+        } else {
+            p.write("map[string]*ast.Object (len = 0) {}")?;
+        }
+
+        p.newline()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write, T: Printable<W>> Printable<W> for Vec<T> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            p.write("nil")?;
+            p.newline()?;
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::CommentGroup {}
 
 impl<W: Write> Printable<W> for ast::File<'_> {
@@ -100,11 +127,32 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         p.write("Name: ")?;
         self.name.print(p)?;
 
+        p.prefix()?;
+        p.write("Decls: ")?;
+        self.decls.print(p)?;
+
+        p.prefix()?;
+        p.write("Scope: ")?;
+        self.scope.print(p)?;
+
+        p.prefix()?;
+        p.write("Imports: ")?;
+        self.imports.print(p)?;
+
+        p.prefix()?;
+        p.write("Unresolved: ")?;
+        self.unresolved.print(p)?;
+
+        p.prefix()?;
+        p.write("Comments: ")?;
+        self.comments.print(p)?;
+
         p.close_bracket()?;
 
         Ok(())
     }
 }
+impl<W: Write> Printable<W> for ast::GenDecl<'_> {}
 
 impl<W: Write> Printable<W> for ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
@@ -129,7 +177,28 @@ impl<W: Write> Printable<W> for ast::Ident<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::ImportSpec {}
+
 impl<W: Write> Printable<W> for ast::Object {}
+
+impl<W: Write> Printable<W> for ast::Scope {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.Scope")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Outer: ")?;
+        self.outer.print(p)?;
+
+        p.prefix()?;
+        p.write("Objects: ")?;
+        self.objects.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
 
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {

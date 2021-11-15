@@ -2,6 +2,7 @@ use crate::ast;
 use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug)]
@@ -70,6 +71,13 @@ impl<'a> Parser<'a> {
                 obj: None,
             },
             decls: vec![],
+            scope: Some(ast::Scope {
+                outer: Box::new(None),
+                objects: HashMap::new(),
+            }),
+            imports: vec![],
+            unresolved: vec![],
+            comments: vec![],
         })
     }
 
