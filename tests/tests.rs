@@ -76,41 +76,33 @@ fn run(command: &str) {
     );
 
     let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
-        let mut handles = vec![];
+        go_files
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(|_| {
+                    chunk.iter().map(|go_file| {
+                        if is_dev {
+                            println!("> {}", go_file);
+                        }
 
-        go_files.chunks(chunk_size).for_each(|go_files| {
-            handles.push(scope.spawn(move |_| {
-                let mut go_elapsed = Duration::new(0, 0);
-                let mut rust_elapsed = Duration::new(0, 0);
+                        let (go_output, go_elapsed) = exec(go_bin, &[command, go_file]).unwrap();
+                        let (rust_output, rust_elapsed) =
+                            exec(rust_bin, &[command, go_file]).unwrap();
 
-                for go_file in go_files {
-                    if is_dev {
-                        println!("> {}", go_file);
-                    }
+                        if go_output.stdout != rust_output.stdout {
+                            print_diff(
+                                std::str::from_utf8(&go_output.stdout).unwrap(),
+                                std::str::from_utf8(&rust_output.stdout).unwrap(),
+                            );
+                            std::process::exit(1);
+                        }
 
-                    let (go_output, elapsed) = exec(go_bin, &[command, go_file]).unwrap();
-                    go_elapsed += elapsed;
-
-                    let (rust_output, elapsed) = exec(rust_bin, &[command, go_file]).unwrap();
-                    rust_elapsed += elapsed;
-
-                    if go_output.stdout != rust_output.stdout {
-                        print_diff(
-                            std::str::from_utf8(&go_output.stdout).unwrap(),
-                            std::str::from_utf8(&rust_output.stdout).unwrap(),
-                        );
-                        std::process::exit(1);
-                    }
-                }
-
-                (go_elapsed, rust_elapsed)
-            }));
-        });
-
-        handles
-            .into_iter()
-            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, handle| {
-                let (g, r) = handle.join().unwrap();
+                        (go_elapsed, rust_elapsed)
+                    })
+                })
+            })
+            .flat_map(|handle| handle.join().unwrap())
+            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, (g, r)| {
                 (acc.0 + g, acc.1 + r)
             })
     })
