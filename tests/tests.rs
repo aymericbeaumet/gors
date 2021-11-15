@@ -20,28 +20,39 @@ fn test_parser() {
 }
 
 fn run(command: &str) {
-    let (is_dev, go_patterns, rust_build_flags, rust_bin, go_bin, thread_count) =
-        if std::option_env!("DEV").unwrap_or("false") == "true" {
-            (
-                true,
-                vec!["tests/files/**/*.go"],
-                vec!["build"],
-                "target/debug/gors",
-                "tests/go-cli/go-cli",
-                1,
-            )
-        } else {
-            (
-                false,
-                vec!["tests/files/**/*.go", ".repositories/**/*.go"],
-                vec!["build", "--release"],
-                "target/release/gors",
-                "tests/go-cli/go-cli",
-                2 * num_cpus::get(),
-            )
-        };
+    #[derive(Debug)]
+    struct Opts<'a> {
+        is_dev: bool,
+        print_files: bool,
+        input_patterns: &'a [&'a str],
+        rust_build_flags: &'a [&'a str],
+        rust_bin: &'a str,
+        go_bin: &'a str,
+        thread_count: usize,
+    }
 
-    println!("| dev mode? {}", is_dev);
+    let opts = if std::option_env!("DEV").unwrap_or("false") == "true" {
+        Opts {
+            is_dev: true,
+            print_files: true,
+            input_patterns: &["tests/files/**/*.go"],
+            rust_build_flags: &["build"],
+            rust_bin: "target/debug/gors",
+            go_bin: "tests/go-cli/go-cli",
+            thread_count: 1,
+        }
+    } else {
+        Opts {
+            is_dev: true,
+            print_files: false,
+            input_patterns: &["tests/files/**/*.go", ".repositories/**/*.go"],
+            rust_build_flags: &["build", "--release"],
+            rust_bin: "target/release/gors",
+            go_bin: "tests/go-cli/go-cli",
+            thread_count: 2 * num_cpus::get(),
+        }
+    };
+    println!("{:?}", opts);
 
     let root = env::var("CARGO_MANIFEST_DIR").unwrap();
     env::set_current_dir(Path::new(&root)).unwrap();
@@ -49,11 +60,12 @@ fn run(command: &str) {
     println!("| updating git submodules...");
     exec("git", &["submodule", "update", "--init"]).unwrap();
 
-    println!("| building the Rust binary... ({:?})", rust_build_flags);
-    exec("cargo", &rust_build_flags).unwrap();
+    println!("| building the Rust binary...");
+    exec("cargo", opts.rust_build_flags).unwrap();
 
     println!("| finding go files...");
-    let go_files: Vec<_> = go_patterns
+    let go_files: Vec<_> = opts
+        .input_patterns
         .iter()
         .flat_map(|pattern| {
             glob(pattern).unwrap().filter_map(|entry| {
@@ -67,42 +79,46 @@ fn run(command: &str) {
             })
         })
         .collect();
-
     let total = go_files.len();
-    let chunk_size = (total / thread_count) + 1;
-    println!(
-        "| starting {} thread(s) to test {} go files in chunks of {}",
-        thread_count, total, chunk_size,
-    );
+    println!("| found {} go files", total);
 
     let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
-        go_files
-            .chunks(chunk_size)
-            .map(|chunk| {
+        let handles: Vec<_> = go_files
+            .chunks((total / opts.thread_count) + 1)
+            .enumerate()
+            .map(|(i, chunk)| {
+                println!("| starting thread #{} (chunk_len={})", i, chunk.len());
                 scope.spawn(|_| {
-                    chunk.iter().map(|go_file| {
-                        if is_dev {
-                            println!("> {}", go_file);
-                        }
+                    chunk.iter().fold(
+                        (Duration::new(0, 0), Duration::new(0, 0)),
+                        |acc, go_file| {
+                            if opts.print_files {
+                                println!("> {}", go_file);
+                            }
 
-                        let args = &[command, go_file];
-                        let (go_output, go_elapsed) = exec(go_bin, args).unwrap();
-                        let (rust_output, rust_elapsed) = exec(rust_bin, args).unwrap();
+                            let args = &[command, go_file];
+                            let (go_output, go_elapsed) = exec(opts.go_bin, args).unwrap();
+                            let (rust_output, rust_elapsed) = exec(opts.rust_bin, args).unwrap();
 
-                        if go_output.stdout != rust_output.stdout {
-                            print_diff(
-                                std::str::from_utf8(&go_output.stdout).unwrap(),
-                                std::str::from_utf8(&rust_output.stdout).unwrap(),
-                            );
-                            std::process::exit(1);
-                        }
+                            if go_output.stdout != rust_output.stdout {
+                                print_diff(
+                                    std::str::from_utf8(&go_output.stdout).unwrap(),
+                                    std::str::from_utf8(&rust_output.stdout).unwrap(),
+                                );
+                                std::process::exit(1);
+                            }
 
-                        (go_elapsed, rust_elapsed)
-                    })
+                            (acc.0 + go_elapsed, acc.1 + rust_elapsed)
+                        },
+                    )
                 })
             })
-            .flat_map(|handle| handle.join().unwrap())
-            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, (g, r)| {
+            .collect();
+
+        handles
+            .into_iter()
+            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, handle| {
+                let (g, r) = handle.join().unwrap();
                 (acc.0 + g, acc.1 + r)
             })
     })
