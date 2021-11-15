@@ -85,9 +85,9 @@ fn run(command: &str) {
                             println!("> {}", go_file);
                         }
 
-                        let (go_output, go_elapsed) = exec(go_bin, &[command, go_file]).unwrap();
-                        let (rust_output, rust_elapsed) =
-                            exec(rust_bin, &[command, go_file]).unwrap();
+                        let args = &[command, go_file];
+                        let (go_output, go_elapsed) = exec(go_bin, args).unwrap();
+                        let (rust_output, rust_elapsed) = exec(rust_bin, args).unwrap();
 
                         if go_output.stdout != rust_output.stdout {
                             print_diff(
