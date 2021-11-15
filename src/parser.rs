@@ -107,7 +107,7 @@ impl<'a> Parser<'a> {
                 return Ok(current);
             }
         }
-        return Err(ParserError::UnexpectedToken);
+        Err(ParserError::UnexpectedToken)
     }
 
     fn next(&mut self) -> Result<(), ParserError> {
