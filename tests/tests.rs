@@ -1,7 +1,10 @@
+use console::{style, Style};
 use crossbeam::thread;
 use glob::glob;
 use phf::{phf_set, Set};
+use similar::{ChangeTag, TextDiff};
 use std::env;
+use std::fmt;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -17,7 +20,7 @@ fn test_parser() {
 
 fn run(command: &str) {
     let (is_dev, go_patterns, rust_build_flags, rust_bin, go_bin, thread_count) =
-        if env::var("DEV").unwrap_or(String::from("dev")) == "true" {
+        if env::var("DEV").unwrap_or(String::from("false")) == "true" {
             (
                 true,
                 vec!["tests/files/**/*.go"],
@@ -84,7 +87,11 @@ fn run(command: &str) {
 
                     if go_output.stdout != rust_output.stdout {
                         if is_dev {
-                            // git diff
+                            print_diff(
+                                std::str::from_utf8(&go_output.stdout).unwrap(),
+                                std::str::from_utf8(&rust_output.stdout).unwrap(),
+                            );
+                            std::process::exit(1);
                         } else {
                             panic!("Rust/Go outputs diff on: {:?}", go_file)
                         }
@@ -157,3 +164,51 @@ static IGNORE_FILES: Set<&'static str> = phf_set! {
     ".repositories/github.com/golang/go/test/typeparam/smallest.go",
     ".repositories/github.com/golang/go/test/typeparam/typelist.go",
 };
+
+// https://github.com/mitsuhiko/similar/blob/main/examples/terminal-inline.rs
+
+struct Line(Option<usize>);
+
+impl fmt::Display for Line {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            None => write!(f, "    "),
+            Some(idx) => write!(f, "{:<4}", idx + 1),
+        }
+    }
+}
+
+fn print_diff(old: &str, new: &str) {
+    let diff = TextDiff::from_lines(old, new);
+
+    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        if idx > 0 {
+            println!("{:-^1$}", "-", 80);
+        }
+        for op in group {
+            for change in diff.iter_inline_changes(op) {
+                let (sign, s) = match change.tag() {
+                    ChangeTag::Delete => ("-", Style::new().red()),
+                    ChangeTag::Insert => ("+", Style::new().green()),
+                    ChangeTag::Equal => (" ", Style::new().dim()),
+                };
+                print!(
+                    "{}{} |{}",
+                    style(Line(change.old_index())).dim(),
+                    style(Line(change.new_index())).dim(),
+                    s.apply_to(sign).bold(),
+                );
+                for (emphasized, value) in change.iter_strings_lossy() {
+                    if emphasized {
+                        print!("{}", s.apply_to(value).underlined().on_black());
+                    } else {
+                        print!("{}", s.apply_to(value));
+                    }
+                }
+                if change.missing_newline() {
+                    println!();
+                }
+            }
+        }
+    }
+}

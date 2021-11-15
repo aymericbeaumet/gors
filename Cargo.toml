@@ -13,9 +13,12 @@ serde_json = "1.0.68"
 unicode-general-category = "0.4.0"
 
 [dev-dependencies]
+console = "0.15.0"
 crossbeam = "0.8.1"
 glob = "0.3.0"
 num_cpus = "1.13.0"
+pretty_assertions = "1.0.0"
+similar = { version = "2.1.0", features = ["inline"] }
 
 [profile.dev]
 opt-level = 0
