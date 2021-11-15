@@ -86,15 +86,11 @@ fn run(command: &str) {
                     let rust_output = exec(rust_bin, &[command, go_file]).unwrap();
 
                     if go_output.stdout != rust_output.stdout {
-                        if is_dev {
-                            print_diff(
-                                std::str::from_utf8(&go_output.stdout).unwrap(),
-                                std::str::from_utf8(&rust_output.stdout).unwrap(),
-                            );
-                            std::process::exit(1);
-                        } else {
-                            panic!("Rust/Go outputs diff on: {:?}", go_file)
-                        }
+                        print_diff(
+                            std::str::from_utf8(&go_output.stdout).unwrap(),
+                            std::str::from_utf8(&rust_output.stdout).unwrap(),
+                        );
+                        std::process::exit(1);
                     }
                 }
             });
