@@ -53,7 +53,7 @@ fn run(command: &str) {
             _ => 2 * num_cpus::get(),
         },
     };
-    println!("{:?}", opts);
+    println!("\n| running the tests with {:#?}", opts);
 
     let root = env::var("CARGO_MANIFEST_DIR").unwrap();
     env::set_current_dir(Path::new(&root)).unwrap();
@@ -125,15 +125,13 @@ fn run(command: &str) {
     })
     .unwrap();
 
-    println!("");
-    println!("Total Elapsed Time:");
-    println!("- Go: {:?}", go_elapsed);
+    println!("| total elapsed time:");
+    println!("|   go:   {:?}", go_elapsed);
     println!(
-        "- Rust: {:?} ({:+.2}%)",
+        "|   rust: {:?} ({:+.2}%)",
         rust_elapsed,
         ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
     );
-    println!("");
 }
 
 fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::error::Error>> {
