@@ -80,27 +80,71 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write, T: Printable<W>> Printable<W> for std::collections::HashMap<String, T> {
+impl<W: Write> Printable<W> for std::collections::HashMap<String, ast::Object> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if self.is_empty() {
-            p.write("map[string]*ast.Object (len = 0) {}")?;
-        } else {
-            p.write("map[string]*ast.Object (len = 0) {}")?;
-        }
-
+        p.write("map[string]*ast.Object (len = 0) {}")?;
         p.newline()?;
 
         Ok(())
     }
 }
 
-impl<W: Write, T: Printable<W>> Printable<W> for Vec<T> {
+impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.CommentGroup (len = {})", self.len())?;
+            p.open_bracket()?;
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
             p.newline()?;
         } else {
             write!(p.w, "[]ast.Decl (len = {})", self.len())?;
+            p.open_bracket()?;
+            for (i, decl) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                decl.print(p)?;
+            }
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::FieldList {}
+
+impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.Ident (len = {})", self.len())?;
+            p.open_bracket()?;
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for Vec<ast::ImportSpec> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.ImportSpec (len = {})", self.len())?;
             p.open_bracket()?;
             p.close_bracket()?;
         }
@@ -110,7 +154,31 @@ impl<W: Write, T: Printable<W>> Printable<W> for Vec<T> {
 
 impl<W: Write> Printable<W> for ast::CommentGroup {}
 
-impl<W: Write> Printable<W> for ast::Decl<'_> {}
+impl<W: Write> Printable<W> for ast::Decl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::Decl::FuncDecl(decl) => {
+                p.write("*ast.FuncDecl")?;
+                p.open_bracket()?;
+
+                p.prefix()?;
+                p.write("Doc: ")?;
+                decl.doc.print(p)?;
+
+                p.prefix()?;
+                p.write("Recv: ")?;
+                decl.recv.print(p)?;
+
+                p.prefix()?;
+                p.write("Name: ")?;
+                decl.name.print(p)?;
+
+                p.close_bracket()?;
+            }
+        }
+        Ok(())
+    }
+}
 
 impl<W: Write> Printable<W> for ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
@@ -155,7 +223,6 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         Ok(())
     }
 }
-impl<W: Write> Printable<W> for ast::GenDecl<'_> {}
 
 impl<W: Write> Printable<W> for ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {

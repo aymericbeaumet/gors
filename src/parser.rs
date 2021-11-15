@@ -140,6 +140,8 @@ impl<'a> Parser<'a> {
         self.next()?;
 
         Ok(Some(ast::FuncDecl {
+            doc: None,
+            recv: None,
             name: function_name,
             type_: signature,
         }))

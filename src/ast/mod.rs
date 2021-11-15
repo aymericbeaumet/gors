@@ -1,6 +1,6 @@
 mod printer;
 
-use crate::token::{Position, Token};
+use crate::token::Position;
 use std::collections::HashMap;
 
 pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +15,6 @@ pub struct CommentGroup {
 
 pub enum Decl<'a> {
     FuncDecl(FuncDecl<'a>),
-    GenDecl(GenDecl<'a>),
 }
 
 // https://pkg.go.dev/go/ast#FieldList
@@ -39,9 +38,9 @@ pub struct File<'a> {
 
 // https://pkg.go.dev/go/ast#FuncDecl
 pub struct FuncDecl<'a> {
-    //doc  *CommentGroup // associated documentation; or nil
-    //recv *FieldList    // receiver (methods); or nil (functions)
-    pub name: Ident<'a>, // function/method name
+    pub doc: Option<CommentGroup>, // associated documentation; or nil
+    pub recv: Option<FieldList>,   // receiver (methods); or nil (functions)
+    pub name: Ident<'a>,           // function/method name
     pub type_: FuncType, // function signature: type and value parameters, results, and position of "func" keyword
                          //body *BlockStmt    // function body; or nil for external (non-Go) function
 }
@@ -51,16 +50,6 @@ pub struct FuncType {
     //Func    token.Pos  // position of "func" keyword (token.NoPos if there is no "func")
     pub params: FieldList, // (incoming) parameters; non-nil
                            //results: FieldList, // (outgoing) results; or nil
-}
-
-// https://pkg.go.dev/go/ast#GenDecl
-pub struct GenDecl<'a> {
-    pub doc: Option<CommentGroup>, // associated documentation; or nil
-    pub tok_pos: Position<'a>,     // position of Tok
-    pub tok: Token,                // IMPORT, CONST, TYPE, or VAR
-    pub lparen: Position<'a>,      // position of '(', if any
-    //Specs  []Spec
-    pub rparen: Position<'a>, // position of ')', if any
 }
 
 // https://pkg.go.dev/go/ast#Ident
