@@ -98,7 +98,6 @@ impl<'a> Parser<'a> {
     fn identifier(&mut self) -> ParserResult<'a, ast::Ident<'a>> {
         let ident = self.expect(Token::IDENT)?;
         self.next()?;
-
         Ok(ast::Ident {
             name_pos: ident.0,
             name: ident.2,
@@ -118,57 +117,77 @@ impl<'a> Parser<'a> {
         if let Some(func_decl) = self.function_decl()? {
             return Ok(Some(ast::Decl::FuncDecl(func_decl)));
         }
-
         Ok(None)
     }
 
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
     // FunctionName = identifier .
+    // Signature    = Parameters [ Result ] .
+    // Result       = Parameters | Type .
     fn function_decl(&mut self) -> ParserResult<'a, Option<ast::FuncDecl<'a>>> {
-        if self.expect(Token::FUNC).is_err() {
+        let func = self.expect(Token::FUNC);
+        if func.is_err() {
             return Ok(None);
         }
+        let func = func.unwrap();
         self.next()?;
 
-        let function_name = self.identifier()?;
-        let signature = self.signature()?;
+        let mut function_name = self.identifier()?;
+        function_name.obj = Some(ast::Object {
+            kind: ast::ObjKind::Fun,
+            name: function_name.name,
+            decl: None,
+            data: None,
+            type_: None,
+        });
 
-        self.expect(Token::LBRACE)?;
-        self.next()?;
+        let signature = ast::FuncType {
+            func: func.0,
+            params: self.parameters()?,
+        };
 
-        self.expect(Token::RBRACE)?;
-        self.next()?;
+        let function_body = self.function_body()?;
 
         Ok(Some(ast::FuncDecl {
             doc: None,
             recv: None,
             name: function_name,
             type_: signature,
+            body: function_body,
         }))
-    }
-
-    // Signature    = Parameters [ Result ] .
-    // Result       = Parameters | Type .
-    fn signature(&mut self) -> ParserResult<'a, ast::FuncType> {
-        Ok(ast::FuncType {
-            params: self.parameters()?,
-        })
     }
 
     // Parameters     = "(" [ ParameterList [ "," ] ] ")" .
     // ParameterList  = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
-    fn parameters(&mut self) -> ParserResult<'a, ast::FieldList> {
-        self.expect(Token::LPAREN)?;
+    fn parameters(&mut self) -> ParserResult<'a, ast::FieldList<'a>> {
+        let lparen = self.expect(Token::LPAREN)?;
         self.next()?;
 
-        self.expect(Token::RPAREN)?;
+        let rparen = self.expect(Token::RPAREN)?;
         self.next()?;
 
-        Ok(ast::FieldList {})
+        Ok(ast::FieldList {
+            opening: lparen.0,
+            list: vec![],
+            closing: rparen.0,
+        })
     }
 
     // FunctionBody = Block .
+    fn function_body(&mut self) -> ParserResult<'a, Option<ast::BlockStmt<'a>>> {
+        let lbrace = self.expect(Token::LBRACE)?;
+        self.next()?;
+
+        let rbrace = self.expect(Token::RBRACE)?;
+        self.next()?;
+
+        Ok(Some(ast::BlockStmt {
+            lbrace: lbrace.0,
+            list: vec![],
+            rbrace: rbrace.0,
+        }))
+    }
 
     fn expect(&self, expected: Token) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
         if let Some(current) = self.current {

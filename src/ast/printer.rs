@@ -34,7 +34,7 @@ impl<W: Write> Printer<W> {
 
     fn open_bracket(&mut self) -> std::io::Result<()> {
         self.depth += 1;
-        self.write(" {")?;
+        self.write("{")?;
         self.newline()
     }
 
@@ -80,10 +80,17 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write> Printable<W> for std::collections::HashMap<String, ast::Object> {
+impl<W: Write> Printable<W> for std::collections::HashMap<String, ast::Object<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.write("map[string]*ast.Object (len = 0) {}")?;
-        p.newline()?;
+        if self.is_empty() {
+            p.write("map[string]*ast.Object (len = 0) {}")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "map[string]*ast.Object (len = {}) ", self.len())?;
+            p.open_bracket()?;
+
+            p.close_bracket()?;
+        }
 
         Ok(())
     }
@@ -95,7 +102,21 @@ impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.CommentGroup (len = {})", self.len())?;
+            write!(p.w, "[]ast.CommentGroup (len = {}) ", self.len())?;
+            p.open_bracket()?;
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for Vec<ast::Field> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.Field (len = {}) ", self.len())?;
             p.open_bracket()?;
             p.close_bracket()?;
         }
@@ -109,7 +130,7 @@ impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.Decl (len = {})", self.len())?;
+            write!(p.w, "[]ast.Decl (len = {}) ", self.len())?;
             p.open_bracket()?;
             for (i, decl) in self.iter().enumerate() {
                 p.prefix()?;
@@ -122,7 +143,28 @@ impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::FieldList {}
+impl<W: Write> Printable<W> for ast::FieldList<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.FieldList ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Opening: ")?;
+        self.opening.print(p)?;
+
+        p.prefix()?;
+        p.write("List: ")?;
+        self.list.print(p)?;
+
+        p.prefix()?;
+        p.write("Closing: ")?;
+        self.closing.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
 
 impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
@@ -130,7 +172,7 @@ impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.Ident (len = {})", self.len())?;
+            write!(p.w, "[]ast.Ident (len = {}) ", self.len())?;
             p.open_bracket()?;
             p.close_bracket()?;
         }
@@ -144,7 +186,7 @@ impl<W: Write> Printable<W> for Vec<ast::ImportSpec> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.ImportSpec (len = {})", self.len())?;
+            write!(p.w, "[]ast.ImportSpec (len = {}) ", self.len())?;
             p.open_bracket()?;
             p.close_bracket()?;
         }
@@ -154,11 +196,61 @@ impl<W: Write> Printable<W> for Vec<ast::ImportSpec> {
 
 impl<W: Write> Printable<W> for ast::CommentGroup {}
 
+impl<W: Write> Printable<W> for ast::Field {}
+
+impl<W: Write> Printable<W> for Vec<ast::Stmt> {}
+
+impl<W: Write> Printable<W> for ast::BlockStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.BlockStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Lbrace: ")?;
+        self.lbrace.print(p)?;
+
+        p.prefix()?;
+        p.write("List: nil")?;
+        p.newline()?;
+
+        p.prefix()?;
+        p.write("Rbrace: ")?;
+        self.rbrace.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::FuncType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.FuncType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Func: ")?;
+        self.func.print(p)?;
+
+        p.prefix()?;
+        p.write("Params: ")?;
+        self.params.print(p)?;
+
+        p.prefix()?;
+        p.write("Results: nil")?;
+        p.newline()?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Decl::FuncDecl(decl) => {
-                p.write("*ast.FuncDecl")?;
+                p.write("*ast.FuncDecl ")?;
                 p.open_bracket()?;
 
                 p.prefix()?;
@@ -173,6 +265,14 @@ impl<W: Write> Printable<W> for ast::Decl<'_> {
                 p.write("Name: ")?;
                 decl.name.print(p)?;
 
+                p.prefix()?;
+                p.write("Type: ")?;
+                decl.type_.print(p)?;
+
+                p.prefix()?;
+                p.write("Body: ")?;
+                decl.body.print(p)?;
+
                 p.close_bracket()?;
             }
         }
@@ -183,7 +283,7 @@ impl<W: Write> Printable<W> for ast::Decl<'_> {
 impl<W: Write> Printable<W> for ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.prefix()?;
-        p.write("*ast.File")?;
+        p.write("*ast.File ")?;
         p.open_bracket()?;
 
         p.prefix()?;
@@ -226,7 +326,7 @@ impl<W: Write> Printable<W> for ast::File<'_> {
 
 impl<W: Write> Printable<W> for ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.write("*ast.Ident")?;
+        p.write("*ast.Ident ")?;
         p.open_bracket()?;
 
         p.prefix()?;
@@ -247,13 +347,57 @@ impl<W: Write> Printable<W> for ast::Ident<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for () {}
+
 impl<W: Write> Printable<W> for ast::ImportSpec {}
 
-impl<W: Write> Printable<W> for ast::Object {}
-
-impl<W: Write> Printable<W> for ast::Scope {
+impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.write("*ast.Scope")?;
+        match self {
+            ast::ObjKind::Fun => p.write("func")?,
+            _ => unimplemented!("ast::ObjKind printer {:?}", self),
+        }
+
+        p.newline()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::Object<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.Object ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Kind: ")?;
+        self.kind.print(p)?;
+
+        p.prefix()?;
+        p.write("Name: ")?;
+        self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("Decl: ")?;
+        self.decl.print(p)?;
+
+        p.prefix()?;
+        p.write("Data: ")?;
+        self.data.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::Scope<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.Scope ")?;
         p.open_bracket()?;
 
         p.prefix()?;

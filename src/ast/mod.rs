@@ -18,11 +18,14 @@ pub enum Decl<'a> {
 }
 
 // https://pkg.go.dev/go/ast#FieldList
-pub struct FieldList {
-    //Opening token.Pos // position of opening parenthesis/brace, if any
-//List    []*Field  // field list; or nil
-//Closing token.Pos // position of closing parenthesis/brace, if any
+pub struct FieldList<'a> {
+    pub opening: Position<'a>, // position of opening parenthesis/brace, if any
+    pub list: Vec<Field>,      // field list; or nil
+    pub closing: Position<'a>, // position of closing parenthesis/brace, if any
 }
+
+// https://pkg.go.dev/go/ast#Field
+pub struct Field {}
 
 // https://pkg.go.dev/go/ast#File
 pub struct File<'a> {
@@ -30,7 +33,7 @@ pub struct File<'a> {
     pub package: Position<'a>,       // position of "package" keyword
     pub name: Ident<'a>,             // package name
     pub decls: Vec<Decl<'a>>,        // top-level declarations; or nil
-    pub scope: Option<Scope>,        // package scope (this file only)
+    pub scope: Option<Scope<'a>>,    // package scope (this file only)
     pub imports: Vec<ImportSpec>,    // imports in this file
     pub unresolved: Vec<Ident<'a>>,  // unresolved identifiers in this file
     pub comments: Vec<CommentGroup>, // list of all comments in the source file
@@ -38,25 +41,35 @@ pub struct File<'a> {
 
 // https://pkg.go.dev/go/ast#FuncDecl
 pub struct FuncDecl<'a> {
-    pub doc: Option<CommentGroup>, // associated documentation; or nil
-    pub recv: Option<FieldList>,   // receiver (methods); or nil (functions)
-    pub name: Ident<'a>,           // function/method name
-    pub type_: FuncType, // function signature: type and value parameters, results, and position of "func" keyword
-                         //body *BlockStmt    // function body; or nil for external (non-Go) function
+    pub doc: Option<CommentGroup>,   // associated documentation; or nil
+    pub recv: Option<FieldList<'a>>, // receiver (methods); or nil (functions)
+    pub name: Ident<'a>,             // function/method name
+    pub type_: FuncType<'a>, // function signature: type and value parameters, results, and position of "func" keyword
+    pub body: Option<BlockStmt<'a>>, // function body; or nil for external (non-Go) function
 }
 
+// https://pkg.go.dev/go/ast#BlockStmt
+pub struct BlockStmt<'a> {
+    pub lbrace: Position<'a>, // position of "{"
+    pub list: Vec<Stmt>,
+    pub rbrace: Position<'a>, // position of "}", if any (may be absent due to syntax error)
+}
+
+// https://pkg.go.dev/go/ast#Stmt
+pub struct Stmt {}
+
 // https://pkg.go.dev/go/ast#FuncType
-pub struct FuncType {
-    //Func    token.Pos  // position of "func" keyword (token.NoPos if there is no "func")
-    pub params: FieldList, // (incoming) parameters; non-nil
-                           //results: FieldList, // (outgoing) results; or nil
+pub struct FuncType<'a> {
+    pub func: Position<'a>, // position of "func" keyword (token.NoPos if there is no "func")
+    pub params: FieldList<'a>, // (incoming) parameters; non-nil
+                            //pub results: FieldList<'a>, // (outgoing) results; or nil
 }
 
 // https://pkg.go.dev/go/ast#Ident
 pub struct Ident<'a> {
-    pub name_pos: Position<'a>, // identifier position
-    pub name: &'a str,          // identifier name
-    pub obj: Option<Object>,    // denoted object; or nil
+    pub name_pos: Position<'a>,  // identifier position
+    pub name: &'a str,           // identifier name
+    pub obj: Option<Object<'a>>, // denoted object; or nil
 }
 
 // https://pkg.go.dev/go/ast#ImportSpec
@@ -69,16 +82,27 @@ pub struct ImportSpec {
 }
 
 // https://pkg.go.dev/go/ast#Object
-pub struct Object {
-    //Kind ObjKind
-//Name string      // declared name
-//Decl interface{} // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
-//Data interface{} // object-specific data; or nil
-//Type interface{} // placeholder for type information; may be nil
+pub struct Object<'a> {
+    pub kind: ObjKind,
+    pub name: &'a str,     // declared name
+    pub decl: Option<()>, // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
+    pub data: Option<()>, // object-specific data; or nil
+    pub type_: Option<()>, // placeholder for type information; may be nil
+}
+
+// https://pkg.go.dev/go/ast#ObjKind
+#[derive(Debug)]
+pub enum ObjKind {
+    Pkg, // package
+    Con, // constant
+    Typ, // type
+    Var, // variable
+    Fun, // function or method
+    Lbl, // label
 }
 
 // https://pkg.go.dev/go/ast#Scope
-pub struct Scope {
-    pub outer: Box<Option<Scope>>,
-    pub objects: HashMap<String, Object>,
+pub struct Scope<'a> {
+    pub outer: Box<Option<Scope<'a>>>,
+    pub objects: HashMap<String, Object<'a>>,
 }
