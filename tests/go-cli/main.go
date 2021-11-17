@@ -13,12 +13,31 @@ import (
 
 // ./go ast|tokens <filename>
 func main() {
+	subcommand := os.Args[1]
 	filename := os.Args[2]
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
-	switch os.Args[1] {
+	switch subcommand {
+	case "ast":
+		{
+			src, err := ioutil.ReadFile(filename)
+			if err != nil {
+				panic(err)
+			}
+
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors)
+			if err != nil {
+				panic(err)
+			}
+
+			if err := ast.Fprint(os.Stdout, fset, file, nil); err != nil {
+				panic(err)
+			}
+		}
+
 	case "tokens":
 		{
 			src, err := ioutil.ReadFile(filename)
@@ -46,24 +65,6 @@ func main() {
 
 			if s.ErrorCount > 0 {
 				panic(fmt.Errorf("%d error(s) occured while scanning", s.ErrorCount))
-			}
-		}
-
-	case "ast":
-		{
-			src, err := ioutil.ReadFile(filename)
-			if err != nil {
-				panic(err)
-			}
-
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors)
-			if err != nil {
-				panic(err)
-			}
-
-			if err := ast.Fprint(os.Stdout, fset, file, nil); err != nil {
-				panic(err)
 			}
 		}
 	}
