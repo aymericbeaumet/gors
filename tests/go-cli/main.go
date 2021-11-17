@@ -20,9 +20,6 @@ func main() {
 	w := bufio.NewWriterSize(os.Stdout, 8192)
 	defer w.Flush()
 
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-
 	switch subcommand {
 	case "ast":
 		{
@@ -37,13 +34,16 @@ func main() {
 				panic(err)
 			}
 
-			if err := ast.Fprint(os.Stdout, fset, file, nil); err != nil {
+			if err := ast.Fprint(w, fset, file, nil); err != nil {
 				panic(err)
 			}
 		}
 
 	case "tokens":
 		{
+			enc := json.NewEncoder(w)
+			enc.SetEscapeHTML(false)
+
 			src, err := ioutil.ReadFile(filename)
 			if err != nil {
 				panic(err)
