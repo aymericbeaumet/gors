@@ -50,7 +50,7 @@ fn run(command: &str) {
         },
         thread_count: match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => 1,
-            _ => 2 * num_cpus::get(),
+            _ => num_cpus::get(),
         },
     };
     println!("\n| running the tests with {:#?}", opts);
@@ -128,7 +128,7 @@ fn run(command: &str) {
     println!("| total elapsed time:");
     println!("|   go:   {:?}", go_elapsed);
     println!(
-        "|   rust: {:?} ({:+.2}%)",
+        "|   rust: {:?} (go {:+.2}%)",
         rust_elapsed,
         ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
     );
