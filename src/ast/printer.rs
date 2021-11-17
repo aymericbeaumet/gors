@@ -63,7 +63,16 @@ impl<W: Write> Printer<W> {
 type PrintResult = Result<(), Box<dyn std::error::Error>>;
 
 trait Printable<W: Write> {
+    // TODO: remove the default impl when development is finished
     fn print(&self, _: &mut Printer<W>) -> PrintResult {
+        Ok(())
+    }
+}
+
+impl<W: Write, T: Printable<W>> Printable<W> for &T {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        let node = *self;
+        node.print(p)?;
         Ok(())
     }
 }
@@ -280,6 +289,37 @@ impl<W: Write> Printable<W> for ast::Decl<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::FuncDecl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.FuncDecl ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("Recv: ")?;
+        self.recv.print(p)?;
+
+        p.prefix()?;
+        p.write("Name: ")?;
+        self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.prefix()?;
@@ -355,9 +395,18 @@ impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::ObjKind::Fun => p.write("func")?,
-            _ => unimplemented!("ast::ObjKind printer {:?}", self),
         }
+        p.newline()?;
 
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::ObjDecl::FuncDecl(func_decl) => func_decl.print(p)?,
+        }
         p.newline()?;
 
         Ok(())

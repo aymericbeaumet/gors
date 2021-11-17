@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::SEMICOLON)?;
         self.next()?;
 
-        let imports = vec_until(|| match self.import_decl() {
+        let imports = zero_or_more(|| match self.import_decl() {
             Ok(Some(out)) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
             out => out,
         })?;
 
-        let decls = vec_until(|| match self.top_level_decl() {
+        let decls = zero_or_more(|| match self.top_level_decl() {
             Ok(Some(out)) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
@@ -86,7 +86,7 @@ impl<'a> Parser<'a> {
             name: package_name,
             decls,
             scope: Some(ast::Scope {
-                outer: Box::new(None),
+                outer: None,
                 objects: HashMap::new(),
             }),
             imports,
@@ -205,7 +205,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn vec_until<'a, T>(
+fn zero_or_more<'a, T>(
     mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
 ) -> ParserResult<'a, Vec<T>> {
     let mut out = vec![];

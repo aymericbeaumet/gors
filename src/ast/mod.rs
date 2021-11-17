@@ -84,25 +84,29 @@ pub struct ImportSpec {
 // https://pkg.go.dev/go/ast#Object
 pub struct Object<'a> {
     pub kind: ObjKind,
-    pub name: &'a str,     // declared name
-    pub decl: Option<()>, // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
-    pub data: Option<()>, // object-specific data; or nil
-    pub type_: Option<()>, // placeholder for type information; may be nil
+    pub name: &'a str,                 // declared name
+    pub decl: Option<&'a ObjDecl<'a>>, // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
+    pub data: Option<()>,              // object-specific data; or nil
+    pub type_: Option<()>,             // placeholder for type information; may be nil
 }
 
 // https://pkg.go.dev/go/ast#ObjKind
 #[derive(Debug)]
 pub enum ObjKind {
-    Pkg, // package
-    Con, // constant
-    Typ, // type
-    Var, // variable
+    //Pkg, // package
+    //Con, // constant
+    //Typ, // type
+    //Var, // variable
     Fun, // function or method
-    Lbl, // label
+         //Lbl, // label
+}
+
+pub enum ObjDecl<'a> {
+    FuncDecl(FuncDecl<'a>),
 }
 
 // https://pkg.go.dev/go/ast#Scope
 pub struct Scope<'a> {
-    pub outer: Box<Option<Scope<'a>>>,
+    pub outer: Option<&'a Scope<'a>>,
     pub objects: HashMap<String, Object<'a>>,
 }
