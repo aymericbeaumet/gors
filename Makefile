@@ -34,5 +34,9 @@ dev-parser: go-cli
 .PHONY: go-cli
 go-cli: tests/go-cli/go-cli
 
+.PHONY: clean
+clean:
+	rm -f ./tests/go-cli/go-cli
+
 tests/go-cli/go-cli:
 	cd ./tests/go-cli && go build .
