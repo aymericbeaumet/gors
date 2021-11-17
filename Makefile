@@ -7,6 +7,10 @@ all: lint test
 lint:
 	cargo clippy
 
+.PHONY: build
+build:
+	cargo build --release
+
 .PHONY: test
 test: go-cli
 	cargo test --release -- $(CARGO_TEST_BIN_ARGS)
