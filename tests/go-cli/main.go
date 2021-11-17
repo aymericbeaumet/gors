@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -16,7 +17,10 @@ func main() {
 	subcommand := os.Args[1]
 	filename := os.Args[2]
 
-	enc := json.NewEncoder(os.Stdout)
+	w := bufio.NewWriterSize(os.Stdout, 8192)
+	defer w.Flush()
+
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 
 	switch subcommand {

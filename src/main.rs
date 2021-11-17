@@ -42,7 +42,7 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let file = parser::parse_file(&cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
 
     let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::new(stdout.lock());
+    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
     ast::fprint(&mut w, &file)?;
 
