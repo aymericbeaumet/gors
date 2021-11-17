@@ -40,9 +40,13 @@ struct Ast {
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
     let file = parser::parse_file(&cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
-    let mut stdout = std::io::stdout();
 
-    ast::fprint(&mut stdout, &file)?;
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::new(stdout.lock());
+
+    ast::fprint(&mut w, &file)?;
+
+    w.flush()?;
 
     Ok(())
 }
@@ -56,18 +60,22 @@ struct Tokens {
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
     let mut s = scanner::Scanner::new(&cmd.filepath, &buffer);
-    let mut stdout = std::io::stdout();
+
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::new(stdout.lock());
 
     loop {
         let (pos, tok, lit) = s.scan()?;
 
-        serde_json::to_writer(&stdout, &(pos, tok, lit))?;
-        stdout.write_all(&[b'\n'])?;
+        serde_json::to_writer(&mut w, &(pos, tok, lit))?;
+        w.write(b"\n")?;
 
         if tok == token::Token::EOF {
             break;
         }
     }
+
+    w.flush()?;
 
     Ok(())
 }
