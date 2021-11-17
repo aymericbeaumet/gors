@@ -34,9 +34,11 @@ func main() {
 
 			for {
 				pos, tok, lit := s.Scan()
+
 				if err := enc.Encode([]interface{}{file.Position(pos), tok.String(), lit}); err != nil {
 					panic(err)
 				}
+
 				if tok == token.EOF {
 					break
 				}
