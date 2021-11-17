@@ -38,13 +38,15 @@ struct Ast {
 }
 
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
+    let arena = parser::new_arena();
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let file = parser::parse_file(&cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
+    let file =
+        parser::parse_file(&arena, &cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
 
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    ast::fprint(&mut w, &file)?;
+    ast::fprint(&mut w, file)?;
 
     w.flush()?;
 
@@ -62,7 +64,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let mut s = scanner::Scanner::new(&cmd.filepath, &buffer);
 
     let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::new(stdout.lock());
+    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
     loop {
         let (pos, tok, lit) = s.scan()?;

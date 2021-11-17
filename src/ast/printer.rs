@@ -17,7 +17,7 @@ impl<W: Write> Printer<W> {
         }
     }
 
-    pub fn print(&mut self, file: &ast::File) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn print(&mut self, file: &mut ast::File) -> Result<(), Box<dyn std::error::Error>> {
         self.reset();
         file.print(self)?;
         self.w.flush()?;
@@ -69,14 +69,6 @@ trait Printable<W: Write> {
     }
 }
 
-impl<W: Write, T: Printable<W>> Printable<W> for &T {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        let node = *self;
-        node.print(p)?;
-        Ok(())
-    }
-}
-
 impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if let Some(node) = self {
@@ -89,7 +81,7 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write> Printable<W> for std::collections::HashMap<String, ast::Object<'_>> {
+impl<W: Write> Printable<W> for std::collections::HashMap<String, &mut ast::Object<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("map[string]*ast.Object (len = 0) {}")?;
@@ -105,7 +97,7 @@ impl<W: Write> Printable<W> for std::collections::HashMap<String, ast::Object<'_
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
+impl<W: Write> Printable<W> for Vec<&mut ast::CommentGroup> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -119,7 +111,7 @@ impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::Field> {
+impl<W: Write> Printable<W> for Vec<&mut ast::Field> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -133,7 +125,7 @@ impl<W: Write> Printable<W> for Vec<ast::Field> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
+impl<W: Write> Printable<W> for Vec<&mut ast::Decl<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -152,7 +144,7 @@ impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::FieldList<'_> {
+impl<W: Write> Printable<W> for &mut ast::FieldList<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FieldList ")?;
         p.open_bracket()?;
@@ -175,7 +167,7 @@ impl<W: Write> Printable<W> for ast::FieldList<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
+impl<W: Write> Printable<W> for Vec<&mut ast::Ident<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -189,7 +181,7 @@ impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::ImportSpec> {
+impl<W: Write> Printable<W> for Vec<&mut ast::ImportSpec> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -203,13 +195,13 @@ impl<W: Write> Printable<W> for Vec<ast::ImportSpec> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::CommentGroup {}
+impl<W: Write> Printable<W> for &mut ast::CommentGroup {}
 
-impl<W: Write> Printable<W> for ast::Field {}
+impl<W: Write> Printable<W> for &mut ast::Field {}
 
-impl<W: Write> Printable<W> for Vec<ast::Stmt> {}
+impl<W: Write> Printable<W> for Vec<&mut ast::Stmt> {}
 
-impl<W: Write> Printable<W> for ast::BlockStmt<'_> {
+impl<W: Write> Printable<W> for &mut ast::BlockStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BlockStmt ")?;
         p.open_bracket()?;
@@ -232,7 +224,7 @@ impl<W: Write> Printable<W> for ast::BlockStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::FuncType<'_> {
+impl<W: Write> Printable<W> for &mut ast::FuncType<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FuncType ")?;
         p.open_bracket()?;
@@ -255,7 +247,7 @@ impl<W: Write> Printable<W> for ast::FuncType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::Decl<'_> {
+impl<W: Write> Printable<W> for &mut ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Decl::FuncDecl(decl) => {
@@ -289,7 +281,7 @@ impl<W: Write> Printable<W> for ast::Decl<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::FuncDecl<'_> {
+impl<W: Write> Printable<W> for &mut ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FuncDecl ")?;
         p.open_bracket()?;
@@ -320,7 +312,7 @@ impl<W: Write> Printable<W> for ast::FuncDecl<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::File<'_> {
+impl<W: Write> Printable<W> for &mut ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.prefix()?;
         p.write("*ast.File ")?;
@@ -364,7 +356,7 @@ impl<W: Write> Printable<W> for ast::File<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::Ident<'_> {
+impl<W: Write> Printable<W> for &mut ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Ident ")?;
         p.open_bracket()?;
@@ -389,9 +381,9 @@ impl<W: Write> Printable<W> for ast::Ident<'_> {
 
 impl<W: Write> Printable<W> for () {}
 
-impl<W: Write> Printable<W> for ast::ImportSpec {}
+impl<W: Write> Printable<W> for &mut ast::ImportSpec {}
 
-impl<W: Write> Printable<W> for ast::ObjKind {
+impl<W: Write> Printable<W> for &mut ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::ObjKind::Fun => p.write("func")?,
@@ -402,7 +394,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
     }
 }
 
-impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
+impl<W: Write> Printable<W> for &mut ast::ObjDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::ObjDecl::FuncDecl(func_decl) => func_decl.print(p)?,
@@ -413,7 +405,7 @@ impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::Object<'_> {
+impl<W: Write> Printable<W> for &mut ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Object ")?;
         p.open_bracket()?;
@@ -444,7 +436,7 @@ impl<W: Write> Printable<W> for ast::Object<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::Scope<'_> {
+impl<W: Write> Printable<W> for &mut ast::Scope<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Scope ")?;
         p.open_bracket()?;
