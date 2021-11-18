@@ -116,6 +116,7 @@ impl<'a> Hash for ObjDecl<'a> {
     }
 }
 
+// https://pkg.go.dev/go/ast#Decl
 pub enum Decl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
 }
