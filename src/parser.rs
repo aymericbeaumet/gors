@@ -38,7 +38,7 @@ pub fn parse_file<'a>(
     arena: &'a ParserArena,
     filepath: &'a str,
     buffer: &'a str,
-) -> ParserResult<'a, &'a mut ast::File<'a>> {
+) -> ParserResult<'a, &'a ast::File<'a>> {
     let s = Scanner::new(filepath, buffer);
     let mut p = Parser::new(arena, s);
     p.source_file()
@@ -61,10 +61,15 @@ impl<'a> Parser<'a> {
         p
     }
 
+    #[inline(always)]
+    fn alloc<T>(&self, val: T) -> &'a T {
+        self.arena.alloc_with(|| val)
+    }
+
     // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     // PackageClause = "package" PackageName .
     // PackageName   = identifier .
-    fn source_file(&mut self) -> ParserResult<'a, &'a mut ast::File<'a>> {
+    fn source_file(&mut self) -> ParserResult<'a, &'a ast::File<'a>> {
         let package = self.expect(Token::PACKAGE)?;
         self.next()?;
 
@@ -93,14 +98,26 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::EOF)?;
 
-        Ok(self.arena.alloc_with(|| ast::File {
+        let objects = decls
+            .iter()
+            .filter_map(|decl| match decl {
+                ast::Decl::FuncDecl(decl) => {
+                    if let Some(o) = decl.name.obj.get() {
+                        return Some((decl.name.name, o));
+                    }
+                    return None;
+                }
+            })
+            .collect();
+
+        Ok(self.alloc(ast::File {
             doc: None,
             package: package.0,
             name: package_name,
             decls,
-            scope: Some(self.arena.alloc_with(|| ast::Scope {
+            scope: Some(self.alloc(ast::Scope {
                 outer: None,
-                objects: HashMap::new(),
+                objects,
             })),
             imports,
             unresolved: vec![],
@@ -108,31 +125,28 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    fn identifier(&mut self) -> ParserResult<'a, &'a mut ast::Ident<'a>> {
+    fn identifier(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
         let ident = self.expect(Token::IDENT)?;
         self.next()?;
 
-        let out = self.arena.alloc_with(|| ast::Ident {
+        Ok(self.alloc(ast::Ident {
             name_pos: ident.0,
             name: ident.2,
-            obj: None,
-        });
-        Ok(out)
+            obj: std::cell::Cell::new(None),
+        }))
     }
 
     // ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
     // ImportSpec       = [ "." | PackageName ] ImportPath .
     // ImportPath       = string_lit .
-    fn import_decl(&mut self) -> ParserResult<'a, Option<&'a mut ast::ImportSpec>> {
+    fn import_decl(&mut self) -> ParserResult<'a, Option<&'a ast::ImportSpec>> {
         Ok(None)
     }
 
     // TopLevelDecl  = Declaration | FunctionDecl | MethodDecl .
-    fn top_level_decl(&mut self) -> ParserResult<'a, Option<&'a mut ast::Decl<'a>>> {
+    fn top_level_decl(&mut self) -> ParserResult<'a, Option<&'a ast::Decl<'a>>> {
         if let Some(func_decl) = self.function_decl()? {
-            return Ok(Some(
-                self.arena.alloc_with(|| ast::Decl::FuncDecl(func_decl)),
-            ));
+            return Ok(Some(self.alloc(ast::Decl::FuncDecl(func_decl))));
         }
         Ok(None)
     }
@@ -141,7 +155,7 @@ impl<'a> Parser<'a> {
     // FunctionName = identifier .
     // Signature    = Parameters [ Result ] .
     // Result       = Parameters | Type .
-    fn function_decl(&mut self) -> ParserResult<'a, Option<&'a mut ast::FuncDecl<'a>>> {
+    fn function_decl(&mut self) -> ParserResult<'a, Option<&'a ast::FuncDecl<'a>>> {
         let func = self.expect(Token::FUNC);
         if func.is_err() {
             return Ok(None);
@@ -152,34 +166,43 @@ impl<'a> Parser<'a> {
         let function_name = self.identifier()?;
 
         let params = self.parameters()?;
-
-        let signature = self.arena.alloc_with(|| ast::FuncType {
+        let signature = self.alloc(ast::FuncType {
             func: func.0,
             params,
         });
 
         let function_body = self.function_body()?;
 
-        Ok(Some(self.arena.alloc_with(|| ast::FuncDecl {
+        let out = self.alloc(ast::FuncDecl {
             doc: None,
             recv: None,
             name: function_name,
             type_: signature,
             body: function_body,
-        })))
+        });
+
+        out.name.obj.set(Some(self.alloc(ast::Object {
+            kind: ast::ObjKind::Fun,
+            name: out.name.name,
+            decl: Some(ast::ObjDecl::FuncDecl(out)),
+            data: None,
+            type_: None,
+        })));
+
+        Ok(Some(out))
     }
 
     // Parameters     = "(" [ ParameterList [ "," ] ] ")" .
     // ParameterList  = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
-    fn parameters(&mut self) -> ParserResult<'a, &'a mut ast::FieldList<'a>> {
+    fn parameters(&mut self) -> ParserResult<'a, &'a ast::FieldList<'a>> {
         let lparen = self.expect(Token::LPAREN)?;
         self.next()?;
 
         let rparen = self.expect(Token::RPAREN)?;
         self.next()?;
 
-        Ok(self.arena.alloc_with(|| ast::FieldList {
+        Ok(self.alloc(ast::FieldList {
             opening: lparen.0,
             list: vec![],
             closing: rparen.0,
@@ -187,14 +210,14 @@ impl<'a> Parser<'a> {
     }
 
     // FunctionBody = Block .
-    fn function_body(&mut self) -> ParserResult<'a, Option<&'a mut ast::BlockStmt<'a>>> {
+    fn function_body(&mut self) -> ParserResult<'a, Option<&'a ast::BlockStmt<'a>>> {
         let lbrace = self.expect(Token::LBRACE)?;
         self.next()?;
 
         let rbrace = self.expect(Token::RBRACE)?;
         self.next()?;
 
-        Ok(Some(self.arena.alloc_with(|| ast::BlockStmt {
+        Ok(Some(self.alloc(ast::BlockStmt {
             lbrace: lbrace.0,
             list: vec![],
             rbrace: rbrace.0,
