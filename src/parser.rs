@@ -2,7 +2,6 @@ use crate::ast;
 use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
-use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug)]
@@ -101,12 +100,7 @@ impl<'a> Parser<'a> {
         let objects = decls
             .iter()
             .filter_map(|decl| match decl {
-                ast::Decl::FuncDecl(decl) => {
-                    if let Some(o) = decl.name.obj.get() {
-                        return Some((decl.name.name, o));
-                    }
-                    return None;
-                }
+                ast::Decl::FuncDecl(decl) => decl.name.obj.get().map(|o| (decl.name.name, o)),
             })
             .collect();
 

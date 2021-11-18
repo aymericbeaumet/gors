@@ -215,19 +215,19 @@ impl<W: Write> Printable<W> for Vec<&ast::ImportSpec> {
 }
 
 impl<W: Write> Printable<W> for &ast::CommentGroup {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+    fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
 
 impl<W: Write> Printable<W> for &ast::Field {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+    fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
 
 impl<W: Write> Printable<W> for Vec<&ast::Stmt> {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+    fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
@@ -377,13 +377,13 @@ impl<W: Write> Printable<W> for &ast::Ident<'_> {
 }
 
 impl<W: Write> Printable<W> for () {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+    fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
 
 impl<W: Write> Printable<W> for ast::ImportSpec {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+    fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
@@ -443,8 +443,8 @@ impl<W: Write> Printable<W> for &ast::Scope<'_> {
 impl<W: Write> Printable<W> for ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
-            &ast::Decl::FuncDecl(decl) => {
-                p.set_line(decl);
+            ast::Decl::FuncDecl(decl) => {
+                p.set_line(*decl);
 
                 p.write("*ast.FuncDecl ")?;
                 p.open_bracket()?;
@@ -479,7 +479,7 @@ impl<W: Write> Printable<W> for ast::Decl<'_> {
 impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
-            &ast::ObjKind::Fun => p.write("func")?,
+            ast::ObjKind::Fun => p.write("func")?,
         }
         p.newline()?;
 
@@ -490,7 +490,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         let line = match self {
-            &ast::ObjDecl::FuncDecl(decl) => p.get_line(decl),
+            ast::ObjDecl::FuncDecl(decl) => p.get_line(*decl),
         };
         write!(p.w, "*(obj @ {})", line)?;
         p.newline()?;

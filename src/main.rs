@@ -70,7 +70,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
         let (pos, tok, lit) = s.scan()?;
 
         serde_json::to_writer(&mut w, &(pos, tok, lit))?;
-        w.write(b"\n")?;
+        w.write_all(b"\n")?;
 
         if tok == token::Token::EOF {
             break;
