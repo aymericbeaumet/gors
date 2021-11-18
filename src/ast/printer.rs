@@ -1,6 +1,7 @@
 use crate::ast;
 use crate::token;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Write;
 
@@ -63,18 +64,18 @@ impl<W: Write> Printer<W> {
         self.depth = 0;
     }
 
-    fn set_line<T>(&mut self, val: &T) {
+    fn set_line<T: Hash>(&mut self, val: T) {
         self.lines.insert(hash(val), self.line);
     }
 
-    fn get_line<T>(&self, val: &T) -> usize {
+    fn get_line<T: Hash>(&self, val: T) -> usize {
         self.lines.get(&hash(val)).copied().unwrap_or(0)
     }
 }
 
-fn hash<T>(val: &T) -> u64 {
+fn hash<T: Hash>(val: T) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::ptr::hash(val, &mut hasher);
+    val.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -442,10 +443,10 @@ impl<W: Write> Printable<W> for &ast::Scope<'_> {
 
 impl<W: Write> Printable<W> for ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.set_line(self);
+
         match self {
             ast::Decl::FuncDecl(decl) => {
-                p.set_line(*decl);
-
                 p.write("*ast.FuncDecl ")?;
                 p.open_bracket()?;
 
@@ -489,10 +490,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        let line = match self {
-            ast::ObjDecl::FuncDecl(decl) => p.get_line(*decl),
-        };
-        write!(p.w, "*(obj @ {})", line)?;
+        write!(p.w, "*(obj @ {})", p.get_line(self))?;
         p.newline()?;
 
         Ok(())

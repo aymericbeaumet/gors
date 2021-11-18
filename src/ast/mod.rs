@@ -1,7 +1,9 @@
 mod printer;
 
+use crate::ast;
 use crate::token::Position;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
@@ -86,6 +88,12 @@ pub struct Object<'a> {
     pub type_: Option<()>,         // placeholder for type information; may be nil
 }
 
+impl<'a> Hash for &Object<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::Object, state)
+    }
+}
+
 // https://pkg.go.dev/go/ast#ObjKind
 pub enum ObjKind {
     //Pkg, // package
@@ -100,8 +108,24 @@ pub enum ObjDecl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
 }
 
+impl<'a> Hash for ObjDecl<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ast::ObjDecl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
+        }
+    }
+}
+
 pub enum Decl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
+}
+
+impl<'a> Hash for Decl<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ast::Decl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
+        }
+    }
 }
 
 // https://pkg.go.dev/go/ast#Scope
