@@ -1,11 +1,14 @@
 use crate::ast;
 use crate::token;
+use std::collections::HashMap;
+use std::hash::Hasher;
 use std::io::Write;
 
 pub struct Printer<W: Write> {
     w: W,
     line: usize,
     depth: usize,
+    lines: HashMap<u64, usize>,
 }
 
 impl<W: Write> Printer<W> {
@@ -14,6 +17,7 @@ impl<W: Write> Printer<W> {
             w,
             line: 0,
             depth: 0,
+            lines: HashMap::default(),
         }
     }
 
@@ -58,6 +62,20 @@ impl<W: Write> Printer<W> {
         self.line = 0;
         self.depth = 0;
     }
+
+    fn set_line<T>(&mut self, val: &T) {
+        self.lines.insert(hash(val), self.line);
+    }
+
+    fn get_line<T>(&self, val: &T) -> usize {
+        self.lines.get(&hash(val)).copied().unwrap_or(0)
+    }
+}
+
+fn hash<T>(val: &T) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::ptr::hash(val, &mut hasher);
+    hasher.finish()
 }
 
 type PrintResult = Result<(), Box<dyn std::error::Error>>;
@@ -78,7 +96,7 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write> Printable<W> for std::collections::HashMap<&str, &ast::Object<'_>> {
+impl<W: Write> Printable<W> for HashMap<&str, &ast::Object<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("map[string]*ast.Object (len = 0) {}")?;
@@ -88,8 +106,8 @@ impl<W: Write> Printable<W> for std::collections::HashMap<&str, &ast::Object<'_>
             p.open_bracket()?;
             for (key, value) in self.iter() {
                 p.prefix()?;
-                write!(p.w, "{:?}: ", key)?;
-                value.decl.print(p)?;
+                write!(p.w, "{:?}: *(obj @ {})", key, p.get_line(*value))?;
+                p.newline()?;
             }
             p.close_bracket()?;
         }
@@ -260,40 +278,6 @@ impl<W: Write> Printable<W> for &ast::FuncType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Decl<'_> {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        match self {
-            &ast::Decl::FuncDecl(decl) => {
-                p.write("*ast.FuncDecl ")?;
-                p.open_bracket()?;
-
-                p.prefix()?;
-                p.write("Doc: ")?;
-                decl.doc.print(p)?;
-
-                p.prefix()?;
-                p.write("Recv: ")?;
-                decl.recv.print(p)?;
-
-                p.prefix()?;
-                p.write("Name: ")?;
-                decl.name.print(p)?;
-
-                p.prefix()?;
-                p.write("Type: ")?;
-                decl.type_.print(p)?;
-
-                p.prefix()?;
-                p.write("Body: ")?;
-                decl.body.print(p)?;
-
-                p.close_bracket()?;
-            }
-        }
-        Ok(())
-    }
-}
-
 impl<W: Write> Printable<W> for &ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FuncDecl ")?;
@@ -406,6 +390,8 @@ impl<W: Write> Printable<W> for ast::ImportSpec {
 
 impl<W: Write> Printable<W> for &ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.set_line(*self);
+
         p.write("*ast.Object ")?;
         p.open_bracket()?;
 
@@ -454,10 +440,46 @@ impl<W: Write> Printable<W> for &ast::Scope<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::Decl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            &ast::Decl::FuncDecl(decl) => {
+                p.set_line(decl);
+
+                p.write("*ast.FuncDecl ")?;
+                p.open_bracket()?;
+
+                p.prefix()?;
+                p.write("Doc: ")?;
+                decl.doc.print(p)?;
+
+                p.prefix()?;
+                p.write("Recv: ")?;
+                decl.recv.print(p)?;
+
+                p.prefix()?;
+                p.write("Name: ")?;
+                decl.name.print(p)?;
+
+                p.prefix()?;
+                p.write("Type: ")?;
+                decl.type_.print(p)?;
+
+                p.prefix()?;
+                p.write("Body: ")?;
+                decl.body.print(p)?;
+
+                p.close_bracket()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
-            ast::ObjKind::Fun => p.write("func")?,
+            &ast::ObjKind::Fun => p.write("func")?,
         }
         p.newline()?;
 
@@ -467,7 +489,10 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.write("*(obj @ 0)")?;
+        let line = match self {
+            &ast::ObjDecl::FuncDecl(decl) => p.get_line(decl),
+        };
+        write!(p.w, "*(obj @ {})", line)?;
         p.newline()?;
 
         Ok(())

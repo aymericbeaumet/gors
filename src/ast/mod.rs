@@ -13,10 +13,6 @@ pub struct CommentGroup {
     // List []*Comment // len(List) > 0
 }
 
-pub enum Decl<'a> {
-    FuncDecl(&'a FuncDecl<'a>),
-}
-
 // https://pkg.go.dev/go/ast#FieldList
 pub struct FieldList<'a> {
     pub opening: Position<'a>, // position of opening parenthesis/brace, if any
@@ -101,6 +97,10 @@ pub enum ObjKind {
 }
 
 pub enum ObjDecl<'a> {
+    FuncDecl(&'a FuncDecl<'a>),
+}
+
+pub enum Decl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
 }
 
