@@ -136,19 +136,11 @@ pub enum Token {
     VAR,
 }
 
-// String returns the string corresponding to the token tok.
-// For operators, delimiters, and keywords the string is the actual
-// token character sequence (e.g., for the token ADD, the string is
-// "+"). For all other tokens the string corresponds to the token
-// constant name (e.g. for the token IDENT, the string is "IDENT").
-impl Serialize for Token {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+impl Into<&'static str> for &Token {
+    fn into(self) -> &'static str {
         use Token::*;
 
-        serializer.serialize_str(match self {
+        match self {
             EOF => "EOF",
             COMMENT => "COMMENT",
 
@@ -244,6 +236,15 @@ impl Serialize for Token {
             SWITCH => "switch",
             TYPE => "type",
             VAR => "var",
-        })
+        }
+    }
+}
+
+impl Serialize for Token {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.into())
     }
 }

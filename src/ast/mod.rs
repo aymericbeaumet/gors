@@ -1,10 +1,8 @@
 mod printer;
 
-use crate::ast;
 use crate::token;
 use crate::token::Position;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
 pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
@@ -31,7 +29,7 @@ pub struct File<'a> {
     pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
     pub package: Position<'a>,         // position of "package" keyword
     pub name: &'a Ident<'a>,           // package name
-    pub decls: Vec<&'a Decl<'a>>,      // top-level declarations; or nil
+    pub decls: Vec<Decl<'a>>,          // top-level declarations; or nil
     pub scope: Option<&'a Scope<'a>>,  // package scope (this file only)
     pub imports: Vec<&'a ImportSpec<'a>>, // imports in this file
     pub unresolved: Vec<&'a Ident<'a>>, // unresolved identifiers in this file
@@ -77,7 +75,7 @@ pub struct ImportSpec<'a> {
     pub name: Option<&'a Ident<'a>>,   // local package name (including "."); or nil
     pub path: &'a BasicLit<'a>,        // import path
     pub comment: Option<&'a CommentGroup>, // line comments; or nil
-    pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
+                                       //pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
 }
 
 // https://pkg.go.dev/go/ast#BasicLit
@@ -96,12 +94,6 @@ pub struct Object<'a> {
     pub type_: Option<()>,         // placeholder for type information; may be nil
 }
 
-impl<'a> Hash for &Object<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash((*self) as *const ast::Object, state)
-    }
-}
-
 // https://pkg.go.dev/go/ast#ObjKind
 pub enum ObjKind {
     //Pkg, // package
@@ -116,29 +108,29 @@ pub enum ObjDecl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
 }
 
-impl<'a> Hash for ObjDecl<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            ast::ObjDecl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
-        }
-    }
-}
-
 // https://pkg.go.dev/go/ast#Decl
 pub enum Decl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
-}
-
-impl<'a> Hash for Decl<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            ast::Decl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
-        }
-    }
+    GenDecl(&'a GenDecl<'a>),
 }
 
 // https://pkg.go.dev/go/ast#Scope
 pub struct Scope<'a> {
     pub outer: Option<&'a Scope<'a>>,
     pub objects: HashMap<&'a str, &'a Object<'a>>,
+}
+
+// https://pkg.go.dev/go/ast#GenDecl
+pub struct GenDecl<'a> {
+    pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
+    pub tok_pos: Position<'a>,         // position of Tok
+    pub tok: token::Token,             // IMPORT, CONST, TYPE, or VAR
+    pub lparen: Option<Position<'a>>,  // position of '(', if any
+    pub specs: Vec<Spec<'a>>,
+    pub rparen: Option<Position<'a>>, // position of ')', if any
+}
+
+// https://pkg.go.dev/go/ast#Spec
+pub enum Spec<'a> {
+    ImportSpec(&'a ImportSpec<'a>),
 }

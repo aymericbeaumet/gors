@@ -1,8 +1,7 @@
 use crate::ast;
 use crate::token;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 pub struct Printer<W: Write> {
@@ -85,6 +84,8 @@ trait Printable<W: Write> {
     fn print(&self, _: &mut Printer<W>) -> PrintResult;
 }
 
+/* Printable trait implementations */
+
 impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if let Some(node) = self {
@@ -145,7 +146,7 @@ impl<W: Write> Printable<W> for Vec<&ast::Field> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::Decl<'_>> {
+impl<W: Write> Printable<W> for Vec<ast::Decl<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -157,6 +158,25 @@ impl<W: Write> Printable<W> for Vec<&ast::Decl<'_>> {
                 p.prefix()?;
                 write!(p.w, "{}: ", i)?;
                 decl.print(p)?;
+            }
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for Vec<ast::Spec<'_>> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.Spec (len = {}) ", self.len())?;
+            p.open_bracket()?;
+            for (i, spec) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                spec.print(p)?;
             }
             p.close_bracket()?;
         }
@@ -201,14 +221,43 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::BasicLit<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.BasicLit ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("ValuePos: ")?;
+        self.value_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Kind: ")?;
+        self.kind.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        write!(p.w, "{:?}", self.value)?;
+        p.newline()?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for Vec<&ast::ImportSpec<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.ImportSpec (len = {}) ", self.len())?;
+            write!(p.w, "[]*ast.ImportSpec (len = {}) ", self.len())?;
             p.open_bracket()?;
+            for (i, spec) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: *(obj @ {})", i, p.get_line(spec))?;
+                p.newline()?;
+            }
             p.close_bracket()?;
         }
         Ok(())
@@ -272,6 +321,51 @@ impl<W: Write> Printable<W> for &ast::FuncType<'_> {
         p.prefix()?;
         p.write("Results: nil")?;
         p.newline()?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::GenDecl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.GenDecl ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("TokPos: ")?;
+        self.tok_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Tok: ")?;
+        self.tok.print(p)?;
+
+        p.prefix()?;
+        p.write("Lparen: ")?;
+        if let Some(lparen) = self.lparen {
+            lparen.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("Specs: ")?;
+        self.specs.print(p)?;
+
+        p.prefix()?;
+        p.write("Rparen: ")?;
+        if let Some(rparen) = self.rparen {
+            rparen.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
 
         p.close_bracket()?;
 
@@ -384,7 +478,34 @@ impl<W: Write> Printable<W> for () {
 }
 
 impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
-    fn print(&self, _: &mut Printer<W>) -> PrintResult {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.set_line(self);
+
+        p.write("*ast.ImportSpec ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("Name: ")?;
+        self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("Path: ")?;
+        self.path.print(p)?;
+
+        p.prefix()?;
+        p.write("Comment: ")?;
+        self.comment.print(p)?;
+
+        p.prefix()?;
+        p.write("EndPos: -")?;
+        p.newline()?;
+
+        p.close_bracket()?;
+
         Ok(())
     }
 }
@@ -441,39 +562,22 @@ impl<W: Write> Printable<W> for &ast::Scope<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::Spec<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::Spec::ImportSpec(spec) => spec.print(p),
+        }
+    }
+}
+
 impl<W: Write> Printable<W> for ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.set_line(self);
 
         match self {
-            ast::Decl::FuncDecl(decl) => {
-                p.write("*ast.FuncDecl ")?;
-                p.open_bracket()?;
-
-                p.prefix()?;
-                p.write("Doc: ")?;
-                decl.doc.print(p)?;
-
-                p.prefix()?;
-                p.write("Recv: ")?;
-                decl.recv.print(p)?;
-
-                p.prefix()?;
-                p.write("Name: ")?;
-                decl.name.print(p)?;
-
-                p.prefix()?;
-                p.write("Type: ")?;
-                decl.type_.print(p)?;
-
-                p.prefix()?;
-                p.write("Body: ")?;
-                decl.body.print(p)?;
-
-                p.close_bracket()?;
-            }
+            ast::Decl::FuncDecl(decl) => decl.print(p),
+            ast::Decl::GenDecl(decl) => decl.print(p),
         }
-        Ok(())
     }
 }
 
@@ -506,5 +610,44 @@ impl<W: Write> Printable<W> for token::Position<'_> {
         )?;
         p.newline()?;
         Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for token::Token {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write(self.into())?;
+        p.newline()?;
+        Ok(())
+    }
+}
+
+/* Hash trait implementations */
+
+impl<'a> Hash for &ast::Object<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::Object, state)
+    }
+}
+
+impl<'a> Hash for ast::ObjDecl<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ast::ObjDecl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
+        }
+    }
+}
+
+impl<'a> Hash for ast::Decl<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ast::Decl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
+            ast::Decl::GenDecl(decl) => std::ptr::hash((*decl) as *const ast::GenDecl, state),
+        }
+    }
+}
+
+impl<'a> Hash for &ast::ImportSpec<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::ImportSpec, state);
     }
 }

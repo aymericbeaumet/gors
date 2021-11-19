@@ -22,20 +22,31 @@ impl<'a> From<ScannerError> for ParserError<'a> {
 
 pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
 
+/*
+ * TODO: implement a ParserResult::maybe() method that returns an Option<T> allowing to deal with
+ * optional tokens. Sometimes an error is acceptable as we just want to see check what the current
+ * token is.
+ * TODO: implement a ParserResult::followed() that allows to check whether a token is followed by
+ * another (e.g.: very useful to write concise code to check whether a token is followed by a
+ * semicolon).
+ */
+
 impl<'a> fmt::Display for ParserError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "scanner error: {:?}", self)
     }
 }
 
-pub type ParserArena = bumpalo::Bump;
+pub struct Arena(bumpalo::Bump);
 
-pub fn new_arena() -> ParserArena {
-    bumpalo::Bump::new()
+impl Arena {
+    pub fn new() -> Self {
+        Self(bumpalo::Bump::new())
+    }
 }
 
 pub fn parse_file<'a>(
-    arena: &'a ParserArena,
+    arena: &'a Arena,
     filepath: &'a str,
     buffer: &'a str,
 ) -> ParserResult<'a, &'a ast::File<'a>> {
@@ -45,13 +56,13 @@ pub fn parse_file<'a>(
 }
 
 struct Parser<'a> {
-    arena: &'a ParserArena,
+    arena: &'a Arena,
     scanner: Scanner<'a>,
     current: Option<(Position<'a>, Token, &'a str)>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(arena: &'a ParserArena, scanner: Scanner<'a>) -> Self {
+    fn new(arena: &'a Arena, scanner: Scanner<'a>) -> Self {
         let mut p = Self {
             arena,
             scanner,
@@ -63,7 +74,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn alloc<T>(&self, val: T) -> &'a T {
-        self.arena.alloc_with(|| val)
+        self.arena.0.alloc_with(|| val)
     }
 
     // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
@@ -77,16 +88,17 @@ impl<'a> Parser<'a> {
         self.expect(Token::SEMICOLON)?;
         self.next()?;
 
-        let imports = until_empty(|| match self.import_decl() {
-            Ok(out) if !out.is_empty() => {
+        let mut import_decls = until(|| match self.import_decl() {
+            Ok(Some(out)) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
-                Ok(out)
+                Ok(Some(ast::Decl::GenDecl(out)))
             }
-            _ => Ok(vec![]),
+            Ok(None) => Ok(None),
+            Err(err) => Err(err),
         })?;
 
-        let decls = until_none(|| match self.top_level_decl() {
+        let mut top_level_decls = until(|| match self.top_level_decl() {
             Ok(Some(out)) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
@@ -97,12 +109,37 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::EOF)?;
 
-        let objects = decls
+        let objects = top_level_decls
             .iter()
             .filter_map(|decl| match decl {
                 ast::Decl::FuncDecl(decl) => decl.name.obj.get().map(|o| (decl.name.name, o)),
+                ast::Decl::GenDecl(_) => unimplemented!(),
             })
             .collect();
+
+        let imports = import_decls
+            .iter()
+            .filter_map(|decl| {
+                if let ast::Decl::GenDecl(decl) = decl {
+                    if decl.tok == Token::IMPORT {
+                        return Some(decl.specs.iter());
+                    }
+                }
+                None
+            })
+            .flatten()
+            .filter_map(|spec| {
+                if let ast::Spec::ImportSpec(spec) = spec {
+                    return Some(spec);
+                }
+                None
+            })
+            .copied()
+            .collect();
+
+        let mut decls = vec![];
+        decls.append(&mut import_decls);
+        decls.append(&mut top_level_decls);
 
         Ok(self.alloc(ast::File {
             doc: None,
@@ -136,34 +173,49 @@ impl<'a> Parser<'a> {
     }
 
     // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
-    fn import_decl(&mut self) -> ParserResult<'a, Vec<&'a ast::ImportSpec<'a>>> {
+    fn import_decl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
         let import = self.expect(Token::IMPORT);
         if import.is_err() {
-            return Ok(vec![]);
+            return Ok(None);
         }
         let import = import.unwrap();
         self.next()?;
 
         let lparen = self.expect(Token::LPAREN);
         if lparen.is_err() {
-            return Ok(vec![self.import_spec()?]);
+            let specs = vec![ast::Spec::ImportSpec(self.import_spec()?)];
+            return Ok(Some(self.alloc(ast::GenDecl {
+                doc: None,
+                tok_pos: import.0,
+                tok: Token::IMPORT,
+                lparen: None,
+                specs,
+                rparen: None,
+            })));
         }
         let lparen = lparen.unwrap();
         self.next()?;
 
-        let import_specs = until_none(|| match self.import_spec() {
+        let specs = until(|| match self.import_spec() {
             Ok(out) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
-                Ok(Some(out))
+                Ok(Some(ast::Spec::ImportSpec(out)))
             }
-            Err(err) => Ok(None),
+            _ => Ok(None),
         })?;
 
         let rparen = self.expect(Token::RPAREN)?;
         self.next()?;
 
-        Ok(import_specs)
+        Ok(Some(self.alloc(ast::GenDecl {
+            doc: None,
+            tok_pos: import.0,
+            tok: Token::IMPORT,
+            lparen: Some(lparen.0),
+            specs,
+            rparen: Some(rparen.0),
+        })))
     }
 
     // ImportSpec = [ "." | PackageName ] ImportPath .
@@ -188,25 +240,28 @@ impl<'a> Parser<'a> {
             name,
             path: import_path,
             comment: None,
-            end_pos: import_path.value_pos,
         }))
     }
 
     // ImportPath = string_lit .
     fn import_path(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+        self.string_lit()
+    }
+
+    fn string_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
         let out = self.expect(Token::STRING)?;
         self.next()?;
         Ok(self.alloc(ast::BasicLit {
-            value_pos: out.0, // literal position
-            kind: out.1,      // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
-            value: out.2, // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
+            value_pos: out.0,
+            kind: out.1,
+            value: out.2,
         }))
     }
 
     // TopLevelDecl = Declaration | FunctionDecl | MethodDecl .
-    fn top_level_decl(&mut self) -> ParserResult<'a, Option<&'a ast::Decl<'a>>> {
+    fn top_level_decl(&mut self) -> ParserResult<'a, Option<ast::Decl<'a>>> {
         if let Some(func_decl) = self.function_decl()? {
-            return Ok(Some(self.alloc(ast::Decl::FuncDecl(func_decl))));
+            return Ok(Some(ast::Decl::FuncDecl(func_decl)));
         }
         Ok(None)
     }
@@ -300,26 +355,10 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn until_none<'a, T>(
-    mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
-) -> ParserResult<'a, Vec<T>> {
+fn until<'a, T>(mut func: impl FnMut() -> ParserResult<'a, Option<T>>) -> ParserResult<'a, Vec<T>> {
     let mut out = vec![];
     while let Some(v) = func()? {
         out.push(v);
-    }
-    Ok(out)
-}
-
-fn until_empty<'a, T>(
-    mut func: impl FnMut() -> ParserResult<'a, Vec<T>>,
-) -> ParserResult<'a, Vec<T>> {
-    let mut out = vec![];
-    loop {
-        let mut v = func()?;
-        if v.is_empty() {
-            break;
-        }
-        out.append(&mut v);
     }
     Ok(out)
 }

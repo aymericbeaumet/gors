@@ -38,10 +38,12 @@ struct Ast {
 }
 
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
-    let arena = parser::new_arena();
-    let buffer = std::fs::read_to_string(&cmd.filepath)?;
+    let arena = parser::Arena::new();
+    let filepath = cmd.filepath;
+    let buffer = std::fs::read_to_string(&filepath)?;
+
     let file =
-        parser::parse_file(&arena, &cmd.filepath, &buffer).map_err(|err| format!("{:?}", err))?;
+        parser::parse_file(&arena, &filepath, &buffer).map_err(|err| format!("{:?}", err))?;
 
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
@@ -49,7 +51,6 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     ast::fprint(&mut w, file)?;
 
     w.flush()?;
-
     Ok(())
 }
 
@@ -60,8 +61,10 @@ struct Tokens {
 }
 
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
-    let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let mut s = scanner::Scanner::new(&cmd.filepath, &buffer);
+    let filepath = cmd.filepath;
+    let buffer = std::fs::read_to_string(&filepath)?;
+
+    let mut s = scanner::Scanner::new(&filepath, &buffer);
 
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
@@ -78,6 +81,5 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     w.flush()?;
-
     Ok(())
 }
