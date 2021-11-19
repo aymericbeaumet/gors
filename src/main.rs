@@ -43,7 +43,7 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&filepath)?;
 
     let file =
-        parser::parse_file(&arena, &filepath, &buffer).map_err(|err| format!("{:?}", err))?;
+        parser::parse_file(&arena, &filepath, &buffer).map_err(|err| format!("{:#?}", err))?;
 
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());

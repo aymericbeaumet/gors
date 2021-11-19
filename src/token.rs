@@ -136,11 +136,11 @@ pub enum Token {
     VAR,
 }
 
-impl Into<&'static str> for &Token {
-    fn into(self) -> &'static str {
+impl From<&Token> for &'static str {
+    fn from(token: &Token) -> Self {
         use Token::*;
 
-        match self {
+        match token {
             EOF => "EOF",
             COMMENT => "COMMENT",
 

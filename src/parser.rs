@@ -33,7 +33,7 @@ pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
 
 impl<'a> fmt::Display for ParserError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "scanner error: {:?}", self)
+        write!(f, "parser error: {:?}", self)
     }
 }
 
@@ -113,7 +113,7 @@ impl<'a> Parser<'a> {
             .iter()
             .filter_map(|decl| match decl {
                 ast::Decl::FuncDecl(decl) => decl.name.obj.get().map(|o| (decl.name.name, o)),
-                ast::Decl::GenDecl(_) => unimplemented!(),
+                _ => None,
             })
             .collect();
 
@@ -260,9 +260,17 @@ impl<'a> Parser<'a> {
 
     // TopLevelDecl = Declaration | FunctionDecl | MethodDecl .
     fn top_level_decl(&mut self) -> ParserResult<'a, Option<ast::Decl<'a>>> {
+        if let Some(gen_decl) = self.declaration()? {
+            return Ok(Some(ast::Decl::GenDecl(gen_decl)));
+        }
         if let Some(func_decl) = self.function_decl()? {
             return Ok(Some(ast::Decl::FuncDecl(func_decl)));
         }
+        Ok(None)
+    }
+
+    // Declaration = ConstDecl | TypeDecl | VarDecl .
+    fn declaration(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
         Ok(None)
     }
 

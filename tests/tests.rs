@@ -1,3 +1,4 @@
+use colored::*;
 use console::{style, Style};
 use crossbeam::thread;
 use glob::glob;
@@ -140,9 +141,15 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     let after = std::time::Instant::now();
 
     if !output.status.success() {
-        eprintln!("STATUS: {:?}", output.status.code().unwrap());
-        eprintln!("STDOUT: {:?}", std::str::from_utf8(&output.stdout).unwrap());
-        eprintln!("STDERR: {:?}", std::str::from_utf8(&output.stderr).unwrap());
+        eprintln!("STATUS: {}", output.status.code().unwrap());
+        eprintln!(
+            "STDOUT:\n\t{}",
+            std::str::from_utf8(&output.stdout).unwrap().blue(),
+        );
+        eprintln!(
+            "STDERR:\n\t{}",
+            std::str::from_utf8(&output.stderr).unwrap().blue(),
+        );
         return Err(format!("{} {:?} failed", bin, args,).into());
     }
 
