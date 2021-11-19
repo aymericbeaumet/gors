@@ -1,6 +1,7 @@
 mod printer;
 
 use crate::ast;
+use crate::token;
 use crate::token::Position;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -32,7 +33,7 @@ pub struct File<'a> {
     pub name: &'a Ident<'a>,           // package name
     pub decls: Vec<&'a Decl<'a>>,      // top-level declarations; or nil
     pub scope: Option<&'a Scope<'a>>,  // package scope (this file only)
-    pub imports: Vec<&'a ImportSpec>,  // imports in this file
+    pub imports: Vec<&'a ImportSpec<'a>>, // imports in this file
     pub unresolved: Vec<&'a Ident<'a>>, // unresolved identifiers in this file
     pub comments: Vec<&'a CommentGroup>, // list of all comments in the source file
 }
@@ -71,12 +72,19 @@ pub struct Ident<'a> {
 }
 
 // https://pkg.go.dev/go/ast#ImportSpec
-pub struct ImportSpec {
-    //Doc     *CommentGroup // associated documentation; or nil
-//Name    *Ident        // local package name (including "."); or nil
-//Path    *BasicLit     // import path
-//Comment *CommentGroup // line comments; or nil
-//EndPos  token.Pos     // end of spec (overrides Path.Pos if nonzero)
+pub struct ImportSpec<'a> {
+    pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
+    pub name: Option<&'a Ident<'a>>,   // local package name (including "."); or nil
+    pub path: &'a BasicLit<'a>,        // import path
+    pub comment: Option<&'a CommentGroup>, // line comments; or nil
+    pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
+}
+
+// https://pkg.go.dev/go/ast#BasicLit
+pub struct BasicLit<'a> {
+    pub value_pos: Position<'a>, // literal position
+    pub kind: token::Token,      // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
+    pub value: &'a str, // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
 }
 
 // https://pkg.go.dev/go/ast#Object

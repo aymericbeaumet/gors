@@ -201,7 +201,7 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::ImportSpec> {
+impl<W: Write> Printable<W> for Vec<&ast::ImportSpec<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -383,7 +383,7 @@ impl<W: Write> Printable<W> for () {
     }
 }
 
-impl<W: Write> Printable<W> for ast::ImportSpec {
+impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }

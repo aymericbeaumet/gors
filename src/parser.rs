@@ -2,6 +2,7 @@ use crate::ast;
 use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
+use std::cell::Cell;
 use std::fmt;
 
 #[derive(Debug)]
@@ -67,26 +68,25 @@ impl<'a> Parser<'a> {
 
     // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     // PackageClause = "package" PackageName .
-    // PackageName   = identifier .
     fn source_file(&mut self) -> ParserResult<'a, &'a ast::File<'a>> {
         let package = self.expect(Token::PACKAGE)?;
         self.next()?;
 
-        let package_name = self.identifier()?;
+        let package_name = self.package_name()?;
 
         self.expect(Token::SEMICOLON)?;
         self.next()?;
 
-        let imports = zero_or_more(|| match self.import_decl() {
-            Ok(Some(out)) => {
+        let imports = until_empty(|| match self.import_decl() {
+            Ok(out) if !out.is_empty() => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
-                Ok(Some(out))
+                Ok(out)
             }
-            out => out,
+            _ => Ok(vec![]),
         })?;
 
-        let decls = zero_or_more(|| match self.top_level_decl() {
+        let decls = until_none(|| match self.top_level_decl() {
             Ok(Some(out)) => {
                 self.expect(Token::SEMICOLON)?;
                 self.next()?;
@@ -119,6 +119,11 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    // PackageName = identifier .
+    fn package_name(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
+        self.identifier()
+    }
+
     fn identifier(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
         let ident = self.expect(Token::IDENT)?;
         self.next()?;
@@ -126,18 +131,79 @@ impl<'a> Parser<'a> {
         Ok(self.alloc(ast::Ident {
             name_pos: ident.0,
             name: ident.2,
-            obj: std::cell::Cell::new(None),
+            obj: Cell::new(None),
         }))
     }
 
-    // ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
-    // ImportSpec       = [ "." | PackageName ] ImportPath .
-    // ImportPath       = string_lit .
-    fn import_decl(&mut self) -> ParserResult<'a, Option<&'a ast::ImportSpec>> {
-        Ok(None)
+    // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
+    fn import_decl(&mut self) -> ParserResult<'a, Vec<&'a ast::ImportSpec<'a>>> {
+        let import = self.expect(Token::IMPORT);
+        if import.is_err() {
+            return Ok(vec![]);
+        }
+        let import = import.unwrap();
+        self.next()?;
+
+        let lparen = self.expect(Token::LPAREN);
+        if lparen.is_err() {
+            return Ok(vec![self.import_spec()?]);
+        }
+        let lparen = lparen.unwrap();
+        self.next()?;
+
+        let import_specs = until_none(|| match self.import_spec() {
+            Ok(out) => {
+                self.expect(Token::SEMICOLON)?;
+                self.next()?;
+                Ok(Some(out))
+            }
+            Err(err) => Ok(None),
+        })?;
+
+        let rparen = self.expect(Token::RPAREN)?;
+        self.next()?;
+
+        Ok(import_specs)
     }
 
-    // TopLevelDecl  = Declaration | FunctionDecl | MethodDecl .
+    // ImportSpec = [ "." | PackageName ] ImportPath .
+    fn import_spec(&mut self) -> ParserResult<'a, &'a ast::ImportSpec<'a>> {
+        let name = if let Ok(package_name) = self.package_name() {
+            Some(package_name)
+        } else if let Ok(period) = self.expect(Token::PERIOD) {
+            self.next()?;
+            Some(self.alloc(ast::Ident {
+                name_pos: period.0,
+                name: ".",
+                obj: Cell::new(None),
+            }))
+        } else {
+            None
+        };
+
+        let import_path = self.import_path()?;
+
+        Ok(self.alloc(ast::ImportSpec {
+            doc: None,
+            name,
+            path: import_path,
+            comment: None,
+            end_pos: import_path.value_pos,
+        }))
+    }
+
+    // ImportPath = string_lit .
+    fn import_path(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+        let out = self.expect(Token::STRING)?;
+        self.next()?;
+        Ok(self.alloc(ast::BasicLit {
+            value_pos: out.0, // literal position
+            kind: out.1,      // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
+            value: out.2, // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
+        }))
+    }
+
+    // TopLevelDecl = Declaration | FunctionDecl | MethodDecl .
     fn top_level_decl(&mut self) -> ParserResult<'a, Option<&'a ast::Decl<'a>>> {
         if let Some(func_decl) = self.function_decl()? {
             return Ok(Some(self.alloc(ast::Decl::FuncDecl(func_decl))));
@@ -234,14 +300,26 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn zero_or_more<'a, T>(
+fn until_none<'a, T>(
     mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
 ) -> ParserResult<'a, Vec<T>> {
     let mut out = vec![];
-
     while let Some(v) = func()? {
         out.push(v);
     }
+    Ok(out)
+}
 
+fn until_empty<'a, T>(
+    mut func: impl FnMut() -> ParserResult<'a, Vec<T>>,
+) -> ParserResult<'a, Vec<T>> {
+    let mut out = vec![];
+    loop {
+        let mut v = func()?;
+        if v.is_empty() {
+            break;
+        }
+        out.append(&mut v);
+    }
     Ok(out)
 }
