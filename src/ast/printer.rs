@@ -63,7 +63,7 @@ impl<W: Write> Printer<W> {
         self.depth = 0;
     }
 
-    fn print_line<T: Hash>(&mut self, val: T) -> Result<bool, Box<dyn std::error::Error>> {
+    fn prevent_circular<T: Hash>(&mut self, val: T) -> Result<bool, Box<dyn std::error::Error>> {
         let h = hash(val);
         if let Some(line) = self.lines.get(&h) {
             write!(self.w, "*(obj @ {})", line)?;
@@ -384,7 +384,7 @@ impl<W: Write> Printable<W> for &ast::GenDecl<'_> {
 
 impl<W: Write> Printable<W> for &ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.print_line(self)? {
+        if p.prevent_circular(self)? {
             return Ok(());
         }
 
@@ -463,6 +463,10 @@ impl<W: Write> Printable<W> for &ast::File<'_> {
 
 impl<W: Write> Printable<W> for &ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if p.prevent_circular(self)? {
+            return Ok(());
+        }
+
         p.write("*ast.Ident ")?;
         p.open_bracket()?;
 
@@ -492,7 +496,7 @@ impl<W: Write> Printable<W> for () {
 
 impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.print_line(self)? {
+        if p.prevent_circular(self)? {
             return Ok(());
         }
 
@@ -527,7 +531,7 @@ impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
 
 impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.print_line(self)? {
+        if p.prevent_circular(self)? {
             return Ok(());
         }
 
@@ -590,7 +594,7 @@ impl<W: Write> Printable<W> for Vec<ast::Expr<'_>> {
 
 impl<W: Write> Printable<W> for &ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.print_line(self)? {
+        if p.prevent_circular(self)? {
             return Ok(());
         }
 
@@ -706,6 +710,12 @@ impl<W: Write> Printable<W> for token::Token {
 impl<'a> Hash for &ast::FuncDecl<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::ptr::hash((*self) as *const ast::FuncDecl, state);
+    }
+}
+
+impl<'a> Hash for &ast::Ident<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::Ident, state);
     }
 }
 

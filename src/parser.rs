@@ -119,6 +119,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::EOF)?;
 
         let mut objects = BTreeMap::default();
+        let mut idents = vec![];
         for decl in top_level_decls.iter() {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {
@@ -133,6 +134,9 @@ impl<'a> Parser<'a> {
                                 if let Some(o) = name.obj.get() {
                                     objects.insert(name.name, o);
                                 }
+                            }
+                            if let Some(ast::Expr::Ident(ident)) = value_spec.type_ {
+                                idents.push(ident);
                             }
                         }
                     }
@@ -164,6 +168,11 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
+        let unresolved = idents
+            .into_iter()
+            .filter(|ident| !objects.contains_key(ident.name))
+            .collect();
+
         Ok(self.alloc(ast::File {
             doc: None,
             package: package.0,
@@ -174,7 +183,7 @@ impl<'a> Parser<'a> {
                 objects,
             })),
             imports,
-            unresolved: vec![],
+            unresolved,
             comments: vec![],
         }))
     }
