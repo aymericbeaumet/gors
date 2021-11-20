@@ -78,6 +78,15 @@ pub struct ImportSpec<'a> {
                                        //pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
 }
 
+// https://pkg.go.dev/go/ast#ValueSpec
+pub struct ValueSpec<'a> {
+    pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
+    pub names: Vec<&'a Ident<'a>>,     // value names (len(Names) > 0)
+    pub type_: Option<Expr<'a>>,       // value type; or nil
+    pub values: Vec<Expr<'a>>,         // initial values; or nil
+    pub comment: Option<&'a CommentGroup>, // line comments; or nil
+}
+
 // https://pkg.go.dev/go/ast#BasicLit
 pub struct BasicLit<'a> {
     pub value_pos: Position<'a>, // literal position
@@ -99,13 +108,14 @@ pub enum ObjKind {
     //Pkg, // package
     //Con, // constant
     //Typ, // type
-    //Var, // variable
+    Var, // variable
     Fun, // function or method
          //Lbl, // label
 }
 
 pub enum ObjDecl<'a> {
     FuncDecl(&'a FuncDecl<'a>),
+    ValueSpec(&'a ValueSpec<'a>),
 }
 
 // https://pkg.go.dev/go/ast#Decl
@@ -133,4 +143,11 @@ pub struct GenDecl<'a> {
 // https://pkg.go.dev/go/ast#Spec
 pub enum Spec<'a> {
     ImportSpec(&'a ImportSpec<'a>),
+    ValueSpec(&'a ValueSpec<'a>),
+}
+
+// https://pkg.go.dev/go/ast#Expr
+pub enum Expr<'a> {
+    BasicLit(&'a BasicLit<'a>),
+    Ident(&'a Ident<'a>),
 }

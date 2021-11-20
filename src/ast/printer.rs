@@ -213,8 +213,13 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.Ident (len = {}) ", self.len())?;
+            write!(p.w, "[]*ast.Ident (len = {}) ", self.len())?;
             p.open_bracket()?;
+            for (i, ident) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                ident.print(p)?;
+            }
             p.close_bracket()?;
         }
         Ok(())
@@ -510,6 +515,67 @@ impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.set_line(self);
+
+        p.write("*ast.ValueSpec ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("Names: ")?;
+        self.names.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Values: ")?;
+        self.values.print(p)?;
+
+        p.prefix()?;
+        p.write("Comment: ")?;
+        self.comment.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::Expr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::Expr::BasicLit(basic_lit) => basic_lit.print(p),
+            ast::Expr::Ident(ident) => ident.print(p),
+        }
+    }
+}
+
+impl<W: Write> Printable<W> for Vec<ast::Expr<'_>> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.Expr (len = {}) ", self.len())?;
+            p.open_bracket()?;
+            for (i, expr) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                expr.print(p)?;
+            }
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.set_line(*self);
@@ -566,6 +632,7 @@ impl<W: Write> Printable<W> for ast::Spec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Spec::ImportSpec(spec) => spec.print(p),
+            ast::Spec::ValueSpec(spec) => spec.print(p),
         }
     }
 }
@@ -585,6 +652,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::ObjKind::Fun => p.write("func")?,
+            ast::ObjKind::Var => p.write("var")?,
         }
         p.newline()?;
 
@@ -629,10 +697,25 @@ impl<'a> Hash for &ast::Object<'a> {
     }
 }
 
+impl<'a> Hash for &ast::ImportSpec<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::ImportSpec, state);
+    }
+}
+
+impl<'a> Hash for &ast::ValueSpec<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::ValueSpec, state);
+    }
+}
+
 impl<'a> Hash for ast::ObjDecl<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             ast::ObjDecl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
+            ast::ObjDecl::ValueSpec(decl) => {
+                std::ptr::hash((*decl) as *const ast::ValueSpec, state)
+            }
         }
     }
 }
@@ -643,11 +726,5 @@ impl<'a> Hash for ast::Decl<'a> {
             ast::Decl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
             ast::Decl::GenDecl(decl) => std::ptr::hash((*decl) as *const ast::GenDecl, state),
         }
-    }
-}
-
-impl<'a> Hash for &ast::ImportSpec<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash((*self) as *const ast::ImportSpec, state);
     }
 }

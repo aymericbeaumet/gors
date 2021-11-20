@@ -143,11 +143,11 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     if !output.status.success() {
         eprintln!("STATUS: {}", output.status.code().unwrap());
         eprintln!(
-            "STDOUT:\n\t{}",
+            "STDOUT: {}",
             std::str::from_utf8(&output.stdout).unwrap().blue(),
         );
         eprintln!(
-            "STDERR:\n\t{}",
+            "STDERR: {}",
             std::str::from_utf8(&output.stderr).unwrap().blue(),
         );
         return Err(format!("{} {:?} failed", bin, args,).into());
