@@ -106,7 +106,7 @@ pub struct Object<'a> {
 // https://pkg.go.dev/go/ast#ObjKind
 pub enum ObjKind {
     //Pkg, // package
-    //Con, // constant
+    Con, // constant
     //Typ, // type
     Var, // variable
     Fun, // function or method

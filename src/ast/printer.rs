@@ -676,6 +676,7 @@ impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
 impl<W: Write> Printable<W> for ast::ObjKind {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
+            ast::ObjKind::Con => p.write("const")?,
             ast::ObjKind::Fun => p.write("func")?,
             ast::ObjKind::Var => p.write("var")?,
         }

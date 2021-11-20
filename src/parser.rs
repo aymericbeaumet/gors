@@ -303,10 +303,99 @@ impl<'a> Parser<'a> {
 
     // Declaration = ConstDecl | TypeDecl | VarDecl .
     fn declaration(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
+        if let Some(var_decl) = self.const_decl()? {
+            return Ok(Some(var_decl));
+        }
         if let Some(var_decl) = self.var_decl()? {
             return Ok(Some(var_decl));
         }
         Ok(None)
+    }
+
+    // ConstDecl = "const" ( ConstSpec | "(" { ConstSpec ";" } ")" ) .
+    fn const_decl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
+        let const_ = self.expect(Token::CONST);
+        if const_.is_err() {
+            return Ok(None);
+        }
+        let const_ = const_.unwrap();
+        self.next()?;
+
+        let lparen = self.expect(Token::LPAREN);
+        if lparen.is_err() {
+            let specs = vec![ast::Spec::ValueSpec(self.const_spec()?)];
+            return Ok(Some(self.alloc(ast::GenDecl {
+                doc: None,
+                tok_pos: const_.0,
+                tok: const_.1,
+                lparen: None,
+                specs,
+                rparen: None,
+            })));
+        }
+        let lparen = lparen.unwrap();
+        self.next()?;
+
+        let specs = until(|| match self.const_spec() {
+            Ok(out) => {
+                self.expect(Token::SEMICOLON)?;
+                self.next()?;
+                Ok(Some(ast::Spec::ValueSpec(out)))
+            }
+            _ => Ok(None),
+        })?;
+
+        let rparen = self.expect(Token::RPAREN)?;
+        self.next()?;
+
+        Ok(Some(self.alloc(ast::GenDecl {
+            doc: None,
+            tok_pos: const_.0,
+            tok: const_.1,
+            lparen: Some(lparen.0),
+            specs,
+            rparen: Some(rparen.0),
+        })))
+    }
+
+    // ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] .
+    fn const_spec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
+        let names = self.identifier_list()?;
+
+        let (type_, values) = if self.expect(Token::ASSIGN).is_ok() {
+            self.next()?;
+            (None, self.expression_list()?)
+        } else {
+            (
+                Some(self.type_()?),
+                if self.expect(Token::ASSIGN).is_ok() {
+                    self.next()?;
+                    self.expression_list()?
+                } else {
+                    vec![]
+                },
+            )
+        };
+
+        let out = self.alloc(ast::ValueSpec {
+            doc: None,
+            names,
+            type_,
+            values,
+            comment: None,
+        });
+
+        for name in out.names.iter() {
+            name.obj.set(Some(self.alloc(ast::Object {
+                kind: ast::ObjKind::Con,
+                name: name.name,
+                decl: Some(ast::ObjDecl::ValueSpec(out)),
+                data: Some(0),
+                type_: None,
+            })));
+        }
+
+        Ok(out)
     }
 
     // VarDecl = "var" ( VarSpec | "(" { VarSpec ";" } ")" ) .
