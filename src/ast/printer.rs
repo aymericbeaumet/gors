@@ -63,12 +63,16 @@ impl<W: Write> Printer<W> {
         self.depth = 0;
     }
 
-    fn set_line<T: Hash>(&mut self, val: T) {
-        self.lines.insert(hash(val), self.line);
-    }
-
-    fn get_line<T: Hash>(&self, val: T) -> usize {
-        self.lines.get(&hash(val)).copied().unwrap_or(0)
+    fn print_line<T: Hash>(&mut self, val: T) -> Result<bool, Box<dyn std::error::Error>> {
+        let h = hash(val);
+        if let Some(line) = self.lines.get(&h) {
+            write!(self.w, "*(obj @ {})", line)?;
+            self.newline()?;
+            Ok(true)
+        } else {
+            self.lines.insert(h, self.line);
+            Ok(false)
+        }
     }
 }
 
@@ -108,8 +112,8 @@ impl<W: Write> Printable<W> for HashMap<&str, &ast::Object<'_>> {
             p.open_bracket()?;
             for (key, value) in self.iter() {
                 p.prefix()?;
-                write!(p.w, "{:?}: *(obj @ {})", key, p.get_line(*value))?;
-                p.newline()?;
+                write!(p.w, "{:?}: ", key)?;
+                value.print(p)?;
             }
             p.close_bracket()?;
         }
@@ -260,8 +264,8 @@ impl<W: Write> Printable<W> for Vec<&ast::ImportSpec<'_>> {
             p.open_bracket()?;
             for (i, spec) in self.iter().enumerate() {
                 p.prefix()?;
-                write!(p.w, "{}: *(obj @ {})", i, p.get_line(spec))?;
-                p.newline()?;
+                write!(p.w, "{}: ", i)?;
+                spec.print(p)?;
             }
             p.close_bracket()?;
         }
@@ -380,6 +384,10 @@ impl<W: Write> Printable<W> for &ast::GenDecl<'_> {
 
 impl<W: Write> Printable<W> for &ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if p.print_line(self)? {
+            return Ok(());
+        }
+
         p.write("*ast.FuncDecl ")?;
         p.open_bracket()?;
 
@@ -484,7 +492,9 @@ impl<W: Write> Printable<W> for () {
 
 impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.set_line(self);
+        if p.print_line(self)? {
+            return Ok(());
+        }
 
         p.write("*ast.ImportSpec ")?;
         p.open_bracket()?;
@@ -517,7 +527,9 @@ impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
 
 impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.set_line(self);
+        if p.print_line(self)? {
+            return Ok(());
+        }
 
         p.write("*ast.ValueSpec ")?;
         p.open_bracket()?;
@@ -578,7 +590,9 @@ impl<W: Write> Printable<W> for Vec<ast::Expr<'_>> {
 
 impl<W: Write> Printable<W> for &ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.set_line(*self);
+        if p.print_line(self)? {
+            return Ok(());
+        }
 
         p.write("*ast.Object ")?;
         p.open_bracket()?;
@@ -639,11 +653,18 @@ impl<W: Write> Printable<W> for ast::Spec<'_> {
 
 impl<W: Write> Printable<W> for ast::Decl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        p.set_line(self);
-
         match self {
             ast::Decl::FuncDecl(decl) => decl.print(p),
             ast::Decl::GenDecl(decl) => decl.print(p),
+        }
+    }
+}
+
+impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::ObjDecl::FuncDecl(decl) => decl.print(p),
+            ast::ObjDecl::ValueSpec(decl) => decl.print(p),
         }
     }
 }
@@ -654,15 +675,6 @@ impl<W: Write> Printable<W> for ast::ObjKind {
             ast::ObjKind::Fun => p.write("func")?,
             ast::ObjKind::Var => p.write("var")?,
         }
-        p.newline()?;
-
-        Ok(())
-    }
-}
-
-impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
-    fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        write!(p.w, "*(obj @ {})", p.get_line(self))?;
         p.newline()?;
 
         Ok(())
@@ -691,9 +703,9 @@ impl<W: Write> Printable<W> for token::Token {
 
 /* Hash trait implementations */
 
-impl<'a> Hash for &ast::Object<'a> {
+impl<'a> Hash for &ast::FuncDecl<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash((*self) as *const ast::Object, state)
+        std::ptr::hash((*self) as *const ast::FuncDecl, state);
     }
 }
 
@@ -703,28 +715,14 @@ impl<'a> Hash for &ast::ImportSpec<'a> {
     }
 }
 
+impl<'a> Hash for &ast::Object<'a> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash((*self) as *const ast::Object, state)
+    }
+}
+
 impl<'a> Hash for &ast::ValueSpec<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::ptr::hash((*self) as *const ast::ValueSpec, state);
-    }
-}
-
-impl<'a> Hash for ast::ObjDecl<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            ast::ObjDecl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
-            ast::ObjDecl::ValueSpec(decl) => {
-                std::ptr::hash((*decl) as *const ast::ValueSpec, state)
-            }
-        }
-    }
-}
-
-impl<'a> Hash for ast::Decl<'a> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            ast::Decl::FuncDecl(decl) => std::ptr::hash((*decl) as *const ast::FuncDecl, state),
-            ast::Decl::GenDecl(decl) => std::ptr::hash((*decl) as *const ast::GenDecl, state),
-        }
     }
 }
