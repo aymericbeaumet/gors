@@ -387,7 +387,7 @@ impl<'a> Parser<'a> {
                 kind: ast::ObjKind::Var,
                 name: name.name,
                 decl: Some(ast::ObjDecl::ValueSpec(out)),
-                data: None,
+                data: Some(0),
                 type_: None,
             })));
         }

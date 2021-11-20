@@ -705,6 +705,14 @@ impl<W: Write> Printable<W> for token::Token {
     }
 }
 
+impl<W: Write> Printable<W> for usize {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        write!(p.w, "{}", self)?;
+        p.newline()?;
+        Ok(())
+    }
+}
+
 /* Hash trait implementations */
 
 impl<'a> Hash for &ast::FuncDecl<'a> {

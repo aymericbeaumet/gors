@@ -99,7 +99,7 @@ pub struct Object<'a> {
     pub kind: ObjKind,
     pub name: &'a str,             // declared name
     pub decl: Option<ObjDecl<'a>>, // corresponding Field, XxxSpec, FuncDecl, LabeledStmt, AssignStmt, Scope; or nil
-    pub data: Option<()>,          // object-specific data; or nil
+    pub data: Option<usize>,       // object-specific data; or nil
     pub type_: Option<()>,         // placeholder for type information; may be nil
 }
 
