@@ -2,7 +2,7 @@ mod printer;
 
 use crate::token;
 use crate::token::Position;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
@@ -127,7 +127,7 @@ pub enum Decl<'a> {
 // https://pkg.go.dev/go/ast#Scope
 pub struct Scope<'a> {
     pub outer: Option<&'a Scope<'a>>,
-    pub objects: HashMap<&'a str, &'a Object<'a>>,
+    pub objects: BTreeMap<&'a str, &'a Object<'a>>,
 }
 
 // https://pkg.go.dev/go/ast#GenDecl

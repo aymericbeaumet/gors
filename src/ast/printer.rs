@@ -1,6 +1,6 @@
 use crate::ast;
 use crate::token;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 
@@ -102,7 +102,7 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write> Printable<W> for HashMap<&str, &ast::Object<'_>> {
+impl<W: Write> Printable<W> for BTreeMap<&str, &ast::Object<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("map[string]*ast.Object (len = 0) {}")?;

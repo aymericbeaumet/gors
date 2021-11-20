@@ -3,7 +3,7 @@ use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug)]
@@ -118,7 +118,7 @@ impl<'a> Parser<'a> {
 
         self.expect(Token::EOF)?;
 
-        let mut objects = HashMap::default();
+        let mut objects = BTreeMap::default();
         for decl in top_level_decls.iter() {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {

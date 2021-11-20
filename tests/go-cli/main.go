@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"go/ast"
 	"go/parser"
 	"go/scanner"
 	"go/token"
@@ -34,7 +33,8 @@ func main() {
 				panic(err)
 			}
 
-			if err := ast.Fprint(w, fset, file, nil); err != nil {
+			// Using our forked version that prints maps with their keys sorted
+			if err := Fprint(w, fset, file, nil); err != nil {
 				panic(err)
 			}
 		}
