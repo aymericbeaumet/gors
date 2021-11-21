@@ -285,8 +285,48 @@ impl<W: Write> Printable<W> for &ast::Field {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::Stmt> {
-    fn print(&self, _: &mut Printer<W>) -> PrintResult {
+impl<W: Write> Printable<W> for Vec<ast::Stmt<'_>> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "[]ast.Stmt (len = {}) ", self.len())?;
+            p.open_bracket()?;
+            for (i, stmt) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                stmt.print(p)?;
+            }
+            p.close_bracket()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::AssignStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.AssignStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Lhs: ")?;
+        self.lhs.print(p)?;
+
+        p.prefix()?;
+        p.write("TokPos: ")?;
+        self.tok_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Tok: ")?;
+        self.tok.print(p)?;
+
+        p.prefix()?;
+        p.write("Rhs: ")?;
+        self.rhs.print(p)?;
+
+        p.close_bracket()?;
+
         Ok(())
     }
 }
@@ -301,8 +341,8 @@ impl<W: Write> Printable<W> for &ast::BlockStmt<'_> {
         self.lbrace.print(p)?;
 
         p.prefix()?;
-        p.write("List: nil")?;
-        p.newline()?;
+        p.write("List: ")?;
+        self.list.print(p)?;
 
         p.prefix()?;
         p.write("Rbrace: ")?;
@@ -669,6 +709,14 @@ impl<W: Write> Printable<W> for ast::ObjDecl<'_> {
         match self {
             ast::ObjDecl::FuncDecl(decl) => decl.print(p),
             ast::ObjDecl::ValueSpec(decl) => decl.print(p),
+        }
+    }
+}
+
+impl<W: Write> Printable<W> for ast::Stmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        match self {
+            ast::Stmt::AssignStmt(stmt) => stmt.print(p),
         }
     }
 }

@@ -48,12 +48,9 @@ pub struct FuncDecl<'a> {
 // https://pkg.go.dev/go/ast#BlockStmt
 pub struct BlockStmt<'a> {
     pub lbrace: Position<'a>, // position of "{"
-    pub list: Vec<&'a Stmt>,
+    pub list: Vec<Stmt<'a>>,
     pub rbrace: Position<'a>, // position of "}", if any (may be absent due to syntax error)
 }
-
-// https://pkg.go.dev/go/ast#Stmt
-pub struct Stmt {}
 
 // https://pkg.go.dev/go/ast#FuncType
 pub struct FuncType<'a> {
@@ -140,6 +137,14 @@ pub struct GenDecl<'a> {
     pub rparen: Option<Position<'a>>, // position of ')', if any
 }
 
+// https://pkg.go.dev/go/ast#AssignStmt
+pub struct AssignStmt<'a> {
+    pub lhs: Vec<Expr<'a>>,
+    pub tok_pos: Position<'a>, // position of Tok
+    pub tok: token::Token,     // assignment token, DEFINE
+    pub rhs: Vec<Expr<'a>>,
+}
+
 // https://pkg.go.dev/go/ast#Spec
 pub enum Spec<'a> {
     ImportSpec(&'a ImportSpec<'a>),
@@ -150,4 +155,9 @@ pub enum Spec<'a> {
 pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     Ident(&'a Ident<'a>),
+}
+
+// https://pkg.go.dev/go/ast#Stmt
+pub enum Stmt<'a> {
+    AssignStmt(&'a AssignStmt<'a>),
 }
