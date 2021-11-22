@@ -21,9 +21,9 @@ impl<W: Write> Printer<W> {
         }
     }
 
-    pub fn print(&mut self, file: &ast::File) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn print<T: Printable<W>>(&mut self, node: T) -> Result<(), Box<dyn std::error::Error>> {
         self.reset();
-        file.print(self)?;
+        node.print(self)?;
         self.w.flush()?;
         Ok(())
     }
@@ -84,7 +84,7 @@ fn hash<T: Hash>(val: T) -> u64 {
 
 type PrintResult = Result<(), Box<dyn std::error::Error>>;
 
-trait Printable<W: Write> {
+pub trait Printable<W: Write> {
     fn print(&self, _: &mut Printer<W>) -> PrintResult;
 }
 

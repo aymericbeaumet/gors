@@ -4,9 +4,12 @@ use crate::token;
 use crate::token::Position;
 use std::collections::BTreeMap;
 
-pub fn fprint<W: std::io::Write>(w: &mut W, file: &File) -> Result<(), Box<dyn std::error::Error>> {
+pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
+    w: W,
+    node: T,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
-    p.print(file)
+    p.print(node)
 }
 
 // https://pkg.go.dev/go/ast#CommentGroup
