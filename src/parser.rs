@@ -72,7 +72,7 @@ impl<'a> Parser<'a> {
         self.arena.0.alloc_with(|| val)
     }
 
-    fn get(&self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
+    const fn get(&self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
         if let Some(current) = self.current {
             return Ok(current);
         }
