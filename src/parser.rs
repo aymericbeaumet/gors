@@ -531,8 +531,6 @@ impl<'a> Parser<'a> {
         Ok(ast::Expr::Ident(self.identifier()?))
     }
 
-    // OperandName = identifier | QualifiedIdent .
-
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
     fn BasicLit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
         self.int_lit()

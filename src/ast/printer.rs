@@ -19,12 +19,6 @@ impl<W: Write> Printer<W> {
         }
     }
 
-    pub fn print<T: Printable<W>>(&mut self, node: T) -> Result<(), Box<dyn std::error::Error>> {
-        node.print(self)?;
-        self.w.flush()?;
-        Ok(())
-    }
-
     pub fn prefix(&mut self) -> std::io::Result<()> {
         write!(self.w, "{:6}  ", self.line)?;
         for _ in 0..self.depth {

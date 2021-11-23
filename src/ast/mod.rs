@@ -13,7 +13,7 @@ pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
     node: T,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut p = printer::Printer::new(w);
-    p.print(node)
+    node.print(&mut p)
 }
 
 // https://pkg.go.dev/go/ast#CommentGroup
