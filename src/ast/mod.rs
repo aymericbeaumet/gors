@@ -4,8 +4,7 @@ mod printer;
 mod visitable;
 mod visitor;
 
-use crate::token;
-use crate::token::Position;
+use crate::token::{Position, Token};
 use std::collections::BTreeMap;
 
 pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
@@ -94,7 +93,7 @@ pub struct ValueSpec<'a> {
 // https://pkg.go.dev/go/ast#BasicLit
 pub struct BasicLit<'a> {
     pub value_pos: Position<'a>, // literal position
-    pub kind: token::Token,      // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
+    pub kind: Token,             // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
     pub value: &'a str, // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
 }
 
@@ -138,7 +137,7 @@ pub struct Scope<'a> {
 pub struct GenDecl<'a> {
     pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
     pub tok_pos: Position<'a>,         // position of Tok
-    pub tok: token::Token,             // IMPORT, CONST, TYPE, or VAR
+    pub tok: Token,                    // IMPORT, CONST, TYPE, or VAR
     pub lparen: Option<Position<'a>>,  // position of '(', if any
     pub specs: Vec<Spec<'a>>,
     pub rparen: Option<Position<'a>>, // position of ')', if any
@@ -148,7 +147,7 @@ pub struct GenDecl<'a> {
 pub struct AssignStmt<'a> {
     pub lhs: Vec<Expr<'a>>,
     pub tok_pos: Position<'a>, // position of Tok
-    pub tok: token::Token,     // assignment token, DEFINE
+    pub tok: Token,            // assignment token, DEFINE
     pub rhs: Vec<Expr<'a>>,
 }
 
