@@ -7,6 +7,8 @@ mod visitor;
 use crate::token::{Position, Token};
 use std::collections::BTreeMap;
 
+pub use visitor::{Visitable, Visitor};
+
 pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
     w: W,
     node: T,

@@ -2,13 +2,15 @@
 
 use crate::ast;
 
-pub trait Visitor {
-    fn BlockStmt(&self, _: &ast::BlockStmt) {}
-    fn File(&self, _: &ast::File) {}
-    fn FuncDecl(&self, _: &ast::FuncDecl) {}
-    fn GenDecl(&self, _: &ast::GenDecl) {}
+pub trait Visitor<'a> {
+    fn BlockStmt(&mut self, _: &'a ast::BlockStmt<'a>) {}
+    fn File(&mut self, _: &'a ast::File<'a>) {}
+    fn FuncDecl(&mut self, _: &'a ast::FuncDecl<'a>) {}
+    fn GenDecl(&mut self, _: &'a ast::GenDecl<'a>) {}
+    fn ImportSpec(&mut self, _: &'a ast::ImportSpec<'a>) {}
+    fn ValueSpec(&mut self, _: &'a ast::ValueSpec<'a>) {}
 }
 
-pub trait Visitable<V: Visitor> {
+pub trait Visitable<'a, V: Visitor<'a>> {
     fn visit(&self, v: &mut V);
 }

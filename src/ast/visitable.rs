@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::ast::visitor::{Visitable, Visitor};
 
-impl<V: Visitor, T: Visitable<V>> Visitable<V> for Option<T> {
+impl<'a, V: Visitor<'a>, T: Visitable<'a, V>> Visitable<'a, V> for Option<T> {
     fn visit(&self, visitor: &mut V) {
         if let Some(some) = self {
             some.visit(visitor);
@@ -9,43 +9,64 @@ impl<V: Visitor, T: Visitable<V>> Visitable<V> for Option<T> {
     }
 }
 
-impl<V: Visitor, T: Visitable<V>> Visitable<V> for Vec<T> {
+impl<'a, V: Visitor<'a>, T: Visitable<'a, V>> Visitable<'a, V> for Vec<T> {
     fn visit(&self, visitor: &mut V) {
         self.iter().for_each(|visitable| visitable.visit(visitor));
     }
 }
 
-impl<V: Visitor> Visitable<V> for &ast::File<'_> {
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::File<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.File(self);
         self.decls.visit(visitor);
     }
 }
 
-impl<V: Visitor> Visitable<V> for &ast::FuncDecl<'_> {
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::FuncDecl<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.FuncDecl(self);
         self.body.visit(visitor);
     }
 }
 
-impl<V: Visitor> Visitable<V> for &ast::BlockStmt<'_> {
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BlockStmt<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.BlockStmt(self);
     }
 }
 
-impl<V: Visitor> Visitable<V> for &ast::GenDecl<'_> {
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::GenDecl<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.GenDecl(self);
+        self.specs.visit(visitor);
     }
 }
 
-impl<V: Visitor> Visitable<V> for ast::Decl<'_> {
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::ImportSpec<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.ImportSpec(self);
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::ValueSpec<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.ValueSpec(self);
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Decl<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
-            ast::Decl::FuncDecl(func_decl) => visitor.FuncDecl(func_decl),
-            ast::Decl::GenDecl(gen_decl) => visitor.GenDecl(gen_decl),
+            ast::Decl::FuncDecl(f) => f.visit(visitor),
+            ast::Decl::GenDecl(g) => g.visit(visitor),
+        };
+    }
+}
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Spec<'a> {
+    fn visit(&self, visitor: &mut V) {
+        match self {
+            ast::Spec::ImportSpec(i) => i.visit(visitor),
+            ast::Spec::ValueSpec(v) => v.visit(visitor),
         };
     }
 }
