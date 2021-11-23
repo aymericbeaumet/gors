@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::ast::{self, ValueSpec};
+use crate::ast::{self};
 use crate::ast::{Visitable, Visitor};
 use crate::scanner;
 use crate::token::{Position, Token};
@@ -129,8 +129,8 @@ impl<'a> Parser<'a> {
 
         self.consume(Token::EOF)?;
 
-        let mut ic = IdentObjectCollector::default();
-        top_level_decls.visit(&mut ic);
+        let mut ioc = IdentObjectCollector::default();
+        top_level_decls.visit(&mut ioc);
 
         let imports = import_decls
             .iter()
@@ -156,10 +156,10 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
-        let unresolved = ic
+        let unresolved = ioc
             .idents
             .into_iter()
-            .filter(|ident| !ic.objects.contains_key(ident.name))
+            .filter(|ident| !ioc.objects.contains_key(ident.name))
             .collect();
 
         Ok(self.alloc(ast::File {
@@ -169,7 +169,7 @@ impl<'a> Parser<'a> {
             decls,
             scope: Some(self.alloc(ast::Scope {
                 outer: None,
-                objects: ic.objects,
+                objects: ioc.objects,
             })),
             imports,
             unresolved,
