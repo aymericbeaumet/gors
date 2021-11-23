@@ -22,9 +22,16 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::File<'a> {
     }
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::Ident<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.Ident(self);
+    }
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::FuncDecl<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.FuncDecl(self);
+        self.name.visit(visitor);
         self.body.visit(visitor);
     }
 }
@@ -32,6 +39,7 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::FuncDecl<'a> {
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BlockStmt<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.BlockStmt(self);
+        self.list.visit(visitor);
     }
 }
 
@@ -51,6 +59,22 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::ImportSpec<'a> {
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::ValueSpec<'a> {
     fn visit(&self, visitor: &mut V) {
         visitor.ValueSpec(self);
+        self.names.visit(visitor);
+        self.type_.visit(visitor);
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::AssignStmt<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.AssignStmt(self);
+        self.lhs.visit(visitor);
+        self.rhs.visit(visitor);
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BasicLit<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.BasicLit(self);
     }
 }
 
@@ -62,11 +86,29 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Decl<'a> {
         };
     }
 }
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Spec<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
             ast::Spec::ImportSpec(i) => i.visit(visitor),
             ast::Spec::ValueSpec(v) => v.visit(visitor),
+        };
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Stmt<'a> {
+    fn visit(&self, visitor: &mut V) {
+        match self {
+            ast::Stmt::AssignStmt(i) => i.visit(visitor),
+        };
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Expr<'a> {
+    fn visit(&self, visitor: &mut V) {
+        match self {
+            ast::Expr::BasicLit(b) => b.visit(visitor),
+            ast::Expr::Ident(i) => i.visit(visitor),
         };
     }
 }

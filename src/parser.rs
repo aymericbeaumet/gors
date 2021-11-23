@@ -709,14 +709,15 @@ impl<'a> Visitor<'a> for IdentObjectCollector<'a> {
         }
     }
 
+    fn Ident(&mut self, ident: &'a ast::Ident<'a>) {
+        self.idents.push(ident);
+    }
+
     fn ValueSpec(&mut self, value_spec: &'a ast::ValueSpec<'a>) {
         for name in value_spec.names.iter() {
             if let Some(o) = name.obj.get() {
                 self.objects.insert(name.name, o);
             }
-        }
-        if let Some(ast::Expr::Ident(ident)) = value_spec.type_ {
-            self.idents.push(ident);
         }
     }
 }
