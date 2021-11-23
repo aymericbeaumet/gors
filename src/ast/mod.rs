@@ -1,3 +1,5 @@
+mod hashable;
+mod printable;
 mod printer;
 mod visitable;
 mod visitor;
