@@ -53,7 +53,11 @@ impl<W: Write> Printer<W> {
         &mut self,
         val: T,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let h = hash(val); // downside: this hash function should not produce collisions
+        // downside: this hash function should not produce collisions
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        val.hash(&mut hasher);
+        let h = hasher.finish();
+
         if let Some(line) = self.lines.get(&h) {
             write!(self.w, "*(obj @ {})", line)?;
             self.newline()?;
@@ -63,12 +67,6 @@ impl<W: Write> Printer<W> {
             Ok(false)
         }
     }
-}
-
-fn hash<T: Hash>(val: T) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    val.hash(&mut hasher);
-    hasher.finish()
 }
 
 pub type PrintResult = Result<(), Box<dyn std::error::Error>>;
