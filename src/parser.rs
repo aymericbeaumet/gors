@@ -518,7 +518,7 @@ impl<'a> Parser<'a> {
         if lit.is_ok() {
             return lit;
         }
-        return self.OperandName();
+        self.OperandName()
     }
 
     // Literal = BasicLit | CompositeLit | FunctionLit .
