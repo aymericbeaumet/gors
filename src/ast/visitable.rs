@@ -9,6 +9,12 @@ impl<'a, V: Visitor<'a>, T: Visitable<'a, V>> Visitable<'a, V> for Option<T> {
     }
 }
 
+impl<'a, V: Visitor<'a>, T: Visitable<'a, V>> Visitable<'a, V> for &Vec<T> {
+    fn visit(&self, visitor: &mut V) {
+        self.iter().for_each(|visitable| visitable.visit(visitor));
+    }
+}
+
 impl<'a, V: Visitor<'a>, T: Visitable<'a, V>> Visitable<'a, V> for Vec<T> {
     fn visit(&self, visitor: &mut V) {
         self.iter().for_each(|visitable| visitable.visit(visitor));

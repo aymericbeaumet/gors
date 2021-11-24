@@ -3,6 +3,14 @@
 use crate::ast;
 
 pub trait Visitor<'a> {
+    fn visit<T>(&mut self, node: T)
+    where
+        T: Visitable<'a, Self>,
+        Self: Sized,
+    {
+        node.visit(self);
+    }
+
     fn AssignStmt(&mut self, _: &'a ast::AssignStmt<'a>) {}
     fn BasicLit(&mut self, _: &'a ast::BasicLit<'a>) {}
     fn BlockStmt(&mut self, _: &'a ast::BlockStmt<'a>) {}

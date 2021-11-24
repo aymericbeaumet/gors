@@ -1,12 +1,14 @@
 mod hashable;
 mod printable;
 mod printer;
+mod resolver;
 mod visitable;
 mod visitor;
 
 use crate::token::{Position, Token};
 use std::collections::BTreeMap;
 
+pub use resolver::Resolver;
 pub use visitor::{Visitable, Visitor};
 
 pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(

@@ -1,12 +1,10 @@
 #![allow(non_snake_case)]
 
-use crate::ast::{self};
-use crate::ast::{Visitable, Visitor};
+use crate::ast::{self, Resolver, Visitor};
 use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug)]
@@ -129,8 +127,8 @@ impl<'a> Parser<'a> {
 
         self.consume(Token::EOF)?;
 
-        let mut ioc = IdentObjectCollector::default();
-        top_level_decls.visit(&mut ioc);
+        let mut resolver = Resolver::new();
+        resolver.visit(&top_level_decls);
 
         let imports = import_decls
             .iter()
@@ -156,10 +154,10 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
-        let unresolved = ioc
+        let unresolved = resolver
             .idents
             .into_iter()
-            .filter(|ident| !ioc.objects.contains_key(ident.name))
+            .filter(|ident| !resolver.objects.contains_key(ident.name))
             .collect();
 
         Ok(self.alloc(ast::File {
@@ -169,7 +167,7 @@ impl<'a> Parser<'a> {
             decls,
             scope: Some(self.alloc(ast::Scope {
                 outer: None,
-                objects: ioc.objects,
+                objects: resolver.objects,
             })),
             imports,
             unresolved,
@@ -694,30 +692,4 @@ fn repetition<'a, T>(
         out.push(v);
     }
     Ok(out)
-}
-
-#[derive(Default)]
-struct IdentObjectCollector<'a> {
-    idents: Vec<&'a ast::Ident<'a>>,
-    objects: BTreeMap<&'a str, &'a ast::Object<'a>>,
-}
-
-impl<'a> Visitor<'a> for IdentObjectCollector<'a> {
-    fn FuncDecl(&mut self, func_decl: &'a ast::FuncDecl<'a>) {
-        if let Some(o) = func_decl.name.obj.get() {
-            self.objects.insert(func_decl.name.name, o);
-        }
-    }
-
-    fn Ident(&mut self, ident: &'a ast::Ident<'a>) {
-        self.idents.push(ident);
-    }
-
-    fn ValueSpec(&mut self, value_spec: &'a ast::ValueSpec<'a>) {
-        for name in value_spec.names.iter() {
-            if let Some(o) = name.obj.get() {
-                self.objects.insert(name.name, o);
-            }
-        }
-    }
 }
