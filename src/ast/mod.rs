@@ -182,6 +182,13 @@ pub struct BinaryExpr<'a> {
     pub y: Expr<'a>,          // right operand
 }
 
+// https://pkg.go.dev/go/ast#ReturnStmt
+#[derive(Debug)]
+pub struct ReturnStmt<'a> {
+    pub return_: Position<'a>,  // position of "return" keyword
+    pub results: Vec<Expr<'a>>, // result expressions; or nil
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -201,4 +208,5 @@ pub enum Expr<'a> {
 #[derive(Debug)]
 pub enum Stmt<'a> {
     AssignStmt(&'a AssignStmt<'a>),
+    ReturnStmt(&'a ReturnStmt<'a>),
 }

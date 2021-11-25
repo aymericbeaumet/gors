@@ -448,10 +448,18 @@ impl<'a> Parser<'a> {
     fn IdentifierList(&mut self) -> ParserResult<'a, Vec<&'a ast::Ident<'a>>> {
         log::debug!("IdentifierList");
 
-        let mut out = vec![self.identifier()?];
+        let mut out = vec![];
+
+        if let Ok(ident) = self.identifier() {
+            out.push(ident);
+        } else {
+            return Ok(out);
+        }
+
         while self.consume(Token::COMMA).is_ok() {
             out.push(self.identifier()?);
         }
+
         Ok(out)
     }
 
@@ -459,10 +467,18 @@ impl<'a> Parser<'a> {
     fn ExpressionList(&mut self) -> ParserResult<'a, Vec<ast::Expr<'a>>> {
         log::debug!("ExpressionList");
 
-        let mut out = vec![self.Expression()?];
+        let mut out = vec![];
+
+        if let Ok(expression) = self.Expression() {
+            out.push(expression);
+        } else {
+            return Ok(out);
+        }
+
         while self.consume(Token::COMMA).is_ok() {
             out.push(self.Expression()?);
         }
+
         Ok(out)
     }
 
@@ -647,7 +663,26 @@ impl<'a> Parser<'a> {
     fn Statement(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
         log::debug!("Statement");
 
+        if let Some(return_stmt) = self.ReturnStmt()? {
+            return Ok(ast::Stmt::ReturnStmt(return_stmt));
+        }
+
         self.SimpleStmt()
+    }
+
+    // ReturnStmt = "return" [ ExpressionList ] .
+    fn ReturnStmt(&mut self) -> ParserResult<'a, Option<&'a ast::ReturnStmt<'a>>> {
+        log::debug!("ReturnStmt");
+
+        if let Ok(return_) = self.consume(Token::RETURN) {
+            let results = self.ExpressionList()?;
+            Ok(Some(self.alloc(ast::ReturnStmt {
+                return_: return_.0,
+                results,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     // SimpleStmt   = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .

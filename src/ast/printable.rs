@@ -144,6 +144,25 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::ReturnStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ReturnStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Return: ")?;
+        self.return_.print(p)?;
+
+        p.prefix()?;
+        p.write("Results: ")?;
+        self.results.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::BinaryExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BinaryExpr ")?;
@@ -659,6 +678,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
+            ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
         }
     }
 }

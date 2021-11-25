@@ -20,6 +20,7 @@ pub trait Visitor<'a> {
     fn GenDecl(&mut self, _: &'a ast::GenDecl<'a>) {}
     fn Ident(&mut self, _: &'a ast::Ident<'a>) {}
     fn ImportSpec(&mut self, _: &'a ast::ImportSpec<'a>) {}
+    fn ReturnStmt(&mut self, _: &'a ast::ReturnStmt<'a>) {}
     fn ValueSpec(&mut self, _: &'a ast::ValueSpec<'a>) {}
 }
 

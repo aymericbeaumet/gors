@@ -84,6 +84,12 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BasicLit<'a> {
     }
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::ReturnStmt<'a> {
+    fn visit(&self, visitor: &mut V) {
+        visitor.ReturnStmt(self);
+    }
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BinaryExpr<'a> {
     fn visit(&self, _: &mut V) {}
 }
@@ -110,6 +116,7 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Stmt<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
             ast::Stmt::AssignStmt(node) => node.visit(visitor),
+            ast::Stmt::ReturnStmt(node) => node.visit(visitor),
         };
     }
 }
