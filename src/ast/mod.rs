@@ -28,14 +28,20 @@ pub struct CommentGroup {
 // https://pkg.go.dev/go/ast#FieldList
 #[derive(Debug)]
 pub struct FieldList<'a> {
-    pub opening: Position<'a>, // position of opening parenthesis/brace, if any
-    pub list: Vec<&'a Field>,  // field list; or nil
-    pub closing: Position<'a>, // position of closing parenthesis/brace, if any
+    pub opening: Option<Position<'a>>, // position of opening parenthesis/brace, if any
+    pub list: Vec<&'a Field<'a>>,      // field list; or nil
+    pub closing: Option<Position<'a>>, // position of closing parenthesis/brace, if any
 }
 
 // https://pkg.go.dev/go/ast#Field
 #[derive(Debug)]
-pub struct Field {}
+pub struct Field<'a> {
+    pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
+    pub names: Vec<&'a Ident<'a>>, // field/method/(type) parameter names, or type "type"; or nil
+    pub type_: Option<Expr<'a>>,   // field/method/parameter type, type list type; or nil
+    pub tag: Option<&'a BasicLit<'a>>, // field tag; or nil
+    pub comment: Option<&'a CommentGroup>, // line comments; or nil
+}
 
 // https://pkg.go.dev/go/ast#File
 #[derive(Debug)]
@@ -73,7 +79,7 @@ pub struct BlockStmt<'a> {
 pub struct FuncType<'a> {
     pub func: Position<'a>, // position of "func" keyword (token.NoPos if there is no "func")
     pub params: &'a FieldList<'a>, // (incoming) parameters; non-nil
-                            //pub results: FieldList<'a>, // (outgoing) results; or nil
+    pub results: Option<&'a FieldList<'a>>, // (outgoing) results; or nil
 }
 
 // https://pkg.go.dev/go/ast#Ident

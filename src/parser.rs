@@ -31,12 +31,12 @@ impl<'a> fmt::Display for ParserError<'a> {
 
 pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
 
-trait ParserResultMethods {
+trait ParserResultRequired {
     type Out;
     fn required(self) -> Self::Out;
 }
 
-impl<'a, T> ParserResultMethods for ParserResult<'a, Option<T>> {
+impl<'a, T> ParserResultRequired for ParserResult<'a, Option<T>> {
     type Out = ParserResult<'a, T>;
     fn required(self) -> Self::Out {
         match self {
@@ -201,7 +201,7 @@ impl<'a> Parser<'a> {
     fn PackageName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
         log::debug!("PackageName");
 
-        self.identifier()
+        self.identifier().required()
     }
 
     // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
@@ -365,7 +365,7 @@ impl<'a> Parser<'a> {
             (None, self.ExpressionList().required()?)
         } else {
             (
-                Some(self.Type()?),
+                self.Type()?,
                 if self.consume(Token::ASSIGN).is_ok() {
                     self.ExpressionList().required()?
                 } else {
@@ -441,7 +441,7 @@ impl<'a> Parser<'a> {
             (None, self.ExpressionList().required()?)
         } else {
             (
-                Some(self.Type()?),
+                self.Type()?,
                 if self.consume(Token::ASSIGN).is_ok() {
                     self.ExpressionList().required()?
                 } else {
@@ -467,14 +467,14 @@ impl<'a> Parser<'a> {
 
         let mut out = vec![];
 
-        if let Ok(ident) = self.identifier() {
+        if let Some(ident) = self.identifier()? {
             out.push(ident);
         } else {
             return Ok(None);
         }
 
         while self.consume(Token::COMMA).is_ok() {
-            out.push(self.identifier()?);
+            out.push(self.identifier().required()?);
         }
 
         Ok(Some(out))
@@ -562,7 +562,7 @@ impl<'a> Parser<'a> {
     fn OperandName(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
         log::debug!("OperandName");
 
-        Ok(ast::Expr::Ident(self.identifier()?))
+        Ok(ast::Expr::Ident(self.identifier().required()?))
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
@@ -576,15 +576,18 @@ impl<'a> Parser<'a> {
     // TypeName  = identifier | QualifiedIdent .
     // TypeLit   = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
     // SliceType | MapType | ChannelType .
-    fn Type(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn Type(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("Type");
 
-        Ok(ast::Expr::Ident(self.identifier()?))
+        if let Some(ident) = self.identifier()? {
+            Ok(Some(ast::Expr::Ident(ident)))
+        } else {
+            Ok(None)
+        }
     }
 
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
     // Signature    = Parameters [ Result ] .
-    // Result       = Parameters | Type .
     fn FunctionDecl(&mut self) -> ParserResult<'a, Option<&'a ast::FuncDecl<'a>>> {
         log::debug!("FunctionDecl");
 
@@ -597,10 +600,12 @@ impl<'a> Parser<'a> {
 
         let function_name = self.FunctionName()?;
 
-        let params = self.Parameters()?;
+        let params = self.Parameters().required()?;
+        let results = self.Result()?;
         let signature = self.alloc(ast::FuncType {
             func: func.0,
             params,
+            results,
         });
 
         let function_body = self.FunctionBody()?;
@@ -610,53 +615,85 @@ impl<'a> Parser<'a> {
             recv: None,
             name: function_name,
             type_: signature,
-            body: Some(function_body),
+            body: function_body,
         });
 
         Ok(Some(out))
+    }
+
+    // Result = Parameters | Type .
+    fn Result(&mut self) -> ParserResult<'a, Option<&'a ast::FieldList<'a>>> {
+        log::debug!("Result");
+
+        if let Some(parameters) = self.Parameters()? {
+            Ok(Some(parameters))
+        } else if let Some(type_) = self.Type()? {
+            Ok(Some(self.alloc(ast::FieldList {
+                opening: None,
+                list: vec![self.alloc(ast::Field {
+                    doc: None,
+                    names: vec![],
+                    tag: None,
+                    type_: Some(type_),
+                    comment: None,
+                })],
+                closing: None,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     // FunctionName = identifier .
     fn FunctionName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
         log::debug!("FunctionName");
 
-        self.identifier()
+        self.identifier().required()
     }
 
     // Parameters     = "(" [ ParameterList [ "," ] ] ")" .
     // ParameterList  = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
-    fn Parameters(&mut self) -> ParserResult<'a, &'a ast::FieldList<'a>> {
+    fn Parameters(&mut self) -> ParserResult<'a, Option<&'a ast::FieldList<'a>>> {
         log::debug!("Parameters");
 
-        let lparen = self.consume(Token::LPAREN)?;
+        let lparen = self.consume(Token::LPAREN);
+        if lparen.is_err() {
+            return Ok(None);
+        }
+        let lparen = lparen.unwrap();
+
         let rparen = self.consume(Token::RPAREN)?;
-        Ok(self.alloc(ast::FieldList {
-            opening: lparen.0,
+        Ok(Some(self.alloc(ast::FieldList {
+            opening: Some(lparen.0),
             list: vec![],
-            closing: rparen.0,
-        }))
+            closing: Some(rparen.0),
+        })))
     }
 
     // FunctionBody = Block .
-    fn FunctionBody(&mut self) -> ParserResult<'a, &'a ast::BlockStmt<'a>> {
+    fn FunctionBody(&mut self) -> ParserResult<'a, Option<&'a ast::BlockStmt<'a>>> {
         log::debug!("FunctionBody");
 
         self.Block()
     }
 
     // Block = "{" StatementList "}" .
-    fn Block(&mut self) -> ParserResult<'a, &'a ast::BlockStmt<'a>> {
+    fn Block(&mut self) -> ParserResult<'a, Option<&'a ast::BlockStmt<'a>>> {
         log::debug!("Block");
 
-        let lbrace = self.consume(Token::LBRACE)?;
+        let lbrace = self.consume(Token::LBRACE);
+        if lbrace.is_err() {
+            return Ok(None);
+        }
+        let lbrace = lbrace.unwrap();
         let list = self.StatementList()?;
         let rbrace = self.consume(Token::RBRACE)?;
-        Ok(self.alloc(ast::BlockStmt {
+        Ok(Some(self.alloc(ast::BlockStmt {
             lbrace: lbrace.0,
             list,
             rbrace: rbrace.0,
-        }))
+        })))
     }
 
     // StatementList = { Statement ";" } .
@@ -780,15 +817,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn identifier(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
+    fn identifier(&mut self) -> ParserResult<'a, Option<&'a ast::Ident<'a>>> {
         log::debug!("identifier");
 
-        let ident = self.consume(Token::IDENT)?;
-        Ok(self.alloc(ast::Ident {
-            name_pos: ident.0,
-            name: ident.2,
-            obj: Cell::new(None),
-        }))
+        if let Ok(ident) = self.consume(Token::IDENT) {
+            Ok(Some(self.alloc(ast::Ident {
+                name_pos: ident.0,
+                name: ident.2,
+                obj: Cell::new(None),
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     fn int_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {

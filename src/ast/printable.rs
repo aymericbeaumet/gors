@@ -50,14 +50,19 @@ impl<W: Write> Printable<W> for Vec<&ast::CommentGroup> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::Field> {
+impl<W: Write> Printable<W> for Vec<&ast::Field<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
             p.newline()?;
         } else {
-            write!(p.w, "[]ast.Field (len = {}) ", self.len())?;
+            write!(p.w, "[]*ast.Field (len = {}) ", self.len())?;
             p.open_bracket()?;
+            for (i, decl) in self.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: ", i)?;
+                decl.print(p)?;
+            }
             p.close_bracket()?;
         }
         Ok(())
@@ -109,7 +114,12 @@ impl<W: Write> Printable<W> for &ast::FieldList<'_> {
 
         p.prefix()?;
         p.write("Opening: ")?;
-        self.opening.print(p)?;
+        if let Some(opening) = self.opening {
+            opening.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
 
         p.prefix()?;
         p.write("List: ")?;
@@ -117,7 +127,12 @@ impl<W: Write> Printable<W> for &ast::FieldList<'_> {
 
         p.prefix()?;
         p.write("Closing: ")?;
-        self.closing.print(p)?;
+        if let Some(closing) = self.closing {
+            closing.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
 
         p.close_bracket()?;
 
@@ -239,8 +254,33 @@ impl<W: Write> Printable<W> for &ast::CommentGroup {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Field {
-    fn print(&self, _: &mut Printer<W>) -> PrintResult {
+impl<W: Write> Printable<W> for &ast::Field<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.Field ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("Names: ")?;
+        self.names.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Tag: ")?;
+        self.tag.print(p)?;
+
+        p.prefix()?;
+        p.write("Comment: ")?;
+        self.comment.print(p)?;
+
+        p.close_bracket()?;
+
         Ok(())
     }
 }
@@ -328,8 +368,8 @@ impl<W: Write> Printable<W> for &ast::FuncType<'_> {
         self.params.print(p)?;
 
         p.prefix()?;
-        p.write("Results: nil")?;
-        p.newline()?;
+        p.write("Results: ")?;
+        self.results.print(p)?;
 
         p.close_bracket()?;
 
