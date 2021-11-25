@@ -37,9 +37,9 @@ pub struct FieldList<'a> {
 #[derive(Debug)]
 pub struct Field<'a> {
     pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
-    pub names: Vec<&'a Ident<'a>>, // field/method/(type) parameter names, or type "type"; or nil
-    pub type_: Option<Expr<'a>>,   // field/method/parameter type, type list type; or nil
-    pub tag: Option<&'a BasicLit<'a>>, // field tag; or nil
+    pub names: Option<Vec<&'a Ident<'a>>>, // field/method/(type) parameter names, or type "type"; or nil
+    pub type_: Option<Expr<'a>>,           // field/method/parameter type, type list type; or nil
+    pub tag: Option<&'a BasicLit<'a>>,     // field tag; or nil
     pub comment: Option<&'a CommentGroup>, // line comments; or nil
 }
 

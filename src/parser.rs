@@ -12,7 +12,7 @@ pub enum ParserError<'a> {
     MissingRequiredProduction,
     ScannerError(ScannerError),
     UnexpectedEndOfFile,
-    UnexpectedToken((Position<'a>, Token, &'a str)),
+    UnexpectedToken(Token, (Position<'a>, Token, &'a str)),
 }
 
 impl<'a> std::error::Error for ParserError<'a> {}
@@ -31,14 +31,12 @@ impl<'a> fmt::Display for ParserError<'a> {
 
 pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
 
-trait ParserResultRequired {
-    type Out;
-    fn required(self) -> Self::Out;
+trait ParserResultExt<'a, T> {
+    fn required(self) -> ParserResult<'a, T>;
 }
 
-impl<'a, T> ParserResultRequired for ParserResult<'a, Option<T>> {
-    type Out = ParserResult<'a, T>;
-    fn required(self) -> Self::Out {
+impl<'a, T> ParserResultExt<'a, T> for ParserResult<'a, Option<T>> {
+    fn required(self) -> ParserResult<'a, T> {
         match self {
             Ok(Some(node)) => Ok(node),
             Ok(None) => Err(ParserError::MissingRequiredProduction),
@@ -62,7 +60,7 @@ pub fn parse_file<'a>(
 ) -> ParserResult<'a, &'a ast::File<'a>> {
     let s = Scanner::new(filepath, buffer);
     let mut p = Parser::new(arena, s);
-    p.SourceFile()
+    p.SourceFile().required()
 }
 
 struct Parser<'a> {
@@ -99,7 +97,7 @@ impl<'a> Parser<'a> {
             if current.1 == expected {
                 Ok(current)
             } else {
-                Err(ParserError::UnexpectedToken(current))
+                Err(ParserError::UnexpectedToken(expected, current))
             }
         })
     }
@@ -122,10 +120,10 @@ impl<'a> Parser<'a> {
      */
 
     // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
-    fn SourceFile(&mut self) -> ParserResult<'a, &'a ast::File<'a>> {
+    fn SourceFile(&mut self) -> ParserResult<'a, Option<&'a ast::File<'a>>> {
         log::debug!("SourceFile");
 
-        let (package, package_name) = self.PackageClause()?;
+        let (package, package_name) = self.PackageClause().required()?;
         self.consume(Token::SEMICOLON)?;
 
         let mut import_decls = repetition(|| match self.ImportDecl() {
@@ -135,7 +133,8 @@ impl<'a> Parser<'a> {
             }
             Ok(None) => Ok(None),
             Err(err) => Err(err),
-        })?;
+        })
+        .required()?;
 
         let mut top_level_decls = repetition(|| match self.TopLevelDecl() {
             Ok(Some(out)) => {
@@ -143,7 +142,8 @@ impl<'a> Parser<'a> {
                 Ok(Some(out))
             }
             out => out,
-        })?;
+        })
+        .required()?;
 
         self.consume(Token::EOF)?;
 
@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
-        Ok(self.alloc(ast::File {
+        Ok(Some(self.alloc(ast::File {
             doc: None,
             package: package.0,
             name: package_name,
@@ -183,25 +183,25 @@ impl<'a> Parser<'a> {
             imports,
             unresolved: vec![],
             comments: vec![],
-        }))
+        })))
     }
 
     // PackageClause = "package" PackageName .
     fn PackageClause(
         &mut self,
-    ) -> ParserResult<'a, ((Position<'a>, Token, &'a str), &'a ast::Ident<'a>)> {
+    ) -> ParserResult<'a, Option<((Position<'a>, Token, &'a str), &'a ast::Ident<'a>)>> {
         log::debug!("PackageClause");
 
         let package = self.consume(Token::PACKAGE)?;
-        let package_name = self.PackageName()?;
-        Ok((package, package_name))
+        let package_name = self.PackageName().required()?;
+        Ok(Some((package, package_name)))
     }
 
     // PackageName = identifier .
-    fn PackageName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
+    fn PackageName(&mut self) -> ParserResult<'a, Option<&'a ast::Ident<'a>>> {
         log::debug!("PackageName");
 
-        self.identifier().required()
+        self.identifier()
     }
 
     // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
 
         let lparen = self.expect(Token::LPAREN);
         if lparen.is_err() {
-            let specs = vec![ast::Spec::ImportSpec(self.ImportSpec()?)];
+            let specs = vec![ast::Spec::ImportSpec(self.ImportSpec().required()?)];
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: import.0,
@@ -231,12 +231,13 @@ impl<'a> Parser<'a> {
         self.next()?;
 
         let specs = repetition(|| match self.ImportSpec() {
-            Ok(out) => {
+            Ok(Some(out)) => {
                 self.consume(Token::SEMICOLON)?;
                 Ok(Some(ast::Spec::ImportSpec(out)))
             }
             _ => Ok(None),
-        })?;
+        })
+        .required()?;
 
         let rparen = self.consume(Token::RPAREN)?;
 
@@ -251,7 +252,7 @@ impl<'a> Parser<'a> {
     }
 
     // ImportSpec = [ "." | PackageName ] ImportPath .
-    fn ImportSpec(&mut self) -> ParserResult<'a, &'a ast::ImportSpec<'a>> {
+    fn ImportSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ImportSpec<'a>>> {
         log::debug!("ImportSpec");
 
         let name = if let Ok(period) = self.consume(Token::PERIOD) {
@@ -260,24 +261,24 @@ impl<'a> Parser<'a> {
                 name: ".",
                 obj: Cell::new(None),
             }))
-        } else if let Ok(package_name) = self.PackageName() {
+        } else if let Some(package_name) = self.PackageName()? {
             Some(package_name)
         } else {
             None
         };
 
-        let import_path = self.ImportPath()?;
+        let import_path = self.ImportPath().required()?;
 
-        Ok(self.alloc(ast::ImportSpec {
+        Ok(Some(self.alloc(ast::ImportSpec {
             doc: None,
             name,
             path: import_path,
             comment: None,
-        }))
+        })))
     }
 
     // ImportPath = string_lit .
-    fn ImportPath(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+    fn ImportPath(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("ImportPath");
 
         self.string_lit()
@@ -322,7 +323,7 @@ impl<'a> Parser<'a> {
 
         let lparen = self.expect(Token::LPAREN);
         if lparen.is_err() {
-            let specs = vec![ast::Spec::ValueSpec(self.ConstSpec()?)];
+            let specs = vec![ast::Spec::ValueSpec(self.ConstSpec().required()?)];
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: const_.0,
@@ -336,12 +337,13 @@ impl<'a> Parser<'a> {
         self.next()?;
 
         let specs = repetition(|| match self.ConstSpec() {
-            Ok(out) => {
+            Ok(Some(out)) => {
                 self.consume(Token::SEMICOLON)?;
                 Ok(Some(ast::Spec::ValueSpec(out)))
             }
             _ => Ok(None),
-        })?;
+        })
+        .required()?;
 
         let rparen = self.consume(Token::RPAREN)?;
 
@@ -356,7 +358,7 @@ impl<'a> Parser<'a> {
     }
 
     // ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] .
-    fn ConstSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
+    fn ConstSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ValueSpec<'a>>> {
         log::debug!("ConstSpec");
 
         let names = self.IdentifierList().required()?;
@@ -374,15 +376,13 @@ impl<'a> Parser<'a> {
             )
         };
 
-        let out = self.alloc(ast::ValueSpec {
+        Ok(Some(self.alloc(ast::ValueSpec {
             doc: None,
             names,
             type_,
             values,
             comment: None,
-        });
-
-        Ok(out)
+        })))
     }
 
     // VarDecl = "var" ( VarSpec | "(" { VarSpec ";" } ")" ) .
@@ -398,7 +398,7 @@ impl<'a> Parser<'a> {
 
         let lparen = self.expect(Token::LPAREN);
         if lparen.is_err() {
-            let specs = vec![ast::Spec::ValueSpec(self.VarSpec()?)];
+            let specs = vec![ast::Spec::ValueSpec(self.VarSpec().required()?)];
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: var.0,
@@ -412,12 +412,13 @@ impl<'a> Parser<'a> {
         self.next()?;
 
         let specs = repetition(|| match self.VarSpec() {
-            Ok(out) => {
+            Ok(Some(out)) => {
                 self.consume(Token::SEMICOLON)?;
                 Ok(Some(ast::Spec::ValueSpec(out)))
             }
             _ => Ok(None),
-        })?;
+        })
+        .required()?;
 
         let rparen = self.consume(Token::RPAREN)?;
 
@@ -432,7 +433,7 @@ impl<'a> Parser<'a> {
     }
 
     // VarSpec = IdentifierList ( Type [ "=" ExpressionList ] | "=" ExpressionList ) .
-    fn VarSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
+    fn VarSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ValueSpec<'a>>> {
         log::debug!("VarSpec");
 
         let names = self.IdentifierList().required()?;
@@ -450,15 +451,13 @@ impl<'a> Parser<'a> {
             )
         };
 
-        let out = self.alloc(ast::ValueSpec {
+        Ok(Some(self.alloc(ast::ValueSpec {
             doc: None,
             names,
             type_,
             values,
             comment: None,
-        });
-
-        Ok(out)
+        })))
     }
 
     // IdentifierList = identifier { "," identifier } .
@@ -486,40 +485,43 @@ impl<'a> Parser<'a> {
 
         let mut out = vec![];
 
-        if let Ok(expression) = self.Expression() {
+        if let Some(expression) = self.Expression()? {
             out.push(expression);
         } else {
             return Ok(None);
         }
 
         while self.consume(Token::COMMA).is_ok() {
-            out.push(self.Expression()?);
+            out.push(self.Expression().required()?);
         }
 
         Ok(Some(out))
     }
 
     // Expression = UnaryExpr | Expression binary_op Expression .
-    fn Expression(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn Expression(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("Expression");
 
-        let x = self.UnaryExpr()?;
+        let x = match self.UnaryExpr()? {
+            Some(x) => x,
+            None => return Ok(None),
+        };
 
-        if let Ok(op) = self.binary_op() {
-            let y = self.Expression()?;
-            return Ok(ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
+        if let Some(op) = self.binary_op()? {
+            let y = self.Expression().required()?;
+            return Ok(Some(ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
                 x,
                 op_pos: op.0,
                 op: op.1,
                 y,
-            })));
+            }))));
         }
 
-        Ok(x)
+        Ok(Some(x))
     }
 
     // UnaryExpr = PrimaryExpr | unary_op UnaryExpr .
-    fn UnaryExpr(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn UnaryExpr(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("UnaryExpr");
 
         self.PrimaryExpr()
@@ -534,39 +536,47 @@ impl<'a> Parser<'a> {
     //         PrimaryExpr Slice |
     //         PrimaryExpr TypeAssertion |
     //         PrimaryExpr Arguments .
-    fn PrimaryExpr(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn PrimaryExpr(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("PrimaryExpr");
 
         self.Operand()
     }
 
     // Operand = Literal | OperandName | "(" Expression ")" .
-    fn Operand(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn Operand(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("Operand");
 
-        let lit = self.Literal();
-        if lit.is_ok() {
-            return lit;
+        if let Some(lit) = self.Literal()? {
+            return Ok(Some(lit));
         }
+
         self.OperandName()
     }
 
     // Literal = BasicLit | CompositeLit | FunctionLit .
-    fn Literal(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn Literal(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("Literal");
 
-        Ok(ast::Expr::BasicLit(self.BasicLit()?))
+        if let Some(lit) = self.BasicLit()? {
+            return Ok(Some(ast::Expr::BasicLit(lit)));
+        }
+
+        Ok(None)
     }
 
     // OperandName = identifier | QualifiedIdent .
-    fn OperandName(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
+    fn OperandName(&mut self) -> ParserResult<'a, Option<ast::Expr<'a>>> {
         log::debug!("OperandName");
 
-        Ok(ast::Expr::Ident(self.identifier().required()?))
+        if let Some(ident) = self.identifier()? {
+            return Ok(Some(ast::Expr::Ident(ident)));
+        }
+
+        Ok(None)
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
-    fn BasicLit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+    fn BasicLit(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("BasicLit");
 
         self.int_lit()
@@ -580,10 +590,10 @@ impl<'a> Parser<'a> {
         log::debug!("Type");
 
         if let Some(ident) = self.identifier()? {
-            Ok(Some(ast::Expr::Ident(ident)))
-        } else {
-            Ok(None)
+            return Ok(Some(ast::Expr::Ident(ident)));
         }
+
+        Ok(None)
     }
 
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
@@ -632,7 +642,7 @@ impl<'a> Parser<'a> {
                 opening: None,
                 list: vec![self.alloc(ast::Field {
                     doc: None,
-                    names: vec![],
+                    names: None,
                     tag: None,
                     type_: Some(type_),
                     comment: None,
@@ -651,9 +661,7 @@ impl<'a> Parser<'a> {
         self.identifier().required()
     }
 
-    // Parameters     = "(" [ ParameterList [ "," ] ] ")" .
-    // ParameterList  = ParameterDecl { "," ParameterDecl } .
-    // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
+    // Parameters = "(" [ ParameterList [ "," ] ] ")" .
     fn Parameters(&mut self) -> ParserResult<'a, Option<&'a ast::FieldList<'a>>> {
         log::debug!("Parameters");
 
@@ -663,12 +671,56 @@ impl<'a> Parser<'a> {
         }
         let lparen = lparen.unwrap();
 
+        let list = self
+            .ParameterList()?
+            .and_then(|list| {
+                self.consume(Token::COMMA);
+                Some(list)
+            })
+            .unwrap_or(vec![]);
+
         let rparen = self.consume(Token::RPAREN)?;
         Ok(Some(self.alloc(ast::FieldList {
             opening: Some(lparen.0),
-            list: vec![],
+            list,
             closing: Some(rparen.0),
         })))
+    }
+
+    // ParameterList = ParameterDecl { "," ParameterDecl } .
+    fn ParameterList(&mut self) -> ParserResult<'a, Option<Vec<&'a ast::Field<'a>>>> {
+        log::debug!("ExpressionList");
+
+        let mut out = vec![];
+
+        if let Some(expression) = self.ParameterDecl()? {
+            out.push(expression);
+        } else {
+            return Ok(None);
+        }
+
+        while self.consume(Token::COMMA).is_ok() {
+            out.push(self.ParameterDecl().required()?);
+        }
+
+        Ok(Some(out))
+    }
+
+    // ParameterDecl = [ IdentifierList ] [ "..." ] Type .
+    fn ParameterDecl(&mut self) -> ParserResult<'a, Option<&'a ast::Field<'a>>> {
+        log::debug!("ParameterDecl");
+
+        if let Some(type_) = self.Type()? {
+            Ok(Some(self.alloc(ast::Field {
+                doc: None,
+                names: None,
+                type_: Some(type_),
+                tag: None,
+                comment: None,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     // FunctionBody = Block .
@@ -687,7 +739,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let lbrace = lbrace.unwrap();
-        let list = self.StatementList()?;
+        let list = self.StatementList().required()?;
         let rbrace = self.consume(Token::RBRACE)?;
         Ok(Some(self.alloc(ast::BlockStmt {
             lbrace: lbrace.0,
@@ -697,11 +749,11 @@ impl<'a> Parser<'a> {
     }
 
     // StatementList = { Statement ";" } .
-    fn StatementList(&mut self) -> ParserResult<'a, Vec<ast::Stmt<'a>>> {
+    fn StatementList(&mut self) -> ParserResult<'a, Option<Vec<ast::Stmt<'a>>>> {
         log::debug!("StatementList");
 
         repetition(|| match self.Statement() {
-            Ok(out) => {
+            Ok(Some(out)) => {
                 self.consume(Token::SEMICOLON)?;
                 Ok(Some(out))
             }
@@ -714,11 +766,11 @@ impl<'a> Parser<'a> {
     //         GoStmt | ReturnStmt | BreakStmt | ContinueStmt | GotoStmt |
     //         FallthroughStmt | Block | IfStmt | SwitchStmt | SelectStmt | ForStmt |
     //         DeferStmt .
-    fn Statement(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
+    fn Statement(&mut self) -> ParserResult<'a, Option<ast::Stmt<'a>>> {
         log::debug!("Statement");
 
         if let Some(return_stmt) = self.ReturnStmt()? {
-            return Ok(ast::Stmt::ReturnStmt(return_stmt));
+            return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
         }
 
         self.SimpleStmt()
@@ -742,7 +794,7 @@ impl<'a> Parser<'a> {
     // SimpleStmt   = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .
     // Assignment   = ExpressionList assign_op ExpressionList .
     // ShortVarDecl = IdentifierList ":=" ExpressionList .
-    fn SimpleStmt(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
+    fn SimpleStmt(&mut self) -> ParserResult<'a, Option<ast::Stmt<'a>>> {
         log::debug!("SimpleStmt");
 
         let lhs = self.ExpressionList().required()?;
@@ -751,24 +803,24 @@ impl<'a> Parser<'a> {
         if lhs.iter().all(|node| matches!(node, ast::Expr::Ident(_))) {
             if let Ok(define_op) = self.consume(Token::DEFINE) {
                 let rhs = self.ExpressionList().required()?;
-                return Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
+                return Ok(Some(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
                     lhs,
                     tok_pos: define_op.0,
                     tok: define_op.1,
                     rhs,
-                })));
+                }))));
             }
         }
 
         // Assignment
-        let assign_op = self.assign_op()?;
+        let assign_op = self.assign_op().required()?;
         let rhs = self.ExpressionList().required()?;
-        Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
+        Ok(Some(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
             lhs,
             tok_pos: assign_op.0,
             tok: assign_op.1,
             rhs,
-        })))
+        }))))
     }
 
     /*
@@ -778,7 +830,7 @@ impl<'a> Parser<'a> {
     // assign_op = [ add_op | mul_op ] "=" .
     // add_op     = "+" | "-" | "|" | "^" .
     // mul_op     = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
-    fn assign_op(&mut self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
+    fn assign_op(&mut self) -> ParserResult<'a, Option<(Position<'a>, Token, &'a str)>> {
         log::debug!("assign_op");
 
         use Token::*;
@@ -789,9 +841,9 @@ impl<'a> Parser<'a> {
             /* mul_op "=" */ MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
              => {
                 self.next()?;
-                Ok(out)
+                Ok(Some(out))
             }
-            _ => Err(ParserError::UnexpectedToken(out)),
+            _ => Ok(None),
         }
     }
 
@@ -799,7 +851,7 @@ impl<'a> Parser<'a> {
     // rel_op     = "==" | "!=" | "<" | "<=" | ">" | ">=" .
     // add_op     = "+" | "-" | "|" | "^" .
     // mul_op     = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
-    fn binary_op(&mut self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
+    fn binary_op(&mut self) -> ParserResult<'a, Option<(Position<'a>, Token, &'a str)>> {
         log::debug!("binary_op");
 
         use Token::*;
@@ -811,9 +863,9 @@ impl<'a> Parser<'a> {
             /* mul_op */ MUL | QUO | REM | SHL | SHR | AND | AND_NOT
              => {
                 self.next()?;
-                Ok(out)
+                Ok(Some(out))
             }
-            _ => Err(ParserError::UnexpectedToken(out)),
+            _ => Ok(None),
         }
     }
 
@@ -831,35 +883,41 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn int_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+    fn int_lit(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("int_lit");
 
-        let int_lit = self.consume(Token::INT)?;
-        Ok(self.alloc(ast::BasicLit {
-            kind: int_lit.1,
-            value: int_lit.2,
-            value_pos: int_lit.0,
-        }))
+        if let Ok(int_lit) = self.consume(Token::INT) {
+            Ok(Some(self.alloc(ast::BasicLit {
+                kind: int_lit.1,
+                value: int_lit.2,
+                value_pos: int_lit.0,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn string_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+    fn string_lit(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("string_lit");
 
-        let out = self.consume(Token::STRING)?;
-        Ok(self.alloc(ast::BasicLit {
-            value_pos: out.0,
-            kind: out.1,
-            value: out.2,
-        }))
+        if let Ok(string_lit) = self.consume(Token::STRING) {
+            Ok(Some(self.alloc(ast::BasicLit {
+                value_pos: string_lit.0,
+                kind: string_lit.1,
+                value: string_lit.2,
+            })))
+        } else {
+            Ok(None)
+        }
     }
 }
 
 fn repetition<'a, T>(
     mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
-) -> ParserResult<'a, Vec<T>> {
+) -> ParserResult<'a, Option<Vec<T>>> {
     let mut out = vec![];
     while let Some(v) = func()? {
         out.push(v);
     }
-    Ok(out)
+    Ok(Some(out))
 }
