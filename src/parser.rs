@@ -103,7 +103,7 @@ impl<'a> Parser<'a> {
      * Non-terminal productions
      */
 
-    // SourceFile    = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
+    // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     fn SourceFile(&mut self) -> ParserResult<'a, &'a ast::File<'a>> {
         let (package, package_name) = self.PackageClause()?;
         self.consume(Token::SEMICOLON)?;
@@ -154,11 +154,13 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
-        let unresolved = resolver
-            .idents
-            .into_iter()
-            .filter(|ident| !resolver.objects.contains_key(ident.name))
-            .collect();
+        // TODO: implement ident resolution
+        let unresolved = vec![];
+        //let unresolved = resolver
+        //.idents
+        //.into_iter()
+        //.filter(|ident| !resolver.objects.contains_key(ident.name))
+        //.collect();
 
         Ok(self.alloc(ast::File {
             doc: None,

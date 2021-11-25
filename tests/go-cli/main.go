@@ -33,6 +33,9 @@ func main() {
 				panic(err)
 			}
 
+			// TODO: implement ident resolution
+			file.Unresolved = nil
+
 			// Using our forked version that prints maps with their keys sorted
 			if err := Fprint(w, fset, file, nil); err != nil {
 				panic(err)
