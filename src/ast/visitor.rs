@@ -13,6 +13,7 @@ pub trait Visitor<'a> {
 
     fn AssignStmt(&mut self, _: &'a ast::AssignStmt<'a>) {}
     fn BasicLit(&mut self, _: &'a ast::BasicLit<'a>) {}
+    fn BinaryExpr(&mut self, _: &'a ast::BinaryExpr<'a>) {}
     fn BlockStmt(&mut self, _: &'a ast::BlockStmt<'a>) {}
     fn File(&mut self, _: &'a ast::File<'a>) {}
     fn FuncDecl(&mut self, _: &'a ast::FuncDecl<'a>) {}

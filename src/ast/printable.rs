@@ -144,6 +144,33 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::BinaryExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.BinaryExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("OpPos: ")?;
+        self.op_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Op: ")?;
+        self.op.print(p)?;
+
+        p.prefix()?;
+        p.write("Y: ")?;
+        self.y.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::BasicLit<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BasicLit ")?;
@@ -521,8 +548,9 @@ impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
 impl<W: Write> Printable<W> for ast::Expr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
-            ast::Expr::BasicLit(basic_lit) => basic_lit.print(p),
-            ast::Expr::Ident(ident) => ident.print(p),
+            ast::Expr::BasicLit(node) => node.print(p),
+            ast::Expr::BinaryExpr(node) => node.print(p),
+            ast::Expr::Ident(node) => node.print(p),
         }
     }
 }

@@ -84,11 +84,15 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BasicLit<'a> {
     }
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BinaryExpr<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Decl<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
-            ast::Decl::FuncDecl(f) => f.visit(visitor),
-            ast::Decl::GenDecl(g) => g.visit(visitor),
+            ast::Decl::FuncDecl(node) => node.visit(visitor),
+            ast::Decl::GenDecl(node) => node.visit(visitor),
         };
     }
 }
@@ -96,8 +100,8 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Decl<'a> {
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Spec<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
-            ast::Spec::ImportSpec(i) => i.visit(visitor),
-            ast::Spec::ValueSpec(v) => v.visit(visitor),
+            ast::Spec::ImportSpec(node) => node.visit(visitor),
+            ast::Spec::ValueSpec(node) => node.visit(visitor),
         };
     }
 }
@@ -105,7 +109,7 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Spec<'a> {
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Stmt<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
-            ast::Stmt::AssignStmt(i) => i.visit(visitor),
+            ast::Stmt::AssignStmt(node) => node.visit(visitor),
         };
     }
 }
@@ -113,8 +117,9 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Stmt<'a> {
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Expr<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
-            ast::Expr::BasicLit(b) => b.visit(visitor),
-            ast::Expr::Ident(i) => i.visit(visitor),
+            ast::Expr::BasicLit(node) => node.visit(visitor),
+            ast::Expr::BinaryExpr(node) => node.visit(visitor),
+            ast::Expr::Ident(node) => node.visit(visitor),
         };
     }
 }

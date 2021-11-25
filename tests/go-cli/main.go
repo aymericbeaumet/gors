@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/scanner"
 	"go/token"
@@ -32,6 +33,18 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
+
+			// TODO: implement objects/scopes
+			ast.Inspect(file, func(node ast.Node) bool {
+				switch n := node.(type) {
+				case *ast.File:
+					n.Scope = nil
+				case *ast.Ident:
+					n.Obj = nil
+				}
+
+				return true
+			})
 
 			// TODO: implement ident resolution
 			file.Unresolved = nil

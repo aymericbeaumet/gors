@@ -96,6 +96,7 @@ impl<'a> Parser<'a> {
 
     fn next(&mut self) -> ParserResult<'a, ()> {
         self.current = Some(self.scanner.scan()?);
+        log::debug!("self.next() {:?}", self.current);
         Ok(())
     }
 
@@ -105,7 +106,7 @@ impl<'a> Parser<'a> {
 
     // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     fn SourceFile(&mut self) -> ParserResult<'a, &'a ast::File<'a>> {
-        log::trace!("SourceFile");
+        log::debug!("SourceFile");
 
         let (package, package_name) = self.PackageClause()?;
         self.consume(Token::SEMICOLON)?;
@@ -156,25 +157,14 @@ impl<'a> Parser<'a> {
         decls.append(&mut import_decls);
         decls.append(&mut top_level_decls);
 
-        // TODO: implement ident resolution
-        let unresolved = vec![];
-        //let unresolved = resolver
-        //.idents
-        //.into_iter()
-        //.filter(|ident| !resolver.objects.contains_key(ident.name))
-        //.collect();
-
         Ok(self.alloc(ast::File {
             doc: None,
             package: package.0,
             name: package_name,
             decls,
-            scope: Some(self.alloc(ast::Scope {
-                outer: None,
-                objects: resolver.objects,
-            })),
+            scope: None,
             imports,
-            unresolved,
+            unresolved: vec![],
             comments: vec![],
         }))
     }
@@ -183,7 +173,7 @@ impl<'a> Parser<'a> {
     fn PackageClause(
         &mut self,
     ) -> ParserResult<'a, ((Position<'a>, Token, &'a str), &'a ast::Ident<'a>)> {
-        log::trace!("PackageClause");
+        log::debug!("PackageClause");
 
         let package = self.consume(Token::PACKAGE)?;
         let package_name = self.PackageName()?;
@@ -192,14 +182,14 @@ impl<'a> Parser<'a> {
 
     // PackageName = identifier .
     fn PackageName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
-        log::trace!("PackageName");
+        log::debug!("PackageName");
 
         self.identifier()
     }
 
     // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
     fn ImportDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
-        log::trace!("ImportDecl");
+        log::debug!("ImportDecl");
 
         let import = self.expect(Token::IMPORT);
         if import.is_err() {
@@ -245,7 +235,7 @@ impl<'a> Parser<'a> {
 
     // ImportSpec = [ "." | PackageName ] ImportPath .
     fn ImportSpec(&mut self) -> ParserResult<'a, &'a ast::ImportSpec<'a>> {
-        log::trace!("ImportSpec");
+        log::debug!("ImportSpec");
 
         let name = if let Ok(period) = self.consume(Token::PERIOD) {
             Some(self.alloc(ast::Ident {
@@ -271,14 +261,14 @@ impl<'a> Parser<'a> {
 
     // ImportPath = string_lit .
     fn ImportPath(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
-        log::trace!("ImportPath");
+        log::debug!("ImportPath");
 
         self.string_lit()
     }
 
     // TopLevelDecl = Declaration | FunctionDecl | MethodDecl .
     fn TopLevelDecl(&mut self) -> ParserResult<'a, Option<ast::Decl<'a>>> {
-        log::trace!("TopLevelDecl");
+        log::debug!("TopLevelDecl");
 
         if let Some(declaration) = self.Declaration()? {
             return Ok(Some(ast::Decl::GenDecl(declaration)));
@@ -291,7 +281,7 @@ impl<'a> Parser<'a> {
 
     // Declaration = ConstDecl | TypeDecl | VarDecl .
     fn Declaration(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
-        log::trace!("Declaration");
+        log::debug!("Declaration");
 
         if let Some(decl) = self.ConstDecl()? {
             return Ok(Some(decl));
@@ -304,7 +294,7 @@ impl<'a> Parser<'a> {
 
     // ConstDecl = "const" ( ConstSpec | "(" { ConstSpec ";" } ")" ) .
     fn ConstDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
-        log::trace!("ConstDecl");
+        log::debug!("ConstDecl");
 
         let const_ = self.expect(Token::CONST);
         if const_.is_err() {
@@ -350,7 +340,7 @@ impl<'a> Parser<'a> {
 
     // ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] .
     fn ConstSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
-        log::trace!("ConstSpec");
+        log::debug!("ConstSpec");
 
         let names = self.IdentifierList()?;
 
@@ -375,22 +365,12 @@ impl<'a> Parser<'a> {
             comment: None,
         });
 
-        for name in out.names.iter() {
-            name.obj.set(Some(self.alloc(ast::Object {
-                kind: ast::ObjKind::Con,
-                name: name.name,
-                decl: Some(ast::ObjDecl::ValueSpec(out)),
-                data: Some(0),
-                type_: None,
-            })));
-        }
-
         Ok(out)
     }
 
     // VarDecl = "var" ( VarSpec | "(" { VarSpec ";" } ")" ) .
     fn VarDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
-        log::trace!("VarDecl");
+        log::debug!("VarDecl");
 
         let var = self.expect(Token::VAR);
         if var.is_err() {
@@ -436,7 +416,7 @@ impl<'a> Parser<'a> {
 
     // VarSpec = IdentifierList ( Type [ "=" ExpressionList ] | "=" ExpressionList ) .
     fn VarSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
-        log::trace!("VarSpec");
+        log::debug!("VarSpec");
 
         let names = self.IdentifierList()?;
 
@@ -461,22 +441,12 @@ impl<'a> Parser<'a> {
             comment: None,
         });
 
-        for name in out.names.iter() {
-            name.obj.set(Some(self.alloc(ast::Object {
-                kind: ast::ObjKind::Var,
-                name: name.name,
-                decl: Some(ast::ObjDecl::ValueSpec(out)),
-                data: Some(0),
-                type_: None,
-            })));
-        }
-
         Ok(out)
     }
 
     // IdentifierList = identifier { "," identifier } .
     fn IdentifierList(&mut self) -> ParserResult<'a, Vec<&'a ast::Ident<'a>>> {
-        log::trace!("IdentifierList");
+        log::debug!("IdentifierList");
 
         let mut out = vec![self.identifier()?];
         while self.consume(Token::COMMA).is_ok() {
@@ -487,7 +457,7 @@ impl<'a> Parser<'a> {
 
     // ExpressionList = Expression { "," Expression } .
     fn ExpressionList(&mut self) -> ParserResult<'a, Vec<ast::Expr<'a>>> {
-        log::trace!("ExpressionList");
+        log::debug!("ExpressionList");
 
         let mut out = vec![self.Expression()?];
         while self.consume(Token::COMMA).is_ok() {
@@ -498,14 +468,26 @@ impl<'a> Parser<'a> {
 
     // Expression = UnaryExpr | Expression binary_op Expression .
     fn Expression(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("Expression");
+        log::debug!("Expression");
 
-        self.UnaryExpr()
+        let x = self.UnaryExpr()?;
+
+        if let Ok(op) = self.binary_op() {
+            let y = self.Expression()?;
+            return Ok(ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
+                x,
+                op_pos: op.0,
+                op: op.1,
+                y,
+            })));
+        }
+
+        Ok(x)
     }
 
     // UnaryExpr = PrimaryExpr | unary_op UnaryExpr .
     fn UnaryExpr(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("UnaryExpr");
+        log::debug!("UnaryExpr");
 
         self.PrimaryExpr()
     }
@@ -520,14 +502,14 @@ impl<'a> Parser<'a> {
     //         PrimaryExpr TypeAssertion |
     //         PrimaryExpr Arguments .
     fn PrimaryExpr(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("PrimaryExpr");
+        log::debug!("PrimaryExpr");
 
         self.Operand()
     }
 
     // Operand = Literal | OperandName | "(" Expression ")" .
     fn Operand(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("Operand");
+        log::debug!("Operand");
 
         let lit = self.Literal();
         if lit.is_ok() {
@@ -538,21 +520,21 @@ impl<'a> Parser<'a> {
 
     // Literal = BasicLit | CompositeLit | FunctionLit .
     fn Literal(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("Literal");
+        log::debug!("Literal");
 
         Ok(ast::Expr::BasicLit(self.BasicLit()?))
     }
 
     // OperandName = identifier | QualifiedIdent .
     fn OperandName(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("OperandName");
+        log::debug!("OperandName");
 
         Ok(ast::Expr::Ident(self.identifier()?))
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
     fn BasicLit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
-        log::trace!("BasicLit");
+        log::debug!("BasicLit");
 
         self.int_lit()
     }
@@ -562,7 +544,7 @@ impl<'a> Parser<'a> {
     // TypeLit   = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
     // SliceType | MapType | ChannelType .
     fn Type(&mut self) -> ParserResult<'a, ast::Expr<'a>> {
-        log::trace!("Type");
+        log::debug!("Type");
 
         Ok(ast::Expr::Ident(self.identifier()?))
     }
@@ -571,7 +553,7 @@ impl<'a> Parser<'a> {
     // Signature    = Parameters [ Result ] .
     // Result       = Parameters | Type .
     fn FunctionDecl(&mut self) -> ParserResult<'a, Option<&'a ast::FuncDecl<'a>>> {
-        log::trace!("FunctionDecl");
+        log::debug!("FunctionDecl");
 
         let func = self.expect(Token::FUNC);
         if func.is_err() {
@@ -598,20 +580,12 @@ impl<'a> Parser<'a> {
             body: Some(function_body),
         });
 
-        out.name.obj.set(Some(self.alloc(ast::Object {
-            kind: ast::ObjKind::Fun,
-            name: out.name.name,
-            decl: Some(ast::ObjDecl::FuncDecl(out)),
-            data: None,
-            type_: None,
-        })));
-
         Ok(Some(out))
     }
 
     // FunctionName = identifier .
     fn FunctionName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
-        log::trace!("FunctionName");
+        log::debug!("FunctionName");
 
         self.identifier()
     }
@@ -620,7 +594,7 @@ impl<'a> Parser<'a> {
     // ParameterList  = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
     fn Parameters(&mut self) -> ParserResult<'a, &'a ast::FieldList<'a>> {
-        log::trace!("Parameters");
+        log::debug!("Parameters");
 
         let lparen = self.consume(Token::LPAREN)?;
         let rparen = self.consume(Token::RPAREN)?;
@@ -633,14 +607,14 @@ impl<'a> Parser<'a> {
 
     // FunctionBody = Block .
     fn FunctionBody(&mut self) -> ParserResult<'a, &'a ast::BlockStmt<'a>> {
-        log::trace!("FunctionBody");
+        log::debug!("FunctionBody");
 
         self.Block()
     }
 
     // Block = "{" StatementList "}" .
     fn Block(&mut self) -> ParserResult<'a, &'a ast::BlockStmt<'a>> {
-        log::trace!("Block");
+        log::debug!("Block");
 
         let lbrace = self.consume(Token::LBRACE)?;
         let list = self.StatementList()?;
@@ -654,7 +628,7 @@ impl<'a> Parser<'a> {
 
     // StatementList = { Statement ";" } .
     fn StatementList(&mut self) -> ParserResult<'a, Vec<ast::Stmt<'a>>> {
-        log::trace!("StatementList");
+        log::debug!("StatementList");
 
         repetition(|| match self.Statement() {
             Ok(out) => {
@@ -671,31 +645,41 @@ impl<'a> Parser<'a> {
     //         FallthroughStmt | Block | IfStmt | SwitchStmt | SelectStmt | ForStmt |
     //         DeferStmt .
     fn Statement(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
-        log::trace!("Statement");
+        log::debug!("Statement");
 
         self.SimpleStmt()
     }
 
-    // SimpleStmt = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .
+    // SimpleStmt   = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .
+    // Assignment   = ExpressionList assign_op ExpressionList .
+    // ShortVarDecl = IdentifierList ":=" ExpressionList .
     fn SimpleStmt(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
-        log::trace!("SimpleStmt");
-
-        Ok(ast::Stmt::AssignStmt(self.Assignment()?))
-    }
-
-    // Assignment = ExpressionList assign_op ExpressionList .
-    fn Assignment(&mut self) -> ParserResult<'a, &'a ast::AssignStmt<'a>> {
-        log::trace!("Assignment");
+        log::debug!("SimpleStmt");
 
         let lhs = self.ExpressionList()?;
+
+        // ShortVarDecl
+        if lhs.iter().all(|node| matches!(node, ast::Expr::Ident(_))) {
+            if let Ok(define_op) = self.consume(Token::DEFINE) {
+                let rhs = self.ExpressionList()?;
+                return Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
+                    lhs,
+                    tok_pos: define_op.0,
+                    tok: define_op.1,
+                    rhs,
+                })));
+            }
+        }
+
+        // Assignment
         let assign_op = self.assign_op()?;
         let rhs = self.ExpressionList()?;
-        Ok(self.alloc(ast::AssignStmt {
+        Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
             lhs,
             tok_pos: assign_op.0,
             tok: assign_op.1,
             rhs,
-        }))
+        })))
     }
 
     /*
@@ -706,13 +690,37 @@ impl<'a> Parser<'a> {
     // add_op     = "+" | "-" | "|" | "^" .
     // mul_op     = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
     fn assign_op(&mut self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
-        use Token::*;
+        log::debug!("assign_op");
 
+        use Token::*;
         let out = self.get()?;
         match out.1 {
+            /* "=" */ ASSIGN |
             /* add_op "=" */ ADD_ASSIGN | SUB_ASSIGN | OR_ASSIGN | XOR_ASSIGN |
-            /* mul_op "=" */ MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN |
-            /* "=" */ EQL => {
+            /* mul_op "=" */ MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
+             => {
+                self.next()?;
+                Ok(out)
+            }
+            _ => Err(ParserError::UnexpectedToken(out)),
+        }
+    }
+
+    // binary_op  = "||" | "&&" | rel_op | add_op | mul_op .
+    // rel_op     = "==" | "!=" | "<" | "<=" | ">" | ">=" .
+    // add_op     = "+" | "-" | "|" | "^" .
+    // mul_op     = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
+    fn binary_op(&mut self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
+        log::debug!("binary_op");
+
+        use Token::*;
+        let out = self.get()?;
+        match out.1 {
+            /* binary_op */ LOR | LAND |
+            /* rel_op */ EQL | NEQ | LSS | LEQ | GTR | GEQ |
+            /* add_op */ ADD | SUB | OR | XOR |
+            /* mul_op */ MUL | QUO | REM | SHL | SHR | AND | AND_NOT
+             => {
                 self.next()?;
                 Ok(out)
             }
@@ -721,6 +729,8 @@ impl<'a> Parser<'a> {
     }
 
     fn identifier(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
+        log::debug!("identifier");
+
         let ident = self.consume(Token::IDENT)?;
         Ok(self.alloc(ast::Ident {
             name_pos: ident.0,
@@ -730,6 +740,8 @@ impl<'a> Parser<'a> {
     }
 
     fn int_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+        log::debug!("int_lit");
+
         let int_lit = self.consume(Token::INT)?;
         Ok(self.alloc(ast::BasicLit {
             kind: int_lit.1,
@@ -739,6 +751,8 @@ impl<'a> Parser<'a> {
     }
 
     fn string_lit(&mut self) -> ParserResult<'a, &'a ast::BasicLit<'a>> {
+        log::debug!("string_lit");
+
         let out = self.consume(Token::STRING)?;
         Ok(self.alloc(ast::BasicLit {
             value_pos: out.0,
