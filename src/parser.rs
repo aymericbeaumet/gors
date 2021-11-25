@@ -9,9 +9,10 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ParserError<'a> {
-    UnexpectedToken((Position<'a>, Token, &'a str)),
-    UnexpectedEndOfFile,
+    MissingRequiredProduction,
     ScannerError(ScannerError),
+    UnexpectedEndOfFile,
+    UnexpectedToken((Position<'a>, Token, &'a str)),
 }
 
 impl<'a> std::error::Error for ParserError<'a> {}
@@ -22,11 +23,27 @@ impl<'a> From<ScannerError> for ParserError<'a> {
     }
 }
 
-pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
-
 impl<'a> fmt::Display for ParserError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "parser error: {:?}", self)
+    }
+}
+
+pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
+
+trait ParserResultMethods {
+    type Out;
+    fn required(self) -> Self::Out;
+}
+
+impl<'a, T> ParserResultMethods for ParserResult<'a, Option<T>> {
+    type Out = ParserResult<'a, T>;
+    fn required(self) -> Self::Out {
+        match self {
+            Ok(Some(node)) => Ok(node),
+            Ok(None) => Err(ParserError::MissingRequiredProduction),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -342,15 +359,15 @@ impl<'a> Parser<'a> {
     fn ConstSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
         log::debug!("ConstSpec");
 
-        let names = self.IdentifierList()?;
+        let names = self.IdentifierList().required()?;
 
         let (type_, values) = if self.consume(Token::ASSIGN).is_ok() {
-            (None, self.ExpressionList()?)
+            (None, self.ExpressionList().required()?)
         } else {
             (
                 Some(self.Type()?),
                 if self.consume(Token::ASSIGN).is_ok() {
-                    self.ExpressionList()?
+                    self.ExpressionList().required()?
                 } else {
                     vec![]
                 },
@@ -418,15 +435,15 @@ impl<'a> Parser<'a> {
     fn VarSpec(&mut self) -> ParserResult<'a, &'a ast::ValueSpec<'a>> {
         log::debug!("VarSpec");
 
-        let names = self.IdentifierList()?;
+        let names = self.IdentifierList().required()?;
 
         let (type_, values) = if self.consume(Token::ASSIGN).is_ok() {
-            (None, self.ExpressionList()?)
+            (None, self.ExpressionList().required()?)
         } else {
             (
                 Some(self.Type()?),
                 if self.consume(Token::ASSIGN).is_ok() {
-                    self.ExpressionList()?
+                    self.ExpressionList().required()?
                 } else {
                     vec![]
                 },
@@ -445,7 +462,7 @@ impl<'a> Parser<'a> {
     }
 
     // IdentifierList = identifier { "," identifier } .
-    fn IdentifierList(&mut self) -> ParserResult<'a, Vec<&'a ast::Ident<'a>>> {
+    fn IdentifierList(&mut self) -> ParserResult<'a, Option<Vec<&'a ast::Ident<'a>>>> {
         log::debug!("IdentifierList");
 
         let mut out = vec![];
@@ -453,18 +470,18 @@ impl<'a> Parser<'a> {
         if let Ok(ident) = self.identifier() {
             out.push(ident);
         } else {
-            return Ok(out);
+            return Ok(None);
         }
 
         while self.consume(Token::COMMA).is_ok() {
             out.push(self.identifier()?);
         }
 
-        Ok(out)
+        Ok(Some(out))
     }
 
     // ExpressionList = Expression { "," Expression } .
-    fn ExpressionList(&mut self) -> ParserResult<'a, Vec<ast::Expr<'a>>> {
+    fn ExpressionList(&mut self) -> ParserResult<'a, Option<Vec<ast::Expr<'a>>>> {
         log::debug!("ExpressionList");
 
         let mut out = vec![];
@@ -472,14 +489,14 @@ impl<'a> Parser<'a> {
         if let Ok(expression) = self.Expression() {
             out.push(expression);
         } else {
-            return Ok(out);
+            return Ok(None);
         }
 
         while self.consume(Token::COMMA).is_ok() {
             out.push(self.Expression()?);
         }
 
-        Ok(out)
+        Ok(Some(out))
     }
 
     // Expression = UnaryExpr | Expression binary_op Expression .
@@ -675,7 +692,7 @@ impl<'a> Parser<'a> {
         log::debug!("ReturnStmt");
 
         if let Ok(return_) = self.consume(Token::RETURN) {
-            let results = self.ExpressionList()?;
+            let results = self.ExpressionList()?.unwrap_or(vec![]);
             Ok(Some(self.alloc(ast::ReturnStmt {
                 return_: return_.0,
                 results,
@@ -691,12 +708,12 @@ impl<'a> Parser<'a> {
     fn SimpleStmt(&mut self) -> ParserResult<'a, ast::Stmt<'a>> {
         log::debug!("SimpleStmt");
 
-        let lhs = self.ExpressionList()?;
+        let lhs = self.ExpressionList().required()?;
 
         // ShortVarDecl
         if lhs.iter().all(|node| matches!(node, ast::Expr::Ident(_))) {
             if let Ok(define_op) = self.consume(Token::DEFINE) {
-                let rhs = self.ExpressionList()?;
+                let rhs = self.ExpressionList().required()?;
                 return Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
                     lhs,
                     tok_pos: define_op.0,
@@ -708,7 +725,7 @@ impl<'a> Parser<'a> {
 
         // Assignment
         let assign_op = self.assign_op()?;
-        let rhs = self.ExpressionList()?;
+        let rhs = self.ExpressionList().required()?;
         Ok(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
             lhs,
             tok_pos: assign_op.0,
