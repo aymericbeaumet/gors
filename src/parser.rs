@@ -8,28 +8,27 @@ use std::cell::Cell;
 use std::fmt;
 
 #[derive(Debug)]
-pub enum ParserError<'a> {
+pub enum ParserError {
     MissingRequiredProduction,
     ScannerError(ScannerError),
     UnexpectedEndOfFile,
-    UnexpectedToken(Token, (Position<'a>, Token, &'a str)),
 }
 
-impl<'a> std::error::Error for ParserError<'a> {}
+impl<'a> std::error::Error for ParserError {}
 
-impl<'a> From<ScannerError> for ParserError<'a> {
+impl<'a> From<ScannerError> for ParserError {
     fn from(e: ScannerError) -> Self {
         Self::ScannerError(e)
     }
 }
 
-impl<'a> fmt::Display for ParserError<'a> {
+impl<'a> fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "parser error: {:?}", self)
     }
 }
 
-pub type ParserResult<'a, T> = Result<T, ParserError<'a>>;
+pub type ParserResult<'a, T> = Result<T, ParserError>;
 
 trait ParserResultExt<'a, T> {
     fn required(self) -> ParserResult<'a, T>;
@@ -62,7 +61,6 @@ pub fn parse_file<'a>(
     let mut p = Parser::new(arena, s);
     p.SourceFile().required()
 }
-
 struct Parser<'a> {
     arena: &'a Arena,
     scanner: Scanner<'a>,
@@ -85,30 +83,6 @@ impl<'a> Parser<'a> {
         self.arena.0.alloc_with(|| val)
     }
 
-    const fn get(&self) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
-        if let Some(current) = self.current {
-            return Ok(current);
-        }
-        Err(ParserError::UnexpectedEndOfFile)
-    }
-
-    fn expect(&self, expected: Token) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
-        self.get().and_then(|current| {
-            if current.1 == expected {
-                Ok(current)
-            } else {
-                Err(ParserError::UnexpectedToken(expected, current))
-            }
-        })
-    }
-
-    fn consume(&mut self, expected: Token) -> ParserResult<'a, (Position<'a>, Token, &'a str)> {
-        self.expect(expected).and_then(|out| {
-            self.next()?;
-            Ok(out)
-        })
-    }
-
     fn next(&mut self) -> ParserResult<'a, ()> {
         self.current = Some(self.scanner.scan()?);
         log::debug!("self.next() {:?}", self.current);
@@ -123,29 +97,33 @@ impl<'a> Parser<'a> {
     fn SourceFile(&mut self) -> ParserResult<'a, Option<&'a ast::File<'a>>> {
         log::debug!("SourceFile");
 
-        let (package, package_name) = self.PackageClause().required()?;
-        self.consume(Token::SEMICOLON)?;
+        let (package, package_name) = match self.PackageClause()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        self.token(Token::SEMICOLON)?;
 
-        let mut import_decls = repetition(|| match self.ImportDecl() {
-            Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
-                Ok(Some(ast::Decl::GenDecl(out)))
+        let mut import_decls = zero_or_more(|| match self.ImportDecl() {
+            Ok(Some(import_decl)) => {
+                self.token(Token::SEMICOLON)?;
+                Ok(Some(ast::Decl::GenDecl(import_decl)))
             }
             Ok(None) => Ok(None),
             Err(err) => Err(err),
         })
         .required()?;
 
-        let mut top_level_decls = repetition(|| match self.TopLevelDecl() {
+        let mut top_level_decls = zero_or_more(|| match self.TopLevelDecl() {
             Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
+                self.token(Token::SEMICOLON)?;
                 Ok(Some(out))
             }
-            out => out,
+            Ok(None) => Ok(None),
+            Err(err) => Err(err),
         })
         .required()?;
 
-        self.consume(Token::EOF)?;
+        self.token(Token::EOF)?;
 
         let mut resolver = Resolver::new();
         resolver.visit(&top_level_decls);
@@ -192,7 +170,10 @@ impl<'a> Parser<'a> {
     ) -> ParserResult<'a, Option<((Position<'a>, Token, &'a str), &'a ast::Ident<'a>)>> {
         log::debug!("PackageClause");
 
-        let package = self.consume(Token::PACKAGE)?;
+        let package = match self.token(Token::PACKAGE)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
         let package_name = self.PackageName().required()?;
         Ok(Some((package, package_name)))
     }
@@ -208,46 +189,41 @@ impl<'a> Parser<'a> {
     fn ImportDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
         log::debug!("ImportDecl");
 
-        let import = self.expect(Token::IMPORT);
-        if import.is_err() {
-            return Ok(None);
-        }
-        let import = import.unwrap();
-        self.next()?;
+        let import = match self.token(Token::IMPORT)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let lparen = self.expect(Token::LPAREN);
-        if lparen.is_err() {
-            let specs = vec![ast::Spec::ImportSpec(self.ImportSpec().required()?)];
+        if let Some(lparen) = self.token(Token::LPAREN)? {
+            let specs = zero_or_more(|| match self.ImportSpec() {
+                Ok(Some(out)) => {
+                    self.token(Token::SEMICOLON)?;
+                    Ok(Some(ast::Spec::ImportSpec(out)))
+                }
+                _ => Ok(None),
+            })
+            .required()?;
+
+            let rparen = self.token(Token::RPAREN).required()?;
+
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: import.0,
                 tok: import.1,
-                lparen: None,
+                lparen: Some(lparen.0),
                 specs,
-                rparen: None,
+                rparen: Some(rparen.0),
             })));
         }
-        let lparen = lparen.unwrap();
-        self.next()?;
 
-        let specs = repetition(|| match self.ImportSpec() {
-            Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
-                Ok(Some(ast::Spec::ImportSpec(out)))
-            }
-            _ => Ok(None),
-        })
-        .required()?;
-
-        let rparen = self.consume(Token::RPAREN)?;
-
+        let specs = vec![ast::Spec::ImportSpec(self.ImportSpec().required()?)];
         Ok(Some(self.alloc(ast::GenDecl {
             doc: None,
             tok_pos: import.0,
             tok: import.1,
-            lparen: Some(lparen.0),
+            lparen: None,
             specs,
-            rparen: Some(rparen.0),
+            rparen: None,
         })))
     }
 
@@ -255,7 +231,7 @@ impl<'a> Parser<'a> {
     fn ImportSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ImportSpec<'a>>> {
         log::debug!("ImportSpec");
 
-        let name = if let Ok(period) = self.consume(Token::PERIOD) {
+        let name = if let Some(period) = self.token(Token::PERIOD)? {
             Some(self.alloc(ast::Ident {
                 name_pos: period.0,
                 name: ".",
@@ -314,46 +290,41 @@ impl<'a> Parser<'a> {
     fn ConstDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
         log::debug!("ConstDecl");
 
-        let const_ = self.expect(Token::CONST);
-        if const_.is_err() {
-            return Ok(None);
-        }
-        let const_ = const_.unwrap();
-        self.next()?;
+        let const_ = match self.token(Token::CONST)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let lparen = self.expect(Token::LPAREN);
-        if lparen.is_err() {
-            let specs = vec![ast::Spec::ValueSpec(self.ConstSpec().required()?)];
+        if let Some(lparen) = self.token(Token::LPAREN)? {
+            let specs = zero_or_more(|| match self.ConstSpec() {
+                Ok(Some(out)) => {
+                    self.token(Token::SEMICOLON)?;
+                    Ok(Some(ast::Spec::ValueSpec(out)))
+                }
+                _ => Ok(None),
+            })
+            .required()?;
+
+            let rparen = self.token(Token::RPAREN).required()?;
+
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: const_.0,
                 tok: const_.1,
-                lparen: None,
+                lparen: Some(lparen.0),
                 specs,
-                rparen: None,
+                rparen: Some(rparen.0),
             })));
         }
-        let lparen = lparen.unwrap();
-        self.next()?;
 
-        let specs = repetition(|| match self.ConstSpec() {
-            Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
-                Ok(Some(ast::Spec::ValueSpec(out)))
-            }
-            _ => Ok(None),
-        })
-        .required()?;
-
-        let rparen = self.consume(Token::RPAREN)?;
-
+        let specs = vec![ast::Spec::ValueSpec(self.ConstSpec().required()?)];
         Ok(Some(self.alloc(ast::GenDecl {
             doc: None,
             tok_pos: const_.0,
             tok: const_.1,
-            lparen: Some(lparen.0),
+            lparen: None,
             specs,
-            rparen: Some(rparen.0),
+            rparen: None,
         })))
     }
 
@@ -361,14 +332,17 @@ impl<'a> Parser<'a> {
     fn ConstSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ValueSpec<'a>>> {
         log::debug!("ConstSpec");
 
-        let names = self.IdentifierList().required()?;
+        let names = match self.IdentifierList()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let (type_, values) = if self.consume(Token::ASSIGN).is_ok() {
+        let (type_, values) = if self.token(Token::ASSIGN)?.is_some() {
             (None, self.ExpressionList().required()?)
         } else {
             (
                 self.Type()?,
-                if self.consume(Token::ASSIGN).is_ok() {
+                if self.token(Token::ASSIGN)?.is_some() {
                     self.ExpressionList().required()?
                 } else {
                     vec![]
@@ -389,46 +363,41 @@ impl<'a> Parser<'a> {
     fn VarDecl(&mut self) -> ParserResult<'a, Option<&'a ast::GenDecl<'a>>> {
         log::debug!("VarDecl");
 
-        let var = self.expect(Token::VAR);
-        if var.is_err() {
-            return Ok(None);
-        }
-        let var = var.unwrap();
-        self.next()?;
+        let var = match self.token(Token::VAR)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let lparen = self.expect(Token::LPAREN);
-        if lparen.is_err() {
-            let specs = vec![ast::Spec::ValueSpec(self.VarSpec().required()?)];
+        if let Some(lparen) = self.token(Token::LPAREN)? {
+            let specs = zero_or_more(|| match self.VarSpec() {
+                Ok(Some(out)) => {
+                    self.token(Token::SEMICOLON)?;
+                    Ok(Some(ast::Spec::ValueSpec(out)))
+                }
+                _ => Ok(None),
+            })
+            .required()?;
+
+            let rparen = self.token(Token::RPAREN).required()?;
+
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: var.0,
                 tok: var.1,
-                lparen: None,
+                lparen: Some(lparen.0),
                 specs,
-                rparen: None,
+                rparen: Some(rparen.0),
             })));
         }
-        let lparen = lparen.unwrap();
-        self.next()?;
 
-        let specs = repetition(|| match self.VarSpec() {
-            Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
-                Ok(Some(ast::Spec::ValueSpec(out)))
-            }
-            _ => Ok(None),
-        })
-        .required()?;
-
-        let rparen = self.consume(Token::RPAREN)?;
-
+        let specs = vec![ast::Spec::ValueSpec(self.VarSpec().required()?)];
         Ok(Some(self.alloc(ast::GenDecl {
             doc: None,
             tok_pos: var.0,
             tok: var.1,
-            lparen: Some(lparen.0),
+            lparen: None,
             specs,
-            rparen: Some(rparen.0),
+            rparen: None,
         })))
     }
 
@@ -436,14 +405,17 @@ impl<'a> Parser<'a> {
     fn VarSpec(&mut self) -> ParserResult<'a, Option<&'a ast::ValueSpec<'a>>> {
         log::debug!("VarSpec");
 
-        let names = self.IdentifierList().required()?;
+        let names = match self.IdentifierList()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let (type_, values) = if self.consume(Token::ASSIGN).is_ok() {
+        let (type_, values) = if self.token(Token::ASSIGN)?.is_some() {
             (None, self.ExpressionList().required()?)
         } else {
             (
                 self.Type()?,
-                if self.consume(Token::ASSIGN).is_ok() {
+                if self.token(Token::ASSIGN)?.is_some() {
                     self.ExpressionList().required()?
                 } else {
                     vec![]
@@ -472,7 +444,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        while self.consume(Token::COMMA).is_ok() {
+        while self.token(Token::COMMA)?.is_some() {
             out.push(self.identifier().required()?);
         }
 
@@ -491,7 +463,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        while self.consume(Token::COMMA).is_ok() {
+        while self.token(Token::COMMA)?.is_some() {
             out.push(self.Expression().required()?);
         }
 
@@ -503,7 +475,7 @@ impl<'a> Parser<'a> {
         log::debug!("Expression");
 
         let x = match self.UnaryExpr()? {
-            Some(x) => x,
+            Some(v) => v,
             None => return Ok(None),
         };
 
@@ -601,14 +573,12 @@ impl<'a> Parser<'a> {
     fn FunctionDecl(&mut self) -> ParserResult<'a, Option<&'a ast::FuncDecl<'a>>> {
         log::debug!("FunctionDecl");
 
-        let func = self.expect(Token::FUNC);
-        if func.is_err() {
-            return Ok(None);
-        }
-        let func = func.unwrap();
-        self.next()?;
+        let func = match self.token(Token::FUNC)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        let function_name = self.FunctionName()?;
+        let function_name = self.FunctionName().required()?;
 
         let params = self.Parameters().required()?;
         let results = self.Result()?;
@@ -655,31 +625,29 @@ impl<'a> Parser<'a> {
     }
 
     // FunctionName = identifier .
-    fn FunctionName(&mut self) -> ParserResult<'a, &'a ast::Ident<'a>> {
+    fn FunctionName(&mut self) -> ParserResult<'a, Option<&'a ast::Ident<'a>>> {
         log::debug!("FunctionName");
 
-        self.identifier().required()
+        self.identifier()
     }
 
     // Parameters = "(" [ ParameterList [ "," ] ] ")" .
     fn Parameters(&mut self) -> ParserResult<'a, Option<&'a ast::FieldList<'a>>> {
         log::debug!("Parameters");
 
-        let lparen = self.consume(Token::LPAREN);
-        if lparen.is_err() {
-            return Ok(None);
-        }
-        let lparen = lparen.unwrap();
-
+        let lparen = match self.token(Token::LPAREN)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
         let list = self
             .ParameterList()?
-            .and_then(|list| {
-                self.consume(Token::COMMA);
-                Some(list)
+            .map(|list| {
+                let _ = self.token(Token::COMMA);
+                list
             })
-            .unwrap_or(vec![]);
+            .unwrap_or_default();
 
-        let rparen = self.consume(Token::RPAREN)?;
+        let rparen = self.token(Token::RPAREN).required()?;
         Ok(Some(self.alloc(ast::FieldList {
             opening: Some(lparen.0),
             list,
@@ -699,7 +667,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        while self.consume(Token::COMMA).is_ok() {
+        while self.token(Token::COMMA)?.is_some() {
             out.push(self.ParameterDecl().required()?);
         }
 
@@ -734,13 +702,12 @@ impl<'a> Parser<'a> {
     fn Block(&mut self) -> ParserResult<'a, Option<&'a ast::BlockStmt<'a>>> {
         log::debug!("Block");
 
-        let lbrace = self.consume(Token::LBRACE);
-        if lbrace.is_err() {
-            return Ok(None);
-        }
-        let lbrace = lbrace.unwrap();
+        let lbrace = match self.token(Token::LBRACE)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
         let list = self.StatementList().required()?;
-        let rbrace = self.consume(Token::RBRACE)?;
+        let rbrace = self.token(Token::RBRACE).required()?;
         Ok(Some(self.alloc(ast::BlockStmt {
             lbrace: lbrace.0,
             list,
@@ -752,9 +719,9 @@ impl<'a> Parser<'a> {
     fn StatementList(&mut self) -> ParserResult<'a, Option<Vec<ast::Stmt<'a>>>> {
         log::debug!("StatementList");
 
-        repetition(|| match self.Statement() {
+        zero_or_more(|| match self.Statement() {
             Ok(Some(out)) => {
-                self.consume(Token::SEMICOLON)?;
+                self.token(Token::SEMICOLON)?;
                 Ok(Some(out))
             }
             _ => Ok(None),
@@ -780,8 +747,8 @@ impl<'a> Parser<'a> {
     fn ReturnStmt(&mut self) -> ParserResult<'a, Option<&'a ast::ReturnStmt<'a>>> {
         log::debug!("ReturnStmt");
 
-        if let Ok(return_) = self.consume(Token::RETURN) {
-            let results = self.ExpressionList()?.unwrap_or(vec![]);
+        if let Some(return_) = self.token(Token::RETURN)? {
+            let results = self.ExpressionList()?.unwrap_or_default();
             Ok(Some(self.alloc(ast::ReturnStmt {
                 return_: return_.0,
                 results,
@@ -801,7 +768,7 @@ impl<'a> Parser<'a> {
 
         // ShortVarDecl
         if lhs.iter().all(|node| matches!(node, ast::Expr::Ident(_))) {
-            if let Ok(define_op) = self.consume(Token::DEFINE) {
+            if let Some(define_op) = self.token(Token::DEFINE)? {
                 let rhs = self.ExpressionList().required()?;
                 return Ok(Some(ast::Stmt::AssignStmt(self.alloc(ast::AssignStmt {
                     lhs,
@@ -834,17 +801,22 @@ impl<'a> Parser<'a> {
         log::debug!("assign_op");
 
         use Token::*;
-        let out = self.get()?;
-        match out.1 {
-            /* "=" */ ASSIGN |
-            /* add_op "=" */ ADD_ASSIGN | SUB_ASSIGN | OR_ASSIGN | XOR_ASSIGN |
-            /* mul_op "=" */ MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
-             => {
+        if let Some(current) = self.current {
+            if matches!(
+                current.1,
+                /* "=" */
+                ASSIGN |
+                /* add_op "=" */
+                ADD_ASSIGN | SUB_ASSIGN | OR_ASSIGN | XOR_ASSIGN |
+                /* mul_op "=" */
+                MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
+            ) {
                 self.next()?;
-                Ok(Some(out))
+                return Ok(Some(current));
             }
-            _ => Ok(None),
         }
+
+        Ok(None)
     }
 
     // binary_op  = "||" | "&&" | rel_op | add_op | mul_op .
@@ -855,24 +827,30 @@ impl<'a> Parser<'a> {
         log::debug!("binary_op");
 
         use Token::*;
-        let out = self.get()?;
-        match out.1 {
-            /* binary_op */ LOR | LAND |
-            /* rel_op */ EQL | NEQ | LSS | LEQ | GTR | GEQ |
-            /* add_op */ ADD | SUB | OR | XOR |
-            /* mul_op */ MUL | QUO | REM | SHL | SHR | AND | AND_NOT
-             => {
+        if let Some(current) = self.current {
+            if matches!(
+                current.1,
+                /* binary_op */
+                LOR | LAND |
+                /* rel_op */
+                EQL | NEQ | LSS | LEQ | GTR | GEQ |
+                /* add_op */
+                ADD | SUB | OR | XOR |
+                /* mul_op */
+                MUL | QUO | REM | SHL | SHR | AND | AND_NOT
+            ) {
                 self.next()?;
-                Ok(Some(out))
+                return Ok(Some(current));
             }
-            _ => Ok(None),
         }
+
+        Ok(None)
     }
 
     fn identifier(&mut self) -> ParserResult<'a, Option<&'a ast::Ident<'a>>> {
         log::debug!("identifier");
 
-        if let Ok(ident) = self.consume(Token::IDENT) {
+        if let Some(ident) = self.token(Token::IDENT)? {
             Ok(Some(self.alloc(ast::Ident {
                 name_pos: ident.0,
                 name: ident.2,
@@ -886,7 +864,7 @@ impl<'a> Parser<'a> {
     fn int_lit(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("int_lit");
 
-        if let Ok(int_lit) = self.consume(Token::INT) {
+        if let Some(int_lit) = self.token(Token::INT)? {
             Ok(Some(self.alloc(ast::BasicLit {
                 kind: int_lit.1,
                 value: int_lit.2,
@@ -900,7 +878,7 @@ impl<'a> Parser<'a> {
     fn string_lit(&mut self) -> ParserResult<'a, Option<&'a ast::BasicLit<'a>>> {
         log::debug!("string_lit");
 
-        if let Ok(string_lit) = self.consume(Token::STRING) {
+        if let Some(string_lit) = self.token(Token::STRING)? {
             Ok(Some(self.alloc(ast::BasicLit {
                 value_pos: string_lit.0,
                 kind: string_lit.1,
@@ -910,13 +888,29 @@ impl<'a> Parser<'a> {
             Ok(None)
         }
     }
+
+    fn token(
+        &mut self,
+        expected: Token,
+    ) -> ParserResult<'a, Option<(Position<'a>, Token, &'a str)>> {
+        if let Some(current) = self.current {
+            if current.1 == expected {
+                self.next()?;
+                Ok(Some(current))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Err(ParserError::UnexpectedEndOfFile)
+        }
+    }
 }
 
-fn repetition<'a, T>(
-    mut func: impl FnMut() -> ParserResult<'a, Option<T>>,
+fn zero_or_more<'a, T>(
+    mut op: impl FnMut() -> ParserResult<'a, Option<T>>,
 ) -> ParserResult<'a, Option<Vec<T>>> {
     let mut out = vec![];
-    while let Some(v) = func()? {
+    while let Some(v) = op()? {
         out.push(v);
     }
     Ok(Some(out))
