@@ -791,7 +791,7 @@ impl<'a> Parser<'a> {
     }
 
     /*
-     * Lexical tokens
+     * Lexical tokens (terminal productions)
      */
 
     // assign_op = [ add_op | mul_op ] "=" .
