@@ -673,7 +673,6 @@ impl<'a> Parser<'a> {
 
         Ok(None)
     }
-    // ElementType = Type .
 
     // StructType = "struct" "{" { FieldDecl ";" } "}" .
     fn StructType(&mut self) -> ParserResult<Option<&'a ast::StructType<'a>>> {
