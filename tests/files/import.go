@@ -11,5 +11,3 @@ import (
 	_ "lib/math"
 	m "lib/math"
 )
-
-func main() {}
