@@ -4,6 +4,7 @@
 #![allow(non_camel_case_types)]
 
 use serde::{ser::SerializeMap, Serialize, Serializer};
+use std::fmt;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Position<'a> {
@@ -13,6 +14,22 @@ pub struct Position<'a> {
     pub offset: usize,
     pub line: usize,
     pub column: usize,
+}
+
+impl<'a> fmt::Display for Position<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.file.is_empty() {
+            write!(f, "{}:{}:{}", "", self.line, self.column)
+        } else if self.file.starts_with('/') {
+            write!(f, "{}:{}:{}", self.file, self.line, self.column)
+        } else {
+            write!(
+                f,
+                "{}/{}:{}:{}",
+                self.directory, self.file, self.line, self.column
+            )
+        }
+    }
 }
 
 impl<'a> Serialize for Position<'a> {

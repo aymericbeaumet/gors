@@ -9,9 +9,14 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ParserError {
-    MissingRequiredProduction,
     ScannerError(ScannerError),
     UnexpectedEndOfFile,
+    UnexpectedToken,
+    UnexpectedTokenAt {
+        at: String,
+        token: Token,
+        literal: String,
+    },
 }
 
 impl<'a> std::error::Error for ParserError {}
@@ -38,7 +43,7 @@ impl<T> ParserResultExt<T> for ParserResult<Option<T>> {
     fn required(self) -> ParserResult<T> {
         match self {
             Ok(Some(node)) => Ok(node),
-            Ok(None) => Err(ParserError::MissingRequiredProduction),
+            Ok(None) => Err(ParserError::UnexpectedToken),
             Err(err) => Err(err),
         }
     }
@@ -59,8 +64,18 @@ pub fn parse_file<'a>(
 ) -> ParserResult<&'a ast::File<'a>> {
     let s = Scanner::new(filepath, buffer);
     let mut p = Parser::new(arena, s);
-    p.SourceFile().required()
+    p.SourceFile()
+        .required()
+        .map_err(|err| match (err, p.current) {
+            (ParserError::UnexpectedToken, Some(current)) => ParserError::UnexpectedTokenAt {
+                at: current.0.to_string(),
+                token: current.1,
+                literal: current.2.to_owned(),
+            },
+            (err, _) => err,
+        })
 }
+
 struct Parser<'a> {
     arena: &'a Arena,
     scanner: Scanner<'a>,
@@ -557,7 +572,7 @@ impl<'a> Parser<'a> {
     // Type      = TypeName | TypeLit | "(" Type ")" .
     // TypeName  = identifier | QualifiedIdent .
     // TypeLit   = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
-    // SliceType | MapType | ChannelType .
+    //             SliceType | MapType | ChannelType .
     fn Type(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::Type()");
 
@@ -590,15 +605,13 @@ impl<'a> Parser<'a> {
 
         let function_body = self.FunctionBody()?;
 
-        let out = self.alloc(ast::FuncDecl {
+        Ok(Some(self.alloc(ast::FuncDecl {
             doc: None,
             recv: None,
             name: function_name,
             type_: signature,
             body: function_body,
-        });
-
-        Ok(Some(out))
+        })))
     }
 
     // Result = Parameters | Type .
@@ -655,40 +668,17 @@ impl<'a> Parser<'a> {
         })))
     }
 
-    // ParameterList = ParameterDecl { "," ParameterDecl } .
+    // ParameterList  = ParameterDecl { "," ParameterDecl } .
+    // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
+    // IdentifierList = identifier { "," identifier } .
     fn ParameterList(&mut self) -> ParserResult<Option<Vec<&'a ast::Field<'a>>>> {
-        log::debug!("Parser::ExpressionList()");
+        log::debug!("Parser::ParameterList()");
 
-        let mut out = vec![];
+        let mut fields = vec![];
 
-        if let Some(expression) = self.ParameterDecl()? {
-            out.push(expression);
-        } else {
-            return Ok(None);
-        }
+        let ty = self.Type()?;
 
-        while self.token(Token::COMMA)?.is_some() {
-            out.push(self.ParameterDecl().required()?);
-        }
-
-        Ok(Some(out))
-    }
-
-    // ParameterDecl = [ IdentifierList ] [ "..." ] Type .
-    fn ParameterDecl(&mut self) -> ParserResult<Option<&'a ast::Field<'a>>> {
-        log::debug!("Parser::ParameterDecl()");
-
-        if let Some(type_) = self.Type()? {
-            Ok(Some(self.alloc(ast::Field {
-                doc: None,
-                names: None,
-                type_: Some(type_),
-                tag: None,
-                comment: None,
-            })))
-        } else {
-            Ok(None)
-        }
+        Ok(Some(fields))
     }
 
     // FunctionBody = Block .
