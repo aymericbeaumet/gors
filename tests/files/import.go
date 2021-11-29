@@ -5,6 +5,8 @@ import m "lib/math"
 import . "lib/math"
 import _ "lib/math"
 
+import ()
+
 import (
 	"lib/math"
 	. "lib/math"

@@ -98,6 +98,18 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::BinaryExpr<'a> {
     fn visit(&self, _: &mut V) {}
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::StructType<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::StarExpr<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::TypeSpec<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Decl<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
@@ -111,6 +123,7 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Spec<'a> {
     fn visit(&self, visitor: &mut V) {
         match self {
             ast::Spec::ImportSpec(node) => node.visit(visitor),
+            ast::Spec::TypeSpec(node) => node.visit(visitor),
             ast::Spec::ValueSpec(node) => node.visit(visitor),
         };
     }
@@ -132,6 +145,8 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Expr<'a> {
             ast::Expr::BinaryExpr(node) => node.visit(visitor),
             ast::Expr::Ellipsis(node) => node.visit(visitor),
             ast::Expr::Ident(node) => node.visit(visitor),
+            ast::Expr::StarExpr(node) => node.visit(visitor),
+            ast::Expr::StructType(node) => node.visit(visitor),
         };
     }
 }

@@ -202,10 +202,36 @@ pub struct Ellipsis<'a> {
     pub elt: Expr<'a>,          // ellipsis element type (parameter lists only); or nil
 }
 
+// https://pkg.go.dev/go/ast#TypeSpec
+#[derive(Debug)]
+pub struct TypeSpec<'a> {
+    pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
+    pub name: Option<&'a Ident<'a>>,   // type name
+    pub assign: Option<Position<'a>>,  // position of '=', if any
+    pub type_: Expr<'a>, // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
+    pub comment: Option<&'a CommentGroup>, // line comments; or nil
+}
+
+// https://pkg.go.dev/go/ast#StructType
+#[derive(Debug)]
+pub struct StructType<'a> {
+    pub struct_: Position<'a>,             // position of "struct" keyword
+    pub fields: Option<&'a FieldList<'a>>, // list of field declarations
+    pub incomplete: bool,                  // true if (source) fields are missing in the Fields list
+}
+
+// https://pkg.go.dev/go/ast#StarExpr
+#[derive(Debug)]
+pub struct StarExpr<'a> {
+    pub star: Position<'a>, // position of "*"
+    pub x: Expr<'a>,        // operand
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
     ImportSpec(&'a ImportSpec<'a>),
+    TypeSpec(&'a TypeSpec<'a>),
     ValueSpec(&'a ValueSpec<'a>),
 }
 
@@ -216,6 +242,8 @@ pub enum Expr<'a> {
     BinaryExpr(&'a BinaryExpr<'a>),
     Ellipsis(&'a Ellipsis<'a>),
     Ident(&'a Ident<'a>),
+    StarExpr(&'a StarExpr<'a>),
+    StructType(&'a StructType<'a>),
 }
 
 // https://pkg.go.dev/go/ast#Stmt

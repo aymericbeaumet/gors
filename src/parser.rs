@@ -218,9 +218,7 @@ impl<'a> Parser<'a> {
                 _ => Ok(None),
             })
             .required()?;
-
             let rparen = self.token(Token::RPAREN).required()?;
-
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: import.0,
@@ -292,13 +290,78 @@ impl<'a> Parser<'a> {
     fn Declaration(&mut self) -> ParserResult<Option<&'a ast::GenDecl<'a>>> {
         log::debug!("Parser::Declaration()");
 
-        if let Some(decl) = self.ConstDecl()? {
-            return Ok(Some(decl));
+        if let Some(declaration) = self.ConstDecl()? {
+            return Ok(Some(declaration));
         }
-        if let Some(decl) = self.VarDecl()? {
-            return Ok(Some(decl));
+        if let Some(declaration) = self.TypeDecl()? {
+            return Ok(Some(declaration));
+        }
+        if let Some(declaration) = self.VarDecl()? {
+            return Ok(Some(declaration));
         }
         Ok(None)
+    }
+
+    // TypeDecl = "type" ( TypeSpec | "(" { TypeSpec ";" } ")" ) .
+    fn TypeDecl(&mut self) -> ParserResult<Option<&'a ast::GenDecl<'a>>> {
+        log::debug!("Parser::TypeDecl()");
+
+        let type_ = match self.token(Token::TYPE)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(lparen) = self.token(Token::LPAREN)? {
+            let specs = zero_or_more(|| match self.TypeSpec() {
+                Ok(Some(out)) => {
+                    self.token(Token::SEMICOLON)?;
+                    Ok(Some(ast::Spec::TypeSpec(out)))
+                }
+                _ => Ok(None),
+            })
+            .required()?;
+            let rparen = self.token(Token::RPAREN).required()?;
+            return Ok(Some(self.alloc(ast::GenDecl {
+                doc: None,
+                tok_pos: type_.0,
+                tok: type_.1,
+                lparen: Some(lparen.0),
+                specs,
+                rparen: Some(rparen.0),
+            })));
+        }
+
+        let specs = vec![ast::Spec::TypeSpec(self.TypeSpec().required()?)];
+        Ok(Some(self.alloc(ast::GenDecl {
+            doc: None,
+            tok_pos: type_.0,
+            tok: type_.1,
+            lparen: None,
+            specs,
+            rparen: None,
+        })))
+    }
+
+    // TypeSpec  = AliasDecl | TypeDef .
+    // AliasDecl = identifier "=" Type .
+    // TypeDef   = identifier Type .
+    fn TypeSpec(&mut self) -> ParserResult<Option<&'a ast::TypeSpec<'a>>> {
+        log::debug!("Parser::TypeSpec()");
+
+        let name = match self.identifier()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
+        let type_ = self.Type().required()?;
+
+        Ok(Some(self.alloc(ast::TypeSpec {
+            doc: None,
+            name: Some(name),
+            assign,
+            type_,
+            comment: None,
+        })))
     }
 
     // ConstDecl = "const" ( ConstSpec | "(" { ConstSpec ";" } ")" ) .
@@ -319,9 +382,7 @@ impl<'a> Parser<'a> {
                 _ => Ok(None),
             })
             .required()?;
-
             let rparen = self.token(Token::RPAREN).required()?;
-
             return Ok(Some(self.alloc(ast::GenDecl {
                 doc: None,
                 tok_pos: const_.0,
@@ -569,18 +630,145 @@ impl<'a> Parser<'a> {
         self.int_lit()
     }
 
-    // Type      = TypeName | TypeLit | "(" Type ")" .
-    // TypeName  = identifier | QualifiedIdent .
-    // TypeLit   = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
-    //             SliceType | MapType | ChannelType .
+    // Type = TypeName | TypeLit | "(" Type ")" .
     fn Type(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::Type()");
+
+        if self.token(Token::LPAREN)?.is_some() {
+            let type_ = self.Type().required()?;
+            self.token(Token::RPAREN).required()?;
+            return Ok(Some(type_));
+        }
+
+        if let Some(type_name) = self.TypeName()? {
+            return Ok(Some(type_name));
+        }
+
+        if let Some(type_lit) = self.TypeLit()? {
+            return Ok(Some(type_lit));
+        }
+
+        Ok(None)
+    }
+
+    // TypeName = identifier | QualifiedIdent .
+    fn TypeName(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::TypeName()");
 
         if let Some(ident) = self.identifier()? {
             return Ok(Some(ast::Expr::Ident(ident)));
         }
 
         Ok(None)
+    }
+
+    // TypeLit = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
+    //           SliceType | MapType | ChannelType .
+    fn TypeLit(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::TypeLit()");
+
+        if let Some(struct_type) = self.StructType()? {
+            return Ok(Some(ast::Expr::StructType(struct_type)));
+        }
+
+        Ok(None)
+    }
+    // ElementType = Type .
+
+    // StructType = "struct" "{" { FieldDecl ";" } "}" .
+    fn StructType(&mut self) -> ParserResult<Option<&'a ast::StructType<'a>>> {
+        log::debug!("Parser::StructType()");
+
+        let struct_ = match self.token(Token::STRUCT)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let lbrace = self.token(Token::LBRACE).required()?;
+
+        let fields = zero_or_more(|| match self.FieldDecl() {
+            Ok(Some(out)) => {
+                self.token(Token::SEMICOLON)?;
+                Ok(Some(out))
+            }
+            _ => Ok(None),
+        })
+        .required()?;
+
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(Some(self.alloc(ast::StructType {
+            struct_: struct_.0,
+            fields: Some(self.alloc(ast::FieldList {
+                opening: Some(lbrace.0),
+                list: fields,
+                closing: Some(rbrace.0),
+            })),
+            incomplete: false,
+        })))
+    }
+
+    // FieldDecl     = (IdentifierList Type | EmbeddedField) [ Tag ] .
+    // EmbeddedField = [ "*" ] TypeName .
+    fn FieldDecl(&mut self) -> ParserResult<Option<&'a ast::Field<'a>>> {
+        if let Some(star) = self.token(Token::MUL)? {
+            let type_name = self.TypeName().required()?;
+            let tag = self.Tag()?;
+            return Ok(Some(self.alloc(ast::Field {
+                doc: None,
+                type_: Some(ast::Expr::StarExpr(self.alloc(ast::StarExpr {
+                    star: star.0,
+                    x: type_name,
+                }))),
+                names: None,
+                tag,
+                comment: None,
+            })));
+        };
+
+        if let Some(names) = self.IdentifierList()? {
+            if let Some(type_) = self.Type()? {
+                let tag = self.Tag()?;
+                return Ok(Some(self.alloc(ast::Field {
+                    doc: None,
+                    names: Some(names),
+                    type_: Some(type_),
+                    tag,
+                    comment: None,
+                })));
+            }
+
+            if names.len() == 1 {
+                let tag = self.Tag()?;
+                return Ok(Some(self.alloc(ast::Field {
+                    doc: None,
+                    type_: Some(ast::Expr::Ident(names[0])),
+                    names: None,
+                    tag,
+                    comment: None,
+                })));
+            }
+
+            return Err(ParserError::UnexpectedToken);
+        }
+
+        if let Some(type_) = self.TypeName()? {
+            let tag = self.Tag()?;
+            return Ok(Some(self.alloc(ast::Field {
+                doc: None,
+                type_: Some(type_),
+                names: None,
+                tag,
+                comment: None,
+            })));
+        }
+
+        Ok(None)
+    }
+
+    // Tag = string_lit .
+    fn Tag(&mut self) -> ParserResult<Option<&'a ast::BasicLit<'a>>> {
+        self.string_lit()
     }
 
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .

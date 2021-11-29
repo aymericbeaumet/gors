@@ -588,6 +588,84 @@ impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::StructType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.StructType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Struct: ")?;
+        self.struct_.print(p)?;
+
+        p.prefix()?;
+        p.write("Fields: ")?;
+        self.fields.print(p)?;
+
+        p.prefix()?;
+        p.write("Incomplete: ")?;
+        self.incomplete.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::TypeSpec<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.TypeSpec ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Doc: ")?;
+        self.doc.print(p)?;
+
+        p.prefix()?;
+        p.write("Name: ")?;
+        self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("Assign: ")?;
+        if let Some(assign) = self.assign {
+            assign.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Comment: ")?;
+        self.comment.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.StarExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Star: ")?;
+        self.star.print(p)?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
@@ -630,6 +708,8 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::Ellipsis(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
+            ast::Expr::StarExpr(node) => node.print(p),
+            ast::Expr::StructType(node) => node.print(p),
         }
     }
 }
@@ -711,6 +791,7 @@ impl<W: Write> Printable<W> for ast::Spec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Spec::ImportSpec(spec) => spec.print(p),
+            ast::Spec::TypeSpec(spec) => spec.print(p),
             ast::Spec::ValueSpec(spec) => spec.print(p),
         }
     }
@@ -771,6 +852,14 @@ impl<W: Write> Printable<W> for token::Position<'_> {
 impl<W: Write> Printable<W> for token::Token {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write(self.into())?;
+        p.newline()?;
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for bool {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        write!(p.w, "{}", self)?;
         p.newline()?;
         Ok(())
     }
