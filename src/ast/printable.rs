@@ -248,6 +248,25 @@ impl<W: Write> Printable<W> for Vec<&ast::ImportSpec<'_>> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::Ellipsis<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.Ellipsis ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Ellipsis: ")?;
+        self.ellipsis.print(p)?;
+
+        p.prefix()?;
+        p.write("Elt: ")?;
+        self.elt.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::CommentGroup {
     fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
@@ -609,6 +628,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
         match self {
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
+            ast::Expr::Ellipsis(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
         }
     }

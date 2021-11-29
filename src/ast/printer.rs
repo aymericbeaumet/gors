@@ -53,7 +53,7 @@ impl<W: Write> Printer<W> {
         &mut self,
         val: T,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        // downside: this hash function should not produce collisions
+        // requirement: this hash function should not produce collisions
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         val.hash(&mut hasher);
         let h = hasher.finish();

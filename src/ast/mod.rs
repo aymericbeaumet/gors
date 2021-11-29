@@ -195,6 +195,13 @@ pub struct ReturnStmt<'a> {
     pub results: Vec<Expr<'a>>, // result expressions; or nil
 }
 
+// https://pkg.go.dev/go/ast#Ellipsis
+#[derive(Debug)]
+pub struct Ellipsis<'a> {
+    pub ellipsis: Position<'a>, // position of "..."
+    pub elt: Expr<'a>,          // ellipsis element type (parameter lists only); or nil
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -207,6 +214,7 @@ pub enum Spec<'a> {
 pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     BinaryExpr(&'a BinaryExpr<'a>),
+    Ellipsis(&'a Ellipsis<'a>),
     Ident(&'a Ident<'a>),
 }
 

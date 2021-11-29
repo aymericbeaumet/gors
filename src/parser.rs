@@ -674,9 +674,69 @@ impl<'a> Parser<'a> {
     fn ParameterList(&mut self) -> ParserResult<Option<Vec<&'a ast::Field<'a>>>> {
         log::debug!("Parser::ParameterList()");
 
+        let idents = match self.IdentifierList()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let type_ = self.Type()?;
+
+        // If no type can be found, then the idents are types, e.g.: (bool, bool)
+        if type_.is_none() {
+            return Ok(Some(
+                idents
+                    .iter()
+                    .map(|ident| {
+                        self.alloc(ast::Field {
+                            doc: None,
+                            names: None,
+                            type_: Some(ast::Expr::Ident(ident)),
+                            tag: None,
+                            comment: None,
+                        })
+                    })
+                    .collect(),
+            ));
+        }
+
+        // If a type can be found, then we expect idents + types: (a, b bool, c bool, d bool)
+
         let mut fields = vec![];
 
-        let ty = self.Type()?;
+        fields.push(self.alloc(ast::Field {
+            comment: None,
+            type_,
+            tag: None,
+            names: Some(idents),
+            doc: None,
+        }));
+
+        while self.token(Token::COMMA)?.is_some() {
+            let idents = self.IdentifierList().required()?;
+            let ellipsis = self.token(Token::ELLIPSIS)?;
+            let type_ = self.Type().required()?;
+
+            if let Some(ellipsis) = ellipsis {
+                fields.push(self.alloc(ast::Field {
+                    comment: None,
+                    type_: Some(ast::Expr::Ellipsis(self.alloc(ast::Ellipsis {
+                        ellipsis: ellipsis.0,
+                        elt: type_,
+                    }))),
+                    tag: None,
+                    names: Some(idents),
+                    doc: None,
+                }));
+                return Ok(Some(fields));
+            }
+
+            fields.push(self.alloc(ast::Field {
+                comment: None,
+                type_: Some(type_),
+                tag: None,
+                names: Some(idents),
+                doc: None,
+            }));
+        }
 
         Ok(Some(fields))
     }
