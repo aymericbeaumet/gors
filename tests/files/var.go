@@ -12,3 +12,7 @@ var (
 	g    int = 1
 	h, i int = 1, 2
 )
+
+func main() {
+	var zero = 0
+}

@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::ast::{self, Resolver, Visitor};
+use crate::ast;
 use crate::scanner;
 use crate::token::{Position, Token};
 use scanner::{Scanner, ScannerError};
@@ -139,9 +139,6 @@ impl<'a> Parser<'a> {
         .required()?;
 
         self.token(Token::EOF)?;
-
-        let mut resolver = Resolver::new();
-        resolver.visit(&top_level_decls);
 
         let imports = import_decls
             .iter()
@@ -490,7 +487,7 @@ impl<'a> Parser<'a> {
             (None, self.ExpressionList().required()?)
         } else {
             (
-                self.Type()?,
+                Some(self.Type().required()?),
                 if self.token(Token::ASSIGN)?.is_some() {
                     self.ExpressionList().required()?
                 } else {
@@ -671,11 +668,30 @@ impl<'a> Parser<'a> {
             return Ok(Some(ast::Expr::StructType(t)));
         }
 
+        if let Some(t) = self.PointerType()? {
+            return Ok(Some(ast::Expr::StarExpr(t)));
+        }
+
         if let Some(t) = self.InterfaceType()? {
             return Ok(Some(ast::Expr::InterfaceType(t)));
         }
 
         Ok(None)
+    }
+
+    // PointerType = "*" BaseType .
+    fn PointerType(&mut self) -> ParserResult<Option<&'a ast::StarExpr<'a>>> {
+        let star = match self.token(Token::MUL)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let x = self.BaseType().required()?;
+        Ok(Some(self.alloc(ast::StarExpr { star: star.0, x })))
+    }
+
+    // BaseType = Type .
+    fn BaseType(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        self.Type()
     }
 
     // InterfaceType = "interface" "{" { ( MethodSpec | InterfaceTypeName ) ";" } "}" .
@@ -1068,8 +1084,14 @@ impl<'a> Parser<'a> {
     fn Statement(&mut self) -> ParserResult<Option<ast::Stmt<'a>>> {
         log::debug!("Parser::Statement()");
 
-        if let Some(return_stmt) = self.ReturnStmt()? {
-            return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
+        if let Some(decl) = self.Declaration()? {
+            return Ok(Some(ast::Stmt::DeclStmt(
+                self.alloc(ast::DeclStmt { decl }),
+            )));
+        }
+
+        if let Some(s) = self.ReturnStmt()? {
+            return Ok(Some(ast::Stmt::ReturnStmt(s)));
         }
 
         self.SimpleStmt()

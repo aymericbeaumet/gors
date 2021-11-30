@@ -1,15 +1,9 @@
 mod hashable;
 mod printable;
 mod printer;
-mod resolver;
-mod visitable;
-mod visitor;
 
 use crate::token::{Position, Token};
 use std::collections::BTreeMap;
-
-pub use resolver::Resolver;
-pub use visitor::{Visitable, Visitor};
 
 pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
     w: W,
@@ -235,6 +229,12 @@ pub struct InterfaceType<'a> {
     pub incomplete: bool, // true if (source) methods or types are missing in the Methods list
 }
 
+// https://pkg.go.dev/go/ast#DeclStmt
+#[derive(Debug)]
+pub struct DeclStmt<'a> {
+    pub decl: &'a GenDecl<'a>, // *GenDecl with CONST, TYPE, or VAR token
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -260,5 +260,6 @@ pub enum Expr<'a> {
 #[derive(Debug)]
 pub enum Stmt<'a> {
     AssignStmt(&'a AssignStmt<'a>),
+    DeclStmt(&'a DeclStmt<'a>),
     ReturnStmt(&'a ReturnStmt<'a>),
 }

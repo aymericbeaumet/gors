@@ -694,6 +694,21 @@ impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.DeclStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Decl: ")?;
+        self.decl.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
@@ -849,6 +864,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
+            ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
         }
     }

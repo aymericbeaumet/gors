@@ -9,3 +9,7 @@ const (
 	d    int = 1
 	e, f int = 1, 2
 )
+
+func main() {
+	const zero = 0
+}
