@@ -694,6 +694,29 @@ impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::UnaryExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.UnaryExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("OpPos: ")?;
+        self.op_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Op: ")?;
+        self.op.print(p)?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -755,6 +778,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::InterfaceType(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
             ast::Expr::StructType(node) => node.print(p),
+            ast::Expr::UnaryExpr(node) => node.print(p),
         }
     }
 }

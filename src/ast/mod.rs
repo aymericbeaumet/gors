@@ -235,6 +235,14 @@ pub struct DeclStmt<'a> {
     pub decl: &'a GenDecl<'a>, // *GenDecl with CONST, TYPE, or VAR token
 }
 
+// https://pkg.go.dev/go/ast#UnaryExpr
+#[derive(Debug)]
+pub struct UnaryExpr<'a> {
+    pub op_pos: Position<'a>, // position of Op
+    pub op: Token,            // operator
+    pub x: Expr<'a>,          // operand
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -254,6 +262,7 @@ pub enum Expr<'a> {
     InterfaceType(&'a InterfaceType<'a>),
     StarExpr(&'a StarExpr<'a>),
     StructType(&'a StructType<'a>),
+    UnaryExpr(&'a UnaryExpr<'a>),
 }
 
 // https://pkg.go.dev/go/ast#Stmt

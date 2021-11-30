@@ -569,6 +569,20 @@ impl<'a> Parser<'a> {
     fn UnaryExpr(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::UnaryExpr()");
 
+        if let Some(op) = self.unary_op()? {
+            let x = self.UnaryExpr().required()?;
+            let out = if op.1 == Token::MUL {
+                ast::Expr::StarExpr(self.alloc(ast::StarExpr { star: op.0, x }))
+            } else {
+                ast::Expr::UnaryExpr(self.alloc(ast::UnaryExpr {
+                    op: op.1,
+                    op_pos: op.0,
+                    x,
+                }))
+            };
+            return Ok(Some(out));
+        }
+
         self.PrimaryExpr()
     }
 
@@ -1193,6 +1207,21 @@ impl<'a> Parser<'a> {
                 /* mul_op */
                 MUL | QUO | REM | SHL | SHR | AND | AND_NOT
             ) {
+                self.next()?;
+                return Ok(Some(current));
+            }
+        }
+
+        Ok(None)
+    }
+
+    // unary_op   = "+" | "-" | "!" | "^" | "*" | "&" | "<-" .
+    fn unary_op(&mut self) -> ParserResult<Option<(Position<'a>, Token, &'a str)>> {
+        log::debug!("Parser::unary_op()");
+
+        use Token::*;
+        if let Some(current) = self.current {
+            if matches!(current.1, ADD | SUB | NOT | MUL | XOR | AND | ARROW) {
                 self.next()?;
                 return Ok(Some(current));
             }
