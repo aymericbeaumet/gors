@@ -1,3 +1,5 @@
+#![allow(clippy::enum_variant_names)]
+
 mod hashable;
 mod printable;
 mod printer;

@@ -247,10 +247,8 @@ impl<'a> Parser<'a> {
                 name: ".",
                 obj: Cell::new(None),
             }))
-        } else if let Some(package_name) = self.PackageName()? {
-            Some(package_name)
         } else {
-            None
+            self.PackageName()?
         };
 
         let import_path = self.ImportPath().required()?;
@@ -1012,15 +1010,13 @@ impl<'a> Parser<'a> {
 
         // If a type can be found, then we expect idents + types: (a, b bool, c bool, d bool)
 
-        let mut fields = vec![];
-
-        fields.push(self.alloc(ast::Field {
+        let mut fields = vec![self.alloc(ast::Field {
             comment: None,
             type_,
             tag: None,
             names: Some(idents),
             doc: None,
-        }));
+        })];
 
         while self.token(Token::COMMA)?.is_some() {
             let idents = self.IdentifierList().required()?;
@@ -1286,7 +1282,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn zero_or_more<'a, T>(
+fn zero_or_more<T>(
     mut op: impl FnMut() -> ParserResult<Option<T>>,
 ) -> ParserResult<Option<Vec<T>>> {
     let mut out = vec![];

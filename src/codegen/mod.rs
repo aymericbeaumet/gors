@@ -3,7 +3,7 @@ use codegen::Scope;
 
 pub fn fprint<W: std::io::Write>(
     mut w: W,
-    file: &ast::File,
+    _file: &ast::File,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut scope = Scope::new();
 
