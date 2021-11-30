@@ -77,8 +77,8 @@ pub struct BlockStmt<'a> {
 // https://pkg.go.dev/go/ast#FuncType
 #[derive(Debug)]
 pub struct FuncType<'a> {
-    pub func: Position<'a>, // position of "func" keyword (token.NoPos if there is no "func")
-    pub params: &'a FieldList<'a>, // (incoming) parameters; non-nil
+    pub func: Option<Position<'a>>, // position of "func" keyword (token.NoPos if there is no "func")
+    pub params: &'a FieldList<'a>,  // (incoming) parameters; non-nil
     pub results: Option<&'a FieldList<'a>>, // (outgoing) results; or nil
 }
 
@@ -227,6 +227,14 @@ pub struct StarExpr<'a> {
     pub x: Expr<'a>,        // operand
 }
 
+// https://pkg.go.dev/go/ast#InterfaceType
+#[derive(Debug)]
+pub struct InterfaceType<'a> {
+    pub interface: Position<'a>,            // position of "interface" keyword
+    pub methods: Option<&'a FieldList<'a>>, // list of embedded interfaces, methods, or types
+    pub incomplete: bool, // true if (source) methods or types are missing in the Methods list
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -241,7 +249,9 @@ pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     BinaryExpr(&'a BinaryExpr<'a>),
     Ellipsis(&'a Ellipsis<'a>),
+    FuncType(&'a FuncType<'a>),
     Ident(&'a Ident<'a>),
+    InterfaceType(&'a InterfaceType<'a>),
     StarExpr(&'a StarExpr<'a>),
     StructType(&'a StructType<'a>),
 }

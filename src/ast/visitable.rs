@@ -106,6 +106,14 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::StarExpr<'a> {
     fn visit(&self, _: &mut V) {}
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::InterfaceType<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::FuncType<'a> {
+    fn visit(&self, _: &mut V) {}
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for &'a ast::TypeSpec<'a> {
     fn visit(&self, _: &mut V) {}
 }
@@ -144,7 +152,9 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ast::Expr<'a> {
             ast::Expr::BasicLit(node) => node.visit(visitor),
             ast::Expr::BinaryExpr(node) => node.visit(visitor),
             ast::Expr::Ellipsis(node) => node.visit(visitor),
+            ast::Expr::FuncType(node) => node.visit(visitor),
             ast::Expr::Ident(node) => node.visit(visitor),
+            ast::Expr::InterfaceType(node) => node.visit(visitor),
             ast::Expr::StarExpr(node) => node.visit(visitor),
             ast::Expr::StructType(node) => node.visit(visitor),
         };

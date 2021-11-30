@@ -380,7 +380,12 @@ impl<W: Write> Printable<W> for &ast::FuncType<'_> {
 
         p.prefix()?;
         p.write("Func: ")?;
-        self.func.print(p)?;
+        if let Some(func) = self.func {
+            func.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
 
         p.prefix()?;
         p.write("Params: ")?;
@@ -647,6 +652,29 @@ impl<W: Write> Printable<W> for &ast::TypeSpec<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::InterfaceType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.InterfaceType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Interface: ")?;
+        self.interface.print(p)?;
+
+        p.prefix()?;
+        p.write("Methods: ")?;
+        self.methods.print(p)?;
+
+        p.prefix()?;
+        p.write("Incomplete: ")?;
+        self.incomplete.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.StarExpr ")?;
@@ -707,7 +735,9 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::Ellipsis(node) => node.print(p),
+            ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
+            ast::Expr::InterfaceType(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
             ast::Expr::StructType(node) => node.print(p),
         }

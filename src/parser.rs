@@ -667,11 +667,92 @@ impl<'a> Parser<'a> {
     fn TypeLit(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::TypeLit()");
 
-        if let Some(struct_type) = self.StructType()? {
-            return Ok(Some(ast::Expr::StructType(struct_type)));
+        if let Some(t) = self.StructType()? {
+            return Ok(Some(ast::Expr::StructType(t)));
+        }
+
+        if let Some(t) = self.InterfaceType()? {
+            return Ok(Some(ast::Expr::InterfaceType(t)));
         }
 
         Ok(None)
+    }
+
+    // InterfaceType = "interface" "{" { ( MethodSpec | InterfaceTypeName ) ";" } "}" .
+    // MethodSpec    = MethodName Signature .
+    fn InterfaceType(&mut self) -> ParserResult<Option<&'a ast::InterfaceType<'a>>> {
+        log::debug!("Parser::InterfaceType()");
+
+        let interface = match self.token(Token::INTERFACE)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let lbrace = self.token(Token::LBRACE).required()?;
+
+        let fields = zero_or_more(|| {
+            if let Some(method_spec) = self.MethodName()? {
+                if let Some(signature) = self.Signature(None)? {
+                    self.token(Token::SEMICOLON).required()?;
+                    return Ok(Some(self.alloc(ast::Field {
+                        doc: None,
+                        names: Some(vec![method_spec]),
+                        type_: Some(ast::Expr::FuncType(signature)),
+                        tag: None,
+                        comment: None,
+                    })));
+                }
+
+                self.token(Token::SEMICOLON).required()?;
+                return Ok(Some(self.alloc(ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(ast::Expr::Ident(method_spec)),
+                    tag: None,
+                    comment: None,
+                })));
+            };
+
+            if let Some(interface_type_name) = self.InterfaceTypeName()? {
+                self.token(Token::SEMICOLON).required()?;
+                return Ok(Some(self.alloc(ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(interface_type_name),
+                    tag: None,
+                    comment: None,
+                })));
+            }
+
+            Ok(None)
+        })
+        .required()?;
+
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(Some(self.alloc(ast::InterfaceType {
+            interface: interface.0,
+            methods: Some(self.alloc(ast::FieldList {
+                opening: Some(lbrace.0),
+                list: fields,
+                closing: Some(rbrace.0),
+            })),
+            incomplete: false,
+        })))
+    }
+
+    // MethodName = identifier .
+    fn MethodName(&mut self) -> ParserResult<Option<&'a ast::Ident<'a>>> {
+        log::debug!("Parser::MethodName()");
+
+        self.identifier()
+    }
+
+    // InterfaceTypeName = TypeName .
+    fn InterfaceTypeName(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::InterfaceTypeName()");
+
+        self.TypeName()
     }
 
     // StructType = "struct" "{" { FieldDecl ";" } "}" .
@@ -771,7 +852,6 @@ impl<'a> Parser<'a> {
     }
 
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
-    // Signature    = Parameters [ Result ] .
     fn FunctionDecl(&mut self) -> ParserResult<Option<&'a ast::FuncDecl<'a>>> {
         log::debug!("Parser::FunctionDecl()");
 
@@ -782,13 +862,7 @@ impl<'a> Parser<'a> {
 
         let function_name = self.FunctionName().required()?;
 
-        let params = self.Parameters().required()?;
-        let results = self.Result()?;
-        let signature = self.alloc(ast::FuncType {
-            func: func.0,
-            params,
-            results,
-        });
+        let signature = self.Signature(Some(func.0)).required()?;
 
         let function_body = self.FunctionBody()?;
 
@@ -798,6 +872,27 @@ impl<'a> Parser<'a> {
             name: function_name,
             type_: signature,
             body: function_body,
+        })))
+    }
+
+    // Signature = Parameters [ Result ] .
+    fn Signature(
+        &mut self,
+        func: Option<Position<'a>>,
+    ) -> ParserResult<Option<&'a ast::FuncType<'a>>> {
+        log::debug!("Parser::Signature()");
+
+        let params = match self.Parameters()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let results = self.Result()?;
+
+        Ok(Some(self.alloc(ast::FuncType {
+            func,
+            params,
+            results,
         })))
     }
 
