@@ -269,12 +269,12 @@ impl<'a> Parser<'a> {
     fn TopLevelDecl(&mut self) -> ParserResult<Option<ast::Decl<'a>>> {
         log::debug!("Parser::TopLevelDecl()");
 
-        if let Some(declaration) = self.Declaration()? {
-            return Ok(Some(ast::Decl::GenDecl(declaration)));
+        if let Some(decl) = self.Declaration()? {
+            return Ok(Some(ast::Decl::GenDecl(decl)));
         }
 
-        if let Some(function_decl) = self.FunctionDecl()? {
-            return Ok(Some(ast::Decl::FuncDecl(function_decl)));
+        if let Some(decl) = self.FunctionDecl_or_MethodDecl()? {
+            return Ok(Some(ast::Decl::FuncDecl(decl)));
         }
 
         Ok(None)
@@ -919,30 +919,6 @@ impl<'a> Parser<'a> {
         self.string_lit()
     }
 
-    // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
-    fn FunctionDecl(&mut self) -> ParserResult<Option<&'a ast::FuncDecl<'a>>> {
-        log::debug!("Parser::FunctionDecl()");
-
-        let func = match self.token(Token::FUNC)? {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        let function_name = self.FunctionName().required()?;
-
-        let signature = self.Signature(Some(func.0)).required()?;
-
-        let function_body = self.FunctionBody()?;
-
-        Ok(Some(self.alloc(ast::FuncDecl {
-            doc: None,
-            recv: None,
-            name: function_name,
-            type_: signature,
-            body: function_body,
-        })))
-    }
-
     // Signature = Parameters [ Result ] .
     fn Signature(
         &mut self,
@@ -985,13 +961,6 @@ impl<'a> Parser<'a> {
         } else {
             Ok(None)
         }
-    }
-
-    // FunctionName = identifier .
-    fn FunctionName(&mut self) -> ParserResult<Option<&'a ast::Ident<'a>>> {
-        log::debug!("Parser::FunctionName()");
-
-        self.identifier()
     }
 
     // Parameters = "(" [ ParameterList [ "," ] ] ")" .
@@ -1233,6 +1202,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Receiver = Parameters .
+    fn Receiver(&mut self) -> ParserResult<Option<&'a ast::FieldList<'a>>> {
+        self.Parameters()
+    }
+
     /*
      * Intermediate productions (no log, just to simplify/factorize productions or deal with look-ahead)
      */
@@ -1283,6 +1257,34 @@ impl<'a> Parser<'a> {
         }
 
         Ok(None)
+    }
+
+    // FunctionDecl | MethodDecl
+    // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
+    // MethodDecl   = "func" Receiver MethodName Signature [ FunctionBody ] .
+    // FunctionName = identifier .
+    // MethodName   = identifier .
+    fn FunctionDecl_or_MethodDecl(&mut self) -> ParserResult<Option<&'a ast::FuncDecl<'a>>> {
+        let func = match self.token(Token::FUNC)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let recv = self.Receiver()?;
+
+        let name = self.identifier().required()?;
+
+        let type_ = self.Signature(Some(func.0)).required()?;
+
+        let body = self.FunctionBody()?;
+
+        Ok(Some(self.alloc(ast::FuncDecl {
+            doc: None,
+            recv,
+            name,
+            type_,
+            body,
+        })))
     }
 
     /*
