@@ -717,6 +717,76 @@ impl<W: Write> Printable<W> for &ast::UnaryExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::CallExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.CallExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Fun: ")?;
+        self.fun.print(p)?;
+
+        p.prefix()?;
+        p.write("Lparen: ")?;
+        self.lparen.print(p)?;
+
+        p.prefix()?;
+        p.write("Args: ")?;
+        self.args.print(p)?;
+
+        p.prefix()?;
+        p.write("Ellipsis: ")?;
+        if let Some(ellipsis) = self.ellipsis {
+            ellipsis.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("Rparen: ")?;
+        self.rparen.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::SelectorExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.SelectorExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Sel: ")?;
+        self.sel.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::ExprStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ExprStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -772,10 +842,12 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
         match self {
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
+            ast::Expr::CallExpr(node) => node.print(p),
             ast::Expr::Ellipsis(node) => node.print(p),
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
+            ast::Expr::SelectorExpr(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
             ast::Expr::StructType(node) => node.print(p),
             ast::Expr::UnaryExpr(node) => node.print(p),
@@ -889,6 +961,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
         match self {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
+            ast::Stmt::ExprStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
         }
     }

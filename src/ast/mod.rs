@@ -102,7 +102,7 @@ pub struct ValueSpec<'a> {
     pub doc: Option<&'a CommentGroup>, // associated documentation; or nil
     pub names: Vec<&'a Ident<'a>>,     // value names (len(Names) > 0)
     pub type_: Option<Expr<'a>>,       // value type; or nil
-    pub values: Vec<Expr<'a>>,         // initial values; or nil
+    pub values: Option<Vec<Expr<'a>>>, // initial values; or nil
     pub comment: Option<&'a CommentGroup>, // line comments; or nil
 }
 
@@ -245,6 +245,29 @@ pub struct UnaryExpr<'a> {
     pub x: Expr<'a>,          // operand
 }
 
+// https://pkg.go.dev/go/ast#CallExpr
+#[derive(Debug)]
+pub struct CallExpr<'a> {
+    pub fun: Expr<'a>,                  // function expression
+    pub lparen: Position<'a>,           // position of "("
+    pub args: Option<Vec<Expr<'a>>>,    // function arguments; or nil
+    pub ellipsis: Option<Position<'a>>, // position of "..." (token.NoPos if there is no "...")
+    pub rparen: Position<'a>,           // position of ")"
+}
+
+// https://pkg.go.dev/go/ast#SelectorExpr
+#[derive(Debug)]
+pub struct SelectorExpr<'a> {
+    pub x: Expr<'a>,        // expression
+    pub sel: &'a Ident<'a>, // field selector
+}
+
+// https://pkg.go.dev/go/ast#ExprStmt
+#[derive(Debug)]
+pub struct ExprStmt<'a> {
+    pub x: Expr<'a>, // expression
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug)]
 pub enum Spec<'a> {
@@ -258,10 +281,12 @@ pub enum Spec<'a> {
 pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     BinaryExpr(&'a BinaryExpr<'a>),
+    CallExpr(&'a CallExpr<'a>),
     Ellipsis(&'a Ellipsis<'a>),
     FuncType(&'a FuncType<'a>),
     Ident(&'a Ident<'a>),
     InterfaceType(&'a InterfaceType<'a>),
+    SelectorExpr(&'a SelectorExpr<'a>),
     StarExpr(&'a StarExpr<'a>),
     StructType(&'a StructType<'a>),
     UnaryExpr(&'a UnaryExpr<'a>),
@@ -272,5 +297,6 @@ pub enum Expr<'a> {
 pub enum Stmt<'a> {
     AssignStmt(&'a AssignStmt<'a>),
     DeclStmt(&'a DeclStmt<'a>),
+    ExprStmt(&'a ExprStmt<'a>),
     ReturnStmt(&'a ReturnStmt<'a>),
 }
