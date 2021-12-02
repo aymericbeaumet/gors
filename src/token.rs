@@ -153,6 +153,26 @@ pub enum Token {
     VAR,
 }
 
+impl Token {
+    // https://go.dev/ref/spec#Operator_precedence
+    pub fn precedence(&self) -> u8 {
+        use Token::*;
+
+        match self {
+            MUL | QUO | REM | SHL | SHR | AND | AND_NOT => 5,
+            ADD | SUB | OR | XOR => 4,
+            EQL | NEQ | LSS | LEQ | GTR | GEQ => 3,
+            LAND => 2,
+            LOR => 1,
+            _ => unreachable!("precedence() is only supported for binary operators"),
+        }
+    }
+
+    pub const fn lowest_precedence() -> u8 {
+        0
+    }
+}
+
 impl From<&Token> for &'static str {
     fn from(token: &Token) -> Self {
         use Token::*;

@@ -818,6 +818,29 @@ impl<W: Write> Printable<W> for &ast::IfStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::IncDecStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.IncDecStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("TokPos: ")?;
+        self.tok_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Tok: ")?;
+        self.tok.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -995,6 +1018,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
             ast::Stmt::IfStmt(stmt) => stmt.print(p),
+            ast::Stmt::IncDecStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
         }
     }

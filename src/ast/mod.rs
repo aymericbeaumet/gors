@@ -278,6 +278,14 @@ pub struct IfStmt<'a> {
     pub else_: Option<Stmt<'a>>, // else branch; or nil
 }
 
+// https://pkg.go.dev/go/ast#ForStmt
+#[derive(Debug)]
+pub struct IncDecStmt<'a> {
+    pub x: Expr<'a>,
+    pub tok_pos: Position<'a>, // position of Tok
+    pub tok: Token,            // INC or DEC
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug, Copy, Clone)]
 pub enum Spec<'a> {
@@ -310,5 +318,6 @@ pub enum Stmt<'a> {
     DeclStmt(&'a DeclStmt<'a>),
     ExprStmt(&'a ExprStmt<'a>),
     IfStmt(&'a IfStmt<'a>),
+    IncDecStmt(&'a IncDecStmt<'a>),
     ReturnStmt(&'a ReturnStmt<'a>),
 }

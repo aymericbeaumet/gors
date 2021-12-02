@@ -534,19 +534,20 @@ impl<'a> Parser<'a> {
     fn Expression(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::Expression()");
 
-        let x = match self.UnaryExpr()? {
+        let mut x = match self.UnaryExpr()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         if let Some(op) = self.binary_op()? {
             let y = self.Expression().required()?;
-            return Ok(Some(ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
+
+            x = ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
                 x,
                 op_pos: op.0,
                 op: op.1,
                 y,
-            }))));
+            }));
         }
 
         Ok(Some(x))
@@ -1178,6 +1179,7 @@ impl<'a> Parser<'a> {
 
     // SimpleStmt     = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .
     // ExpressionStmt = Expression .
+    // IncDecStmt     = Expression ( "++" | "--" ) .
     // Assignment     = ExpressionList assign_op ExpressionList .
     // ShortVarDecl   = IdentifierList ":=" ExpressionList .
     fn SimpleStmt(&mut self) -> ParserResult<Option<ast::Stmt<'a>>> {
@@ -1213,9 +1215,25 @@ impl<'a> Parser<'a> {
 
             // ExpressionStmt
             if expression_list.len() == 1 {
-                return Ok(Some(ast::Stmt::ExprStmt(self.alloc(ast::ExprStmt {
-                    x: expression_list.pop().unwrap(),
-                }))));
+                let x = expression_list.pop().unwrap();
+
+                if let Some(inc) = self.token(Token::INC)? {
+                    return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
+                        tok: inc.1,
+                        tok_pos: inc.0,
+                        x,
+                    }))));
+                }
+
+                if let Some(dec) = self.token(Token::DEC)? {
+                    return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
+                        tok: dec.1,
+                        tok_pos: dec.0,
+                        x,
+                    }))));
+                }
+
+                return Ok(Some(ast::Stmt::ExprStmt(self.alloc(ast::ExprStmt { x }))));
             }
 
             return Err(ParserError::UnexpectedToken);
