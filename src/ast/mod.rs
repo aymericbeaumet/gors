@@ -268,8 +268,18 @@ pub struct ExprStmt<'a> {
     pub x: Expr<'a>, // expression
 }
 
-// https://pkg.go.dev/go/ast#Spec
+// https://pkg.go.dev/go/ast#SelectorExpr
 #[derive(Debug)]
+pub struct IfStmt<'a> {
+    pub if_: Position<'a>,      // position of "if" keyword
+    pub init: Option<Stmt<'a>>, // initialization statement; or nil
+    pub cond: Expr<'a>,         // condition
+    pub body: &'a BlockStmt<'a>,
+    pub else_: Option<Stmt<'a>>, // else branch; or nil
+}
+
+// https://pkg.go.dev/go/ast#Spec
+#[derive(Debug, Copy, Clone)]
 pub enum Spec<'a> {
     ImportSpec(&'a ImportSpec<'a>),
     TypeSpec(&'a TypeSpec<'a>),
@@ -277,7 +287,7 @@ pub enum Spec<'a> {
 }
 
 // https://pkg.go.dev/go/ast#Expr
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     BinaryExpr(&'a BinaryExpr<'a>),
@@ -293,10 +303,12 @@ pub enum Expr<'a> {
 }
 
 // https://pkg.go.dev/go/ast#Stmt
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum Stmt<'a> {
     AssignStmt(&'a AssignStmt<'a>),
+    BlockStmt(&'a BlockStmt<'a>),
     DeclStmt(&'a DeclStmt<'a>),
     ExprStmt(&'a ExprStmt<'a>),
+    IfStmt(&'a IfStmt<'a>),
     ReturnStmt(&'a ReturnStmt<'a>),
 }

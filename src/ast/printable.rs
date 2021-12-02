@@ -787,6 +787,37 @@ impl<W: Write> Printable<W> for &ast::ExprStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::IfStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.IfStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("If: ")?;
+        self.if_.print(p)?;
+
+        p.prefix()?;
+        p.write("Init: ")?;
+        self.init.print(p)?;
+
+        p.prefix()?;
+        p.write("Cond: ")?;
+        self.cond.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.prefix()?;
+        p.write("Else: ")?;
+        self.else_.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -960,8 +991,10 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
+            ast::Stmt::BlockStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
+            ast::Stmt::IfStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
         }
     }

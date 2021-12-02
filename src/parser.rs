@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
 
         if let Some(op) = self.unary_op()? {
             let x = self.UnaryExpr().required()?;
-            let out = if op.1 == Token::MUL {
+            let expr = if op.1 == Token::MUL {
                 ast::Expr::StarExpr(self.alloc(ast::StarExpr { star: op.0, x }))
             } else {
                 ast::Expr::UnaryExpr(self.alloc(ast::UnaryExpr {
@@ -567,7 +567,7 @@ impl<'a> Parser<'a> {
                     x,
                 }))
             };
-            return Ok(Some(out));
+            return Ok(Some(expr));
         }
 
         self.PrimaryExpr()
@@ -590,15 +590,18 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        // TODO: while let + try Selector/Index/Slice/TypeAssertion/Arguments
-        if let Some((lparen, args, rparen)) = self.Arguments()? {
-            primary_expr = ast::Expr::CallExpr(self.alloc(ast::CallExpr {
-                fun: primary_expr,
-                lparen,
-                args,
-                ellipsis: None,
-                rparen,
-            }));
+        loop {
+            if let Some((lparen, args, rparen)) = self.Arguments()? {
+                primary_expr = ast::Expr::CallExpr(self.alloc(ast::CallExpr {
+                    fun: primary_expr,
+                    lparen,
+                    args,
+                    ellipsis: None,
+                    rparen,
+                }));
+            }
+
+            break;
         }
 
         Ok(Some(primary_expr))
@@ -726,7 +729,9 @@ impl<'a> Parser<'a> {
             Some(v) => v,
             None => return Ok(None),
         };
+
         let x = self.BaseType().required()?;
+
         Ok(Some(self.alloc(ast::StarExpr { star: star.0, x })))
     }
 
@@ -1073,7 +1078,9 @@ impl<'a> Parser<'a> {
             Some(v) => v,
             None => return Ok(None),
         };
+
         let list = self.StatementList().required()?;
+
         let rbrace = self.token(Token::RBRACE).required()?;
 
         Ok(Some(self.alloc(ast::BlockStmt {
@@ -1104,14 +1111,18 @@ impl<'a> Parser<'a> {
     fn Statement(&mut self) -> ParserResult<Option<ast::Stmt<'a>>> {
         log::debug!("Parser::Statement()");
 
-        if let Some(decl) = self.Declaration()? {
-            return Ok(Some(ast::Stmt::DeclStmt(
-                self.alloc(ast::DeclStmt { decl }),
-            )));
+        if let Some(if_stmt) = self.IfStmt()? {
+            return Ok(Some(ast::Stmt::IfStmt(if_stmt)));
         }
 
         if let Some(return_stmt) = self.ReturnStmt()? {
             return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
+        }
+
+        if let Some(decl) = self.Declaration()? {
+            return Ok(Some(ast::Stmt::DeclStmt(
+                self.alloc(ast::DeclStmt { decl }),
+            )));
         }
 
         if let Some(simple_stmt) = self.SimpleStmt()? {
@@ -1119,6 +1130,50 @@ impl<'a> Parser<'a> {
         }
 
         Ok(None)
+    }
+
+    // IfStmt = "if" [ SimpleStmt ";" ] Expression Block [ "else" ( IfStmt | Block ) ] .
+    fn IfStmt(&mut self) -> ParserResult<Option<&'a ast::IfStmt<'a>>> {
+        log::debug!("Parser::IfStmt()");
+
+        let if_ = match self.token(Token::IF)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let (init, cond) = if let Some(simple_stmt) = self.SimpleStmt()? {
+            if self.token(Token::SEMICOLON)?.is_some() {
+                (Some(simple_stmt), self.Expression().required()?)
+            } else if let ast::Stmt::ExprStmt(expr_stmt) = simple_stmt {
+                (None, expr_stmt.x)
+            } else {
+                return Err(ParserError::UnexpectedToken);
+            }
+        } else {
+            (None, self.Expression().required()?)
+        };
+
+        let body = self.Block().required()?;
+
+        let else_ = if self.token(Token::ELSE)?.is_some() {
+            if let Some(if_stmt) = self.IfStmt()? {
+                Some(ast::Stmt::IfStmt(if_stmt))
+            } else if let Some(block_stmt) = self.Block()? {
+                Some(ast::Stmt::BlockStmt(block_stmt))
+            } else {
+                return Err(ParserError::UnexpectedToken);
+            }
+        } else {
+            None
+        };
+
+        Ok(Some(self.alloc(ast::IfStmt {
+            if_: if_.0,
+            init,
+            cond,
+            body,
+            else_,
+        })))
     }
 
     // SimpleStmt     = EmptyStmt | ExpressionStmt | SendStmt | IncDecStmt | Assignment | ShortVarDecl .
@@ -1204,17 +1259,21 @@ impl<'a> Parser<'a> {
 
     // Receiver = Parameters .
     fn Receiver(&mut self) -> ParserResult<Option<&'a ast::FieldList<'a>>> {
+        log::debug!("Parser::Receiver()");
+
         self.Parameters()
     }
 
     /*
-     * Intermediate productions (no log, just to simplify/factorize productions or deal with look-ahead)
+     * Intermediate productions (simplify/factorize code + help with ambiguous look-ahead)
      */
 
     // identifier | QualifiedIdent
     // QualifiedIdent = PackageName "." identifier .
     // PackageName    = identifier .
     fn identifier_or_QualifiedIdent(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::identifier_or_QualifiedIdent()");
+
         let ident = match self.identifier()? {
             Some(v) => v,
             None => return Ok(None),
@@ -1235,6 +1294,8 @@ impl<'a> Parser<'a> {
 
     // "." | PackageName
     fn period_or_PackageName(&mut self) -> ParserResult<Option<&'a ast::Ident<'a>>> {
+        log::debug!("Parser::period_or_PackageName()");
+
         if let Some(period) = self.token(Token::PERIOD)? {
             return Ok(Some(self.alloc(ast::Ident {
                 name_pos: period.0,
@@ -1252,6 +1313,8 @@ impl<'a> Parser<'a> {
 
     // Operand | Conversion | MethodExpr
     fn Operand_or_Conversion_or_MethodExpr(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::Operand_or_Conversion_or_MethodExpr()");
+
         if let Some(operand) = self.Operand()? {
             return Ok(Some(operand));
         }
@@ -1265,6 +1328,8 @@ impl<'a> Parser<'a> {
     // FunctionName = identifier .
     // MethodName   = identifier .
     fn FunctionDecl_or_MethodDecl(&mut self) -> ParserResult<Option<&'a ast::FuncDecl<'a>>> {
+        log::debug!("Parser::FunctionDecl_or_MethodDecl()");
+
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
