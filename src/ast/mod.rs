@@ -286,6 +286,14 @@ pub struct IncDecStmt<'a> {
     pub tok: Token,            // INC or DEC
 }
 
+// https://pkg.go.dev/go/ast#ForStmt
+#[derive(Debug)]
+pub struct ParenExpr<'a> {
+    pub lparen: Position<'a>, // position of "("
+    pub x: Expr<'a>,          // parenthesized expression
+    pub rparen: Position<'a>, // position of ")"
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug, Copy, Clone)]
 pub enum Spec<'a> {
@@ -304,6 +312,7 @@ pub enum Expr<'a> {
     FuncType(&'a FuncType<'a>),
     Ident(&'a Ident<'a>),
     InterfaceType(&'a InterfaceType<'a>),
+    ParenExpr(&'a ParenExpr<'a>),
     SelectorExpr(&'a SelectorExpr<'a>),
     StarExpr(&'a StarExpr<'a>),
     StructType(&'a StructType<'a>),

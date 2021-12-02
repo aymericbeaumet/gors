@@ -753,6 +753,29 @@ impl<W: Write> Printable<W> for &ast::CallExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::ParenExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ParenExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Lparen: ")?;
+        self.lparen.print(p)?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Rparen: ")?;
+        self.rparen.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::SelectorExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.SelectorExpr ")?;
@@ -901,6 +924,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
+            ast::Expr::ParenExpr(node) => node.print(p),
             ast::Expr::SelectorExpr(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
             ast::Expr::StructType(node) => node.print(p),

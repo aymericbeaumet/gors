@@ -534,23 +534,37 @@ impl<'a> Parser<'a> {
     fn Expression(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
         log::debug!("Parser::Expression()");
 
-        let mut x = match self.UnaryExpr()? {
+        let unary_expr = match self.UnaryExpr()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        if let Some(op) = self.binary_op()? {
-            let y = self.Expression().required()?;
+        return self.expression(unary_expr, Token::lowest_precedence());
+    }
 
-            x = ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
-                x,
+    // https://en.wikipedia.org/wiki/Operator-precedence_parser
+    fn expression(
+        &mut self,
+        mut lhs: ast::Expr<'a>,
+        min_precedence: u8,
+    ) -> ParserResult<Option<ast::Expr<'a>>> {
+        while let Some(op) = self.peek_binary_op(min_precedence)? {
+            self.next()?;
+
+            let mut rhs = self.UnaryExpr().required()?;
+            while self.peek_binary_op(op.1.precedence() + 1)?.is_some() {
+                rhs = self.expression(rhs, op.1.precedence() + 1).required()?;
+            }
+
+            lhs = ast::Expr::BinaryExpr(self.alloc(ast::BinaryExpr {
+                x: lhs,
                 op_pos: op.0,
                 op: op.1,
-                y,
+                y: rhs,
             }));
         }
 
-        Ok(Some(x))
+        Ok(Some(lhs))
     }
 
     // UnaryExpr = PrimaryExpr | unary_op UnaryExpr .
@@ -620,10 +634,14 @@ impl<'a> Parser<'a> {
             return Ok(Some(operand_name));
         }
 
-        if self.token(Token::LPAREN)?.is_some() {
+        if let Some(lparen) = self.token(Token::LPAREN)? {
             let expr = self.Expression().required()?;
-            self.token(Token::RPAREN).required()?;
-            return Ok(Some(expr));
+            let rparen = self.token(Token::RPAREN).required()?;
+            return Ok(Some(ast::Expr::ParenExpr(self.alloc(ast::ParenExpr {
+                lparen: lparen.0,
+                x: expr,
+                rparen: rparen.0,
+            }))));
         }
 
         Ok(None)
@@ -1213,10 +1231,10 @@ impl<'a> Parser<'a> {
                 }))));
             }
 
-            // ExpressionStmt
             if expression_list.len() == 1 {
                 let x = expression_list.pop().unwrap();
 
+                // IncDecStmt
                 if let Some(inc) = self.token(Token::INC)? {
                     return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
                         tok: inc.1,
@@ -1225,6 +1243,7 @@ impl<'a> Parser<'a> {
                     }))));
                 }
 
+                // IncDecStmt
                 if let Some(dec) = self.token(Token::DEC)? {
                     return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
                         tok: dec.1,
@@ -1233,6 +1252,7 @@ impl<'a> Parser<'a> {
                     }))));
                 }
 
+                // ExpressionStmt
                 return Ok(Some(ast::Stmt::ExprStmt(self.alloc(ast::ExprStmt { x }))));
             }
 
@@ -1403,11 +1423,14 @@ impl<'a> Parser<'a> {
     // rel_op    = "==" | "!=" | "<" | "<=" | ">" | ">=" .
     // add_op    = "+" | "-" | "|" | "^" .
     // mul_op    = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
-    fn binary_op(&mut self) -> ParserResult<Option<(Position<'a>, Token, &'a str)>> {
+    fn peek_binary_op(
+        &mut self,
+        min_precedence: u8,
+    ) -> ParserResult<Option<(Position<'a>, Token, &'a str)>> {
         log::debug!("Parser::binary_op()");
 
-        use Token::*;
         if let Some(current) = self.current {
+            use Token::*;
             if matches!(
                 current.1,
                 /* binary_op */
@@ -1419,8 +1442,9 @@ impl<'a> Parser<'a> {
                 /* mul_op */
                 MUL | QUO | REM | SHL | SHR | AND | AND_NOT
             ) {
-                self.next()?;
-                return Ok(Some(current));
+                if current.1.precedence() >= min_precedence {
+                    return Ok(Some(current));
+                }
             }
         }
 
