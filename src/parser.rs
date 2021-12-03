@@ -204,8 +204,10 @@ impl<'a> Parser<'a> {
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
             while let Some(import_spec) = self.ImportSpec()? {
-                self.token(Token::SEMICOLON).required()?;
                 specs.push(ast::Spec::ImportSpec(import_spec));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
             }
 
             let rparen = self.token(Token::RPAREN).required()?;
@@ -311,8 +313,10 @@ impl<'a> Parser<'a> {
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
             while let Some(type_spec) = self.TypeSpec()? {
-                self.token(Token::SEMICOLON).required()?;
-                specs.push(ast::Spec::TypeSpec(type_spec))
+                specs.push(ast::Spec::TypeSpec(type_spec));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
             }
 
             let rparen = self.token(Token::RPAREN).required()?;
@@ -374,8 +378,10 @@ impl<'a> Parser<'a> {
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
             while let Some(const_spec) = self.ConstSpec()? {
-                self.token(Token::SEMICOLON).required()?;
                 specs.push(ast::Spec::ValueSpec(const_spec));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
             }
 
             let rparen = self.token(Token::RPAREN).required()?;
@@ -440,8 +446,10 @@ impl<'a> Parser<'a> {
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
             while let Some(var_spec) = self.VarSpec()? {
-                self.token(Token::SEMICOLON).required()?;
                 specs.push(ast::Spec::ValueSpec(var_spec));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
             }
 
             let rparen = self.token(Token::RPAREN).required()?;
@@ -610,7 +618,7 @@ impl<'a> Parser<'a> {
                 primary_expr = ast::Expr::CallExpr(self.alloc(ast::CallExpr {
                     fun: primary_expr,
                     lparen,
-                    args,
+                    args: Some(args),
                     ellipsis: None,
                     rparen,
                 }));
@@ -655,7 +663,25 @@ impl<'a> Parser<'a> {
             return Ok(Some(ast::Expr::BasicLit(basic_lit)));
         }
 
+        if let Some(function_lit) = self.FunctionLit()? {
+            return Ok(Some(ast::Expr::FuncLit(function_lit)));
+        }
+
         Ok(None)
+    }
+
+    // FunctionLit = "func" Signature FunctionBody .
+    fn FunctionLit(&mut self) -> ParserResult<Option<&'a ast::FuncLit<'a>>> {
+        let func = match self.token(Token::FUNC)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let type_ = self.Signature(Some(func.0)).required()?;
+
+        let body = self.FunctionBody().required()?;
+
+        Ok(Some(self.alloc(ast::FuncLit { type_, body })))
     }
 
     // OperandName = identifier | QualifiedIdent .
@@ -737,7 +763,56 @@ impl<'a> Parser<'a> {
             return Ok(Some(ast::Expr::InterfaceType(t)));
         }
 
+        if let Some(t) = self.ChannelType()? {
+            return Ok(Some(ast::Expr::ChanType(t)));
+        }
+
         Ok(None)
+    }
+
+    // ChannelType = ( "chan" | "chan" "<-" | "<-" "chan" ) ElementType .
+    fn ChannelType(&mut self) -> ParserResult<Option<&'a ast::ChanType<'a>>> {
+        log::debug!("Parser::ChannelType()");
+
+        if let Some(chan) = self.token(Token::CHAN)? {
+            if let Some(arrow) = self.token(Token::ARROW)? {
+                let value = self.ElementType().required()?;
+                return Ok(Some(self.alloc(ast::ChanType {
+                    begin: chan.0,
+                    arrow: Some(arrow.0),
+                    dir: ast::ChanDir::SEND as u8,
+                    value,
+                })));
+            }
+
+            let value = self.ElementType().required()?;
+            return Ok(Some(self.alloc(ast::ChanType {
+                begin: chan.0,
+                arrow: None,
+                dir: ast::ChanDir::SEND as u8 | ast::ChanDir::RECV as u8,
+                value,
+            })));
+        }
+
+        if let Some(arrow) = self.token(Token::ARROW)? {
+            self.token(Token::CHAN).required()?;
+            let value = self.ElementType().required()?;
+            return Ok(Some(self.alloc(ast::ChanType {
+                begin: arrow.0,
+                arrow: None,
+                dir: ast::ChanDir::RECV as u8,
+                value,
+            })));
+        }
+
+        Ok(None)
+    }
+
+    // ElementType = Type .
+    fn ElementType(&mut self) -> ParserResult<Option<ast::Expr<'a>>> {
+        log::debug!("Parser::ElementType()");
+
+        self.Type()
     }
 
     // PointerType = "*" BaseType .
@@ -788,7 +863,6 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                self.token(Token::SEMICOLON).required()?;
                 fields.push(self.alloc(ast::Field {
                     doc: None,
                     names: None,
@@ -796,11 +870,13 @@ impl<'a> Parser<'a> {
                     tag: None,
                     comment: None,
                 }));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
                 continue;
             };
 
             if let Some(interface_type_name) = self.InterfaceTypeName()? {
-                self.token(Token::SEMICOLON).required()?;
                 fields.push(self.alloc(ast::Field {
                     doc: None,
                     names: None,
@@ -808,6 +884,9 @@ impl<'a> Parser<'a> {
                     tag: None,
                     comment: None,
                 }));
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
                 continue;
             }
 
@@ -855,9 +934,6 @@ impl<'a> Parser<'a> {
         let mut fields = vec![];
         while let Some(field_decl) = self.FieldDecl()? {
             fields.push(field_decl);
-
-            // SPEC: To allow complex statements to occupy a single line, a semicolon may be
-            // omitted before a closing ")" or "}".
             if self.token(Token::SEMICOLON)?.is_none() {
                 break;
             }
@@ -1115,8 +1191,10 @@ impl<'a> Parser<'a> {
 
         let mut out = vec![];
         while let Some(statement) = self.Statement()? {
-            self.token(Token::SEMICOLON).required()?;
             out.push(statement);
+            if self.token(Token::SEMICOLON)?.is_none() {
+                break;
+            }
         }
 
         Ok(Some(out))
@@ -1130,14 +1208,6 @@ impl<'a> Parser<'a> {
     fn Statement(&mut self) -> ParserResult<Option<ast::Stmt<'a>>> {
         log::debug!("Parser::Statement()");
 
-        if let Some(if_stmt) = self.IfStmt()? {
-            return Ok(Some(ast::Stmt::IfStmt(if_stmt)));
-        }
-
-        if let Some(return_stmt) = self.ReturnStmt()? {
-            return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
-        }
-
         if let Some(decl) = self.Declaration()? {
             return Ok(Some(ast::Stmt::DeclStmt(
                 self.alloc(ast::DeclStmt { decl }),
@@ -1148,7 +1218,34 @@ impl<'a> Parser<'a> {
             return Ok(Some(simple_stmt));
         }
 
+        if let Some(go_stmt) = self.GoStmt()? {
+            return Ok(Some(ast::Stmt::GoStmt(go_stmt)));
+        }
+
+        if let Some(return_stmt) = self.ReturnStmt()? {
+            return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
+        }
+
+        if let Some(if_stmt) = self.IfStmt()? {
+            return Ok(Some(ast::Stmt::IfStmt(if_stmt)));
+        }
+
         Ok(None)
+    }
+
+    // GoStmt = "go" Expression .
+    fn GoStmt(&mut self) -> ParserResult<Option<&'a ast::GoStmt<'a>>> {
+        let go = match self.token(Token::GO)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let call = match self.Expression().required()? {
+            ast::Expr::CallExpr(v) => v,
+            _ => return Err(ParserError::UnexpectedToken),
+        };
+
+        Ok(Some(self.alloc(ast::GoStmt { go: go.0, call })))
     }
 
     // IfStmt = "if" [ SimpleStmt ";" ] Expression Block [ "else" ( IfStmt | Block ) ] .
@@ -1200,6 +1297,8 @@ impl<'a> Parser<'a> {
     // IncDecStmt     = Expression ( "++" | "--" ) .
     // Assignment     = ExpressionList assign_op ExpressionList .
     // ShortVarDecl   = IdentifierList ":=" ExpressionList .
+    // SendStmt = Channel "<-" Expression .
+    // Channel  = Expression .
     fn SimpleStmt(&mut self) -> ParserResult<Option<ast::Stmt<'a>>> {
         log::debug!("Parser::SimpleStmt()");
 
@@ -1232,14 +1331,14 @@ impl<'a> Parser<'a> {
             }
 
             if expression_list.len() == 1 {
-                let x = expression_list.pop().unwrap();
+                let expr = expression_list.pop().unwrap();
 
                 // IncDecStmt
                 if let Some(inc) = self.token(Token::INC)? {
                     return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
                         tok: inc.1,
                         tok_pos: inc.0,
-                        x,
+                        x: expr,
                     }))));
                 }
 
@@ -1248,12 +1347,24 @@ impl<'a> Parser<'a> {
                     return Ok(Some(ast::Stmt::IncDecStmt(self.alloc(ast::IncDecStmt {
                         tok: dec.1,
                         tok_pos: dec.0,
-                        x,
+                        x: expr,
+                    }))));
+                }
+
+                // SendStmt
+                if let Some(arrow) = self.token(Token::ARROW)? {
+                    let value = self.Expression().required()?;
+                    return Ok(Some(ast::Stmt::SendStmt(self.alloc(ast::SendStmt {
+                        chan: expr,
+                        arrow: arrow.0,
+                        value,
                     }))));
                 }
 
                 // ExpressionStmt
-                return Ok(Some(ast::Stmt::ExprStmt(self.alloc(ast::ExprStmt { x }))));
+                return Ok(Some(ast::Stmt::ExprStmt(
+                    self.alloc(ast::ExprStmt { x: expr }),
+                )));
             }
 
             return Err(ParserError::UnexpectedToken);
@@ -1265,7 +1376,7 @@ impl<'a> Parser<'a> {
     // Arguments = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
     fn Arguments(
         &mut self,
-    ) -> ParserResult<Option<(Position<'a>, Option<Vec<ast::Expr<'a>>>, Position<'a>)>> {
+    ) -> ParserResult<Option<(Position<'a>, Vec<ast::Expr<'a>>, Position<'a>)>> {
         log::debug!("Parser::Arguments()");
 
         let lparen = match self.token(Token::LPAREN)? {
@@ -1273,7 +1384,18 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let args = self.ExpressionList()?;
+        let mut args = if let Some(expression_list) = self.ExpressionList()? {
+            expression_list
+        } else if let Some(type_) = self.Type()? {
+            vec![type_]
+        } else {
+            vec![]
+        };
+
+        if self.token(Token::COMMA)?.is_some() {
+            let mut expression_list = self.ExpressionList().required()?;
+            args.append(&mut expression_list);
+        }
 
         let rparen = self.token(Token::RPAREN).required()?;
 

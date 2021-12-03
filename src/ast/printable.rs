@@ -864,6 +864,99 @@ impl<W: Write> Printable<W> for &ast::IncDecStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for &ast::ChanType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ChanType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Begin: ")?;
+        self.begin.print(p)?;
+
+        p.prefix()?;
+        p.write("Arrow: ")?;
+        if let Some(arrow) = self.arrow {
+            arrow.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("Dir: ")?;
+        self.dir.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::GoStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.GoStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Go: ")?;
+        self.go.print(p)?;
+
+        p.prefix()?;
+        p.write("Call: ")?;
+        self.call.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::FuncLit<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.FuncLit ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for &ast::SendStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.SendStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Chan: ")?;
+        self.chan.print(p)?;
+
+        p.prefix()?;
+        p.write("Arrow: ")?;
+        self.arrow.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -920,7 +1013,9 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::CallExpr(node) => node.print(p),
+            ast::Expr::ChanType(node) => node.print(p),
             ast::Expr::Ellipsis(node) => node.print(p),
+            ast::Expr::FuncLit(node) => node.print(p),
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
@@ -1041,9 +1136,11 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::BlockStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
+            ast::Stmt::GoStmt(stmt) => stmt.print(p),
             ast::Stmt::IfStmt(stmt) => stmt.print(p),
             ast::Stmt::IncDecStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
+            ast::Stmt::SendStmt(stmt) => stmt.print(p),
         }
     }
 }
@@ -1090,6 +1187,14 @@ impl<W: Write> Printable<W> for bool {
 }
 
 impl<W: Write> Printable<W> for usize {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        write!(p.w, "{}", self)?;
+        p.newline()?;
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for u8 {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         write!(p.w, "{}", self)?;
         p.newline()?;

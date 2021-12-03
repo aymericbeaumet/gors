@@ -294,6 +294,44 @@ pub struct ParenExpr<'a> {
     pub rparen: Position<'a>, // position of ")"
 }
 
+// https://pkg.go.dev/go/ast#GoStmt
+#[derive(Debug)]
+pub struct GoStmt<'a> {
+    pub go: Position<'a>, // position of "go" keyword
+    pub call: &'a CallExpr<'a>,
+}
+
+// https://pkg.go.dev/go/ast#FuncLit
+#[derive(Debug)]
+pub struct FuncLit<'a> {
+    pub type_: &'a FuncType<'a>, // function type
+    pub body: &'a BlockStmt<'a>, // function body
+}
+
+// https://pkg.go.dev/go/ast#ChanType
+#[derive(Debug)]
+pub struct ChanType<'a> {
+    pub begin: Position<'a>, // position of "chan" keyword or "<-" (whichever comes first)
+    pub arrow: Option<Position<'a>>, // position of "<-" (token.NoPos if there is no "<-")
+    pub dir: u8,             // channel direction
+    pub value: Expr<'a>,     // value type
+}
+
+// https://pkg.go.dev/go/ast#SendStmt
+#[derive(Debug)]
+pub struct SendStmt<'a> {
+    pub chan: Expr<'a>,
+    pub arrow: Position<'a>, // position of "<-"
+    pub value: Expr<'a>,
+}
+
+// https://pkg.go.dev/go/ast#ChanDir
+#[derive(Debug)]
+pub enum ChanDir {
+    SEND = 1 << 0,
+    RECV = 1 << 1,
+}
+
 // https://pkg.go.dev/go/ast#Spec
 #[derive(Debug, Copy, Clone)]
 pub enum Spec<'a> {
@@ -308,7 +346,9 @@ pub enum Expr<'a> {
     BasicLit(&'a BasicLit<'a>),
     BinaryExpr(&'a BinaryExpr<'a>),
     CallExpr(&'a CallExpr<'a>),
+    ChanType(&'a ChanType<'a>),
     Ellipsis(&'a Ellipsis<'a>),
+    FuncLit(&'a FuncLit<'a>),
     FuncType(&'a FuncType<'a>),
     Ident(&'a Ident<'a>),
     InterfaceType(&'a InterfaceType<'a>),
@@ -326,7 +366,9 @@ pub enum Stmt<'a> {
     BlockStmt(&'a BlockStmt<'a>),
     DeclStmt(&'a DeclStmt<'a>),
     ExprStmt(&'a ExprStmt<'a>),
+    GoStmt(&'a GoStmt<'a>),
     IfStmt(&'a IfStmt<'a>),
     IncDecStmt(&'a IncDecStmt<'a>),
     ReturnStmt(&'a ReturnStmt<'a>),
+    SendStmt(&'a SendStmt<'a>),
 }
