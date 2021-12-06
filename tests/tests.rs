@@ -10,129 +10,146 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+lazy_static::lazy_static! {
+    static ref RUNNER: TestRunner<'static> = TestRunner::new();
+}
+
 #[test]
 fn test_lexer() {
-    run("tokens");
+    RUNNER.test("tokens");
 }
 
 #[test]
 fn test_parser() {
-    run("ast");
+    RUNNER.test("ast");
 }
 
-fn run(command: &str) {
-    #[derive(Debug)]
-    struct Opts<'a> {
-        go_bin: &'a str,
-        input_patterns: &'a [&'a str],
-        print_files: bool,
-        rust_bin: &'a str,
-        rust_build_flags: &'a [&'a str],
-        thread_count: usize,
-    }
+#[derive(Debug)]
+struct TestRunner<'a> {
+    go_bin: &'a str,
+    go_files: Vec<String>,
+    print_files: bool,
+    rust_bin: &'a str,
+    thread_count: usize,
+}
 
-    let opts = Opts {
-        go_bin: "tests/go-cli/go-cli",
-        input_patterns: match std::option_env!("LOCAL_FILES_ONLY") {
+impl TestRunner<'_> {
+    fn new() -> Self {
+        println!("\n# initializing test runner...");
+
+        let go_bin = "tests/go-cli/go-cli";
+        let input_patterns: &[&str] = match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => &["tests/files/**/*.go"],
             _ => &["tests/files/**/*.go", ".repositories/**/*.go"],
-        },
-        print_files: match std::option_env!("PRINT_FILES") {
+        };
+        let print_files = match std::option_env!("PRINT_FILES") {
             Some("true") => true,
             _ => false,
-        },
-        rust_bin: match std::option_env!("FAST_BUILD") {
-            Some("true") => "target/debug/gors",
+        };
+        let rust_bin = match std::option_env!("RELEASE_BUILD") {
+            Some("false") => "target/debug/gors",
             _ => "target/release/gors",
-        },
-        rust_build_flags: match std::option_env!("FAST_BUILD") {
-            Some("true") => &["build"],
+        };
+        let rust_build_flags: &[&str] = match std::option_env!("RELEASE_BUILD") {
+            Some("false") => &["build"],
             _ => &["build", "--release"],
-        },
-        thread_count: match std::option_env!("LOCAL_FILES_ONLY") {
+        };
+        let thread_count = match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => 1,
             _ => num_cpus::get(),
-        },
-    };
-    println!("\n| running the tests with {:#?}", opts);
+        };
 
-    let root = env::var("CARGO_MANIFEST_DIR").unwrap();
-    env::set_current_dir(Path::new(&root)).unwrap();
+        let root = env::var("CARGO_MANIFEST_DIR").unwrap();
+        env::set_current_dir(Path::new(&root)).unwrap();
 
-    println!("| updating git submodules...");
-    exec("git", &["submodule", "update", "--init"]).unwrap();
+        println!("# updating git submodules...");
+        exec("git", &["submodule", "update", "--init"]).unwrap();
 
-    println!("| building the Rust binary...");
-    exec("cargo", opts.rust_build_flags).unwrap();
+        println!("# building the Rust binary...");
+        exec("cargo", rust_build_flags).unwrap();
 
-    println!("| finding go files...");
-    let go_files: Vec<_> = opts
-        .input_patterns
-        .iter()
-        .flat_map(|pattern| {
-            glob(pattern).unwrap().filter_map(|entry| {
-                let path = entry.unwrap();
-                let path = path.to_str().unwrap();
-                if IGNORE_FILES.contains(path) {
-                    None
-                } else {
-                    Some(path.to_owned())
-                }
-            })
-        })
-        .collect();
-    let total = go_files.len();
-    println!("| found {} go files", total);
-
-    let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
-        let handles: Vec<_> = go_files
-            .chunks((total / opts.thread_count) + 1)
-            .enumerate()
-            .map(|(i, chunk)| {
-                println!("| starting thread #{} (chunk_len={})", i, chunk.len());
-                scope.spawn(|_| {
-                    chunk.iter().fold(
-                        (Duration::new(0, 0), Duration::new(0, 0)),
-                        |acc, go_file| {
-                            if opts.print_files {
-                                println!("> {}", go_file);
-                            }
-
-                            let args = &[command, go_file];
-                            let (go_output, go_elapsed) = exec(opts.go_bin, args).unwrap();
-                            let (rust_output, rust_elapsed) = exec(opts.rust_bin, args).unwrap();
-
-                            if go_output.stdout != rust_output.stdout {
-                                print_diff(
-                                    std::str::from_utf8(&go_output.stdout).unwrap(),
-                                    std::str::from_utf8(&rust_output.stdout).unwrap(),
-                                );
-                                std::process::exit(1);
-                            }
-
-                            (acc.0 + go_elapsed, acc.1 + rust_elapsed)
-                        },
-                    )
+        println!("# finding go files...");
+        let go_files: Vec<_> = input_patterns
+            .iter()
+            .flat_map(|pattern| {
+                glob(pattern).unwrap().filter_map(|entry| {
+                    let path = entry.unwrap();
+                    let path = path.to_str().unwrap();
+                    if IGNORE_FILES.contains(path) {
+                        None
+                    } else {
+                        Some(path.to_owned())
+                    }
                 })
             })
             .collect();
+        let total = go_files.len();
+        println!("# found {} go files", total);
 
-        handles
-            .into_iter()
-            .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, handle| {
-                let (g, r) = handle.join().unwrap();
-                (acc.0 + g, acc.1 + r)
-            })
-    })
-    .unwrap();
+        print!("# test runner initialized");
 
-    println!("| total elapsed time:");
-    println!("|   go:   {:?}", go_elapsed);
-    println!(
-        "|   rust: {:?} (go {:+.2}%)",
-        rust_elapsed,
-        ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
-    );
+        Self {
+            go_bin,
+            go_files,
+            print_files,
+            rust_bin,
+            thread_count,
+        }
+    }
+
+    fn test(&self, command: &str) {
+        let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
+            let handles: Vec<_> = self
+                .go_files
+                .chunks((self.go_files.len() / self.thread_count) + 1)
+                .enumerate()
+                .map(|(i, chunk)| {
+                    println!("\n| starting thread #{} (chunk_len={})", i, chunk.len());
+                    scope.spawn(|_| {
+                        chunk.iter().fold(
+                            (Duration::new(0, 0), Duration::new(0, 0)),
+                            |acc, go_file| {
+                                if self.print_files {
+                                    println!("> {}", go_file);
+                                }
+
+                                let args = &[command, go_file];
+                                let (go_output, go_elapsed) = exec(self.go_bin, args).unwrap();
+                                let (rust_output, rust_elapsed) =
+                                    exec(self.rust_bin, args).unwrap();
+
+                                if go_output.stdout != rust_output.stdout {
+                                    print_diff(
+                                        std::str::from_utf8(&go_output.stdout).unwrap(),
+                                        std::str::from_utf8(&rust_output.stdout).unwrap(),
+                                    );
+                                    std::process::exit(1);
+                                }
+
+                                (acc.0 + go_elapsed, acc.1 + rust_elapsed)
+                            },
+                        )
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .fold((Duration::new(0, 0), Duration::new(0, 0)), |acc, handle| {
+                    let (g, r) = handle.join().unwrap();
+                    (acc.0 + g, acc.1 + r)
+                })
+        })
+        .unwrap();
+
+        println!("| total elapsed time:");
+        println!("|   go:   {:?}", go_elapsed);
+        println!(
+            "|   rust: {:?} (go {:+.2}%)",
+            rust_elapsed,
+            ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
+        );
+    }
 }
 
 fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::error::Error>> {
