@@ -1,5 +1,6 @@
 mod ast;
 mod codegen;
+mod compiler;
 mod parser;
 mod scanner;
 mod token;
@@ -45,15 +46,14 @@ struct Ast {
 }
 
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
+
     let arena = parser::Arena::new();
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
     let file = parser::parse_file(&arena, &filepath, &buffer)?;
-
-    let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
-
     ast::fprint(&mut w, file)?;
 
     w.flush()?;
@@ -67,16 +67,16 @@ struct Build {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
+
     let arena = parser::Arena::new();
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
-    let file = parser::parse_file(&arena, &filepath, &buffer)?;
-
-    let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
-
-    codegen::fprint(&mut w, file)?;
+    let parsed = parser::parse_file(&arena, &filepath, &buffer)?;
+    let compiled = compiler::compile(parsed)?;
+    codegen::fprint(&mut w, compiled)?;
 
     w.flush()?;
     Ok(())
@@ -99,13 +99,13 @@ struct Tokens {
 }
 
 fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
+
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
     let mut s = scanner::Scanner::new(&filepath, &buffer);
-
-    let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
     loop {
         let (pos, tok, lit) = s.scan()?;

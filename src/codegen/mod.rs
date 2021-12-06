@@ -1,19 +1,8 @@
-use crate::ast;
-use codegen::Scope;
-
 pub fn fprint<W: std::io::Write>(
     mut w: W,
-    _file: &ast::File,
+    file: syn::File,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut scope = Scope::new();
-
-    scope
-        .new_struct("Foo")
-        .derive("Debug")
-        .field("one", "usize")
-        .field("two", "String");
-
-    w.write_all(scope.to_string().as_bytes())?;
-
+    let out = quote::quote! {#file};
+    w.write_all(out.to_string().as_bytes())?;
     Ok(())
 }

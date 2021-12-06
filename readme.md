@@ -7,20 +7,11 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 
 ## Development
 
-- Work on the lexer:
-
 ```
-make test-lexer
-make dev-lexer
+make dev
 RUST_LOG=trace cargo run -- tokens <file>
-```
-
-- Work on the parser:
-
-```
-make test-parser
-make dev-parser
 RUST_LOG=debug cargo run -- ast <file>
+RUST_LOG=info cargo run -- build <file>
 ```
 
 ## Testing
