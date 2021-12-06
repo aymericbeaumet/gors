@@ -33,14 +33,15 @@ struct TestRunner<'a> {
     thread_count: usize,
 }
 
+// All the paths are relative to the root workspace directory
 impl TestRunner<'_> {
     fn new() -> Self {
         println!("\n# initializing test runner...");
 
-        let go_bin = "tests/go-cli/go-cli";
+        let go_bin = "gors-tests/go-cli/go-cli";
         let input_patterns: &[&str] = match std::option_env!("LOCAL_FILES_ONLY") {
-            Some("true") => &["tests/files/**/*.go"],
-            _ => &["tests/files/**/*.go", ".repositories/**/*.go"],
+            Some("true") => &["gors-tests/tests/files/**/*.go"],
+            _ => &["gors-tests/tests/files/**/*.go", ".repositories/**/*.go"],
         };
         let print_files = match std::option_env!("PRINT_FILES") {
             Some("true") => true,
@@ -51,24 +52,27 @@ impl TestRunner<'_> {
             _ => "target/release/gors",
         };
         let rust_build_flags: &[&str] = match std::option_env!("RELEASE_BUILD") {
-            Some("false") => &["build"],
-            _ => &["build", "--release"],
+            Some("false") => &["build", "--bin", "gors"],
+            _ => &["build", "--bin", "gors", "--release"],
         };
         let thread_count = match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => 1,
             _ => num_cpus::get(),
         };
 
-        let root = env::var("CARGO_MANIFEST_DIR").unwrap();
-        env::set_current_dir(Path::new(&root)).unwrap();
+        let workdir = Path::new(&format!("{}/..", env::var("CARGO_MANIFEST_DIR").unwrap()))
+            .canonicalize()
+            .unwrap();
+        env::set_current_dir(&workdir).unwrap();
+        println!("## changed working directory to {:?}", workdir);
 
-        println!("# updating git submodules...");
+        println!("## updating git submodules...");
         exec("git", &["submodule", "update", "--init"]).unwrap();
 
-        println!("# building the Rust binary...");
+        println!("## building the Rust binary...");
         exec("cargo", rust_build_flags).unwrap();
 
-        println!("# finding go files...");
+        println!("## finding go files...");
         let go_files: Vec<_> = input_patterns
             .iter()
             .flat_map(|pattern| {
@@ -84,7 +88,7 @@ impl TestRunner<'_> {
             })
             .collect();
         let total = go_files.len();
-        println!("# found {} go files", total);
+        println!("## found {} go files", total);
 
         print!("# test runner initialized");
 
@@ -98,13 +102,14 @@ impl TestRunner<'_> {
     }
 
     fn test(&self, command: &str) {
+        println!("");
         let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
             let handles: Vec<_> = self
                 .go_files
                 .chunks((self.go_files.len() / self.thread_count) + 1)
                 .enumerate()
                 .map(|(i, chunk)| {
-                    println!("\n| starting thread #{} (chunk_len={})", i, chunk.len());
+                    println!("| starting thread #{} (chunk_len={})", i, chunk.len());
                     scope.spawn(|_| {
                         chunk.iter().fold(
                             (Duration::new(0, 0), Duration::new(0, 0)),

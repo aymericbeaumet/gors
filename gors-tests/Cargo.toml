@@ -1,0 +1,15 @@
+[package]
+name = "gors-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+colored = "2"
+console = "0.15.0"
+crossbeam = "0.8.1"
+glob = "0.3.0"
+lazy_static = "1.4.0"
+num_cpus = "1.13.0"
+phf = { version = "0.10", features = ["macros"] }
+pretty_assertions = "1.0.0"
+similar = { version = "2.1.0", features = ["inline"] }

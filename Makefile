@@ -1,4 +1,4 @@
-CARGO_TEST_BIN_ARGS := --nocapture --test-threads=1
+CARGO_TEST_ARGS := -p gors-tests -- --nocapture --test-threads=1
 
 .PHONY: all
 all: lint test
@@ -13,18 +13,18 @@ build:
 
 .PHONY: test
 test: go-cli
-	cargo test --release -- $(CARGO_TEST_BIN_ARGS)
+	cargo test $(CARGO_TEST_ARGS)
 
 .PHONY: dev
 dev: go-cli
-	watchexec --restart --clear 'RELEASE_BUILD=false LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test -- $(CARGO_TEST_BIN_ARGS)'
+	watchexec --restart --clear 'RELEASE_BUILD=false LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test $(CARGO_TEST_ARGS)'
 
 .PHONY: go-cli
-go-cli: tests/go-cli/go-cli
+go-cli: gors-tests/go-cli/go-cli
 
-tests/go-cli/go-cli:
-	cd ./tests/go-cli && go build .
+gors-tests/go-cli/go-cli:
+	cd ./gors-tests/go-cli && go build .
 
 .PHONY: clean
 clean:
-	rm -f ./tests/go-cli/go-cli
+	rm -f ./gors-tests/go-cli/go-cli

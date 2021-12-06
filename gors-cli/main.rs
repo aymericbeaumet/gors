@@ -1,10 +1,3 @@
-mod ast;
-mod codegen;
-mod compiler;
-mod parser;
-mod scanner;
-mod token;
-
 use clap::Parser;
 use std::io::Write;
 
@@ -49,12 +42,12 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let arena = parser::Arena::new();
+    let arena = gors::parser::Arena::new();
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
-    let file = parser::parse_file(&arena, &filepath, &buffer)?;
-    ast::fprint(&mut w, file)?;
+    let file = gors::parser::parse_file(&arena, &filepath, &buffer)?;
+    gors::ast::fprint(&mut w, file)?;
 
     w.flush()?;
     Ok(())
@@ -70,13 +63,13 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let arena = parser::Arena::new();
+    let arena = gors::parser::Arena::new();
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
-    let parsed = parser::parse_file(&arena, &filepath, &buffer)?;
-    let compiled = compiler::compile(parsed)?;
-    codegen::fprint(&mut w, compiled)?;
+    let parsed = gors::parser::parse_file(&arena, &filepath, &buffer)?;
+    let compiled = gors::compiler::compile(parsed)?;
+    gors::codegen::fprint(&mut w, compiled)?;
 
     w.flush()?;
     Ok(())
@@ -105,7 +98,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let filepath = cmd.filepath;
     let buffer = std::fs::read_to_string(&filepath)?;
 
-    let mut s = scanner::Scanner::new(&filepath, &buffer);
+    let mut s = gors::scanner::Scanner::new(&filepath, &buffer);
 
     loop {
         let (pos, tok, lit) = s.scan()?;
@@ -113,7 +106,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_writer(&mut w, &(pos, tok, lit))?;
         w.write_all(b"\n")?;
 
-        if tok == token::Token::EOF {
+        if tok == gors::token::Token::EOF {
             break;
         }
     }

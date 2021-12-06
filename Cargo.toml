@@ -1,30 +1,9 @@
-[package]
-name = "gors"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-bumpalo = "3.8.0"
-clap = "3.0.0-beta.5"
-log = { version = "0.4", features = ["release_max_level_warn"] }
-phf = { version = "0.10", features = ["macros"] }
-pretty_env_logger = "0.4"
-proc-macro2 = "1.0.33"
-quote = "1.0.10"
-serde = "1.0.130"
-serde_json = "1.0.68"
-syn = { version = "1.0.82", features = ["full"] }
-unicode-general-category = "0.4.0"
-
-[dev-dependencies]
-colored = "2"
-console = "0.15.0"
-crossbeam = "0.8.1"
-glob = "0.3.0"
-lazy_static = "1.4.0"
-num_cpus = "1.13.0"
-pretty_assertions = "1.0.0"
-similar = { version = "2.1.0", features = ["inline"] }
+[workspace]
+members = [
+    "gors",
+    "gors-cli",
+    "gors-tests",
+]
 
 [profile.dev]
 opt-level = 0
