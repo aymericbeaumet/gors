@@ -2,7 +2,7 @@
 members = [
     "gors",
     "gors-cli",
-    "gors-tests",
+    "tests",
 ]
 
 [profile.dev]

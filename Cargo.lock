@@ -265,21 +265,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gors-tests"
-version = "0.1.0"
-dependencies = [
- "colored",
- "console",
- "crossbeam",
- "glob",
- "lazy_static",
- "num_cpus",
- "phf",
- "pretty_assertions",
- "similar",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -712,6 +697,21 @@ checksum = "633c1a546cee861a1a6d0dc69ebeca693bf4296661ba7852b9d21d159e0506df"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "tests"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "console",
+ "crossbeam",
+ "glob",
+ "lazy_static",
+ "num_cpus",
+ "phf",
+ "pretty_assertions",
+ "similar",
 ]
 
 [[package]]

@@ -38,10 +38,10 @@ impl TestRunner<'_> {
     fn new() -> Self {
         println!("\n# initializing test runner...");
 
-        let go_bin = "gors-tests/go-cli/go-cli";
+        let go_bin = "tests/go-cli/go-cli";
         let input_patterns: &[&str] = match std::option_env!("LOCAL_FILES_ONLY") {
-            Some("true") => &["gors-tests/tests/files/**/*.go"],
-            _ => &["gors-tests/tests/files/**/*.go", ".repositories/**/*.go"],
+            Some("true") => &["tests/files/**/*.go"],
+            _ => &["tests/files/**/*.go", ".repositories/**/*.go"],
         };
         let print_files = match std::option_env!("PRINT_FILES") {
             Some("true") => true,
@@ -50,10 +50,6 @@ impl TestRunner<'_> {
         let rust_bin = match std::option_env!("RELEASE_BUILD") {
             Some("false") => "target/debug/gors",
             _ => "target/release/gors",
-        };
-        let rust_build_flags: &[&str] = match std::option_env!("RELEASE_BUILD") {
-            Some("false") => &["build", "--bin", "gors"],
-            _ => &["build", "--bin", "gors", "--release"],
         };
         let thread_count = match std::option_env!("LOCAL_FILES_ONLY") {
             Some("true") => 1,
@@ -65,12 +61,6 @@ impl TestRunner<'_> {
             .unwrap();
         env::set_current_dir(&workdir).unwrap();
         println!("## changed working directory to {:?}", workdir);
-
-        println!("## updating git submodules...");
-        exec("git", &["submodule", "update", "--init"]).unwrap();
-
-        println!("## building the Rust binary...");
-        exec("cargo", rust_build_flags).unwrap();
 
         println!("## finding go files...");
         let go_files: Vec<_> = input_patterns
