@@ -1,4 +1,4 @@
-CARGO_TEST_ARGS := -p tests -- --nocapture --test-threads=1
+CARGO_TEST := cargo test -p tests -- --nocapture --test-threads=1
 
 .PHONY: all
 all: build lint test
@@ -14,11 +14,11 @@ lint:
 .PHONY: test
 test: go-cli build
 	git submodule update --init
-	cargo test $(CARGO_TEST_ARGS)
+	$(CARGO_TEST)
 
 .PHONY: dev
 dev: go-cli
-	watchexec --restart --clear 'cargo build && RELEASE_BUILD=false LOCAL_FILES_ONLY=true PRINT_FILES=true cargo test $(CARGO_TEST_ARGS)'
+	watchexec --restart --clear 'cargo build && RELEASE_BUILD=false LOCAL_FILES_ONLY=true PRINT_FILES=true $(CARGO_TEST)'
 
 # TODO: move this to as a Cargo custom build in ./tests/build.rs
 .PHONY: go-cli
