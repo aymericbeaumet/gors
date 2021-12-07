@@ -1,9 +1,16 @@
+mod passes;
+
 use crate::{ast, token};
 use proc_macro2::Span;
+use syn::visit_mut::VisitMut;
 use syn::Token;
 
 pub fn compile(file: &ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
-    Ok(file.into())
+    let mut out = file.into();
+
+    passes::InlineFmt.visit_file_mut(&mut out);
+
+    Ok(out)
 }
 
 impl From<&ast::BasicLit<'_>> for syn::ExprLit {
@@ -96,6 +103,48 @@ impl From<ast::Expr<'_>> for syn::Expr {
     }
 }
 
+impl From<ast::Expr<'_>> for syn::Type {
+    fn from(expr: ast::Expr) -> Self {
+        match expr {
+            ast::Expr::Ident(ident) => {
+                let mut segments = syn::punctuated::Punctuated::new();
+                segments.push(syn::PathSegment {
+                    ident: syn::Ident::new(
+                        match ident.name {
+                            "bool" => "bool",
+                            "rune" => "u32",
+                            "string" => "String",
+                            "float32" => "f32",
+                            "float64" => "f64",
+                            "int" => "isize",
+                            "int8" => "i8",
+                            "int16" => "i16",
+                            "int32" => "i32",
+                            "int64" => "i64",
+                            "uint" => "usize",
+                            "uint8" => "u8",
+                            "uint16" => "u16",
+                            "uint32" => "u32",
+                            "uint64" => "u64",
+                            _ => unimplemented!("no support for type {:?} yet", ident.name),
+                        },
+                        Span::mixed_site(),
+                    ),
+                    arguments: syn::PathArguments::None,
+                });
+                syn::Type::Path(syn::TypePath {
+                    qself: None,
+                    path: syn::Path {
+                        leading_colon: None,
+                        segments,
+                    },
+                })
+            }
+            _ => unimplemented!("{:?}", expr),
+        }
+    }
+}
+
 impl From<&ast::File<'_>> for syn::File {
     fn from(file: &ast::File) -> Self {
         let items = file
@@ -115,8 +164,31 @@ impl From<&ast::File<'_>> for syn::File {
     }
 }
 
+impl From<&ast::Field<'_>> for syn::FnArg {
+    fn from(field: &ast::Field) -> Self {
+        let names = field.names.as_ref().unwrap();
+        Self::Typed(syn::PatType {
+            attrs: vec![],
+            pat: Box::new(syn::Pat::Ident(syn::PatIdent {
+                attrs: vec![],
+                by_ref: None,
+                subpat: None,
+                mutability: None,
+                ident: names[0].into(),
+            })),
+            colon_token: <Token![:]>::default(),
+            ty: Box::new(field.type_.unwrap().into()),
+        })
+    }
+}
+
 impl From<&ast::FuncDecl<'_>> for syn::ItemFn {
     fn from(func_decl: &ast::FuncDecl) -> Self {
+        let mut inputs = syn::punctuated::Punctuated::new();
+        for &param in &func_decl.type_.params.list {
+            inputs.push(param.into());
+        }
+
         let block =
             Box::new(
                 func_decl
@@ -146,7 +218,7 @@ impl From<&ast::FuncDecl<'_>> for syn::ItemFn {
             paren_token: syn::token::Paren {
                 span: Span::mixed_site(),
             },
-            inputs: syn::punctuated::Punctuated::new(),
+            inputs,
             variadic: None,
             output: syn::ReturnType::Default,
         };

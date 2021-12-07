@@ -7,9 +7,6 @@ edition = "2021"
 name = "gors"
 path = "lib.rs"
 
-[features]
-full = []
-
 [dependencies]
 bumpalo = "3.8.0"
 log = { version = "0.4", features = ["release_max_level_warn"] }
@@ -18,5 +15,5 @@ proc-macro2 = "1.0.33"
 quote = "1.0.10"
 serde = "1.0.130"
 serde_json = "1.0.68"
-syn = { version = "1.0.82", features = ["full"] }
+syn = { version = "1.0.82", features = ["full", "visit-mut"] }
 unicode-general-category = "0.4.0"
