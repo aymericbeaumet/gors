@@ -78,10 +78,10 @@ impl<'scanner> Parser<'scanner> {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.current = match self.scanner.next() {
-            Some(Ok(c)) => Some(c),
-            Some(Err(err)) => return Err(err.into()),
-            None => None,
+        self.current = if let Some(step) = self.scanner.next() {
+            Some(step?)
+        } else {
+            None
         };
         log::debug!("self.current = {:?}", self.current);
         Ok(())
