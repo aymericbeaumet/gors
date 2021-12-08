@@ -502,7 +502,7 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
-        return self.expression(unary_expr, Token::lowest_precedence());
+        self.expression(unary_expr, Token::lowest_precedence())
     }
 
     // https://en.wikipedia.org/wiki/Operator-precedence_parser
@@ -577,6 +577,7 @@ impl<'scanner> Parser<'scanner> {
                     ellipsis: None,
                     rparen,
                 });
+                continue;
             }
 
             break;
@@ -1513,10 +1514,9 @@ impl<'scanner> Parser<'scanner> {
                 ADD | SUB | OR | XOR |
                 /* mul_op */
                 MUL | QUO | REM | SHL | SHR | AND | AND_NOT
-            ) {
-                if current.1.precedence() >= min_precedence {
-                    return Ok(Some(current));
-                }
+            ) && current.1.precedence() >= min_precedence
+            {
+                return Ok(Some(current));
             }
         }
 

@@ -25,7 +25,7 @@ impl VisitMut for InlineFmt {
                     let mut fmt_str = String::new();
                     let mut fmt_args = quote! {};
                     for arg in call.args.iter() {
-                        fmt_str.push_str(if fmt_str.len() == 0 { "{}" } else { " {}" });
+                        fmt_str.push_str(if fmt_str.is_empty() { "{}" } else { " {}" });
                         fmt_args.extend(quote! { , #arg })
                     }
                     // Prepare the macro

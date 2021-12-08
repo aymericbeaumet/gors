@@ -161,9 +161,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
 
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
     for step in gors::scanner::Scanner::new(&cmd.filepath, &buffer) {
-        let (pos, tok, lit) = step?;
-
-        serde_json::to_writer(&mut w, &(pos, tok, lit))?;
+        serde_json::to_writer(&mut w, &step?)?;
         w.write_all(b"\n")?;
     }
     w.flush()?;
