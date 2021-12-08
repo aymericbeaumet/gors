@@ -1,24 +1,24 @@
-[submodule ".repositories/github.com/golang/go"]
-	path = .repositories/github.com/golang/go
+[submodule "tests/repositories/github.com/golang/go"]
+	path = tests/repositories/github.com/golang/go
 	url = https://github.com/golang/go.git
 	shallow = true
 
-[submodule ".repositories/github.com/kubernetes/kubernetes"]
-	path = .repositories/github.com/kubernetes/kubernetes
+[submodule "tests/repositories/github.com/kubernetes/kubernetes"]
+	path = tests/repositories/github.com/kubernetes/kubernetes
 	url = https://github.com/kubernetes/kubernetes.git
 	shallow = true
 
-[submodule ".repositories/github.com/moby/moby"]
-	path = .repositories/github.com/moby/moby
+[submodule "tests/repositories/github.com/moby/moby"]
+	path = tests/repositories/github.com/moby/moby
 	url = https://github.com/moby/moby.git
 	shallow = true
 
-[submodule ".repositories/github.com/gohugoio/hugo"]
-	path = .repositories/github.com/gohugoio/hugo
+[submodule "tests/repositories/github.com/gohugoio/hugo"]
+	path = tests/repositories/github.com/gohugoio/hugo
 	url = https://github.com/gohugoio/hugo.git
 	shallow = true
 
-[submodule ".repositories/github.com/gin-gonic/gin"]
-	path = .repositories/github.com/gin-gonic/gin
+[submodule "tests/repositories/github.com/gin-gonic/gin"]
+	path = tests/repositories/github.com/gin-gonic/gin
 	url = https://github.com/gin-gonic/gin.git
 	shallow = true
