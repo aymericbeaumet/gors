@@ -2,6 +2,19 @@ use clap::Parser;
 use std::io::Write;
 use std::process::Command;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    pretty_env_logger::init();
+
+    let opts: Opts = Opts::parse();
+    match opts.subcmd {
+        SubCommand::Ast(cmd) => ast(cmd),
+        SubCommand::Build(cmd) => build(cmd),
+        SubCommand::Compile(cmd) => compile(cmd),
+        SubCommand::Run(cmd) => run(cmd),
+        SubCommand::Tokens(cmd) => tokens(cmd),
+    }
+}
+
 #[derive(Parser)]
 #[clap(version = "1.0", author = "Aymeric Beaumet <hi@aymericbeaumet.com>")]
 struct Opts {
@@ -13,24 +26,14 @@ struct Opts {
 enum SubCommand {
     #[clap(about = "Parse the named Go file and print the AST")]
     Ast(Ast),
-    #[clap(about = "Compile the named Go file")]
+    #[clap(about = "Compile the named Go file and build an executable")]
     Build(Build),
+    #[clap(about = "Compile the named Go file and print the generated Rust code")]
+    Compile(Compile),
     #[clap(about = "Compile and run the named Go file")]
     Run(Run),
     #[clap(about = "Scan the named Go file and print the tokens")]
     Tokens(Tokens),
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    pretty_env_logger::init();
-
-    let opts: Opts = Opts::parse();
-    match opts.subcmd {
-        SubCommand::Build(cmd) => build(cmd),
-        SubCommand::Run(cmd) => run(cmd),
-        SubCommand::Ast(cmd) => ast(cmd),
-        SubCommand::Tokens(cmd) => tokens(cmd),
-    }
 }
 
 #[derive(Parser)]
@@ -42,6 +45,12 @@ struct Ast {
 #[derive(Parser)]
 struct Build {
     #[clap(name = "file", about = "The file to build")]
+    filepath: String,
+}
+
+#[derive(Parser)]
+struct Compile {
+    #[clap(name = "file", about = "The file to compile")]
     filepath: String,
 }
 
@@ -71,6 +80,39 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir::TempDir::new("gors")?;
+    let main_file = dir.path().join("main.rs");
+    let mut w = std::fs::File::create(&main_file)?;
+
+    let arena = gors::parser::Arena::new();
+    let buffer = std::fs::read_to_string(&cmd.filepath)?;
+    let parsed = gors::parser::parse_file(&arena, &cmd.filepath, &buffer)?;
+    let compiled = gors::compiler::compile(parsed)?;
+    gors::codegen::fprint(&mut w, compiled)?;
+    w.sync_all()?;
+
+    let rustc = Command::new("rustc")
+        .args([
+            main_file.to_str().unwrap(),
+            "--edition=2021",
+            "-Ccodegen-units=1",
+            "-Clto=fat",
+            "-Copt-level=3",
+            "-Ctarget-cpu=native",
+            "-o",
+            "main",
+        ])
+        .output()?;
+    if !rustc.status.success() {
+        print!("{}", String::from_utf8_lossy(&rustc.stdout));
+        eprint!("{}", String::from_utf8_lossy(&rustc.stderr));
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn compile(cmd: Compile) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
@@ -97,22 +139,23 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
-    let output = Command::new("rustc")
+    let rustc = Command::new("rustc")
         .args([
             main_file.to_str().unwrap(),
+            "--edition=2021",
             "-o",
             bin_file.to_str().unwrap(),
         ])
         .output()?;
-    if !output.status.success() {
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !rustc.status.success() {
+        print!("{}", String::from_utf8_lossy(&rustc.stdout));
+        eprint!("{}", String::from_utf8_lossy(&rustc.stderr));
         return Ok(());
     }
 
-    let output = Command::new(&bin_file).output()?;
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let mut cmd = Command::new(&bin_file).spawn()?;
+    cmd.wait()?;
+
     Ok(())
 }
 
