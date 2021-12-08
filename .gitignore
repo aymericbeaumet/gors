@@ -1,3 +1,4 @@
 /.repositories/
-/gors-tests/go-cli/go-cli
+/tests/go-cli/go-cli
+/main.*
 /target/
