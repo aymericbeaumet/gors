@@ -8,11 +8,11 @@ name = "gors"
 path = "lib.rs"
 
 [dependencies]
-log = { version = "0.4", features = ["release_max_level_warn"] }
-phf = { version = "0.10", features = ["macros"] }
+log = { version = "0.4.14", features = ["release_max_level_warn"] }
+phf = { version = "0.10.0", features = ["macros"] }
 proc-macro2 = "1.0.33"
 quote = "1.0.10"
 serde = "1.0.130"
-serde_json = "1.0.68"
+serde_json = "1.0.72"
 syn = { version = "1.0.82", features = ["full", "visit-mut"] }
 unicode-general-category = "0.4.0"
