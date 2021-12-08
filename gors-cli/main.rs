@@ -180,23 +180,20 @@ struct RustcArgs<'a> {
     release: bool,
 }
 
-impl<'a> IntoIterator for RustcArgs<'a> {
-    type Item = &'a str;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+impl<'a> From<RustcArgs<'a>> for Vec<&'a str> {
+    fn from(args: RustcArgs<'a>) -> Self {
+        let mut flags = vec![args.src, "--edition=2021"];
 
-    fn into_iter(self) -> Self::IntoIter {
-        let mut out = vec![self.src, "--edition=2021"];
-
-        if let Some(e) = self.emit {
-            out.extend(["--emit", e]);
+        if let Some(emit) = args.emit {
+            flags.extend(["--emit", emit]);
         }
 
-        if let Some(o) = self.out {
-            out.extend(["-o", o]);
+        if let Some(out) = args.out {
+            flags.extend(["-o", out]);
         }
 
-        if self.release {
-            out.extend([
+        if args.release {
+            flags.extend([
                 "-Ccodegen-units=1",
                 "-Clto=fat",
                 "-Copt-level=3",
@@ -204,6 +201,15 @@ impl<'a> IntoIterator for RustcArgs<'a> {
             ]);
         }
 
-        out.into_iter()
+        flags
+    }
+}
+
+impl<'a> IntoIterator for RustcArgs<'a> {
+    type Item = &'a str;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Vec::from(self).into_iter()
     }
 }
