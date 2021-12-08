@@ -5,7 +5,8 @@ use phf::{phf_map, Map};
 use std::fmt;
 use unicode_general_category::{get_general_category, GeneralCategory};
 
-// TODO: match the errors from the Go scanner
+pub type Step<'a> = (Position<'a>, Token, &'a str);
+
 #[derive(Debug)]
 pub enum ScannerError {
     HexadecimalNotFound,
@@ -23,6 +24,8 @@ impl fmt::Display for ScannerError {
         write!(f, "scanner error: {:?}", self)
     }
 }
+
+pub type Result<T> = std::result::Result<T, ScannerError>;
 
 #[derive(Debug)]
 pub struct Scanner<'a> {
@@ -73,7 +76,7 @@ impl<'a> Scanner<'a> {
         s
     }
 
-    pub fn scan(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    pub fn scan(&mut self) -> Result<Step<'a>> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
 
@@ -385,9 +388,7 @@ impl<'a> Scanner<'a> {
 
     // https://golang.org/ref/spec#Keywords
     // https://golang.org/ref/spec#Identifiers
-    fn scan_pkg_or_keyword_or_ident(
-        &mut self,
-    ) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_pkg_or_keyword_or_ident(&mut self) -> Result<Step<'a>> {
         self.next();
 
         while let Some(c) = self.current() {
@@ -417,10 +418,7 @@ impl<'a> Scanner<'a> {
     // https://golang.org/ref/spec#Integer_literals
     // https://golang.org/ref/spec#Floating-point_literals
     // https://golang.org/ref/spec#Imaginary_literals
-    fn scan_int_or_float_or_imag(
-        &mut self,
-        preceding_dot: bool,
-    ) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_int_or_float_or_imag(&mut self, preceding_dot: bool) -> Result<Step<'a>> {
         self.insert_semi = true;
 
         let mut token = Token::INT;
@@ -496,7 +494,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Rune_literals
-    fn scan_rune(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_rune(&mut self) -> Result<Step<'a>> {
         self.insert_semi = true;
         self.next();
 
@@ -515,7 +513,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    fn scan_interpreted_string(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_interpreted_string(&mut self) -> Result<Step<'a>> {
         self.insert_semi = true;
         self.next();
 
@@ -534,7 +532,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#String_literals
-    fn scan_raw_string(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_raw_string(&mut self) -> Result<Step<'a>> {
         self.insert_semi = true;
         self.next();
 
@@ -552,7 +550,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Comments
-    fn scan_general_comment(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_general_comment(&mut self) -> Result<Step<'a>> {
         self.next();
         self.next();
 
@@ -580,7 +578,7 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Comments
-    fn scan_line_comment(&mut self) -> Result<(Position<'a>, Token, &'a str), ScannerError> {
+    fn scan_line_comment(&mut self) -> Result<Step<'a>> {
         self.next();
         self.next();
 
@@ -758,7 +756,7 @@ impl<'a> Scanner<'a> {
         &self.buffer[self.start_offset..self.offset]
     }
 
-    fn require_escaped_char(&mut self, delim: char) -> Result<(), ScannerError> {
+    fn require_escaped_char(&mut self, delim: char) -> Result<()> {
         self.next();
 
         let c = self
@@ -793,7 +791,7 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    fn require_octal_digits(&mut self, count: usize) -> Result<(), ScannerError> {
+    fn require_octal_digits(&mut self, count: usize) -> Result<()> {
         for _ in 0..count {
             let c = self.current().ok_or(ScannerError::OctalNotFound)?;
 
@@ -807,7 +805,7 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    fn require_hex_digits(&mut self, count: usize) -> Result<(), ScannerError> {
+    fn require_hex_digits(&mut self, count: usize) -> Result<()> {
         for _ in 0..count {
             let c = self.current().ok_or(ScannerError::HexadecimalNotFound)?;
 
@@ -819,6 +817,49 @@ impl<'a> Scanner<'a> {
         }
 
         Ok(())
+    }
+}
+
+impl<'a> IntoIterator for Scanner<'a> {
+    type Item = Result<Step<'a>>;
+    type IntoIter = IntoIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter::new(self)
+    }
+}
+
+pub struct IntoIter<'a> {
+    scanner: Scanner<'a>,
+    eof: bool,
+}
+
+impl<'a> IntoIter<'a> {
+    fn new(scanner: Scanner<'a>) -> Self {
+        Self {
+            scanner,
+            eof: false,
+        }
+    }
+}
+
+impl<'a> Iterator for IntoIter<'a> {
+    type Item = Result<Step<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.eof {
+            return None;
+        }
+
+        match self.scanner.scan() {
+            Ok((pos, tok, lit)) => {
+                if tok == Token::EOF {
+                    self.eof = true;
+                }
+                Some(Ok((pos, tok, lit)))
+            }
+            Err(err) => Some(Err(err)),
+        }
     }
 }
 

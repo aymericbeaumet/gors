@@ -5,7 +5,7 @@ use proc_macro2::Span;
 use syn::visit_mut::VisitMut;
 use syn::Token;
 
-pub fn compile(file: &ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
+pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
     let mut out = file.into();
 
     passes::InlineFmt.visit_file_mut(&mut out);
@@ -13,8 +13,8 @@ pub fn compile(file: &ast::File) -> Result<syn::File, Box<dyn std::error::Error>
     Ok(out)
 }
 
-impl From<&ast::BasicLit<'_>> for syn::ExprLit {
-    fn from(basic_lit: &ast::BasicLit) -> Self {
+impl From<ast::BasicLit<'_>> for syn::ExprLit {
+    fn from(basic_lit: ast::BasicLit) -> Self {
         syn::ExprLit {
             attrs: vec![],
             lit: basic_lit.into(),
@@ -22,8 +22,8 @@ impl From<&ast::BasicLit<'_>> for syn::ExprLit {
     }
 }
 
-impl From<&ast::BasicLit<'_>> for syn::Lit {
-    fn from(basic_lit: &ast::BasicLit) -> Self {
+impl From<ast::BasicLit<'_>> for syn::Lit {
+    fn from(basic_lit: ast::BasicLit) -> Self {
         use token::Token::*;
         match basic_lit.kind {
             INT => syn::Lit::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
@@ -38,30 +38,34 @@ impl From<&ast::BasicLit<'_>> for syn::Lit {
     }
 }
 
-impl From<&ast::BinaryExpr<'_>> for syn::ExprBinary {
-    fn from(binary_expr: &ast::BinaryExpr) -> Self {
+impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
+    fn from(binary_expr: ast::BinaryExpr) -> Self {
         syn::ExprBinary {
             attrs: vec![],
-            left: Box::new(binary_expr.x.into()),
+            left: Box::new((*binary_expr.x).into()),
             op: binary_expr.op.into(),
-            right: Box::new(binary_expr.y.into()),
+            right: Box::new((*binary_expr.y).into()),
         }
     }
 }
 
-impl From<&ast::BlockStmt<'_>> for syn::Block {
-    fn from(block_stmt: &ast::BlockStmt) -> Self {
+impl From<ast::BlockStmt<'_>> for syn::Block {
+    fn from(block_stmt: ast::BlockStmt) -> Self {
         syn::Block {
             brace_token: syn::token::Brace {
                 span: Span::mixed_site(),
             },
-            stmts: block_stmt.list.iter().map(|&stmt| stmt.into()).collect(),
+            stmts: block_stmt
+                .list
+                .into_iter()
+                .map(|stmt| stmt.into())
+                .collect(),
         }
     }
 }
 
-impl From<&ast::BlockStmt<'_>> for syn::ExprBlock {
-    fn from(block_stmt: &ast::BlockStmt) -> Self {
+impl From<ast::BlockStmt<'_>> for syn::ExprBlock {
+    fn from(block_stmt: ast::BlockStmt) -> Self {
         syn::ExprBlock {
             attrs: vec![],
             label: None,
@@ -70,18 +74,18 @@ impl From<&ast::BlockStmt<'_>> for syn::ExprBlock {
     }
 }
 
-impl From<&ast::CallExpr<'_>> for syn::ExprCall {
-    fn from(call_expr: &ast::CallExpr) -> Self {
+impl From<ast::CallExpr<'_>> for syn::ExprCall {
+    fn from(call_expr: ast::CallExpr) -> Self {
         let mut args = syn::punctuated::Punctuated::new();
-        if let Some(cargs) = &call_expr.args {
-            for &arg in cargs.iter() {
+        if let Some(cargs) = call_expr.args {
+            for arg in cargs {
                 args.push(arg.into())
             }
         }
 
         Self {
             attrs: vec![],
-            func: Box::new(call_expr.fun.into()),
+            func: Box::new((*call_expr.fun).into()),
             paren_token: syn::token::Paren {
                 span: Span::mixed_site(),
             },
@@ -145,12 +149,12 @@ impl From<ast::Expr<'_>> for syn::Type {
     }
 }
 
-impl From<&ast::File<'_>> for syn::File {
-    fn from(file: &ast::File) -> Self {
+impl From<ast::File<'_>> for syn::File {
+    fn from(file: ast::File) -> Self {
         let items = file
             .decls
-            .iter()
-            .filter_map(|decl| match *decl {
+            .into_iter()
+            .filter_map(|decl| match decl {
                 ast::Decl::FuncDecl(func_decl) => Some(syn::Item::Fn(func_decl.into())),
                 _ => None,
             })
@@ -164,9 +168,9 @@ impl From<&ast::File<'_>> for syn::File {
     }
 }
 
-impl From<&ast::Field<'_>> for syn::FnArg {
-    fn from(field: &ast::Field) -> Self {
-        let names = field.names.as_ref().unwrap();
+impl From<ast::Field<'_>> for syn::FnArg {
+    fn from(field: ast::Field) -> Self {
+        let name = field.names.unwrap().into_iter().next().unwrap();
         Self::Typed(syn::PatType {
             attrs: vec![],
             pat: Box::new(syn::Pat::Ident(syn::PatIdent {
@@ -174,7 +178,7 @@ impl From<&ast::Field<'_>> for syn::FnArg {
                 by_ref: None,
                 subpat: None,
                 mutability: None,
-                ident: names[0].into(),
+                ident: name.into(),
             })),
             colon_token: <Token![:]>::default(),
             ty: Box::new(field.type_.unwrap().into()),
@@ -182,12 +186,14 @@ impl From<&ast::Field<'_>> for syn::FnArg {
     }
 }
 
-impl From<&ast::FuncDecl<'_>> for syn::ItemFn {
-    fn from(func_decl: &ast::FuncDecl) -> Self {
+impl From<ast::FuncDecl<'_>> for syn::ItemFn {
+    fn from(func_decl: ast::FuncDecl) -> Self {
         let mut inputs = syn::punctuated::Punctuated::new();
-        for &param in &func_decl.type_.params.list {
+        for param in func_decl.type_.params.list {
             inputs.push(param.into());
         }
+
+        let vis = (&func_decl.name).into();
 
         let block =
             Box::new(
@@ -227,27 +233,13 @@ impl From<&ast::FuncDecl<'_>> for syn::ItemFn {
             attrs: vec![],
             block,
             sig,
-            vis: func_decl.into(),
+            vis,
         }
     }
 }
 
-impl From<&ast::FuncDecl<'_>> for syn::Visibility {
-    fn from(func_decl: &ast::FuncDecl) -> Self {
-        if func_decl.name.name == "main"
-            || matches!(func_decl.name.name.chars().next(), Some('A'..='Z'))
-        {
-            syn::Visibility::Public(syn::VisPublic {
-                pub_token: <Token![pub]>::default(),
-            })
-        } else {
-            syn::Visibility::Inherited
-        }
-    }
-}
-
-impl From<&ast::Ident<'_>> for syn::ExprPath {
-    fn from(ident: &ast::Ident) -> Self {
+impl From<ast::Ident<'_>> for syn::ExprPath {
+    fn from(ident: ast::Ident) -> Self {
         let mut segments = syn::punctuated::Punctuated::new();
         segments.push(syn::PathSegment {
             ident: ident.into(),
@@ -265,9 +257,21 @@ impl From<&ast::Ident<'_>> for syn::ExprPath {
     }
 }
 
-impl From<&ast::SelectorExpr<'_>> for syn::ExprPath {
-    fn from(selector_expr: &ast::SelectorExpr) -> Self {
-        let x = match selector_expr.x {
+impl From<&ast::Ident<'_>> for syn::Visibility {
+    fn from(name: &ast::Ident) -> Self {
+        if name.name == "main" || matches!(name.name.chars().next(), Some('A'..='Z')) {
+            syn::Visibility::Public(syn::VisPublic {
+                pub_token: <Token![pub]>::default(),
+            })
+        } else {
+            syn::Visibility::Inherited
+        }
+    }
+}
+
+impl From<ast::SelectorExpr<'_>> for syn::ExprPath {
+    fn from(selector_expr: ast::SelectorExpr) -> Self {
+        let x = match *selector_expr.x {
             ast::Expr::Ident(ident) => ident,
             _ => unimplemented!(),
         };
@@ -293,14 +297,14 @@ impl From<&ast::SelectorExpr<'_>> for syn::ExprPath {
     }
 }
 
-impl From<&ast::Ident<'_>> for syn::Ident {
-    fn from(ident: &ast::Ident) -> Self {
+impl From<ast::Ident<'_>> for syn::Ident {
+    fn from(ident: ast::Ident) -> Self {
         Self::new(ident.name, Span::mixed_site())
     }
 }
 
-impl From<&ast::IfStmt<'_>> for syn::ExprIf {
-    fn from(if_stmt: &ast::IfStmt) -> Self {
+impl From<ast::IfStmt<'_>> for syn::ExprIf {
+    fn from(if_stmt: ast::IfStmt) -> Self {
         syn::ExprIf {
             attrs: vec![],
             cond: Box::new(if_stmt.cond.into()),

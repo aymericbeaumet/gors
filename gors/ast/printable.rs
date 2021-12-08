@@ -4,6 +4,13 @@ use crate::token;
 use std::collections::BTreeMap;
 use std::io::Write;
 
+impl<W: Write, T: Printable<W>> Printable<W> for Box<T> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        (**self).print(p)?;
+        Ok(())
+    }
+}
+
 impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if let Some(node) = self {
@@ -16,7 +23,7 @@ impl<W: Write, T: Printable<W>> Printable<W> for Option<T> {
     }
 }
 
-impl<W: Write> Printable<W> for BTreeMap<&str, &ast::Object<'_>> {
+impl<W: Write> Printable<W> for BTreeMap<&str, ast::Object<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("map[string]*ast.Object (len = 0) {}")?;
@@ -36,7 +43,7 @@ impl<W: Write> Printable<W> for BTreeMap<&str, &ast::Object<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::CommentGroup> {
+impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -50,7 +57,7 @@ impl<W: Write> Printable<W> for Vec<&ast::CommentGroup> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::Field<'_>> {
+impl<W: Write> Printable<W> for Vec<ast::Field<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -107,7 +114,7 @@ impl<W: Write> Printable<W> for Vec<ast::Spec<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::FieldList<'_> {
+impl<W: Write> Printable<W> for ast::FieldList<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FieldList ")?;
         p.open_bracket()?;
@@ -140,7 +147,7 @@ impl<W: Write> Printable<W> for &ast::FieldList<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
+impl<W: Write> Printable<W> for Vec<ast::Ident<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -159,7 +166,7 @@ impl<W: Write> Printable<W> for Vec<&ast::Ident<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ReturnStmt<'_> {
+impl<W: Write> Printable<W> for ast::ReturnStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.ReturnStmt ")?;
         p.open_bracket()?;
@@ -178,7 +185,7 @@ impl<W: Write> Printable<W> for &ast::ReturnStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::BinaryExpr<'_> {
+impl<W: Write> Printable<W> for ast::BinaryExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BinaryExpr ")?;
         p.open_bracket()?;
@@ -205,7 +212,7 @@ impl<W: Write> Printable<W> for &ast::BinaryExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::BasicLit<'_> {
+impl<W: Write> Printable<W> for ast::BasicLit<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BasicLit ")?;
         p.open_bracket()?;
@@ -248,7 +255,7 @@ impl<W: Write> Printable<W> for Vec<&ast::ImportSpec<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Ellipsis<'_> {
+impl<W: Write> Printable<W> for ast::Ellipsis<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Ellipsis ")?;
         p.open_bracket()?;
@@ -267,13 +274,13 @@ impl<W: Write> Printable<W> for &ast::Ellipsis<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::CommentGroup {
+impl<W: Write> Printable<W> for ast::CommentGroup {
     fn print(&self, _: &mut Printer<W>) -> PrintResult {
         Ok(())
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Field<'_> {
+impl<W: Write> Printable<W> for ast::Field<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Field ")?;
         p.open_bracket()?;
@@ -323,7 +330,7 @@ impl<W: Write> Printable<W> for Vec<ast::Stmt<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::AssignStmt<'_> {
+impl<W: Write> Printable<W> for ast::AssignStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.AssignStmt ")?;
         p.open_bracket()?;
@@ -350,7 +357,7 @@ impl<W: Write> Printable<W> for &ast::AssignStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::BlockStmt<'_> {
+impl<W: Write> Printable<W> for ast::BlockStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.BlockStmt ")?;
         p.open_bracket()?;
@@ -373,7 +380,7 @@ impl<W: Write> Printable<W> for &ast::BlockStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::FuncType<'_> {
+impl<W: Write> Printable<W> for ast::FuncType<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FuncType ")?;
         p.open_bracket()?;
@@ -401,7 +408,7 @@ impl<W: Write> Printable<W> for &ast::FuncType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::GenDecl<'_> {
+impl<W: Write> Printable<W> for ast::GenDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.GenDecl ")?;
         p.open_bracket()?;
@@ -446,7 +453,7 @@ impl<W: Write> Printable<W> for &ast::GenDecl<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::FuncDecl<'_> {
+impl<W: Write> Printable<W> for ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
             return Ok(());
@@ -481,7 +488,7 @@ impl<W: Write> Printable<W> for &ast::FuncDecl<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::File<'_> {
+impl<W: Write> Printable<W> for ast::File<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.prefix()?;
         p.write("*ast.File ")?;
@@ -509,7 +516,7 @@ impl<W: Write> Printable<W> for &ast::File<'_> {
 
         p.prefix()?;
         p.write("Imports: ")?;
-        self.imports.print(p)?;
+        self.imports().print(p)?;
 
         p.prefix()?;
         p.write("Unresolved: ")?;
@@ -525,7 +532,7 @@ impl<W: Write> Printable<W> for &ast::File<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Ident<'_> {
+impl<W: Write> Printable<W> for ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
             return Ok(());
@@ -544,7 +551,7 @@ impl<W: Write> Printable<W> for &ast::Ident<'_> {
 
         p.prefix()?;
         p.write("Obj: ")?;
-        self.obj.get().print(p)?;
+        self.obj.print(p)?;
 
         p.close_bracket()?;
 
@@ -558,7 +565,7 @@ impl<W: Write> Printable<W> for () {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
+impl<W: Write> Printable<W> for ast::ImportSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
             return Ok(());
@@ -593,7 +600,7 @@ impl<W: Write> Printable<W> for &ast::ImportSpec<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::StructType<'_> {
+impl<W: Write> Printable<W> for ast::StructType<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.StructType ")?;
         p.open_bracket()?;
@@ -616,7 +623,7 @@ impl<W: Write> Printable<W> for &ast::StructType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::TypeSpec<'_> {
+impl<W: Write> Printable<W> for ast::TypeSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.TypeSpec ")?;
         p.open_bracket()?;
@@ -652,7 +659,7 @@ impl<W: Write> Printable<W> for &ast::TypeSpec<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::InterfaceType<'_> {
+impl<W: Write> Printable<W> for ast::InterfaceType<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.InterfaceType ")?;
         p.open_bracket()?;
@@ -675,7 +682,7 @@ impl<W: Write> Printable<W> for &ast::InterfaceType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
+impl<W: Write> Printable<W> for ast::StarExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.StarExpr ")?;
         p.open_bracket()?;
@@ -694,7 +701,7 @@ impl<W: Write> Printable<W> for &ast::StarExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::UnaryExpr<'_> {
+impl<W: Write> Printable<W> for ast::UnaryExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.UnaryExpr ")?;
         p.open_bracket()?;
@@ -717,7 +724,7 @@ impl<W: Write> Printable<W> for &ast::UnaryExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::CallExpr<'_> {
+impl<W: Write> Printable<W> for ast::CallExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.CallExpr ")?;
         p.open_bracket()?;
@@ -753,7 +760,7 @@ impl<W: Write> Printable<W> for &ast::CallExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ParenExpr<'_> {
+impl<W: Write> Printable<W> for ast::ParenExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.ParenExpr ")?;
         p.open_bracket()?;
@@ -776,7 +783,7 @@ impl<W: Write> Printable<W> for &ast::ParenExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::SelectorExpr<'_> {
+impl<W: Write> Printable<W> for ast::SelectorExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.SelectorExpr ")?;
         p.open_bracket()?;
@@ -795,7 +802,7 @@ impl<W: Write> Printable<W> for &ast::SelectorExpr<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ExprStmt<'_> {
+impl<W: Write> Printable<W> for ast::ExprStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.ExprStmt ")?;
         p.open_bracket()?;
@@ -810,7 +817,7 @@ impl<W: Write> Printable<W> for &ast::ExprStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::IfStmt<'_> {
+impl<W: Write> Printable<W> for ast::IfStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.IfStmt ")?;
         p.open_bracket()?;
@@ -841,7 +848,7 @@ impl<W: Write> Printable<W> for &ast::IfStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::IncDecStmt<'_> {
+impl<W: Write> Printable<W> for ast::IncDecStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.IncDecStmt ")?;
         p.open_bracket()?;
@@ -864,7 +871,7 @@ impl<W: Write> Printable<W> for &ast::IncDecStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ChanType<'_> {
+impl<W: Write> Printable<W> for ast::ChanType<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.ChanType ")?;
         p.open_bracket()?;
@@ -896,7 +903,7 @@ impl<W: Write> Printable<W> for &ast::ChanType<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::GoStmt<'_> {
+impl<W: Write> Printable<W> for ast::GoStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.GoStmt ")?;
         p.open_bracket()?;
@@ -915,7 +922,7 @@ impl<W: Write> Printable<W> for &ast::GoStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::FuncLit<'_> {
+impl<W: Write> Printable<W> for ast::FuncLit<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.FuncLit ")?;
         p.open_bracket()?;
@@ -934,7 +941,7 @@ impl<W: Write> Printable<W> for &ast::FuncLit<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::SendStmt<'_> {
+impl<W: Write> Printable<W> for ast::SendStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.SendStmt ")?;
         p.open_bracket()?;
@@ -957,7 +964,7 @@ impl<W: Write> Printable<W> for &ast::SendStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
+impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
         p.open_bracket()?;
@@ -972,7 +979,7 @@ impl<W: Write> Printable<W> for &ast::DeclStmt<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::ValueSpec<'_> {
+impl<W: Write> Printable<W> for ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
             return Ok(());
@@ -1047,7 +1054,7 @@ impl<W: Write> Printable<W> for Vec<ast::Expr<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Object<'_> {
+impl<W: Write> Printable<W> for ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if p.prevent_circular(self)? {
             return Ok(());
@@ -1082,7 +1089,7 @@ impl<W: Write> Printable<W> for &ast::Object<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for &ast::Scope<'_> {
+impl<W: Write> Printable<W> for ast::Scope<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.Scope ")?;
         p.open_bracket()?;

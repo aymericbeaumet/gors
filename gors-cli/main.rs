@@ -70,12 +70,11 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let arena = gors::parser::Arena::new();
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let file = gors::parser::parse_file(&arena, &cmd.filepath, &buffer)?;
-    gors::ast::fprint(&mut w, file)?;
-
+    let ast = gors::parser::parse_file(&cmd.filepath, &buffer)?;
+    gors::ast::fprint(&mut w, ast)?;
     w.flush()?;
+
     Ok(())
 }
 
@@ -84,10 +83,9 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let main_file = dir.path().join("main.rs");
     let mut w = std::fs::File::create(&main_file)?;
 
-    let arena = gors::parser::Arena::new();
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let parsed = gors::parser::parse_file(&arena, &cmd.filepath, &buffer)?;
-    let compiled = gors::compiler::compile(parsed)?;
+    let ast = gors::parser::parse_file(&cmd.filepath, &buffer)?;
+    let compiled = gors::compiler::compile(ast)?;
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
@@ -116,13 +114,12 @@ fn compile(cmd: Compile) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let arena = gors::parser::Arena::new();
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let parsed = gors::parser::parse_file(&arena, &cmd.filepath, &buffer)?;
-    let compiled = gors::compiler::compile(parsed)?;
+    let ast = gors::parser::parse_file(&cmd.filepath, &buffer)?;
+    let compiled = gors::compiler::compile(ast)?;
     gors::codegen::fprint(&mut w, compiled)?;
-
     w.flush()?;
+
     Ok(())
 }
 
@@ -132,10 +129,9 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let bin_file = dir.path().join("main");
     let mut w = std::fs::File::create(&main_file)?;
 
-    let arena = gors::parser::Arena::new();
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let parsed = gors::parser::parse_file(&arena, &cmd.filepath, &buffer)?;
-    let compiled = gors::compiler::compile(parsed)?;
+    let ast = gors::parser::parse_file(&cmd.filepath, &buffer)?;
+    let compiled = gors::compiler::compile(ast)?;
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
@@ -164,19 +160,13 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
     let buffer = std::fs::read_to_string(&cmd.filepath)?;
-    let mut s = gors::scanner::Scanner::new(&cmd.filepath, &buffer);
-
-    loop {
-        let (pos, tok, lit) = s.scan()?;
+    for step in gors::scanner::Scanner::new(&cmd.filepath, &buffer) {
+        let (pos, tok, lit) = step?;
 
         serde_json::to_writer(&mut w, &(pos, tok, lit))?;
         w.write_all(b"\n")?;
-
-        if tok == gors::token::Token::EOF {
-            break;
-        }
     }
-
     w.flush()?;
+
     Ok(())
 }
