@@ -455,10 +455,6 @@ impl<W: Write> Printable<W> for ast::GenDecl<'_> {
 
 impl<W: Write> Printable<W> for ast::FuncDecl<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.prevent_circular(self)? {
-            return Ok(());
-        }
-
         p.write("*ast.FuncDecl ")?;
         p.open_bracket()?;
 
@@ -534,10 +530,6 @@ impl<W: Write> Printable<W> for ast::File<'_> {
 
 impl<W: Write> Printable<W> for ast::Ident<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.prevent_circular(self)? {
-            return Ok(());
-        }
-
         p.write("*ast.Ident ")?;
         p.open_bracket()?;
 
@@ -567,7 +559,7 @@ impl<W: Write> Printable<W> for () {
 
 impl<W: Write> Printable<W> for ast::ImportSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.prevent_circular(self)? {
+        if p.try_print_line(self)? {
             return Ok(());
         }
 
@@ -981,10 +973,6 @@ impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
 
 impl<W: Write> Printable<W> for ast::ValueSpec<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.prevent_circular(self)? {
-            return Ok(());
-        }
-
         p.write("*ast.ValueSpec ")?;
         p.open_bracket()?;
 
@@ -1056,10 +1044,6 @@ impl<W: Write> Printable<W> for Vec<ast::Expr<'_>> {
 
 impl<W: Write> Printable<W> for ast::Object<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if p.prevent_circular(self)? {
-            return Ok(());
-        }
-
         p.write("*ast.Object ")?;
         p.open_bracket()?;
 

@@ -49,10 +49,7 @@ impl<W: Write> Printer<W> {
         self.w.write_all(buf.as_bytes())
     }
 
-    pub fn prevent_circular<T: Hash>(
-        &mut self,
-        val: T,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    pub fn try_print_line<T: Hash>(&mut self, val: T) -> Result<bool, Box<dyn std::error::Error>> {
         // requirement: this hash function should not produce collisions
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         val.hash(&mut hasher);
