@@ -27,3 +27,7 @@ RUST_LOG=trace cargo run -- tokens <file>
 ```
 make lint test
 ```
+
+## TODO
+
+- inline rust code from go code
