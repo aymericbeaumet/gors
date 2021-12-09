@@ -40,43 +40,43 @@ enum SubCommand {
 
 #[derive(Parser)]
 struct Ast {
-    #[clap(name = "file", about = "The file to parse")]
+    #[clap(name = "file", help = "The file to parse")]
     file: String,
 }
 
 #[derive(Parser)]
 struct Build {
-    #[clap(name = "file", about = "The file to build")]
+    #[clap(name = "file", help = "The file to build")]
     file: String,
     #[clap(
         long,
         name = "release",
-        about = "Build in release mode, with optimizations"
+        help = "Build in release mode, with optimizations"
     )]
     release: bool,
     #[clap(
         long,
         name = "emit",
-        about = "Type of output for the compiler to emit:\nrust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir"
+        help = "Type of output for the compiler to emit:\nrust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir"
     )]
     emit: Option<String>,
 }
 
 #[derive(Parser)]
 struct Run {
-    #[clap(name = "file", about = "The file to run")]
+    #[clap(name = "file", help = "The file to run")]
     file: String,
     #[clap(
         long,
         name = "release",
-        about = "Build in release mode, with optimizations"
+        help = "Build in release mode, with optimizations"
     )]
     release: bool,
 }
 
 #[derive(Parser)]
 struct Tokens {
-    #[clap(name = "file", about = "The file to lex")]
+    #[clap(name = "file", help = "The file to lex")]
     file: String,
 }
 
