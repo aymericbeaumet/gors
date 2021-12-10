@@ -1,4 +1,4 @@
-#![allow(clippy::fallible_impl_from)] // Our conversions cannot fail except in case of unimplemented!(). No need to switch to TryFrom.
+#![allow(clippy::fallible_impl_from)] // TODO: switch to TryFrom
 
 mod passes;
 
@@ -210,6 +210,24 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
                     }),
             );
 
+        let output = if let Some(results) = func_decl.type_.results {
+            syn::ReturnType::Type(
+                <Token![->]>::default(),
+                Box::new(
+                    results
+                        .list
+                        .into_iter()
+                        .next()
+                        .unwrap()
+                        .type_
+                        .unwrap()
+                        .into(),
+                ),
+            )
+        } else {
+            syn::ReturnType::Default
+        };
+
         let sig = syn::Signature {
             constness: None,
             asyncness: None,
@@ -228,7 +246,7 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
             },
             inputs,
             variadic: None,
-            output: syn::ReturnType::Default,
+            output,
         };
 
         Self {
@@ -333,7 +351,19 @@ impl From<ast::Stmt<'_>> for syn::Stmt {
                 Self::Semi(expr_stmt.x.into(), <Token![;]>::default())
             }
             ast::Stmt::IfStmt(if_stmt) => Self::Expr(syn::Expr::If(if_stmt.into())),
+            ast::Stmt::ReturnStmt(return_stmt) => Self::Expr(syn::Expr::Return(return_stmt.into())),
             _ => unimplemented!("{:?}", stmt),
+        }
+    }
+}
+
+impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
+    fn from(return_stmt: ast::ReturnStmt) -> Self {
+        let expr: syn::Expr = return_stmt.results.into_iter().next().unwrap().into();
+        Self {
+            attrs: vec![],
+            expr: Some(Box::new(expr)),
+            return_token: <Token![return]>::default(),
         }
     }
 }
@@ -342,9 +372,25 @@ impl From<token::Token> for syn::BinOp {
     fn from(token: token::Token) -> Self {
         use token::Token::*;
         match token {
-            EQL => Self::Eq(<Token![==]>::default()),
+            ADD => Self::Add(<Token![+]>::default()),
+            SUB => Self::Sub(<Token![-]>::default()),
+            MUL => Self::Mul(<Token![*]>::default()),
+            QUO => Self::Div(<Token![/]>::default()),
             REM => Self::Rem(<Token![%]>::default()),
-            _ => unimplemented!("{:?}", token),
+            LAND => Self::And(<Token![&&]>::default()),
+            LOR => Self::Or(<Token![||]>::default()),
+            XOR => Self::BitXor(<Token![^]>::default()),
+            AND => Self::BitAnd(<Token![&]>::default()),
+            OR => Self::BitOr(<Token![|]>::default()),
+            SHL => Self::Shl(<Token![<<]>::default()),
+            SHR => Self::Shr(<Token![>>]>::default()),
+            EQL => Self::Eq(<Token![==]>::default()),
+            LSS => Self::Lt(<Token![<]>::default()),
+            LEQ => Self::Le(<Token![<=]>::default()),
+            NEQ => Self::Ne(<Token![!=]>::default()),
+            GEQ => Self::Ge(<Token![>=]>::default()),
+            GTR => Self::Gt(<Token![>]>::default()),
+            _ => unreachable!("unsupported binary op: {:?}", token),
         }
     }
 }

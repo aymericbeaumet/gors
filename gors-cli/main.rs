@@ -102,14 +102,14 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     // shortcut when rust code is to be emitted
     if matches!(cmd.emit.as_deref(), Some("rust")) {
         let mut w = std::fs::File::create("main.rs")?;
-        gors::codegen::fprint(&mut w, compiled, true)?;
+        gors::codegen::fprint(&mut w, compiled)?;
         return Ok(());
     }
 
     let tmp_dir = tempdir::TempDir::new("gors")?;
     let source_file = tmp_dir.path().join("main.rs");
     let mut w = std::fs::File::create(&source_file)?;
-    gors::codegen::fprint(&mut w, compiled, false)?;
+    gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
     let rustc = Command::new("rustc")
@@ -138,7 +138,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.file)?;
     let ast = gors::parser::parse_file(&cmd.file, &buffer)?;
     let compiled = gors::compiler::compile(ast)?;
-    gors::codegen::fprint(&mut w, compiled, false)?;
+    gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
     let rustc = Command::new("rustc")
