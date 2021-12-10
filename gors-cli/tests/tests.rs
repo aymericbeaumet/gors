@@ -120,6 +120,7 @@ impl<'a> TestRunner<'a> {
                                     exec(self.gors_bin, args).unwrap();
 
                                 if go_output.stdout != rust_output.stdout {
+                                    println!("| diff found: {}", go_file);
                                     print_diff(
                                         std::str::from_utf8(&go_output.stdout).unwrap(),
                                         std::str::from_utf8(&rust_output.stdout).unwrap(),
@@ -239,8 +240,8 @@ impl fmt::Display for Line {
     }
 }
 
-fn print_diff(old: &str, new: &str) {
-    let diff = TextDiff::from_lines(old, new);
+fn print_diff(expected: &str, got: &str) {
+    let diff = TextDiff::from_lines(expected, got);
 
     for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
         if idx > 0 {

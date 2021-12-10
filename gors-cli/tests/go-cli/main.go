@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"go/ast"
 	"go/parser"
 	"go/scanner"
 	"go/token"
@@ -29,27 +28,11 @@ func main() {
 			}
 
 			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors)
+			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors|parser.SkipObjectResolution)
 			if err != nil {
 				panic(err)
 			}
 
-			// TODO: implement objects/scopes
-			ast.Inspect(file, func(node ast.Node) bool {
-				switch n := node.(type) {
-				case *ast.File:
-					n.Scope = nil
-				case *ast.Ident:
-					n.Obj = nil
-				}
-
-				return true
-			})
-
-			// TODO: implement ident resolution
-			file.Unresolved = nil
-
-			// Using our forked version that prints maps with their keys sorted
 			if err := Fprint(w, fset, file, nil); err != nil {
 				panic(err)
 			}

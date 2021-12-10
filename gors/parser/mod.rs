@@ -1607,15 +1607,18 @@ impl<'scanner> Parser<'scanner> {
     }
 
     fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
-        if let Some(current) = self.current {
+        while let Some(current) = self.current {
             if current.1 == expected {
                 self.next()?;
-                Ok(Some(current))
+                return Ok(Some(current));
+            } else if current.1 == Token::COMMENT {
+                self.next()?;
+                continue;
             } else {
-                Ok(None)
+                return Ok(None);
             }
-        } else {
-            Err(ParserError::UnexpectedEndOfFile)
         }
+
+        Err(ParserError::UnexpectedEndOfFile)
     }
 }
