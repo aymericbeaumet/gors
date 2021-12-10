@@ -1,4 +1,5 @@
-#![allow(clippy::enum_variant_names)]
+// TODO: we allow large enum variant for now, let's profile properly to see if we want to box.
+#![allow(clippy::large_enum_variant)]
 
 mod hashable;
 mod printable;
