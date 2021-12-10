@@ -51,9 +51,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "clap"
-version = "3.0.0-rc.0"
+version = "3.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79b70f999da60e6619a29b131739d2211ed4d4301f40372e94a8081422e9d6c7"
+checksum = "c068998524e6d40ea78c8d2a4b00398f0a8b818c2d484bcb3cbeb2cff2c105ae"
 dependencies = [
  "atty",
  "bitflags",
@@ -68,9 +68,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "3.0.0-rc.0"
+version = "3.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8c0f28022faaef0387fa54f8e33fee22b804a88bbd91303197da2ff8ca6a5d"
+checksum = "0152ba3ee01fa5a9133d4e15a1d9659c75d2270365768dd5a880cc7e68871874"
 dependencies = [
  "heck",
  "proc-macro-error",
@@ -250,9 +250,18 @@ name = "gors-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "colored",
+ "console",
+ "crossbeam",
+ "glob",
  "gors",
+ "lazy_static",
+ "num_cpus",
+ "phf",
+ "pretty_assertions",
  "pretty_env_logger",
  "serde_json",
+ "similar",
  "tempdir",
 ]
 
@@ -618,9 +627,9 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
 name = "serde"
-version = "1.0.130"
+version = "1.0.131"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f12d06de37cf59146fbdecab66aa99f9fe4f78722e3607577a5375d66bd0c913"
+checksum = "b4ad69dfbd3e45369132cc64e6748c2d65cdfb001a2b1c232d128b4ad60561c1"
 
 [[package]]
 name = "serde_json"
@@ -689,21 +698,6 @@ checksum = "633c1a546cee861a1a6d0dc69ebeca693bf4296661ba7852b9d21d159e0506df"
 dependencies = [
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "tests"
-version = "0.1.0"
-dependencies = [
- "colored",
- "console",
- "crossbeam",
- "glob",
- "lazy_static",
- "num_cpus",
- "phf",
- "pretty_assertions",
- "similar",
 ]
 
 [[package]]

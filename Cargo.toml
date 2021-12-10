@@ -1,8 +1,7 @@
 [workspace]
 members = [
-    "gors",
-    "gors-cli",
-    "tests",
+  "gors",
+  "gors-cli",
 ]
 
 [profile.dev]

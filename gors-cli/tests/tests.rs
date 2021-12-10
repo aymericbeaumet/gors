@@ -4,9 +4,7 @@ use crossbeam::thread;
 use glob::glob;
 use phf::{phf_set, Set};
 use similar::{ChangeTag, TextDiff};
-use std::env;
 use std::fmt;
-use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -15,78 +13,89 @@ lazy_static::lazy_static! {
 }
 
 #[test]
-fn test_lexer() {
+fn lexer() {
     RUNNER.test("tokens");
 }
 
 #[test]
-fn test_parser() {
+fn parser() {
     RUNNER.test("ast");
 }
 
 #[derive(Debug)]
 struct TestRunner<'a> {
+    gors_bin: &'a str,
     go_bin: &'a str,
     go_files: Vec<String>,
-    print_files: bool,
-    rust_bin: &'a str,
     thread_count: usize,
 }
 
-// All the paths are relative to the root workspace directory
-impl TestRunner<'_> {
+impl<'a> TestRunner<'a> {
     fn new() -> Self {
-        println!("\n# initializing test runner...");
+        let go_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/go-cli");
+        let go_bin = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/go-cli/go-cli");
 
-        let go_bin = "tests/go-cli/go-cli";
-        let input_patterns: &[&str] = match std::option_env!("LOCAL_FILES_ONLY") {
-            Some("true") => &["tests/files/**/*.go"],
-            _ => &["tests/files/**/*.go", "tests/repositories/**/*.go"],
-        };
-        let print_files = match std::option_env!("PRINT_FILES") {
-            Some("true") => true,
-            _ => false,
-        };
-        let rust_bin = match std::option_env!("RELEASE_BUILD") {
-            Some("false") => "target/debug/gors",
-            _ => "target/release/gors",
-        };
-        let thread_count = match std::option_env!("LOCAL_FILES_ONLY") {
-            Some("true") => 1,
-            _ => num_cpus::get(),
-        };
-
-        let workdir = Path::new(&format!("{}/..", env::var("CARGO_MANIFEST_DIR").unwrap()))
-            .canonicalize()
+        println!("\n| building go-cli binary...");
+        Command::new("go")
+            .args(["build", "-o", &go_bin, "."])
+            .current_dir(&go_dir)
+            .spawn()
+            .unwrap()
+            .wait()
             .unwrap();
-        env::set_current_dir(&workdir).unwrap();
-        println!("## changed working directory to {:?}", workdir);
 
-        println!("## finding go files...");
-        let go_files: Vec<_> = input_patterns
-            .iter()
-            .flat_map(|pattern| {
-                glob(pattern).unwrap().filter_map(|entry| {
-                    let path = entry.unwrap();
-                    let path = path.to_str().unwrap();
-                    if IGNORE_FILES.contains(path) {
-                        None
-                    } else {
-                        Some(path.to_owned())
-                    }
-                })
+        let (gors_bin, go_files_pattern, thread_count) = match std::option_env!("CI") {
+            Some("true") => {
+                println!("| building release gors binary...");
+                Command::new("cargo")
+                    .args(["build", "--release"])
+                    .current_dir(&go_dir)
+                    .spawn()
+                    .unwrap()
+                    .wait()
+                    .unwrap();
+
+                println!("| initializing submodules...");
+                Command::new("git")
+                    .args(["submodule", "update", "--init"])
+                    .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+                    .spawn()
+                    .unwrap()
+                    .wait()
+                    .unwrap();
+
+                (
+                    concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/gors"),
+                    "**/*.go",
+                    num_cpus::get(),
+                )
+            }
+            _ => (
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../target/debug/gors"),
+                "tests/files/**/*.go",
+                1,
+            ),
+        };
+
+        println!("| finding go files...");
+        let go_files: Vec<_> = glob(go_files_pattern)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap();
+                let path = path.to_str().unwrap();
+                if IGNORE_FILES.contains(path) {
+                    None
+                } else {
+                    Some(path.to_owned())
+                }
             })
             .collect();
-        let total = go_files.len();
-        println!("## found {} go files", total);
-
-        print!("# test runner initialized");
+        print!("| found {} go files", go_files.len());
 
         Self {
+            gors_bin,
             go_bin,
             go_files,
-            print_files,
-            rust_bin,
             thread_count,
         }
     }
@@ -104,14 +113,10 @@ impl TestRunner<'_> {
                         chunk.iter().fold(
                             (Duration::new(0, 0), Duration::new(0, 0)),
                             |acc, go_file| {
-                                if self.print_files {
-                                    println!("> {}", go_file);
-                                }
-
                                 let args = &[command, go_file];
-                                let (go_output, go_elapsed) = exec(self.go_bin, args).unwrap();
+                                let (go_output, go_elapsed) = exec(&self.go_bin, args).unwrap();
                                 let (rust_output, rust_elapsed) =
-                                    exec(self.rust_bin, args).unwrap();
+                                    exec(&self.gors_bin, args).unwrap();
 
                                 if go_output.stdout != rust_output.stdout {
                                     print_diff(

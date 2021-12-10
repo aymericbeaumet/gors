@@ -1,9 +1,10 @@
-# Gors
+# gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
+
 
 ## Install
 
 ```
-git clone https://github.com/aymericbeaumet/gors.git /tmp/gors
+git clone -–depth=1 https://github.com/aymericbeaumet/gors.git /tmp/gors
 cargo install --path=/tmp/gors/gors-cli
 ```
 
@@ -15,17 +16,11 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```
 
 ```
-make dev
-RUST_LOG=info cargo run -- build <file>
-RUST_LOG=info cargo run -- run <file>
-RUST_LOG=debug cargo run -- ast <file>
-RUST_LOG=trace cargo run -- tokens <file>
-```
-
-## Testing
-
-```
-make lint test
+RUST_LOG=trace cargo run -- <command> <file>
+cargo build
+cargo clippy
+cargo test -- --nocapture --test-threads=1
+watchexec --restart --clear 'cargo test -- --nocapture --test-threads=1'
 ```
 
 ## TODO
