@@ -37,7 +37,7 @@ impl<'a> TestRunner<'a> {
 
         println!("\n| building go-cli binary...");
         Command::new("go")
-            .args(["build", "-o", &go_bin, "."])
+            .args(["build", "-o", go_bin, "."])
             .current_dir(&go_dir)
             .spawn()
             .unwrap()
@@ -57,7 +57,7 @@ impl<'a> TestRunner<'a> {
 
                 println!("| initializing submodules...");
                 Command::new("git")
-                    .args(["submodule", "update", "--init"])
+                    .args(["submodule", "update", "--init", "--depth=1"])
                     .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
                     .spawn()
                     .unwrap()
@@ -101,8 +101,9 @@ impl<'a> TestRunner<'a> {
     }
 
     fn test(&self, command: &str) {
-        println!("");
+        println!();
         let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
+            #[allow(clippy::needless_collect)] // We collect to start the threads in parallel
             let handles: Vec<_> = self
                 .go_files
                 .chunks((self.go_files.len() / self.thread_count) + 1)
@@ -114,9 +115,9 @@ impl<'a> TestRunner<'a> {
                             (Duration::new(0, 0), Duration::new(0, 0)),
                             |acc, go_file| {
                                 let args = &[command, go_file];
-                                let (go_output, go_elapsed) = exec(&self.go_bin, args).unwrap();
+                                let (go_output, go_elapsed) = exec(self.go_bin, args).unwrap();
                                 let (rust_output, rust_elapsed) =
-                                    exec(&self.gors_bin, args).unwrap();
+                                    exec(self.gors_bin, args).unwrap();
 
                                 if go_output.stdout != rust_output.stdout {
                                     print_diff(

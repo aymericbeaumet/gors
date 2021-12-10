@@ -1,3 +1,5 @@
+#![allow(clippy::fallible_impl_from)] // Our conversions cannot fail except in case of unimplemented!(). No need to switch to TryFrom.
+
 mod passes;
 
 use crate::{ast, token};
@@ -15,7 +17,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>>
 
 impl From<ast::BasicLit<'_>> for syn::ExprLit {
     fn from(basic_lit: ast::BasicLit) -> Self {
-        syn::ExprLit {
+        Self {
             attrs: vec![],
             lit: basic_lit.into(),
         }
@@ -26,12 +28,12 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
     fn from(basic_lit: ast::BasicLit) -> Self {
         use token::Token::*;
         match basic_lit.kind {
-            INT => syn::Lit::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
+            INT => Self::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
             STRING => {
                 let mut value = basic_lit.value.chars();
                 value.next();
                 value.next_back();
-                syn::Lit::Str(syn::LitStr::new(value.as_str(), Span::mixed_site()))
+                Self::Str(syn::LitStr::new(value.as_str(), Span::mixed_site()))
             }
             _ => unimplemented!("{:?}", basic_lit),
         }
@@ -40,7 +42,7 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
 
 impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
     fn from(binary_expr: ast::BinaryExpr) -> Self {
-        syn::ExprBinary {
+        Self {
             attrs: vec![],
             left: Box::new((*binary_expr.x).into()),
             op: binary_expr.op.into(),
@@ -51,7 +53,7 @@ impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
 
 impl From<ast::BlockStmt<'_>> for syn::Block {
     fn from(block_stmt: ast::BlockStmt) -> Self {
-        syn::Block {
+        Self {
             brace_token: syn::token::Brace {
                 span: Span::mixed_site(),
             },
@@ -66,7 +68,7 @@ impl From<ast::BlockStmt<'_>> for syn::Block {
 
 impl From<ast::BlockStmt<'_>> for syn::ExprBlock {
     fn from(block_stmt: ast::BlockStmt) -> Self {
-        syn::ExprBlock {
+        Self {
             attrs: vec![],
             label: None,
             block: block_stmt.into(),
@@ -97,11 +99,11 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
 impl From<ast::Expr<'_>> for syn::Expr {
     fn from(expr: ast::Expr) -> Self {
         match expr {
-            ast::Expr::BasicLit(basic_lit) => syn::Expr::Lit(basic_lit.into()),
-            ast::Expr::BinaryExpr(binary_expr) => syn::Expr::Binary(binary_expr.into()),
-            ast::Expr::CallExpr(call_expr) => syn::Expr::Call(call_expr.into()),
-            ast::Expr::Ident(ident) => syn::Expr::Path(ident.into()),
-            ast::Expr::SelectorExpr(selector_expr) => syn::Expr::Path(selector_expr.into()),
+            ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
+            ast::Expr::BinaryExpr(binary_expr) => Self::Binary(binary_expr.into()),
+            ast::Expr::CallExpr(call_expr) => Self::Call(call_expr.into()),
+            ast::Expr::Ident(ident) => Self::Path(ident.into()),
+            ast::Expr::SelectorExpr(selector_expr) => Self::Path(selector_expr.into()),
             _ => unimplemented!("{:?}", expr),
         }
     }
@@ -136,7 +138,7 @@ impl From<ast::Expr<'_>> for syn::Type {
                     ),
                     arguments: syn::PathArguments::None,
                 });
-                syn::Type::Path(syn::TypePath {
+                Self::Path(syn::TypePath {
                     qself: None,
                     path: syn::Path {
                         leading_colon: None,
@@ -260,11 +262,11 @@ impl From<ast::Ident<'_>> for syn::ExprPath {
 impl From<&ast::Ident<'_>> for syn::Visibility {
     fn from(name: &ast::Ident) -> Self {
         if name.name == "main" || matches!(name.name.chars().next(), Some('A'..='Z')) {
-            syn::Visibility::Public(syn::VisPublic {
+            Self::Public(syn::VisPublic {
                 pub_token: <Token![pub]>::default(),
             })
         } else {
-            syn::Visibility::Inherited
+            Self::Inherited
         }
     }
 }
@@ -305,7 +307,7 @@ impl From<ast::Ident<'_>> for syn::Ident {
 
 impl From<ast::IfStmt<'_>> for syn::ExprIf {
     fn from(if_stmt: ast::IfStmt) -> Self {
-        syn::ExprIf {
+        Self {
             attrs: vec![],
             cond: Box::new(if_stmt.cond.into()),
             if_token: <Token![if]>::default(),
@@ -328,9 +330,9 @@ impl From<ast::Stmt<'_>> for syn::Stmt {
     fn from(stmt: ast::Stmt) -> Self {
         match stmt {
             ast::Stmt::ExprStmt(expr_stmt) => {
-                syn::Stmt::Semi(expr_stmt.x.into(), <Token![;]>::default())
+                Self::Semi(expr_stmt.x.into(), <Token![;]>::default())
             }
-            ast::Stmt::IfStmt(if_stmt) => syn::Stmt::Expr(syn::Expr::If(if_stmt.into())),
+            ast::Stmt::IfStmt(if_stmt) => Self::Expr(syn::Expr::If(if_stmt.into())),
             _ => unimplemented!("{:?}", stmt),
         }
     }
@@ -340,8 +342,8 @@ impl From<token::Token> for syn::BinOp {
     fn from(token: token::Token) -> Self {
         use token::Token::*;
         match token {
-            EQL => syn::BinOp::Eq(<Token![==]>::default()),
-            REM => syn::BinOp::Rem(<Token![%]>::default()),
+            EQL => Self::Eq(<Token![==]>::default()),
+            REM => Self::Rem(<Token![%]>::default()),
             _ => unimplemented!("{:?}", token),
         }
     }

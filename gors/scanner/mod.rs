@@ -76,6 +76,7 @@ impl<'a> Scanner<'a> {
         s
     }
 
+    #[allow(clippy::cognitive_complexity)] // Allow complex scan function
     pub fn scan(&mut self) -> Result<Step<'a>> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
@@ -476,7 +477,7 @@ impl<'a> Scanner<'a> {
                         self.next();
                     }
                     while let Some(c) = self.current() {
-                        if !"_0123456789".contains(c) {
+                        if !matches!(c, '_' | '0'..='9') {
                             break;
                         }
                         self.next();
@@ -639,7 +640,7 @@ impl<'a> Scanner<'a> {
         })
     }
 
-    fn find_line_end(&self) -> bool {
+    const fn find_line_end(&self) -> bool {
         let buffer = self.buffer.as_bytes();
         let mut in_comment = true;
 
@@ -732,7 +733,7 @@ impl<'a> Scanner<'a> {
         );
     }
 
-    fn position(&self) -> Position<'a> {
+    const fn position(&self) -> Position<'a> {
         Position {
             directory: self.directory,
             file: self.file,
@@ -835,7 +836,7 @@ pub struct IntoIter<'a> {
 }
 
 impl<'a> IntoIter<'a> {
-    fn new(scanner: Scanner<'a>) -> Self {
+    const fn new(scanner: Scanner<'a>) -> Self {
         Self {
             scanner,
             eof: false,

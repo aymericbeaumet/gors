@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::nursery)]
+
 use clap::Parser;
 use std::io::Write;
 use std::process::Command;

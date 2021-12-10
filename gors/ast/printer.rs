@@ -11,7 +11,7 @@ pub struct Printer<W: Write> {
 
 impl<W: Write> Printer<W> {
     pub fn new(w: W) -> Self {
-        Printer {
+        Self {
             w,
             line: 0,
             depth: 0,

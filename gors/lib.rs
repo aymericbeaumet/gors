@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::nursery)]
+
 pub mod ast;
 pub mod codegen;
 pub mod compiler;

@@ -1,7 +1,6 @@
 // https://cs.opensource.google/go/go/+/refs/tags/go1.17.2:src/go/token/token.go
 
-// For consistency with the Go types
-#![allow(non_camel_case_types)]
+#![allow(non_camel_case_types)] // For consistency with the Go tokens
 
 use serde::{ser::SerializeMap, Serialize, Serializer};
 use std::fmt;

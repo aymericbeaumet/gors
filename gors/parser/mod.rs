@@ -1,4 +1,4 @@
-#![allow(non_snake_case)]
+#![allow(non_snake_case)] // TODO: switch to parse_* function naming
 
 use crate::ast;
 use crate::scanner;
@@ -39,11 +39,7 @@ trait ResultExt<T> {
 
 impl<T> ResultExt<T> for Result<Option<T>> {
     fn required(self) -> Result<T> {
-        match self {
-            Ok(Some(node)) => Ok(node),
-            Ok(None) => Err(ParserError::UnexpectedToken),
-            Err(err) => Err(err),
-        }
+        self.and_then(|node| node.map_or(Err(ParserError::UnexpectedToken), |node| Ok(node)))
     }
 }
 
@@ -1541,85 +1537,73 @@ impl<'scanner> Parser<'scanner> {
     fn identifier(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
         log::debug!("Parser::identifier()");
 
-        if let Some(ident) = self.token(Token::IDENT)? {
+        self.token(Token::IDENT)?.map_or(Ok(None), |ident| {
             Ok(Some(ast::Ident {
                 name_pos: ident.0,
                 name: ident.2,
                 obj: None,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn int_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::int_lit()");
 
-        if let Some(int_lit) = self.token(Token::INT)? {
+        self.token(Token::INT)?.map_or(Ok(None), |int_lit| {
             Ok(Some(ast::BasicLit {
                 kind: int_lit.1,
                 value: int_lit.2,
                 value_pos: int_lit.0,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn float_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::float_lit()");
 
-        if let Some(int_lit) = self.token(Token::FLOAT)? {
+        self.token(Token::FLOAT)?.map_or(Ok(None), |float_lit| {
             Ok(Some(ast::BasicLit {
-                kind: int_lit.1,
-                value: int_lit.2,
-                value_pos: int_lit.0,
+                kind: float_lit.1,
+                value: float_lit.2,
+                value_pos: float_lit.0,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn imaginary_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::imaginary_lit()");
 
-        if let Some(int_lit) = self.token(Token::IMAG)? {
+        self.token(Token::IMAG)?.map_or(Ok(None), |imag_lit| {
             Ok(Some(ast::BasicLit {
-                kind: int_lit.1,
-                value: int_lit.2,
-                value_pos: int_lit.0,
+                kind: imag_lit.1,
+                value: imag_lit.2,
+                value_pos: imag_lit.0,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn rune_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::rune_lit()");
 
-        if let Some(int_lit) = self.token(Token::CHAR)? {
+        self.token(Token::CHAR)?.map_or(Ok(None), |rune_lit| {
             Ok(Some(ast::BasicLit {
-                kind: int_lit.1,
-                value: int_lit.2,
-                value_pos: int_lit.0,
+                kind: rune_lit.1,
+                value: rune_lit.2,
+                value_pos: rune_lit.0,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn string_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::string_lit()");
 
-        if let Some(string_lit) = self.token(Token::STRING)? {
+        self.token(Token::STRING)?.map_or(Ok(None), |string_lit| {
             Ok(Some(ast::BasicLit {
                 value_pos: string_lit.0,
                 kind: string_lit.1,
                 value: string_lit.2,
             }))
-        } else {
-            Ok(None)
-        }
+        })
     }
 
     fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
