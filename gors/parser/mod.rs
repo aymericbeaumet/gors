@@ -61,7 +61,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
 }
 
 struct Parser<'scanner> {
-    scanner: scanner::IntoIter<'scanner>,
+    scanner: std::iter::Peekable<scanner::IntoIter<'scanner>>,
     current: Option<scanner::Step<'scanner>>,
 }
 
@@ -69,7 +69,7 @@ impl<'scanner> Parser<'scanner> {
     pub fn new(scanner: scanner::Scanner<'scanner>) -> Self {
         Self {
             current: None,
-            scanner: scanner.into_iter(),
+            scanner: scanner.into_iter().peekable(),
         }
     }
 
@@ -81,6 +81,14 @@ impl<'scanner> Parser<'scanner> {
         };
         log::debug!("self.current = {:?}", self.current);
         Ok(())
+    }
+
+    fn peek(&mut self) -> Result<Option<&scanner::Step>> {
+        if let Some(Ok(step)) = self.scanner.peek() {
+            Ok(Some(step))
+        } else {
+            Ok(None)
+        }
     }
 
     /*
@@ -1181,8 +1189,45 @@ impl<'scanner> Parser<'scanner> {
         Ok(None)
     }
 
+    // ForStmt = "for" [ Condition | ForClause | RangeClause ] Block .
+    fn ForStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::ForStmt()");
+
+        let for_ = match self.token(Token::FOR)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        Ok(None)
+    }
+
+    // Condition = Expression .
+    fn Condition(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::Condition()");
+
+        self.Expression()
+    }
+
+    // ForClause = [ InitStmt ] ";" [ Condition ] ";" [ PostStmt ] .
+    // InitStmt = SimpleStmt .
+    // PostStmt = SimpleStmt .
+    fn ForClause(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::ForClause()");
+
+        Ok(None)
+    }
+
+    // RangeClause = [ ExpressionList "=" | IdentifierList ":=" ] "range" Expression .
+    fn RangeClause(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::RangeClause()");
+
+        Ok(None)
+    }
+
     // GoStmt = "go" Expression .
     fn GoStmt(&mut self) -> Result<Option<ast::GoStmt<'scanner>>> {
+        log::debug!("Parser::GoStmt()");
+
         let go = match self.token(Token::GO)? {
             Some(v) => v,
             None => return Ok(None),
