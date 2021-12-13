@@ -20,8 +20,14 @@ impl fmt::Display for CodegenError {
 pub fn fprint<W: std::io::Write>(
     mut w: W,
     file: syn::File,
+    pretty: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ugly = (quote::quote! { #file }).to_string();
+
+    if !pretty {
+        w.write_all(ugly.as_bytes())?;
+        return Ok(());
+    }
 
     let mut cmd = Command::new("rustfmt")
         .stdin(Stdio::piped())
@@ -39,6 +45,5 @@ pub fn fprint<W: std::io::Write>(
     }
 
     w.write_all(&output.stdout)?;
-
     Ok(())
 }
