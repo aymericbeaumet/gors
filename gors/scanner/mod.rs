@@ -51,7 +51,7 @@ pub struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
-        let (directory, file) = filename.rsplit_once('/').unwrap();
+        let (directory, file) = filename.rsplit_once('/').unwrap_or(("", filename));
         let mut s = Scanner {
             directory,
             file,

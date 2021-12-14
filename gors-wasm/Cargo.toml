@@ -1,0 +1,17 @@
+[package]
+name = "gors-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gors"
+path = "lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+console_error_panic_hook = "0.1.7"
+gors = { path = "../gors" }
+wasm-bindgen = "0.2.45"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

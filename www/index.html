@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gors</title>
+
+    <%= htmlWebpackPlugin.tags.headTags %>
+
+    <style>
+      main {
+        text-align: center;
+      }
+
+      textarea {
+        display: inline-block;
+        width: 45%;
+        max-width: 600px;
+        resize: vertical;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1><a href="https://github.com/aymericbeaumet/gors">gors</a></h1>
+
+      <textarea id="input" rows=20>
+// You can edit this code!
+// Click here and start typing.
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, 世界")
+}
+</textarea>
+
+      <textarea id="output" rows=20 readonly></textarea>
+
+      <pre id="error"></pre>
+    </main>
+  </body>
+</html>

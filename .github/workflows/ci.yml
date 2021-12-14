@@ -1,17 +1,9 @@
-on:
-  pull_request:
-  push:
-    branches:
-      - master
-  schedule:
-    - cron: '00 00 * * *'
-
 name: ci
-
+on: [push, pull_request]
 jobs:
-  ci:
-    runs-on: ubuntu-latest
 
+  test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
 
@@ -23,15 +15,13 @@ jobs:
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
           toolchain: stable
-          components: rustfmt, clippy
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --all -- --check
+          args: -- --check
 
       - name: cargo clippy
         uses: actions-rs/cargo@v1
@@ -50,3 +40,42 @@ jobs:
         with:
           command: test
           args: lexer -- --nocapture --test-threads=1
+
+  deploy-www:
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Node.js toolchain
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Building WASM package
+        working-directory: ./gors-wasm
+        run: wasm-pack build
+
+      - name: Install www dependencies
+        working-directory: ./www
+        run: npm ci
+
+      - name: Build www
+        working-directory: ./www
+        run: npm run build
+
+      - name: Deploy www
+        uses: JamesIves/github-pages-deploy-action@4.1.7
+        with:
+          branch: gh-pages
+          folder: ./www/dist
+          clean: true
