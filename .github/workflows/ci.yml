@@ -66,10 +66,8 @@ jobs:
           toolchain: stable
 
       - name: Install wasm-pack
-        uses: actions-rs/cargo@v1
         with:
-          command: install
-          args: wasm-pack
+          run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Building WASM package
         working-directory: ./gors-wasm
