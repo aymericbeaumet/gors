@@ -77,3 +77,4 @@ jobs:
         with:
           branch: gh-pages
           folder: ./www/dist
+          clean: true
