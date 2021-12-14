@@ -956,6 +956,17 @@ impl<W: Write> Printable<W> for ast::SendStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::ForStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ForStmt ")?;
+        p.open_bracket()?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -1127,6 +1138,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::BlockStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
+            ast::Stmt::ForStmt(stmt) => stmt.print(p),
             ast::Stmt::GoStmt(stmt) => stmt.print(p),
             ast::Stmt::IfStmt(stmt) => stmt.print(p),
             ast::Stmt::IncDecStmt(stmt) => stmt.print(p),

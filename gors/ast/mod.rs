@@ -301,7 +301,7 @@ pub struct IfStmt<'a> {
     pub else_: Box<Option<Stmt<'a>>>, // else branch; or nil
 }
 
-// https://pkg.go.dev/go/ast#ForStmt
+// https://pkg.go.dev/go/ast#IncDecStmt
 #[derive(Debug)]
 pub struct IncDecStmt<'a> {
     pub x: Expr<'a>,
@@ -309,7 +309,7 @@ pub struct IncDecStmt<'a> {
     pub tok: Token,            // INC or DEC
 }
 
-// https://pkg.go.dev/go/ast#ForStmt
+// https://pkg.go.dev/go/ast#ParenExpr
 #[derive(Debug)]
 pub struct ParenExpr<'a> {
     pub lparen: Position<'a>, // position of "("
@@ -346,6 +346,16 @@ pub struct SendStmt<'a> {
     pub chan: Expr<'a>,
     pub arrow: Position<'a>, // position of "<-"
     pub value: Expr<'a>,
+}
+
+// https://pkg.go.dev/go/ast#ForStmt
+#[derive(Debug)]
+pub struct ForStmt<'a> {
+    pub for_: Position<'a>,          // position of "for" keyword
+    pub init: Option<Box<Stmt<'a>>>, // initialization statement; or nil
+    pub cond: Option<Expr<'a>>,      // condition; or nil
+    pub post: Option<Box<Stmt<'a>>>, // post iteration statement; or nil
+    pub body: BlockStmt<'a>,
 }
 
 // https://pkg.go.dev/go/ast#ChanDir
@@ -389,6 +399,7 @@ pub enum Stmt<'a> {
     BlockStmt(BlockStmt<'a>),
     DeclStmt(DeclStmt<'a>),
     ExprStmt(ExprStmt<'a>),
+    ForStmt(ForStmt<'a>),
     GoStmt(GoStmt<'a>),
     IfStmt(IfStmt<'a>),
     IncDecStmt(IncDecStmt<'a>),

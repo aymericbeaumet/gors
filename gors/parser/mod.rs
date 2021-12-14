@@ -120,6 +120,7 @@ impl<'scanner> Parser<'scanner> {
             self.token(Token::SEMICOLON).required()?;
             out.decls.push(ast::Decl::GenDecl(import_decl));
         }
+
         while let Some(top_level_decl) = self.TopLevelDecl()? {
             self.token(Token::SEMICOLON).required()?;
             out.decls.push(top_level_decl);
@@ -1166,60 +1167,44 @@ impl<'scanner> Parser<'scanner> {
     fn Statement(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::Statement()");
 
-        if let Some(decl) = self.Declaration()? {
-            return Ok(Some(ast::Stmt::DeclStmt(ast::DeclStmt { decl })));
+        use Token::*;
+        match self.current.map(|(_, token, _)| token) {
+            Some(CONST | TYPE | VAR) => Ok(Some(ast::Stmt::DeclStmt(ast::DeclStmt {
+                decl: self.Declaration().required()?,
+            }))),
+            Some(
+                IDENT | INT | FLOAT | IMAG | CHAR | STRING | FUNC | LPAREN | // operands
+                LBRACK | STRUCT | MAP | CHAN | INTERFACE | // composite types
+                ADD | SUB | MUL | AND | XOR | ARROW | NOT // // unary operators
+            ) => Ok(Some(self.SimpleStmt().required()?)),
+            Some(GO) => Ok(Some(ast::Stmt::GoStmt(self.GoStmt().required()?))),
+            // case token.DEFER:
+            Some(RETURN) => Ok(Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?))),
+            //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
+            //case token.LBRACE:
+            Some(IF) => Ok(Some(ast::Stmt::IfStmt(self.IfStmt().required()?))),
+            //case token.SWITCH:
+            //case token.SELECT:
+            Some(FOR) => Ok(Some(ast::Stmt::ForStmt(self.ForStmt().required()?))),
+            //case token.SEMICOLON:
+            //case token.RBRACE:
+            _ => Ok(None),
         }
-
-        if let Some(simple_stmt) = self.SimpleStmt()? {
-            return Ok(Some(simple_stmt));
-        }
-
-        if let Some(go_stmt) = self.GoStmt()? {
-            return Ok(Some(ast::Stmt::GoStmt(go_stmt)));
-        }
-
-        if let Some(return_stmt) = self.ReturnStmt()? {
-            return Ok(Some(ast::Stmt::ReturnStmt(return_stmt)));
-        }
-
-        if let Some(if_stmt) = self.IfStmt()? {
-            return Ok(Some(ast::Stmt::IfStmt(if_stmt)));
-        }
-
-        Ok(None)
     }
 
     // ForStmt = "for" [ Condition | ForClause | RangeClause ] Block .
-    fn ForStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+    // Condition = Expression .
+    // ForClause = [ InitStmt ] ";" [ Condition ] ";" [ PostStmt ] .
+    // InitStmt = SimpleStmt .
+    // PostStmt = SimpleStmt .
+    // RangeClause = [ ExpressionList "=" | IdentifierList ":=" ] "range" Expression .
+    fn ForStmt(&mut self) -> Result<Option<ast::ForStmt<'scanner>>> {
         log::debug!("Parser::ForStmt()");
 
         let for_ = match self.token(Token::FOR)? {
             Some(v) => v,
             None => return Ok(None),
         };
-
-        Ok(None)
-    }
-
-    // Condition = Expression .
-    fn Condition(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Condition()");
-
-        self.Expression()
-    }
-
-    // ForClause = [ InitStmt ] ";" [ Condition ] ";" [ PostStmt ] .
-    // InitStmt = SimpleStmt .
-    // PostStmt = SimpleStmt .
-    fn ForClause(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::ForClause()");
-
-        Ok(None)
-    }
-
-    // RangeClause = [ ExpressionList "=" | IdentifierList ":=" ] "range" Expression .
-    fn RangeClause(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::RangeClause()");
 
         Ok(None)
     }
