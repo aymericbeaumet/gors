@@ -1,14 +1,9 @@
-on:
-  pull_request:
-  push:
-
 name: ci
-
+on: [push, pull_request]
 jobs:
 
   test:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v2
 
@@ -19,16 +14,12 @@ jobs:
 
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          components: rustfmt, clippy
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --all -- --check
+          args: -- --check
 
       - name: cargo clippy
         uses: actions-rs/cargo@v1
@@ -48,9 +39,10 @@ jobs:
           command: test
           args: lexer -- --nocapture --test-threads=1
 
-  deploy:
+  deploy-www:
+    needs: test
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v2
 
