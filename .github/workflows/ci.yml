@@ -14,6 +14,8 @@ jobs:
 
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
@@ -54,7 +56,6 @@ jobs:
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
           toolchain: stable
 
       - name: Install wasm-pack

@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <title>gors</title>
 
+    <%= htmlWebpackPlugin.tags.headTags %>
+
     <style>
       main {
         text-align: center;
@@ -33,11 +35,9 @@ func main() {
 }
 </textarea>
 
-      <textarea id="output" rows=20></textarea>
+      <textarea id="output" rows=20 readonly></textarea>
 
       <pre id="error"></pre>
     </main>
-
-    <script type="module" src="bundle.js"></script>
   </body>
 </html>
