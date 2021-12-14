@@ -6,10 +6,10 @@
   },
   "dependencies": {
     "gors": "file:../gors-wasm/pkg",
-    "html-webpack-plugin": "5.5.0",
     "lodash": "4.17.21"
   },
   "devDependencies": {
+    "html-webpack-plugin": "5.5.0",
     "webpack": "5.65.0",
     "webpack-cli": "4.9.1",
     "webpack-dev-server": "4.6.0"
