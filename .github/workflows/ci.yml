@@ -66,8 +66,7 @@ jobs:
           toolchain: stable
 
       - name: Install wasm-pack
-        with:
-          run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Building WASM package
         working-directory: ./gors-wasm
