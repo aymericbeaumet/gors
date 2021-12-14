@@ -75,7 +75,7 @@ jobs:
 
       - name: Install www dependencies
         working-directory: ./www
-        run: npm install
+        run: npm ci
 
       - name: Build www
         working-directory: ./www
