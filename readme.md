@@ -24,11 +24,12 @@ rustup update && rustup component add rustfmt rls rust-analysis rust-src
 ```
 
 ```
-RUST_LOG=trace cargo run -- <command> <file>
 cargo build
 cargo clippy
 cargo test -- --nocapture --test-threads=1
+
 watchexec --restart --clear 'cargo test -- --nocapture --test-threads=1'
+RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
 ```
 
 ## TODO
