@@ -358,6 +358,25 @@ pub struct ForStmt<'a> {
     pub body: BlockStmt<'a>,
 }
 
+// https://pkg.go.dev/go/ast#RangeStmt
+#[derive(Debug)]
+pub struct RangeStmt<'a> {
+    pub for_: Position<'a>,            // position of "for" keyword
+    pub key: Option<Expr<'a>>,         // Key, Value may be nil
+    pub value: Option<Expr<'a>>,       // Key, Value may be nil
+    pub tok_pos: Option<Position<'a>>, // position of Tok; invalid if Key == nil
+    pub tok: Option<Token>,            // ILLEGAL if Key == nil, ASSIGN, DEFINE
+    pub x: Expr<'a>,                   // value to range over
+    pub body: BlockStmt<'a>,
+}
+
+// https://pkg.go.dev/go/ast#EmptyStmt
+#[derive(Debug)]
+pub struct EmptyStmt<'a> {
+    pub semicolon: Position<'a>, // position of following ";"
+    pub implicit: bool,          // if set, ";" was omitted in the source
+}
+
 // https://pkg.go.dev/go/ast#ChanDir
 #[derive(Debug)]
 pub enum ChanDir {
@@ -398,11 +417,13 @@ pub enum Stmt<'a> {
     AssignStmt(AssignStmt<'a>),
     BlockStmt(BlockStmt<'a>),
     DeclStmt(DeclStmt<'a>),
+    EmptyStmt(EmptyStmt<'a>),
     ExprStmt(ExprStmt<'a>),
     ForStmt(ForStmt<'a>),
     GoStmt(GoStmt<'a>),
     IfStmt(IfStmt<'a>),
     IncDecStmt(IncDecStmt<'a>),
+    RangeStmt(RangeStmt<'a>),
     ReturnStmt(ReturnStmt<'a>),
     SendStmt(SendStmt<'a>),
 }

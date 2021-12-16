@@ -7,7 +7,19 @@ func main() {
 	}
 
 	// For statements with for clause
-	for i := 0; i < 10; i++ {
+	//for i := 0; i < 10; i++ {
+	//f(i)
+	//}
+	//for ; i < 10; i++ {
+	//f(i)
+	//}
+	//for i := 0; i < 10; {
+	//f(i)
+	//}
+	//for ; i < 10; {
+	//f(i)
+	//}
+	for i < 10 {
 		f(i)
 	}
 	for cond {
@@ -25,5 +37,7 @@ func main() {
 	}
 	for w := range ch {
 		doWork(w)
+	}
+	for range ch {
 	}
 }

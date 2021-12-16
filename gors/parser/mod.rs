@@ -61,7 +61,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
 }
 
 struct Parser<'scanner> {
-    scanner: std::iter::Peekable<scanner::IntoIter<'scanner>>,
+    scanner: scanner::IntoIter<'scanner>,
     current: Option<scanner::Step<'scanner>>,
 }
 
@@ -69,7 +69,7 @@ impl<'scanner> Parser<'scanner> {
     pub fn new(scanner: scanner::Scanner<'scanner>) -> Self {
         Self {
             current: None,
-            scanner: scanner.into_iter().peekable(),
+            scanner: scanner.into_iter(),
         }
     }
 
@@ -81,14 +81,6 @@ impl<'scanner> Parser<'scanner> {
         };
         log::debug!("self.current = {:?}", self.current);
         Ok(())
-    }
-
-    fn peek(&mut self) -> Result<Option<&scanner::Step>> {
-        if let Some(Ok(step)) = self.scanner.peek() {
-            Ok(Some(step))
-        } else {
-            Ok(None)
-        }
     }
 
     /*
@@ -1167,44 +1159,135 @@ impl<'scanner> Parser<'scanner> {
     fn Statement(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::Statement()");
 
-        use Token::*;
-        match self.current.map(|(_, token, _)| token) {
-            Some(CONST | TYPE | VAR) => Ok(Some(ast::Stmt::DeclStmt(ast::DeclStmt {
-                decl: self.Declaration().required()?,
-            }))),
-            Some(
+        if let Some((_, tok, lit)) = self.peek_token()? {
+            use Token::*;
+            return match tok {
+                CONST | TYPE | VAR => Ok(Some(ast::Stmt::DeclStmt(ast::DeclStmt {
+                    decl: self.Declaration().required()?,
+                }))),
                 IDENT | INT | FLOAT | IMAG | CHAR | STRING | FUNC | LPAREN | // operands
                 LBRACK | STRUCT | MAP | CHAN | INTERFACE | // composite types
-                ADD | SUB | MUL | AND | XOR | ARROW | NOT // // unary operators
-            ) => Ok(Some(self.SimpleStmt().required()?)),
-            Some(GO) => Ok(Some(ast::Stmt::GoStmt(self.GoStmt().required()?))),
-            // case token.DEFER:
-            Some(RETURN) => Ok(Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?))),
-            //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
-            //case token.LBRACE:
-            Some(IF) => Ok(Some(ast::Stmt::IfStmt(self.IfStmt().required()?))),
-            //case token.SWITCH:
-            //case token.SELECT:
-            Some(FOR) => Ok(Some(ast::Stmt::ForStmt(self.ForStmt().required()?))),
-            //case token.SEMICOLON:
-            //case token.RBRACE:
-            _ => Ok(None),
+                ADD | SUB | MUL | AND | XOR | ARROW | NOT // unary operators
+                  => Ok(Some(self.SimpleStmt().required()?)),
+                GO => Ok(Some(ast::Stmt::GoStmt(self.GoStmt().required()?))),
+                // case token.DEFER:
+                RETURN => Ok(Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?))),
+                //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
+                //case token.LBRACE:
+                IF => Ok(Some(ast::Stmt::IfStmt(self.IfStmt().required()?))),
+                //case token.SWITCH:
+                //case token.SELECT:
+                FOR => Ok(Some(self.ForStmt().required()?)),
+                SEMICOLON => Ok(Some(ast::Stmt::EmptyStmt(ast::EmptyStmt{
+                    semicolon: self.token(SEMICOLON).required()?.0,
+                    implicit: lit == "\n",
+                }))),
+                _ => Ok(None),
+            };
         }
+
+        Ok(None)
     }
 
     // ForStmt = "for" [ Condition | ForClause | RangeClause ] Block .
-    // Condition = Expression .
     // ForClause = [ InitStmt ] ";" [ Condition ] ";" [ PostStmt ] .
-    // InitStmt = SimpleStmt .
-    // PostStmt = SimpleStmt .
     // RangeClause = [ ExpressionList "=" | IdentifierList ":=" ] "range" Expression .
-    fn ForStmt(&mut self) -> Result<Option<ast::ForStmt<'scanner>>> {
+    // InitStmt = SimpleStmt .
+    // Condition = Expression .
+    // PostStmt = SimpleStmt .
+    fn ForStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::ForStmt()");
 
         let for_ = match self.token(Token::FOR)? {
             Some(v) => v,
             None => return Ok(None),
         };
+
+        // for {}
+        if let Some(body) = self.Block()? {
+            return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
+                for_: for_.0,
+                init: None,
+                cond: None,
+                post: None,
+                body,
+            })));
+        }
+
+        // for range x {}
+        if self.token(Token::RANGE)?.is_some() {
+            let x = self.Expression().required()?;
+            let body = self.Block().required()?;
+            return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
+                for_: for_.0,
+                key: None,
+                value: None,
+                tok_pos: None,
+                tok: None,
+                x,
+                body,
+            })));
+        }
+
+        if let Some(expr_list) = self.ExpressionList()? {
+            // for a < b {}
+            if expr_list.len() == 1 {
+                if let Some(body) = self.Block()? {
+                    let cond = expr_list.into_iter().next().unwrap();
+                    return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
+                        for_: for_.0,
+                        init: None,
+                        cond: Some(cond),
+                        post: None,
+                        body,
+                    })));
+                }
+            }
+
+            // for a, b := range x {}
+            if let Some(define) = self.token(Token::DEFINE)? {
+                if self.token(Token::RANGE)?.is_some() {
+                    let mut expr_list = expr_list.into_iter();
+                    let key = expr_list.next();
+                    let value = expr_list.next();
+                    let x = self.Expression().required()?;
+                    let body = self.Block().required()?;
+                    return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
+                        for_: for_.0,
+                        key,
+                        value,
+                        tok_pos: Some(define.0),
+                        tok: Some(define.1),
+                        x,
+                        body,
+                    })));
+                }
+            }
+
+            // for a, b = range x {}
+            if expr_list
+                .iter()
+                .all(|expr| matches!(expr, ast::Expr::Ident(_)))
+            {
+                if let Some(assign) = self.token(Token::ASSIGN)? {
+                    if self.token(Token::RANGE)?.is_some() {
+                        let x = self.Expression().required()?;
+                        let body = self.Block().required()?;
+                        return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
+                            for_: for_.0,
+                            key: None,
+                            value: None,
+                            tok_pos: Some(assign.0),
+                            tok: Some(assign.1),
+                            x,
+                            body,
+                        })));
+                    }
+                }
+            }
+        }
+
+        // for SimpleStmt ; SimpleStmt ; SimpleStmt {}
 
         Ok(None)
     }
@@ -1503,7 +1586,7 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::assign_op()");
 
         use Token::*;
-        if let Some(current) = self.current {
+        if let Some(current) = self.peek_token()? {
             if matches!(
                 current.1,
                 /* "=" */
@@ -1528,7 +1611,7 @@ impl<'scanner> Parser<'scanner> {
     fn peek_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
         log::debug!("Parser::binary_op()");
 
-        if let Some(current) = self.current {
+        if let Some(current) = self.peek_token()? {
             use Token::*;
             if matches!(
                 current.1,
@@ -1554,7 +1637,7 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::unary_op()");
 
         use Token::*;
-        if let Some(current) = self.current {
+        if let Some(current) = self.peek_token()? {
             if matches!(current.1, ADD | SUB | NOT | MUL | XOR | AND | ARROW) {
                 self.next()?;
                 return Ok(Some(current));
@@ -1637,7 +1720,7 @@ impl<'scanner> Parser<'scanner> {
     }
 
     fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
-        while let Some(current) = self.current {
+        while let Some(current) = self.peek_token()? {
             if current.1 == expected {
                 self.next()?;
                 return Ok(Some(current));
@@ -1648,7 +1731,16 @@ impl<'scanner> Parser<'scanner> {
                 return Ok(None);
             }
         }
-
         Err(ParserError::UnexpectedEndOfFile)
+    }
+
+    fn peek_token(&mut self) -> Result<Option<scanner::Step<'scanner>>> {
+        while let Some(current) = self.current {
+            if current.1 != Token::COMMENT {
+                break;
+            }
+            self.next()?;
+        }
+        Ok(self.current)
     }
 }
