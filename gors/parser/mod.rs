@@ -1229,11 +1229,11 @@ impl<'scanner> Parser<'scanner> {
             })));
         }
 
-        if let Some(expr_list) = self.ExpressionList()? {
+        let init = if let Some(exprs) = self.ExpressionList()? {
             // for a < b {}
-            if expr_list.len() == 1 {
+            if exprs.len() == 1 {
                 if let Some(body) = self.Block()? {
-                    let cond = expr_list.into_iter().next().unwrap();
+                    let cond = exprs.into_iter().next().unwrap();
                     return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
                         for_: for_.0,
                         init: None,
@@ -1244,12 +1244,15 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
 
+            let mut tok: Option<scanner::Step> = None;
+
             // for a, b := range x {}
             if let Some(define) = self.token(Token::DEFINE)? {
+                tok = Some(define);
                 if self.token(Token::RANGE)?.is_some() {
-                    let mut expr_list = expr_list.into_iter();
-                    let key = expr_list.next();
-                    let value = expr_list.next();
+                    let mut exprs = exprs.into_iter();
+                    let key = exprs.next();
+                    let value = exprs.next();
                     let x = self.Expression().required()?;
                     let body = self.Block().required()?;
                     return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
@@ -1262,14 +1265,11 @@ impl<'scanner> Parser<'scanner> {
                         body,
                     })));
                 }
-            }
 
             // for a, b = range x {}
-            if expr_list
-                .iter()
-                .all(|expr| matches!(expr, ast::Expr::Ident(_)))
-            {
+            } else if exprs.iter().all(|expr| matches!(expr, ast::Expr::Ident(_))) {
                 if let Some(assign) = self.token(Token::ASSIGN)? {
+                    tok = Some(assign);
                     if self.token(Token::RANGE)?.is_some() {
                         let x = self.Expression().required()?;
                         let body = self.Block().required()?;
@@ -1285,11 +1285,33 @@ impl<'scanner> Parser<'scanner> {
                     }
                 }
             }
-        }
 
-        // for SimpleStmt ; SimpleStmt ; SimpleStmt {}
+            match tok {
+                Some(tok) => Some(ast::Stmt::AssignStmt(ast::AssignStmt {
+                    lhs: exprs,
+                    tok_pos: tok.0,
+                    tok: tok.1,
+                    rhs: self.ExpressionList().required()?,
+                })),
+                _ => return Err(ParserError::UnexpectedToken),
+            }
+        } else {
+            self.SimpleStmt()?
+        };
 
-        Ok(None)
+        // for a;b;c {}
+        self.token(Token::SEMICOLON).required()?;
+        let cond = self.Expression()?;
+        self.token(Token::SEMICOLON).required()?;
+        let post = self.SimpleStmt()?;
+        let body = self.Block().required()?;
+        Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
+            for_: for_.0,
+            init: init.map(Box::new),
+            cond,
+            post: post.map(Box::new),
+            body,
+        })))
     }
 
     // GoStmt = "go" Expression .
@@ -1363,16 +1385,13 @@ impl<'scanner> Parser<'scanner> {
     fn SimpleStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::SimpleStmt()");
 
-        if let Some(mut expression_list) = self.ExpressionList()? {
+        if let Some(mut exprs) = self.ExpressionList()? {
             // ShortVarDecl
-            if expression_list
-                .iter()
-                .all(|node| matches!(node, ast::Expr::Ident(_)))
-            {
+            if exprs.iter().all(|expr| matches!(expr, ast::Expr::Ident(_))) {
                 if let Some(define_op) = self.token(Token::DEFINE)? {
                     let rhs = self.ExpressionList().required()?;
                     return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
-                        lhs: expression_list,
+                        lhs: exprs,
                         tok_pos: define_op.0,
                         tok: define_op.1,
                         rhs,
@@ -1384,15 +1403,15 @@ impl<'scanner> Parser<'scanner> {
             if let Some(assign_op) = self.assign_op()? {
                 let rhs = self.ExpressionList().required()?;
                 return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
-                    lhs: expression_list,
+                    lhs: exprs,
                     tok_pos: assign_op.0,
                     tok: assign_op.1,
                     rhs,
                 })));
             }
 
-            if expression_list.len() == 1 {
-                let expr = expression_list.pop().unwrap();
+            if exprs.len() == 1 {
+                let expr = exprs.pop().unwrap();
 
                 // IncDecStmt
                 if let Some(inc) = self.token(Token::INC)? {
@@ -1449,8 +1468,8 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
-        let mut args = if let Some(expression_list) = self.ExpressionList()? {
-            expression_list
+        let mut args = if let Some(exprs) = self.ExpressionList()? {
+            exprs
         } else if let Some(type_) = self.Type()? {
             vec![type_]
         } else {
@@ -1458,8 +1477,8 @@ impl<'scanner> Parser<'scanner> {
         };
 
         if self.token(Token::COMMA)?.is_some() {
-            let mut expression_list = self.ExpressionList().required()?;
-            args.append(&mut expression_list);
+            let mut exprs = self.ExpressionList().required()?;
+            args.append(&mut exprs);
         }
 
         let rparen = self.token(Token::RPAREN).required()?;
