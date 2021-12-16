@@ -301,7 +301,7 @@ pub struct IfStmt<'a> {
     pub else_: Box<Option<Stmt<'a>>>, // else branch; or nil
 }
 
-// https://pkg.go.dev/go/ast#ForStmt
+// https://pkg.go.dev/go/ast#IncDecStmt
 #[derive(Debug)]
 pub struct IncDecStmt<'a> {
     pub x: Expr<'a>,
@@ -309,7 +309,7 @@ pub struct IncDecStmt<'a> {
     pub tok: Token,            // INC or DEC
 }
 
-// https://pkg.go.dev/go/ast#ForStmt
+// https://pkg.go.dev/go/ast#ParenExpr
 #[derive(Debug)]
 pub struct ParenExpr<'a> {
     pub lparen: Position<'a>, // position of "("
@@ -346,6 +346,35 @@ pub struct SendStmt<'a> {
     pub chan: Expr<'a>,
     pub arrow: Position<'a>, // position of "<-"
     pub value: Expr<'a>,
+}
+
+// https://pkg.go.dev/go/ast#ForStmt
+#[derive(Debug)]
+pub struct ForStmt<'a> {
+    pub for_: Position<'a>,          // position of "for" keyword
+    pub init: Option<Box<Stmt<'a>>>, // initialization statement; or nil
+    pub cond: Option<Expr<'a>>,      // condition; or nil
+    pub post: Option<Box<Stmt<'a>>>, // post iteration statement; or nil
+    pub body: BlockStmt<'a>,
+}
+
+// https://pkg.go.dev/go/ast#RangeStmt
+#[derive(Debug)]
+pub struct RangeStmt<'a> {
+    pub for_: Position<'a>,            // position of "for" keyword
+    pub key: Option<Expr<'a>>,         // Key, Value may be nil
+    pub value: Option<Expr<'a>>,       // Key, Value may be nil
+    pub tok_pos: Option<Position<'a>>, // position of Tok; invalid if Key == nil
+    pub tok: Option<Token>,            // ILLEGAL if Key == nil, ASSIGN, DEFINE
+    pub x: Expr<'a>,                   // value to range over
+    pub body: BlockStmt<'a>,
+}
+
+// https://pkg.go.dev/go/ast#EmptyStmt
+#[derive(Debug)]
+pub struct EmptyStmt<'a> {
+    pub semicolon: Position<'a>, // position of following ";"
+    pub implicit: bool,          // if set, ";" was omitted in the source
 }
 
 // https://pkg.go.dev/go/ast#ChanDir
@@ -388,10 +417,13 @@ pub enum Stmt<'a> {
     AssignStmt(AssignStmt<'a>),
     BlockStmt(BlockStmt<'a>),
     DeclStmt(DeclStmt<'a>),
+    EmptyStmt(EmptyStmt<'a>),
     ExprStmt(ExprStmt<'a>),
+    ForStmt(ForStmt<'a>),
     GoStmt(GoStmt<'a>),
     IfStmt(IfStmt<'a>),
     IncDecStmt(IncDecStmt<'a>),
+    RangeStmt(RangeStmt<'a>),
     ReturnStmt(ReturnStmt<'a>),
     SendStmt(SendStmt<'a>),
 }

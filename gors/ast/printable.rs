@@ -330,6 +330,17 @@ impl<W: Write> Printable<W> for Vec<ast::Stmt<'_>> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::EmptyStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.EmptyStmt ")?;
+        p.open_bracket()?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::AssignStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.AssignStmt ")?;
@@ -956,6 +967,86 @@ impl<W: Write> Printable<W> for ast::SendStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::ForStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ForStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("For: ")?;
+        self.for_.print(p)?;
+
+        p.prefix()?;
+        p.write("Init: ")?;
+        self.init.print(p)?;
+
+        p.prefix()?;
+        p.write("Cond: ")?;
+        self.cond.print(p)?;
+
+        p.prefix()?;
+        p.write("Post: ")?;
+        self.post.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::RangeStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.RangeStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("For: ")?;
+        self.for_.print(p)?;
+
+        p.prefix()?;
+        p.write("Key: ")?;
+        self.key.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        self.value.print(p)?;
+
+        p.prefix()?;
+        p.write("TokPos: ")?;
+        if let Some(tok_pos) = self.tok_pos {
+            tok_pos.print(p)?;
+        } else {
+            p.write("-")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("Tok: ")?;
+        if let Some(tok) = self.tok {
+            tok.print(p)?;
+        } else {
+            p.write("ILLEGAL")?;
+            p.newline()?;
+        }
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -1126,10 +1217,13 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
             ast::Stmt::BlockStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
+            ast::Stmt::EmptyStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
+            ast::Stmt::ForStmt(stmt) => stmt.print(p),
             ast::Stmt::GoStmt(stmt) => stmt.print(p),
             ast::Stmt::IfStmt(stmt) => stmt.print(p),
             ast::Stmt::IncDecStmt(stmt) => stmt.print(p),
+            ast::Stmt::RangeStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
             ast::Stmt::SendStmt(stmt) => stmt.print(p),
         }

@@ -4,14 +4,11 @@ mod passes;
 
 use crate::{ast, token};
 use proc_macro2::Span;
-use syn::visit_mut::VisitMut;
 use syn::Token;
 
 pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
     let mut out = file.into();
-
-    passes::InlineFmt.visit_file_mut(&mut out);
-
+    passes::apply(&mut out);
     Ok(out)
 }
 
@@ -57,11 +54,7 @@ impl From<ast::BlockStmt<'_>> for syn::Block {
             brace_token: syn::token::Brace {
                 span: Span::mixed_site(),
             },
-            stmts: block_stmt
-                .list
-                .into_iter()
-                .map(|stmt| stmt.into())
-                .collect(),
+            stmts: block_stmt.list.into_iter().flat_map(Vec::from).collect(),
         }
     }
 }
@@ -78,6 +71,25 @@ impl From<ast::BlockStmt<'_>> for syn::ExprBlock {
 
 impl From<ast::CallExpr<'_>> for syn::ExprCall {
     fn from(call_expr: ast::CallExpr) -> Self {
+        let func = if let ast::Expr::Ident(ident) = *call_expr.fun {
+            let mut segments = syn::punctuated::Punctuated::new();
+            segments.push(syn::PathSegment {
+                ident: ident.into(),
+                arguments: syn::PathArguments::None,
+            });
+
+            syn::Expr::Path(syn::ExprPath {
+                attrs: vec![],
+                qself: None,
+                path: syn::Path {
+                    segments,
+                    leading_colon: None,
+                },
+            })
+        } else {
+            (*call_expr.fun).into()
+        };
+
         let mut args = syn::punctuated::Punctuated::new();
         if let Some(cargs) = call_expr.args {
             for arg in cargs {
@@ -87,7 +99,7 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
 
         Self {
             attrs: vec![],
-            func: Box::new((*call_expr.fun).into()),
+            func: Box::new(func),
             paren_token: syn::token::Paren {
                 span: Span::mixed_site(),
             },
@@ -115,27 +127,7 @@ impl From<ast::Expr<'_>> for syn::Type {
             ast::Expr::Ident(ident) => {
                 let mut segments = syn::punctuated::Punctuated::new();
                 segments.push(syn::PathSegment {
-                    ident: syn::Ident::new(
-                        match ident.name {
-                            "bool" => "bool",
-                            "rune" => "u32",
-                            "string" => "String",
-                            "float32" => "f32",
-                            "float64" => "f64",
-                            "int" => "isize",
-                            "int8" => "i8",
-                            "int16" => "i16",
-                            "int32" => "i32",
-                            "int64" => "i64",
-                            "uint" => "usize",
-                            "uint8" => "u8",
-                            "uint16" => "u16",
-                            "uint32" => "u32",
-                            "uint64" => "u64",
-                            _ => unimplemented!("no support for type {:?} yet", ident.name),
-                        },
-                        Span::mixed_site(),
-                    ),
+                    ident: ident.into(),
                     arguments: syn::PathArguments::None,
                 });
                 Self::Path(syn::TypePath {
@@ -344,16 +336,233 @@ impl From<ast::IfStmt<'_>> for syn::ExprIf {
     }
 }
 
-impl From<ast::Stmt<'_>> for syn::Stmt {
+impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
     fn from(stmt: ast::Stmt) -> Self {
+        let semi = <Token![;]>::default();
         match stmt {
-            ast::Stmt::ExprStmt(expr_stmt) => {
-                Self::Semi(expr_stmt.x.into(), <Token![;]>::default())
-            }
-            ast::Stmt::IfStmt(if_stmt) => Self::Expr(syn::Expr::If(if_stmt.into())),
-            ast::Stmt::ReturnStmt(return_stmt) => Self::Expr(syn::Expr::Return(return_stmt.into())),
+            ast::Stmt::AssignStmt(s) => s.into(),
+            ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Semi(s.x.into(), semi)],
+            ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into())],
+            ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()))],
+            ast::Stmt::IncDecStmt(s) => vec![syn::Stmt::Semi(syn::Expr::AssignOp(s.into()), semi)],
+            ast::Stmt::ReturnStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Return(s.into()))],
             _ => unimplemented!("{:?}", stmt),
         }
+    }
+}
+
+impl From<ast::IncDecStmt<'_>> for syn::ExprAssignOp {
+    fn from(inc_dec_stmt: ast::IncDecStmt) -> Self {
+        Self {
+            attrs: vec![],
+            op: match inc_dec_stmt.tok {
+                token::Token::INC => syn::BinOp::AddEq(<Token![+=]>::default()),
+                token::Token::DEC => syn::BinOp::SubEq(<Token![-=]>::default()),
+                _ => unreachable!("implementation error"),
+            },
+            left: Box::new(inc_dec_stmt.x.into()),
+            right: Box::new(syn::Expr::Lit(syn::ExprLit {
+                attrs: vec![],
+                lit: syn::Lit::Int(syn::LitInt::new("1", Span::mixed_site())),
+            })),
+        }
+    }
+}
+
+impl From<ast::ForStmt<'_>> for syn::Expr {
+    fn from(for_stmt: ast::ForStmt) -> Self {
+        let mut stmts = vec![];
+
+        if let Some(init) = for_stmt.init {
+            stmts.extend(Vec::from(*init));
+        }
+
+        let mut body: syn::Block = for_stmt.body.into();
+        if let Some(post) = for_stmt.post {
+            body.stmts.extend(Vec::from(*post));
+        }
+
+        stmts.push(syn::Stmt::Expr(if let Some(cond) = for_stmt.cond {
+            Self::While(syn::ExprWhile {
+                attrs: vec![],
+                label: None,
+                cond: Box::new(cond.into()),
+                body,
+                while_token: <Token![while]>::default(),
+            })
+        } else {
+            Self::Loop(syn::ExprLoop {
+                attrs: vec![],
+                label: None,
+                body,
+                loop_token: <Token![loop]>::default(),
+            })
+        }));
+
+        Self::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: None,
+            block: syn::Block {
+                stmts,
+                brace_token: syn::token::Brace {
+                    ..Default::default()
+                },
+            },
+        })
+    }
+}
+
+impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
+    fn from(assign_stmt: ast::AssignStmt) -> Self {
+        if assign_stmt.lhs.len() != assign_stmt.rhs.len() {
+            panic!("different numbers of lhs/rhs in assignment")
+        }
+
+        if assign_stmt.lhs.is_empty() {
+            panic!("empty lhs")
+        }
+
+        // a := 1
+        // b, c := 2, 3
+        if assign_stmt.tok == token::Token::DEFINE {
+            let pat = match assign_stmt.lhs.len() {
+                1 => {
+                    if let ast::Expr::Ident(ident) = assign_stmt.lhs.into_iter().next().unwrap() {
+                        syn::Pat::Ident(syn::PatIdent {
+                            attrs: vec![],
+                            ident: ident.into(),
+                            by_ref: None,
+                            subpat: None,
+                            mutability: Some(<Token![mut]>::default()),
+                        })
+                    } else {
+                        panic!("expected ident")
+                    }
+                }
+                _ => {
+                    let mut elems = syn::punctuated::Punctuated::new();
+                    for expr in assign_stmt.lhs {
+                        if let ast::Expr::Ident(ident) = expr {
+                            elems.push(syn::Pat::Ident(syn::PatIdent {
+                                attrs: vec![],
+                                ident: ident.into(),
+                                by_ref: None,
+                                subpat: None,
+                                mutability: Some(<Token![mut]>::default()),
+                            }))
+                        } else {
+                            panic!("expecting ident")
+                        }
+                    }
+                    syn::Pat::Tuple(syn::PatTuple {
+                        attrs: vec![],
+                        paren_token: syn::token::Paren {
+                            ..Default::default()
+                        },
+                        elems,
+                    })
+                }
+            };
+
+            let init = match assign_stmt.rhs.len() {
+                1 => assign_stmt.rhs.into_iter().next().unwrap().into(),
+                _ => {
+                    let mut elems = syn::punctuated::Punctuated::new();
+                    for expr in assign_stmt.rhs {
+                        elems.push(expr.into())
+                    }
+                    syn::Expr::Tuple(syn::ExprTuple {
+                        attrs: vec![],
+                        elems,
+                        paren_token: syn::token::Paren {
+                            ..Default::default()
+                        },
+                    })
+                }
+            };
+
+            return vec![syn::Stmt::Local(syn::Local {
+                attrs: vec![],
+                pat,
+                init: Some((<Token![=]>::default(), Box::new(init))),
+                let_token: <Token![let]>::default(),
+                semi_token: <Token![;]>::default(),
+            })];
+        }
+
+        // a = 1
+        // b, c = 2, 3
+        if assign_stmt.tok == token::Token::ASSIGN {
+            if assign_stmt.lhs.len() == 1 {
+                return vec![syn::Stmt::Expr(syn::Expr::Assign(syn::ExprAssign {
+                    attrs: vec![],
+                    left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
+                    eq_token: <Token![=]>::default(),
+                    right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
+                }))];
+            }
+
+            let mut out = vec![];
+
+            for (lhs, rhs) in assign_stmt.lhs.iter().zip(assign_stmt.rhs.into_iter()) {
+                if let ast::Expr::Ident(ident) = lhs {
+                    out.push(syn::Stmt::Local(syn::Local {
+                        attrs: vec![],
+                        semi_token: <Token![;]>::default(),
+                        let_token: <Token![let]>::default(),
+                        pat: syn::Pat::Ident(syn::PatIdent {
+                            attrs: vec![],
+                            mutability: None,
+                            subpat: None,
+                            by_ref: None,
+                            ident: syn::Ident::new(
+                                &format!("{}__", ident.name),
+                                Span::mixed_site(),
+                            ),
+                        }),
+                        init: Some((<Token![=]>::default(), Box::new(rhs.into()))),
+                    }))
+                } else {
+                    panic!("expecting ident")
+                }
+            }
+
+            for lhs in assign_stmt.lhs {
+                let mut segments = syn::punctuated::Punctuated::new();
+                if let ast::Expr::Ident(ident) = &lhs {
+                    segments.push(syn::PathSegment {
+                        ident: syn::Ident::new(&format!("{}__", ident.name), Span::mixed_site()),
+                        arguments: syn::PathArguments::None,
+                    });
+
+                    out.push(syn::Stmt::Semi(
+                        syn::Expr::Assign(syn::ExprAssign {
+                            attrs: vec![],
+                            left: Box::new(lhs.into()),
+                            eq_token: <Token![=]>::default(),
+                            right: Box::new(syn::Expr::Path(syn::ExprPath {
+                                attrs: vec![],
+                                path: syn::Path {
+                                    leading_colon: None,
+                                    segments,
+                                },
+                                qself: None,
+                            })),
+                        }),
+                        <Token![;]>::default(),
+                    ))
+                } else {
+                    panic!("expecting ident")
+                }
+            }
+
+            return out;
+        }
+
+        unimplemented!(
+            "implementation error, unexpected token {:?}",
+            assign_stmt.tok
+        )
     }
 }
 
