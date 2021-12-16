@@ -63,5 +63,5 @@ fn tokens(call_args: &Punctuated<Expr, Comma>) -> TokenStream {
         fmt_str.push_str(if fmt_str.is_empty() { "{}" } else { " {}" });
         fmt_args.extend(quote! { , #arg })
     }
-    quote! { #fmt_str, #fmt_args }
+    quote! { #fmt_str #fmt_args }
 }
