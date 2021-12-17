@@ -44,6 +44,8 @@ jobs:
   build-www:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v2
+
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -55,9 +57,9 @@ jobs:
           node-version: '16'
 
       - name: Install wasm-pack
-        run: npm install -g wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: Build gors-wasm
+      - name: Building gors-wasm
         working-directory: ./gors-wasm
         run: wasm-pack build --release
 
@@ -76,7 +78,7 @@ jobs:
 
   deploy-www:
     runs-on: ubuntu-latest
-    #if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master'
     needs: [test, build-www]
     steps:
       - uses: actions/download-artifact@v2
