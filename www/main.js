@@ -1,18 +1,35 @@
 import * as gors from 'gors';
-import { throttle } from 'lodash';
+import * as rustfmt from 'rustfmt';
+import hljs from 'highlight.js/lib/core';
+import hljsRust from 'highlight.js/lib/languages/rust'
+import throttle from 'lodash/throttle';
+import 'highlight.js/styles/tomorrow-night-bright.css';
 
-const input = document.getElementById("input");
-const output = document.getElementById("output");
-const error = document.getElementById("error");
+hljs.registerLanguage('rust', hljsRust);
 
-compile();
-input.addEventListener('input', throttle(compile, 100), false);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', onDOMContentLoaded);
+} else {
+  onDOMContentLoaded();
+}
 
-function compile() {
-  try {
-    output.value = gors.compile(input.value);
-    error.innerHTML = '';
-  } catch (err) {
-    error.innerHTML = err;
+function onDOMContentLoaded() {
+  const input = document.getElementById("input");
+  const output = document.getElementById("output");
+  const error = document.getElementById("error");
+  input.addEventListener('input', throttle(onInput, 100), false);
+  onInput();
+
+  function onInput() {
+    try {
+      const compiled = gors.compile(input.value);
+      const formatted = rustfmt.format(compiled);
+      console.log(formatted);
+      const hightlighted = hljs.highlight(formatted, {language: 'rust'}).value;
+      output.innerHTML = hightlighted;
+      error.innerHTML = '';
+    } catch (err) {
+      error.innerHTML = err;
+    }
   }
 }

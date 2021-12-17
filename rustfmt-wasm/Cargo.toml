@@ -1,16 +1,16 @@
 [package]
-name = "gors-wasm"
+name = "rustfmt"
 version = "0.1.0"
-edition = "2021"
+edition = "2018"
 
 [lib]
-name = "gors"
+name = "rustfmt"
 path = "lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
 console_error_panic_hook = "0.1.7"
-gors = { path = "../gors" }
+rustfmt-nightly = { git = "https://github.com/rust-lang/rustfmt.git", rev = "v1.4.37" }
 wasm-bindgen = "0.2.78"
 
 [package.metadata.wasm-pack.profile.release]

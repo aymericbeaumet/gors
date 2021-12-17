@@ -19,15 +19,15 @@ cargo install --path=/tmp/gors/gors-cli
 ## Development
 
 ```
-brew install go@1.17 watchexec
-rustup update && rustup component add rustfmt rls rust-analysis rust-src
+brew install rustup go@1.17 watchexec
+rustup toolchain install stable && rustup default stable
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 ```
 
 ```
 cargo build
 cargo clippy
 cargo test -- --nocapture --test-threads=1
-
 watchexec --restart --clear 'cargo test -- --nocapture --test-threads=1'
 RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
 ```

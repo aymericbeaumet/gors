@@ -4,6 +4,9 @@ members = [
   "gors-cli",
   "gors-wasm",
 ]
+exclude = [
+  "rustfmt-wasm",
+]
 
 [profile.dev]
 opt-level = 0
