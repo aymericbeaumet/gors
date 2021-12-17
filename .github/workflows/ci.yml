@@ -2,6 +2,54 @@ name: ci
 on: [push, pull_request]
 jobs:
 
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: cargo clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- --deny warnings
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -16,24 +64,6 @@ jobs:
         uses: actions/setup-go@v2
         with:
           go-version: '^1.17'
-
-      - name: cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: -- --check
-
-      - name: cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- --deny warnings
-
-      - name: cargo build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release
 
       - name: cargo test
         uses: actions-rs/cargo@v1
@@ -79,8 +109,10 @@ jobs:
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
-    needs: [test, build-www]
+    needs: [rustfmt, clippy, build, test, build-www]
     steps:
+      - uses: actions/checkout@v2
+
       - uses: actions/download-artifact@v2
         with:
           name: www-dist
