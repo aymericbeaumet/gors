@@ -7,15 +7,15 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Go toolchain
-        uses: actions/setup-go@v2
-        with:
-          go-version: '^1.17'
-
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+
+      - name: Go toolchain
+        uses: actions/setup-go@v2
+        with:
+          go-version: '^1.17'
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
@@ -41,29 +41,27 @@ jobs:
           command: test
           args: lexer -- --nocapture --test-threads=1
 
-  deploy-www:
-    needs: test
-    if: github.ref == 'refs/heads/master'
+  build-www:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-
-      - name: Node.js toolchain
-        uses: actions/setup-node@v2
-        with:
-          node-version: '16'
 
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
 
+      - name: Node.js toolchain
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: Building WASM package
+      - name: Build gors-wasm
         working-directory: ./gors-wasm
-        run: wasm-pack build
+        run: wasm-pack build --release
 
       - name: Install www dependencies
         working-directory: ./www
@@ -72,6 +70,21 @@ jobs:
       - name: Build www
         working-directory: ./www
         run: npm run build
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: www-dist
+          path: ./www/dist
+
+  deploy-www:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    needs: [test, build-www]
+    steps:
+      - uses: actions/download-artifact@v2
+        with:
+          name: www-dist
+          path: ./www/dist
 
       - name: Deploy www
         uses: JamesIves/github-pages-deploy-action@4.1.7

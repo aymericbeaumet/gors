@@ -1,8 +1,7 @@
 # gors-wasm
 
-WASM bindings.
+## Compile
 
 ```
-cargo install wasm-pack
 wasm-pack build
 ```

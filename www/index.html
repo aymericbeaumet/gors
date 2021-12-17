@@ -4,26 +4,39 @@
     <meta charset="utf-8" />
     <title>gors</title>
 
-    <%= htmlWebpackPlugin.tags.headTags %>
-
     <style>
-      main {
-        text-align: center;
+      textarea {
+        resize: none;
+        border: none;
+        outline: none;
+        width: 100%;
       }
 
-      textarea {
-        display: inline-block;
-        width: 45%;
-        max-width: 600px;
-        resize: vertical;
+      pre {
+        margin: 0;
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+
+      .col {
+        width: 500px;
+        border: 1px solid gray;
+        padding: 5px;
       }
     </style>
+
+    <script src="/bundle.js" async></script>
   </head>
   <body>
     <main>
-      <h1><a href="https://github.com/aymericbeaumet/gors">gors</a></h1>
+      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p>
 
-      <textarea id="input" rows=20>
+      <div class="row">
+        <div class="col">
+          <textarea id="input" rows=30>
 // You can edit this code!
 // Click here and start typing.
 package main
@@ -34,8 +47,12 @@ func main() {
 	fmt.Println("Hello, 世界")
 }
 </textarea>
+        </div>
 
-      <textarea id="output" rows=20 readonly></textarea>
+        <div class="col">
+          <pre><code id="output"></code></pre>
+        </div>
+      </div>
 
       <pre id="error"></pre>
     </main>

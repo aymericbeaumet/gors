@@ -494,12 +494,15 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // b, c = 2, 3
         if assign_stmt.tok == token::Token::ASSIGN {
             if assign_stmt.lhs.len() == 1 {
-                return vec![syn::Stmt::Expr(syn::Expr::Assign(syn::ExprAssign {
-                    attrs: vec![],
-                    left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
-                    eq_token: <Token![=]>::default(),
-                    right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
-                }))];
+                return vec![syn::Stmt::Semi(
+                    syn::Expr::Assign(syn::ExprAssign {
+                        attrs: vec![],
+                        left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
+                        eq_token: <Token![=]>::default(),
+                        right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
+                    }),
+                    <Token![;]>::default(),
+                )];
             }
 
             let mut out = vec![];
