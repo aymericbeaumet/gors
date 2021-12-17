@@ -59,7 +59,7 @@ jobs:
 
       - name: Building gors-wasm
         working-directory: ./gors-wasm
-        run: wasm-pack build --release
+        run: ~/.cargo/bin/wasm-pack build --release
 
       - name: Install www dependencies
         working-directory: ./www
