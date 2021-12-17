@@ -1,8 +1,5 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>gors</title><style>textarea {
-        resize: none;
-        border: none;
-        outline: none;
-        width: 100%;
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>gors</title><style>#input, #output {
+        height: 100%;
       }
 
       pre {
@@ -12,20 +9,11 @@
       .row {
         display: flex;
         gap: 12px;
+        height: 600px;
       }
 
       .col {
-        width: 500px;
+        width: 600px;
         border: 1px solid gray;
         padding: 5px;
-      }</style><script src="/bundle.js" async></script><script defer="defer" src="bundle.js"></script></head><body><main><p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p><div class="row"><div class="col"><textarea id="input" rows="30">
-// You can edit this code!
-// Click here and start typing.
-package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("Hello, 世界")
-}
-</textarea></div><div class="col"><pre><code id="output"></code></pre></div></div><pre id="error"></pre></main></body></html>
+      }</style><script defer="defer" src="bundle.js"></script></head><body><main><p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p><div class="row"><div class="col"><div id="input"></div></div><div class="col"><div id="output"></div></div></div><pre id="error"></pre></main></body></html>
