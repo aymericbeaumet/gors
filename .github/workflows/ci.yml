@@ -55,11 +55,11 @@ jobs:
           node-version: '16'
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        run: npm install -g wasm-pack
 
       - name: Build gors-wasm
         working-directory: ./gors-wasm
-        run: /home/runner/.cargo/bin/wasm-pack build --release
+        run: wasm-pack build --release
 
       - name: Install www dependencies
         working-directory: ./www
