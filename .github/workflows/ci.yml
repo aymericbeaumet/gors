@@ -76,7 +76,7 @@ jobs:
 
   deploy-www:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    #if: github.ref == 'refs/heads/master'
     needs: [test, build-www]
     steps:
       - uses: actions/download-artifact@v2
