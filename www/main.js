@@ -15,13 +15,19 @@ function onDOMContentLoaded() {
 
   const opts = {
     fontSize: "13px",
-    minimap: {
-      enabled: false
-    },
+    minimap: {enabled: false},
     renderFinalNewline: false,
+    renderLineHighlight: "none",
+    // https://stackoverflow.com/a/53448744/1071486
+    lineNumbers: 'off',
+    glyphMargin: false,
+    folding: false,
+    lineDecorationsWidth: 0,
+    lineNumbersMinChars: 0,
   };
 
   const inputEditor = monaco.editor.create(input, {
+    ...opts,
     language: 'go',
     value: `// You can edit this code!
 // Click here and start typing.
@@ -32,14 +38,13 @@ import "fmt"
 func main() {
 	fmt.Println("Hello, 世界")
 }`,
-    ...opts,
   });
   const inputModel = inputEditor.getModel();
 
   const outputEditor = monaco.editor.create(output, {
+    ...opts,
     language: 'rust',
     readOnly: true,
-    ...opts,
   });
   const outputModel = outputEditor.getModel();
 
