@@ -566,6 +566,18 @@ impl<'scanner> Parser<'scanner> {
         };
 
         loop {
+            // TODO: match
+
+            if let Some((lbrack, expr, rbrack)) = self.Index()? {
+                primary_expr = ast::Expr::IndexExpr(ast::IndexExpr {
+                    x: Box::new(primary_expr),
+                    rbrack,
+                    index: Box::new(expr),
+                    lbrack,
+                });
+                continue;
+            }
+
             if let Some((lparen, args, rparen)) = self.Arguments()? {
                 primary_expr = ast::Expr::CallExpr(ast::CallExpr {
                     fun: Box::new(primary_expr),
@@ -581,6 +593,22 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(Some(primary_expr))
+    }
+
+    // Index = "[" Expression "]" .
+    fn Index(
+        &mut self,
+    ) -> Result<Option<(Position<'scanner>, ast::Expr<'scanner>, Position<'scanner>)>> {
+        log::debug!("Parser::Index()");
+
+        let lbrack = match self.token(Token::LBRACK)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let expr = self.Expression().required()?;
+        let rbrack = self.token(Token::RBRACK).required()?;
+
+        Ok(Some((lbrack.0, expr, rbrack.0)))
     }
 
     // Operand = Literal | OperandName | "(" Expression ")" .
@@ -612,19 +640,74 @@ impl<'scanner> Parser<'scanner> {
     fn Literal(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::Literal()");
 
-        if let Some(basic_lit) = self.BasicLit()? {
-            return Ok(Some(ast::Expr::BasicLit(basic_lit)));
+        if let Some(l) = self.BasicLit()? {
+            return Ok(Some(ast::Expr::BasicLit(l)));
         }
 
-        if let Some(function_lit) = self.FunctionLit()? {
-            return Ok(Some(ast::Expr::FuncLit(function_lit)));
+        if let Some(l) = self.CompositeLit()? {
+            return Ok(Some(ast::Expr::CompositeLit(l)));
         }
+
+        if let Some(l) = self.FunctionLit()? {
+            return Ok(Some(ast::Expr::FuncLit(l)));
+        }
+
+        Ok(None)
+    }
+
+    // CompositeLit = LiteralType LiteralValue .
+    // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
+    fn CompositeLit(&mut self) -> Result<Option<ast::CompositeLit<'scanner>>> {
+        log::debug!("Parser::CompositeLit()");
+
+        let type_ = match self.LiteralType()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let lbrace = self.token(Token::LBRACE).required()?;
+        let elts = self.ElementList()?;
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(Some(ast::CompositeLit {
+            type_: Box::new(type_),
+            lbrace: lbrace.0,
+            elts,
+            rbrace: rbrace.0,
+            incomplete: false,
+        }))
+    }
+
+    // LiteralType = StructType | ArrayType | "[" "..." "]" ElementType |
+    //               SliceType | MapType | TypeName .
+    fn LiteralType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::LiteralType()");
+
+        if let Some(t) = self.StructType()? {
+            return Ok(Some(ast::Expr::StructType(t)));
+        }
+
+        if let Some(t) = self.MapType()? {
+            return Ok(Some(ast::Expr::MapType(t)));
+        }
+
+        Ok(None)
+    }
+
+    // ElementList  = KeyedElement { "," KeyedElement } .
+    // KeyedElement = [ Key ":" ] Element .
+    // Key          = FieldName | Expression | LiteralValue .
+    // FieldName    = identifier .
+    // Element      = Expression | LiteralValue .
+    fn ElementList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
+        log::debug!("Parser::ElementList()");
 
         Ok(None)
     }
 
     // FunctionLit = "func" Signature FunctionBody .
     fn FunctionLit(&mut self) -> Result<Option<ast::FuncLit<'scanner>>> {
+        log::debug!("Parser::FunctionLit()");
+
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
@@ -704,6 +787,8 @@ impl<'scanner> Parser<'scanner> {
     fn TypeLit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeLit()");
 
+        // TODO: match
+
         if let Some(t) = self.StructType()? {
             return Ok(Some(ast::Expr::StructType(t)));
         }
@@ -716,11 +801,42 @@ impl<'scanner> Parser<'scanner> {
             return Ok(Some(ast::Expr::InterfaceType(t)));
         }
 
+        if let Some(t) = self.MapType()? {
+            return Ok(Some(ast::Expr::MapType(t)));
+        }
+
         if let Some(t) = self.ChannelType()? {
             return Ok(Some(ast::Expr::ChanType(t)));
         }
 
         Ok(None)
+    }
+
+    // MapType = "map" "[" KeyType "]" ElementType .
+    fn MapType(&mut self) -> Result<Option<ast::MapType<'scanner>>> {
+        log::debug!("Parser::MapType()");
+
+        let map = match self.token(Token::MAP)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        self.token(Token::LBRACK).required()?;
+        let key_type = self.KeyType().required()?;
+        self.token(Token::RBRACK).required()?;
+        let element_type = self.ElementType().required()?;
+
+        Ok(Some(ast::MapType {
+            map: map.0,
+            key: Box::new(key_type),
+            value: Box::new(element_type),
+        }))
+    }
+
+    // KeyType = Type .
+    fn KeyType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::KeyType()");
+
+        self.Type()
     }
 
     // ChannelType = ( "chan" | "chan" "<-" | "<-" "chan" ) ElementType .

@@ -763,6 +763,33 @@ impl<W: Write> Printable<W> for ast::CallExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::IndexExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.IndexExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Index: ")?;
+        self.index.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrack: ")?;
+        self.rbrack.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::ParenExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.ParenExpr ")?;
@@ -899,6 +926,60 @@ impl<W: Write> Printable<W> for ast::ChanType<'_> {
         p.prefix()?;
         p.write("Value: ")?;
         self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::MapType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.MapType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Map: ")?;
+        self.map.print(p)?;
+
+        p.prefix()?;
+        p.write("Key: ")?;
+        self.key.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::CompositeLit<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.CompositeLit ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrace: ")?;
+        self.lbrace.print(p)?;
+
+        p.prefix()?;
+        p.write("Elts: ")?;
+        self.elts.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrace: ")?;
+        self.rbrace.print(p)?;
+
+        p.prefix()?;
+        p.write("Incomplete: ")?;
+        self.incomplete.print(p)?;
 
         p.close_bracket()?;
 
@@ -1100,11 +1181,14 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::CallExpr(node) => node.print(p),
             ast::Expr::ChanType(node) => node.print(p),
+            ast::Expr::CompositeLit(node) => node.print(p),
             ast::Expr::Ellipsis(node) => node.print(p),
             ast::Expr::FuncLit(node) => node.print(p),
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
+            ast::Expr::IndexExpr(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
+            ast::Expr::MapType(node) => node.print(p),
             ast::Expr::ParenExpr(node) => node.print(p),
             ast::Expr::SelectorExpr(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
