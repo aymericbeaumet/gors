@@ -2,7 +2,7 @@ name: ci
 on: [push, pull_request]
 jobs:
 
-  rustfmt:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -17,16 +17,6 @@ jobs:
         with:
           command: fmt
           args: -- --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
 
       - name: cargo clippy
         uses: actions-rs/cargo@v1
@@ -65,11 +55,17 @@ jobs:
         with:
           go-version: '^1.17'
 
-      - name: cargo test
+      - name: run unit tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: lexer -- --nocapture --test-threads=1
+          args: --lib
+
+      - name: run integration tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --bin lexer -- --nocapture --test-threads=1
 
   build-www:
     runs-on: ubuntu-latest
@@ -109,7 +105,7 @@ jobs:
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
-    needs: [rustfmt, clippy, build, test, build-www]
+    needs: [lint, build, test, build-www]
     steps:
       - uses: actions/checkout@v2
 
