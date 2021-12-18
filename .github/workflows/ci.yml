@@ -65,7 +65,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --bin lexer -- --nocapture --test-threads=1
+          args: --bin gors lexer -- --nocapture --test-threads=1
 
   build-www:
     runs-on: ubuntu-latest
