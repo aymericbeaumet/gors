@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io/ioutil"
 	"os"
+	"os/exec"
 )
 
 // ./go ast|tokens <filename>
@@ -34,6 +35,17 @@ func main() {
 			}
 
 			if err := Fprint(w, fset, file, nil); err != nil {
+				panic(err)
+			}
+		}
+
+	case "run":
+		{
+			cmd := exec.Command("go", "run", filename)
+			cmd.Stdout = w
+			cmd.Stderr = os.Stderr
+
+			if err := cmd.Run(); err != nil {
 				panic(err)
 			}
 		}

@@ -13,38 +13,43 @@ lazy_static::lazy_static! {
 }
 
 #[test]
+fn compiler() {
+    RUNNER.test("run", &["programs"]);
+}
+
+#[test]
 fn lexer() {
-    RUNNER.test("tokens");
+    RUNNER.test("tokens", &["files", "programs"]);
 }
 
 #[test]
 fn parser() {
-    RUNNER.test("ast");
+    RUNNER.test("ast", &["files", "programs"]);
 }
 
 #[derive(Debug)]
 struct TestRunner<'a> {
     gors_bin: &'a str,
-    go_bin: &'a str,
-    go_files: Vec<String>,
+    gors_go_bin: &'a str,
+    pattern: &'a str,
     thread_count: usize,
 }
 
 impl<'a> TestRunner<'a> {
     fn new() -> Self {
-        let go_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/go-cli");
-        let go_bin = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/go-cli/go-cli");
+        let go_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        let gors_go_bin = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/gors-go");
 
-        println!("\n| building go-cli binary...");
+        print!("\n| building gors-go binary...");
         Command::new("go")
-            .args(["build", "-o", go_bin, "."])
+            .args(["build", "-o", gors_go_bin, "."])
             .current_dir(&go_dir)
             .spawn()
             .unwrap()
             .wait()
             .unwrap();
 
-        let (gors_bin, go_files_pattern, thread_count) = match std::option_env!("CI") {
+        let (gors_bin, pattern, thread_count) = match std::option_env!("CI") {
             Some("true") => {
                 println!("| building release gors binary...");
                 Command::new("cargo")
@@ -72,14 +77,23 @@ impl<'a> TestRunner<'a> {
             }
             _ => (
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../target/debug/gors"),
-                "tests/files/**/*.go",
+                "*.go",
                 1,
             ),
         };
 
-        println!("| finding go files...");
-        let go_files: Vec<_> = glob(go_files_pattern)
-            .unwrap()
+        Self {
+            gors_bin,
+            gors_go_bin,
+            pattern,
+            thread_count,
+        }
+    }
+
+    fn test(&self, command: &str, prefixes: &[&str]) {
+        let go_files: Vec<_> = prefixes
+            .iter()
+            .flat_map(|prefix| glob(&format!("tests/{}/{}", prefix, self.pattern)).unwrap())
             .filter_map(|entry| {
                 let path = entry.unwrap();
                 let path = path.to_str().unwrap();
@@ -90,23 +104,12 @@ impl<'a> TestRunner<'a> {
                 }
             })
             .collect();
-        print!("| found {} go files", go_files.len());
+        println!("\n| found {} go files", go_files.len());
 
-        Self {
-            gors_bin,
-            go_bin,
-            go_files,
-            thread_count,
-        }
-    }
-
-    fn test(&self, command: &str) {
-        println!();
         let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
             #[allow(clippy::needless_collect)] // We collect to start the threads in parallel
-            let handles: Vec<_> = self
-                .go_files
-                .chunks((self.go_files.len() / self.thread_count) + 1)
+            let handles: Vec<_> = go_files
+                .chunks((go_files.len() / self.thread_count) + 1)
                 .enumerate()
                 .map(|(i, chunk)| {
                     println!("| starting thread #{} (chunk_len={})", i, chunk.len());
@@ -115,7 +118,7 @@ impl<'a> TestRunner<'a> {
                             (Duration::new(0, 0), Duration::new(0, 0)),
                             |acc, go_file| {
                                 let args = &[command, go_file];
-                                let (go_output, go_elapsed) = exec(self.go_bin, args).unwrap();
+                                let (go_output, go_elapsed) = exec(self.gors_go_bin, args).unwrap();
                                 let (rust_output, rust_elapsed) =
                                     exec(self.gors_bin, args).unwrap();
 
@@ -178,53 +181,53 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
 // Some files cannot successfully be parsed by the Go compiler. So we exclude them from the
 // testing/benchmarking for now.
 static IGNORE_FILES: Set<&'static str> = phf_set! {
-    "tests/repositories/github.com/golang/go/src/cmd/api/testdata/src/pkg/p4/p4.go",
-    "tests/repositories/github.com/golang/go/src/constraints/constraints.go",
-    "tests/repositories/github.com/golang/go/src/go/doc/testdata/generics.go",
-    "tests/repositories/github.com/golang/go/src/go/parser/testdata/issue42951/not_a_file.go",
-    "tests/repositories/github.com/golang/go/test/bombad.go",
-    "tests/repositories/github.com/golang/go/test/char_lit1.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/bug014.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/bug068.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/bug163.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/bug169.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue11359.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue11610.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue15611.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue23587.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue30722.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue32133.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue4405.go",
-    "tests/repositories/github.com/golang/go/test/fixedbugs/issue9036.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/absdiff.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/absdiffimp.dir/a.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/append.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/boundmethod.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/builtins.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/double.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/fact.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue39755.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48137.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48424.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48453.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48538.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48609.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue48711.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/issue49295.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/list.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/listimp.dir/a.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/min.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/minimp.dir/a.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/nested.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/ordered.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/orderedmap.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/orderedmapsimp.dir/a.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/settable.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/sliceimp.dir/a.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/sliceimp.dir/main.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/slices.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/smallest.go",
-    "tests/repositories/github.com/golang/go/test/typeparam/typelist.go",
+    "tests/files/go/src/cmd/api/testdata/src/pkg/p4/p4.go",
+    "tests/files/go/src/constraints/constraints.go",
+    "tests/files/go/src/go/doc/testdata/generics.go",
+    "tests/files/go/src/go/parser/testdata/issue42951/not_a_file.go",
+    "tests/files/go/test/bombad.go",
+    "tests/files/go/test/char_lit1.go",
+    "tests/files/go/test/fixedbugs/bug014.go",
+    "tests/files/go/test/fixedbugs/bug068.go",
+    "tests/files/go/test/fixedbugs/bug163.go",
+    "tests/files/go/test/fixedbugs/bug169.go",
+    "tests/files/go/test/fixedbugs/issue11359.go",
+    "tests/files/go/test/fixedbugs/issue11610.go",
+    "tests/files/go/test/fixedbugs/issue15611.go",
+    "tests/files/go/test/fixedbugs/issue23587.go",
+    "tests/files/go/test/fixedbugs/issue30722.go",
+    "tests/files/go/test/fixedbugs/issue32133.go",
+    "tests/files/go/test/fixedbugs/issue4405.go",
+    "tests/files/go/test/fixedbugs/issue9036.go",
+    "tests/files/go/test/typeparam/absdiff.go",
+    "tests/files/go/test/typeparam/absdiffimp.dir/a.go",
+    "tests/files/go/test/typeparam/append.go",
+    "tests/files/go/test/typeparam/boundmethod.go",
+    "tests/files/go/test/typeparam/builtins.go",
+    "tests/files/go/test/typeparam/double.go",
+    "tests/files/go/test/typeparam/fact.go",
+    "tests/files/go/test/typeparam/issue39755.go",
+    "tests/files/go/test/typeparam/issue48137.go",
+    "tests/files/go/test/typeparam/issue48424.go",
+    "tests/files/go/test/typeparam/issue48453.go",
+    "tests/files/go/test/typeparam/issue48538.go",
+    "tests/files/go/test/typeparam/issue48609.go",
+    "tests/files/go/test/typeparam/issue48711.go",
+    "tests/files/go/test/typeparam/issue49295.go",
+    "tests/files/go/test/typeparam/list.go",
+    "tests/files/go/test/typeparam/listimp.dir/a.go",
+    "tests/files/go/test/typeparam/min.go",
+    "tests/files/go/test/typeparam/minimp.dir/a.go",
+    "tests/files/go/test/typeparam/nested.go",
+    "tests/files/go/test/typeparam/ordered.go",
+    "tests/files/go/test/typeparam/orderedmap.go",
+    "tests/files/go/test/typeparam/orderedmapsimp.dir/a.go",
+    "tests/files/go/test/typeparam/settable.go",
+    "tests/files/go/test/typeparam/sliceimp.dir/a.go",
+    "tests/files/go/test/typeparam/sliceimp.dir/main.go",
+    "tests/files/go/test/typeparam/slices.go",
+    "tests/files/go/test/typeparam/smallest.go",
+    "tests/files/go/test/typeparam/typelist.go",
 };
 
 // https://github.com/mitsuhiko/similar/blob/main/examples/terminal-inline.rs

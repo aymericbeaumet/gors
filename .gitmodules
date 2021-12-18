@@ -1,24 +1,24 @@
-[submodule "gors-cli/tests/repositories/github.com/golang/go"]
-	path = gors-cli/tests/repositories/github.com/golang/go
+[submodule "gors-cli/tests/files/go"]
+	path = gors-cli/tests/files/go
 	url = https://github.com/golang/go.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/github.com/kubernetes/kubernetes"]
-	path = gors-cli/tests/repositories/github.com/kubernetes/kubernetes
+[submodule "gors-cli/tests/files/kubernetes"]
+	path = gors-cli/tests/files/kubernetes
 	url = https://github.com/kubernetes/kubernetes.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/github.com/moby/moby"]
-	path = gors-cli/tests/repositories/github.com/moby/moby
+[submodule "gors-cli/tests/files/moby"]
+	path = gors-cli/tests/files/moby
 	url = https://github.com/moby/moby.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/github.com/gohugoio/hugo"]
-	path = gors-cli/tests/repositories/github.com/gohugoio/hugo
+[submodule "gors-cli/tests/files/hugo"]
+	path = gors-cli/tests/files/hugo
 	url = https://github.com/gohugoio/hugo.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/github.com/gin-gonic/gin"]
-	path = gors-cli/tests/repositories/github.com/gin-gonic/gin
+[submodule "gors-cli/tests/files/gin"]
+	path = gors-cli/tests/files/gin
 	url = https://github.com/gin-gonic/gin.git
 	shallow = true
