@@ -519,9 +519,7 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     panic!("expecting ident")
                 }
             }
-            out.push(syn::parse_quote! {
-                let (#(#idents),*) = (#(#values),*);
-            });
+            out.push(syn::parse_quote! { let (#(#idents),*) = (#(#values),*); });
 
             for lhs in assign_stmt.lhs {
                 if let ast::Expr::Ident(ident) = &lhs {

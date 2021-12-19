@@ -17,12 +17,11 @@ struct HoistUse {
 impl VisitMut for HoistUse {
     fn visit_path_mut(&mut self, path: &mut syn::Path) {
         if path.segments.len() > 1 {
-            let ident = path.segments.last().unwrap();
-
             // Save the "use" to hoist it later
             self.uses.push(syn::parse_quote! { use #path; });
 
             // Trim the pass segment to only keep the latest element
+            let ident = path.segments.last().unwrap();
             path.leading_colon = None;
             path.segments = syn::parse_quote! { #ident };
         }
