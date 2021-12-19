@@ -18,7 +18,7 @@ mod tests {
     use syn::parse_quote as rust;
 
     fn test<T: std::iter::IntoIterator<Item = (syn::File, syn::File)>>(tests: T) {
-        for (mut input, expected) in tests.into_iter() {
+        for (mut input, expected) in tests {
             super::pass(&mut input); // mutates in place
             assert_eq!(
                 (quote::quote! {#expected}).to_string(),
