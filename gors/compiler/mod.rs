@@ -341,6 +341,7 @@ impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
         let semi = <Token![;]>::default();
         match stmt {
             ast::Stmt::AssignStmt(s) => s.into(),
+            ast::Stmt::DeclStmt(s) => s.into(),
             ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Semi(s.x.into(), semi)],
             ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into())],
             ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()))],
@@ -409,6 +410,13 @@ impl From<ast::ForStmt<'_>> for syn::Expr {
                 },
             },
         })
+    }
+}
+
+impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
+    fn from(decl_stmt: ast::DeclStmt) -> Self {
+        // TODO
+        vec![]
     }
 }
 
@@ -560,6 +568,22 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             }
 
             return out;
+        }
+
+        // e += 4
+        if assign_stmt.tok.is_assign_op() {
+            if assign_stmt.lhs.len() != 1 {
+                panic!("only supports a single lhs element")
+            }
+            return vec![syn::Stmt::Semi(
+                syn::Expr::Assign(syn::ExprAssign {
+                    attrs: vec![],
+                    left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
+                    eq_token: <Token![=]>::default(),
+                    right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
+                }),
+                <Token![;]>::default(),
+            )];
         }
 
         unimplemented!(
