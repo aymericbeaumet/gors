@@ -31,3 +31,7 @@ cargo test
 cargo test -- --nocapture --test-threads=1
 RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
 ```
+
+## TODO
+
+- fuzzing (https://lcamtuf.coredump.cx/afl)
