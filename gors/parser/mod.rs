@@ -665,7 +665,7 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
         let lbrace = self.token(Token::LBRACE).required()?;
-        let elts = self.ElementList()?;
+        let elts = self.ElementList()?; // TODO: add support for trailing comma from grammar
         let rbrace = self.token(Token::RBRACE).required()?;
 
         Ok(Some(ast::CompositeLit {
