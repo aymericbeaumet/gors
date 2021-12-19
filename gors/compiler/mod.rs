@@ -414,7 +414,7 @@ impl From<ast::ForStmt<'_>> for syn::Expr {
 }
 
 impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
-    fn from(decl_stmt: ast::DeclStmt) -> Self {
+    fn from(_decl_stmt: ast::DeclStmt) -> Self {
         // TODO
         vec![]
     }
