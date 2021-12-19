@@ -1527,8 +1527,8 @@ impl<'scanner> Parser<'scanner> {
     // IncDecStmt     = Expression ( "++" | "--" ) .
     // Assignment     = ExpressionList assign_op ExpressionList .
     // ShortVarDecl   = IdentifierList ":=" ExpressionList .
-    // SendStmt = Channel "<-" Expression .
-    // Channel  = Expression .
+    // SendStmt       = Channel "<-" Expression .
+    // Channel        = Expression .
     fn SimpleStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::SimpleStmt()");
 
