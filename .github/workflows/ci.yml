@@ -16,13 +16,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: -- --check
+          args: --all -- --check
 
       - name: cargo clippy
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: -- --deny warnings
+          args: --all-targets --all-features -- -D warnings
 
   build:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --all-targets --all-features --release
 
   test:
     runs-on: ubuntu-latest
@@ -55,11 +55,17 @@ jobs:
         with:
           go-version: '^1.17'
 
-      - name: cargo test
+      - name: unit tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: lexer -- --nocapture --test-threads=1
+          args: --all-targets --all-features --exclude=gors-cli
+
+      - name: integration tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-targets --all-features --package=gors-cli lexer -- --nocapture --test-threads=1
 
   build-www:
     runs-on: ubuntu-latest
