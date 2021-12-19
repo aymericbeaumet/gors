@@ -404,6 +404,14 @@ pub struct CompositeLit<'a> {
     pub incomplete: bool,            // true if (source) expressions are missing in the Elts list
 }
 
+// https://pkg.go.dev/go/ast#KeyValueExpr
+#[derive(Debug)]
+pub struct KeyValueExpr<'a> {
+    pub key: Box<Expr<'a>>,
+    pub colon: Position<'a>, // position of ":"
+    pub value: Box<Expr<'a>>,
+}
+
 // https://pkg.go.dev/go/ast#ChanDir
 #[derive(Debug)]
 pub enum ChanDir {
@@ -433,6 +441,7 @@ pub enum Expr<'a> {
     Ident(Ident<'a>),
     IndexExpr(IndexExpr<'a>),
     InterfaceType(InterfaceType<'a>),
+    KeyValueExpr(KeyValueExpr<'a>),
     MapType(MapType<'a>),
     ParenExpr(ParenExpr<'a>),
     SelectorExpr(SelectorExpr<'a>),

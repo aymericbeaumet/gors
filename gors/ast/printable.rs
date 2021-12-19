@@ -987,6 +987,29 @@ impl<W: Write> Printable<W> for ast::CompositeLit<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::KeyValueExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.KeyValueExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Key: ")?;
+        self.key.print(p)?;
+
+        p.prefix()?;
+        p.write("Colon: ")?;
+        self.colon.print(p)?;
+
+        p.prefix()?;
+        p.write("Value: ")?;
+        self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::GoStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.GoStmt ")?;
@@ -1188,6 +1211,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::IndexExpr(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
+            ast::Expr::KeyValueExpr(node) => node.print(p),
             ast::Expr::MapType(node) => node.print(p),
             ast::Expr::ParenExpr(node) => node.print(p),
             ast::Expr::SelectorExpr(node) => node.print(p),

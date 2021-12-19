@@ -693,15 +693,47 @@ impl<'scanner> Parser<'scanner> {
         Ok(None)
     }
 
-    // ElementList  = KeyedElement { "," KeyedElement } .
+    // ElementList = KeyedElement { "," KeyedElement } .
+    fn ElementList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
+        log::debug!("Parser::ElementList()");
+
+        let mut out = match self.KeyedElement()? {
+            Some(v) => vec![v],
+            None => return Ok(None),
+        };
+
+        // TODO: peek instead of consuming to distinguish a trailing comma from a new comma+keyed
+        // pair.
+        while self.token(Token::COMMA)?.is_some() {
+            if let Some(k) = self.KeyedElement()? {
+                out.push(k);
+            } else {
+                break;
+            }
+        }
+
+        Ok(Some(out))
+    }
+
     // KeyedElement = [ Key ":" ] Element .
     // Key          = FieldName | Expression | LiteralValue .
     // FieldName    = identifier .
     // Element      = Expression | LiteralValue .
-    fn ElementList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
-        log::debug!("Parser::ElementList()");
+    fn KeyedElement(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        let key = match self.Expression()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        Ok(None)
+        if let Some(colon) = self.token(Token::COLON)? {
+            return Ok(Some(ast::Expr::KeyValueExpr(ast::KeyValueExpr {
+                key: Box::new(key),
+                colon: colon.0,
+                value: Box::new(self.Expression().required()?),
+            })));
+        }
+
+        self.Expression()
     }
 
     // FunctionLit = "func" Signature FunctionBody .
@@ -1158,7 +1190,6 @@ impl<'scanner> Parser<'scanner> {
 
     // ParameterList  = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
-    // IdentifierList = identifier { "," identifier } .
     fn ParameterList(&mut self) -> Result<Option<Vec<ast::Field<'scanner>>>> {
         log::debug!("Parser::ParameterList()");
 

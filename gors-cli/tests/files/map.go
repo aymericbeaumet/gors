@@ -11,5 +11,9 @@ func main() {
 		1: 1,
 	}
 
+	var memoized = map[uint]uint{0: 0, 1: 1}
+
+	var memoized = map[uint]uint{}
+
 	a := m[0]
 }
