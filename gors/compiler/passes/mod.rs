@@ -15,7 +15,7 @@ pub fn pass(file: &mut syn::File) {
 
 #[cfg(test)]
 mod tests {
-    use syn::parse_quote as file;
+    use syn::parse_quote as rust;
 
     fn test<T: std::iter::IntoIterator<Item = (syn::File, syn::File)>>(tests: T) {
         for (mut input, expected) in tests.into_iter() {
@@ -30,11 +30,11 @@ mod tests {
     #[test]
     fn it_should_remove_unnecessary_returns() {
         test([
-            (file! { fn a() { return 0; } }, file! { fn a() { 0 } }),
-            (file! { fn b() { return 0 } }, file! { fn b() { 0 } }),
+            (rust! { fn a() { return 0; } }, rust! { fn a() { 0 } }),
+            (rust! { fn b() { return 0 } }, rust! { fn b() { 0 } }),
             (
-                file! { fn c() { if true { return 0; } return 2; } },
-                file! { fn c() { if true { return 0; } 2 } },
+                rust! { fn c() { if true { return 0; } return 2; } },
+                rust! { fn c() { if true { return 0; } 2 } },
             ),
         ]);
     }
