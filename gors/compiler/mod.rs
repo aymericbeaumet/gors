@@ -8,7 +8,7 @@ use syn::Token;
 
 pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
     let mut out = file.into();
-    passes::apply(&mut out);
+    passes::pass(&mut out);
     Ok(out)
 }
 

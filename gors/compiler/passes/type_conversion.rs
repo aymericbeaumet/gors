@@ -1,6 +1,10 @@
 use syn::visit_mut::{self, VisitMut};
 
-pub struct TypeConversion;
+pub fn pass(file: &mut syn::File) {
+    TypeConversion.visit_file_mut(file);
+}
+
+struct TypeConversion;
 
 impl VisitMut for TypeConversion {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {

@@ -1,11 +1,11 @@
+mod hoist_use;
 mod inline_fmt;
 mod map_type;
 mod type_conversion;
 
-use syn::visit_mut::VisitMut;
-
-pub fn apply(file: &mut syn::File) {
-    inline_fmt::InlineFmt.visit_file_mut(file);
-    map_type::MapType.visit_file_mut(file);
-    type_conversion::TypeConversion.visit_file_mut(file);
+pub fn pass(file: &mut syn::File) {
+    inline_fmt::pass(file);
+    map_type::pass(file);
+    type_conversion::pass(file);
+    hoist_use::pass(file);
 }

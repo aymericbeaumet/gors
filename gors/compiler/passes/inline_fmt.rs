@@ -5,7 +5,11 @@ use syn::token::{Colon2, Comma};
 use syn::visit_mut::{self, VisitMut};
 use syn::{Expr, PathSegment, Token};
 
-pub struct InlineFmt;
+pub fn pass(file: &mut syn::File) {
+    InlineFmt.visit_file_mut(file);
+}
+
+struct InlineFmt;
 
 impl VisitMut for InlineFmt {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
@@ -38,11 +42,11 @@ impl VisitMut for InlineFmt {
 fn segments() -> Punctuated<PathSegment, Colon2> {
     let mut segments = syn::punctuated::Punctuated::new();
     segments.push(syn::PathSegment {
-        ident: syn::Ident::new("std", Span::mixed_site()),
+        ident: quote::format_ident!("std"),
         arguments: syn::PathArguments::None,
     });
     segments.push(syn::PathSegment {
-        ident: syn::Ident::new("println", Span::mixed_site()),
+        ident: quote::format_ident!("println"),
         arguments: syn::PathArguments::None,
     });
     segments
