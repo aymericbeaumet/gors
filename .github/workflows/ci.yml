@@ -16,13 +16,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: -- --check
+          args: --all -- --check
 
       - name: cargo clippy
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: -- --deny warnings
+          args: --all-targets --all-features -- -D warnings
 
   build:
     runs-on: ubuntu-latest
@@ -38,12 +38,14 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --all-targets --all-features --release
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+        with:
+          submodules: true
 
       - name: Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -55,17 +57,17 @@ jobs:
         with:
           go-version: '^1.17'
 
-      - name: run unit tests
+      - name: unit tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib
+          args: --all-targets --all-features --workspace --exclude=gors-cli
 
-      - name: run integration tests
+      - name: integration tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --bin gors lexer -- --nocapture --test-threads=1
+          args: --all-targets --all-features --workspace --package=gors-cli lexer -- --nocapture --test-threads=1
 
   build-www:
     runs-on: ubuntu-latest

@@ -14,4 +14,8 @@ func main() {
 	} else {
 		return y
 	}
+
+	if m, ok := memoized[n]; ok {
+		return m
+	}
 }

@@ -27,11 +27,11 @@ curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 ```
 cargo build
 cargo clippy
+cargo test
 cargo test -- --nocapture --test-threads=1
-watchexec --restart --clear 'cargo test -- --nocapture --test-threads=1'
 RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
 ```
 
 ## TODO
 
-- inline rust code from go code
+- fuzzing (https://lcamtuf.coredump.cx/afl)

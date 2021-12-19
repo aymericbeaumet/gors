@@ -1,3 +1,5 @@
+/gors-cli/tests/files/{go,gin,moby,kubernetes,hugo}
 /gors-cli/tests/gors-go
 /main*
+pkg/
 target/

@@ -153,10 +153,27 @@ pub enum Token {
 }
 
 impl Token {
+    pub const fn is_assign_op(&self) -> bool {
+        use Token::*;
+        matches!(
+            self,
+            ADD_ASSIGN
+                | SUB_ASSIGN
+                | MUL_ASSIGN
+                | QUO_ASSIGN
+                | REM_ASSIGN
+                | AND_ASSIGN
+                | OR_ASSIGN
+                | XOR_ASSIGN
+                | SHL_ASSIGN
+                | SHR_ASSIGN
+                | AND_NOT_ASSIGN
+        )
+    }
+
     // https://go.dev/ref/spec#Operator_precedence
     pub fn precedence(&self) -> u8 {
         use Token::*;
-
         match self {
             MUL | QUO | REM | SHL | SHR | AND | AND_NOT => 5,
             ADD | SUB | OR | XOR => 4,

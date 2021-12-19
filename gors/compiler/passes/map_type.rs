@@ -1,6 +1,10 @@
 use syn::visit_mut::{self, VisitMut};
 
-pub struct MapType;
+pub fn pass(file: &mut syn::File) {
+    MapType.visit_file_mut(file);
+}
+
+struct MapType;
 
 impl VisitMut for MapType {
     fn visit_ident_mut(&mut self, ident: &mut syn::Ident) {
@@ -22,7 +26,7 @@ impl VisitMut for MapType {
             "uint64" => "u64",
             _ => return,
         };
-        *ident = syn::Ident::new(name, ident.span());
+        *ident = quote::format_ident!("{}", name);
 
         visit_mut::visit_ident_mut(self, ident);
     }

@@ -8,7 +8,7 @@ use syn::Token;
 
 pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
     let mut out = file.into();
-    passes::apply(&mut out);
+    passes::pass(&mut out);
     Ok(out)
 }
 
@@ -39,12 +39,12 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
 
 impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
     fn from(binary_expr: ast::BinaryExpr) -> Self {
-        Self {
-            attrs: vec![],
-            left: Box::new((*binary_expr.x).into()),
-            op: binary_expr.op.into(),
-            right: Box::new((*binary_expr.y).into()),
-        }
+        let (x, op, y) = (
+            syn::Expr::from(*binary_expr.x),
+            syn::BinOp::from(binary_expr.op),
+            syn::Expr::from(*binary_expr.y),
+        );
+        syn::parse_quote! { #x #op #y }
     }
 }
 
@@ -341,6 +341,7 @@ impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
         let semi = <Token![;]>::default();
         match stmt {
             ast::Stmt::AssignStmt(s) => s.into(),
+            ast::Stmt::DeclStmt(s) => s.into(),
             ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Semi(s.x.into(), semi)],
             ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into())],
             ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()))],
@@ -409,6 +410,13 @@ impl From<ast::ForStmt<'_>> for syn::Expr {
                 },
             },
         })
+    }
+}
+
+impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
+    fn from(_decl_stmt: ast::DeclStmt) -> Self {
+        // TODO
+        vec![]
     }
 }
 
@@ -494,72 +502,52 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // b, c = 2, 3
         if assign_stmt.tok == token::Token::ASSIGN {
             if assign_stmt.lhs.len() == 1 {
-                return vec![syn::Stmt::Semi(
-                    syn::Expr::Assign(syn::ExprAssign {
-                        attrs: vec![],
-                        left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
-                        eq_token: <Token![=]>::default(),
-                        right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
-                    }),
-                    <Token![;]>::default(),
-                )];
+                let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
+                let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
+                return vec![syn::parse_quote! { #left = #right; }];
             }
 
             let mut out = vec![];
 
+            let mut idents: Vec<syn::Ident> = vec![];
+            let mut values: Vec<syn::Expr> = vec![];
             for (lhs, rhs) in assign_stmt.lhs.iter().zip(assign_stmt.rhs.into_iter()) {
                 if let ast::Expr::Ident(ident) = lhs {
-                    out.push(syn::Stmt::Local(syn::Local {
-                        attrs: vec![],
-                        semi_token: <Token![;]>::default(),
-                        let_token: <Token![let]>::default(),
-                        pat: syn::Pat::Ident(syn::PatIdent {
-                            attrs: vec![],
-                            mutability: None,
-                            subpat: None,
-                            by_ref: None,
-                            ident: syn::Ident::new(
-                                &format!("{}__", ident.name),
-                                Span::mixed_site(),
-                            ),
-                        }),
-                        init: Some((<Token![=]>::default(), Box::new(rhs.into()))),
-                    }))
+                    idents.push(quote::format_ident!("{}__", &ident.name));
+                    values.push(rhs.into());
                 } else {
                     panic!("expecting ident")
                 }
             }
+            out.push(syn::parse_quote! { let (#(#idents),*) = (#(#values),*); });
 
             for lhs in assign_stmt.lhs {
-                let mut segments = syn::punctuated::Punctuated::new();
                 if let ast::Expr::Ident(ident) = &lhs {
-                    segments.push(syn::PathSegment {
-                        ident: syn::Ident::new(&format!("{}__", ident.name), Span::mixed_site()),
-                        arguments: syn::PathArguments::None,
-                    });
-
-                    out.push(syn::Stmt::Semi(
-                        syn::Expr::Assign(syn::ExprAssign {
-                            attrs: vec![],
-                            left: Box::new(lhs.into()),
-                            eq_token: <Token![=]>::default(),
-                            right: Box::new(syn::Expr::Path(syn::ExprPath {
-                                attrs: vec![],
-                                path: syn::Path {
-                                    leading_colon: None,
-                                    segments,
-                                },
-                                qself: None,
-                            })),
-                        }),
-                        <Token![;]>::default(),
-                    ))
+                    let right = quote::format_ident!("{}__", &ident.name);
+                    let left: syn::Expr = lhs.into();
+                    out.push(syn::parse_quote! { #left = #right; });
                 } else {
                     panic!("expecting ident")
                 }
             }
 
             return out;
+        }
+
+        // e += 4
+        if assign_stmt.tok.is_assign_op() {
+            if assign_stmt.lhs.len() != 1 {
+                panic!("only supports a single lhs element")
+            }
+            return vec![syn::Stmt::Semi(
+                syn::Expr::Assign(syn::ExprAssign {
+                    attrs: vec![],
+                    left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
+                    eq_token: <Token![=]>::default(),
+                    right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
+                }),
+                <Token![;]>::default(),
+            )];
         }
 
         unimplemented!(

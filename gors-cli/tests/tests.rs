@@ -51,7 +51,7 @@ impl<'a> TestRunner<'a> {
 
         let (gors_bin, pattern, thread_count) = match std::option_env!("CI") {
             Some("true") => {
-                println!("| building release gors binary...");
+                println!("\n| building release gors binary...");
                 Command::new("cargo")
                     .args(["build", "--release"])
                     .current_dir(&go_dir)

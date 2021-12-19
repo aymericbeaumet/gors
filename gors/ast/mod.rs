@@ -377,6 +377,41 @@ pub struct EmptyStmt<'a> {
     pub implicit: bool,          // if set, ";" was omitted in the source
 }
 
+// https://pkg.go.dev/go/ast#IndexExpr
+#[derive(Debug)]
+pub struct IndexExpr<'a> {
+    pub x: Box<Expr<'a>>,     // expression
+    pub lbrack: Position<'a>, // position of "["
+    pub index: Box<Expr<'a>>, // index expression
+    pub rbrack: Position<'a>, // position of "]"
+}
+
+// https://pkg.go.dev/go/ast#MapType
+#[derive(Debug)]
+pub struct MapType<'a> {
+    pub map: Position<'a>,
+    pub key: Box<Expr<'a>>,
+    pub value: Box<Expr<'a>>,
+}
+
+// https://pkg.go.dev/go/ast#CompositeLit
+#[derive(Debug)]
+pub struct CompositeLit<'a> {
+    pub type_: Box<Expr<'a>>,        // literal type; or nil
+    pub lbrace: Position<'a>,        // position of "{"
+    pub elts: Option<Vec<Expr<'a>>>, // list of composite elements; or nil
+    pub rbrace: Position<'a>,        // position of "}"
+    pub incomplete: bool,            // true if (source) expressions are missing in the Elts list
+}
+
+// https://pkg.go.dev/go/ast#KeyValueExpr
+#[derive(Debug)]
+pub struct KeyValueExpr<'a> {
+    pub key: Box<Expr<'a>>,
+    pub colon: Position<'a>, // position of ":"
+    pub value: Box<Expr<'a>>,
+}
+
 // https://pkg.go.dev/go/ast#ChanDir
 #[derive(Debug)]
 pub enum ChanDir {
@@ -399,11 +434,15 @@ pub enum Expr<'a> {
     BinaryExpr(BinaryExpr<'a>),
     CallExpr(CallExpr<'a>),
     ChanType(ChanType<'a>),
+    CompositeLit(CompositeLit<'a>),
     Ellipsis(Ellipsis<'a>),
     FuncLit(FuncLit<'a>),
     FuncType(FuncType<'a>),
     Ident(Ident<'a>),
+    IndexExpr(IndexExpr<'a>),
     InterfaceType(InterfaceType<'a>),
+    KeyValueExpr(KeyValueExpr<'a>),
+    MapType(MapType<'a>),
     ParenExpr(ParenExpr<'a>),
     SelectorExpr(SelectorExpr<'a>),
     StarExpr(StarExpr<'a>),

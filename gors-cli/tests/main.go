@@ -12,7 +12,6 @@ import (
 	"os/exec"
 )
 
-// ./go ast|tokens <filename>
 func main() {
 	subcommand := os.Args[1]
 	filename := os.Args[2]
