@@ -23,7 +23,9 @@ mod tests {
         super::pass(&mut input); // mutates in place, becomes the output
         let output = (quote::quote! {#input}).to_string();
         let expected = (quote::quote! {#expected}).to_string();
-        assert_eq!(output, expected);
+        if output != expected {
+            panic!("\n    output: {}\n  expected: {}\n", output, expected);
+        }
     }
 
     #[test]
@@ -61,15 +63,16 @@ mod tests {
     }
 
     #[test]
-    fn it_should_flatten_one_stmt_blocks_that_end_with_expr() {
+    fn it_should_flatten_blocks_composed_of_one_expr() {
         test(rust! { fn a() { { { a } } } }, rust! { fn a() { a } });
         test(
-            rust! { fn a() { { { a; } } } },
-            rust! { fn a() { { { a; } } } },
+            rust! { fn a() { { loop { { loop {} } } } } },
+            rust! { fn a() { loop { loop {} } } },
         );
+        test(rust! { fn a() { { { a; } } } }, rust! { fn a() { { a; } } });
         test(
             rust! { fn a() { { { return a; } } } },
-            rust! { fn a() { { { return a; } } } },
+            rust! { fn a() { { return a; } } },
         );
     }
 }
