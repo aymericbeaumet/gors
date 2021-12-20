@@ -7,18 +7,18 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
 
-      - name: cargo fmt
+      - name: Run `cargo fmt`
         uses: actions-rs/cargo@v1
         with:
           command: fmt
           args: --all -- --check
 
-      - name: cargo clippy
+      - name: Run `cargo clippy`
         uses: actions-rs/cargo@v1
         with:
           command: clippy
@@ -29,12 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
 
-      - name: cargo build
+      - name: Run `cargo build`
         uses: actions-rs/cargo@v1
         with:
           command: build
@@ -47,23 +47,23 @@ jobs:
         with:
           submodules: true
 
-      - name: Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
 
-      - name: Go toolchain
+      - name: Install Go toolchain
         uses: actions/setup-go@v2
         with:
           go-version: '^1.17'
 
-      - name: unit tests
+      - name: Run unit tests
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: --all-targets --all-features --workspace --exclude=gors-cli
 
-      - name: integration tests
+      - name: Run integration tests
         uses: actions-rs/cargo@v1
         with:
           command: test
@@ -74,12 +74,12 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
 
-      - name: Node.js toolchain
+      - name: Install Node.js toolchain
         uses: actions/setup-node@v2
         with:
           node-version: '16'
@@ -91,19 +91,20 @@ jobs:
         working-directory: ./gors-wasm
         run: wasm-pack build --release
 
-      - name: Install dependencies
+      - name: Install www dependencies
         working-directory: ./www
         run: npm ci
 
-      - name: Lint code
+      - name: Lint www code
         working-directory: ./www
         run: npm run lint
 
-      - name: Build code
+      - name: Build www code
         working-directory: ./www
         run: npm run build
 
-      - uses: actions/upload-artifact@v2
+      - name: Upload the build artifacts
+        uses: actions/upload-artifact@v2
         with:
           name: www-dist
           path: ./www/dist
@@ -115,7 +116,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - uses: actions/download-artifact@v2
+      - name: Download the build artifacts
+        uses: actions/download-artifact@v2
         with:
           name: www-dist
           path: ./www/dist
