@@ -11,7 +11,5 @@ crate-type = ["cdylib"]
 [dependencies]
 console_error_panic_hook = "0.1.7"
 gors = { path = "../gors" }
+js-sys = "0.3.55"
 wasm-bindgen = "0.2.78"
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false

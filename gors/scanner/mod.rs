@@ -15,6 +15,7 @@ pub enum ScannerError {
     UnterminatedEscapedChar,
     UnterminatedRune,
     UnterminatedString,
+    InvalidDirective,
 }
 
 impl std::error::Error for ScannerError {}
@@ -46,8 +47,10 @@ pub struct Scanner<'a> {
     //
     hide_column: bool,
     insert_semi: bool,
-    pending_line_info: Option<(Option<&'a str>, usize, Option<usize>, bool)>,
+    pending_line_info: Option<LineInfo<'a>>,
 }
+
+type LineInfo<'a> = (Option<&'a str>, usize, Option<usize>, bool);
 
 impl<'a> Scanner<'a> {
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
@@ -566,7 +569,7 @@ impl<'a> Scanner<'a> {
                         let lit = self.literal();
 
                         // look for compiler directives
-                        self.directive(&lit["/*".len()..lit.len() - "*/".len()], true);
+                        self.directive(&lit["/*".len()..lit.len() - "*/".len()], true)?;
 
                         return Ok((pos, Token::COMMENT, lit));
                     }
@@ -595,28 +598,26 @@ impl<'a> Scanner<'a> {
 
         // look for compiler directives (at the beginning of line)
         if self.start_column == 1 {
-            self.directive(lit["//".len()..].trim_end(), false);
+            self.directive(lit["//".len()..].trim_end(), false)?;
         }
 
         Ok((pos, Token::COMMENT, self.literal()))
     }
 
     // https://pkg.go.dev/cmd/compile#hdr-Compiler_Directives
-    fn directive(&mut self, input: &'a str, immediate: bool) {
+    fn directive(&mut self, input: &'a str, immediate: bool) -> Result<()> {
         if let Some(line_directive) = input.strip_prefix("line ") {
-            self.pending_line_info = self.parse_line_directive(line_directive);
+            self.pending_line_info = self.parse_line_directive(line_directive)?;
             if immediate {
                 self.consume_pending_line_info();
             }
         }
+        Ok(())
     }
 
-    fn parse_line_directive(
-        &mut self,
-        line_directive: &'a str,
-    ) -> Option<(Option<&'a str>, usize, Option<usize>, bool)> {
-        line_directive.rsplit_once(':').map(|(file, line)| {
-            let line = line.parse().unwrap();
+    fn parse_line_directive(&mut self, line_directive: &'a str) -> Result<Option<LineInfo<'a>>> {
+        if let Some((file, line)) = line_directive.rsplit_once(':') {
+            let line = line.parse().map_err(|_| ScannerError::InvalidDirective)?;
 
             if let Some((file, l)) = file.rsplit_once(':') {
                 if let Ok(l) = l.parse() {
@@ -628,7 +629,7 @@ impl<'a> Scanner<'a> {
                     let col = Some(line);
                     let line = l;
                     let hide_column = false;
-                    return (file, line, col, hide_column);
+                    return Ok(Some((file, line, col, hide_column)));
                 }
             }
 
@@ -636,8 +637,10 @@ impl<'a> Scanner<'a> {
             //line filename:line
             /*line :line*/
             /*line filename:line*/
-            (Some(file), line, None, true)
-        })
+            Ok(Some((Some(file), line, None, true)))
+        } else {
+            Ok(None)
+        }
     }
 
     const fn find_line_end(&self) -> bool {
@@ -832,14 +835,14 @@ impl<'a> IntoIterator for Scanner<'a> {
 
 pub struct IntoIter<'a> {
     scanner: Scanner<'a>,
-    eof: bool,
+    done: bool,
 }
 
 impl<'a> IntoIter<'a> {
     const fn new(scanner: Scanner<'a>) -> Self {
         Self {
             scanner,
-            eof: false,
+            done: false,
         }
     }
 }
@@ -848,18 +851,21 @@ impl<'a> Iterator for IntoIter<'a> {
     type Item = Result<Step<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.eof {
+        if self.done {
             return None;
         }
 
         match self.scanner.scan() {
             Ok((pos, tok, lit)) => {
                 if tok == Token::EOF {
-                    self.eof = true;
+                    self.done = true;
                 }
                 Some(Ok((pos, tok, lit)))
             }
-            Err(err) => Some(Err(err)),
+            Err(err) => {
+                self.done = true;
+                Some(Err(err))
+            }
         }
     }
 }
@@ -944,3 +950,15 @@ static KEYWORDS: Map<&'static str, Token> = phf_map! {
   "type" => Token::TYPE,
   "var" => Token::VAR,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::Scanner;
+
+    #[test] // fuzz
+    fn it_should_return_an_error_on_missing_line_number() {
+        let input = "/*line :*/";
+        let mut out: Vec<_> = Scanner::new(file!(), input).into_iter().collect();
+        assert!(out.pop().unwrap().is_err());
+    }
+}

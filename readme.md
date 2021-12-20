@@ -19,7 +19,7 @@ cargo install --path=/tmp/gors/gors-cli
 ## Development
 
 ```
-brew install rustup go@1.17 watchexec
+brew install rustup go@1.17 binaryen watchexec
 rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 cargo install --force cargo-fuzz
@@ -29,7 +29,7 @@ cargo install --force cargo-fuzz
 cargo clippy
 cargo build
 cargo test -- --nocapture --test-threads=1
-cargo +nightly fuzz run <lexer|parser|compiler>
+cargo +nightly fuzz run <scanner|parser>
 ```
 
 ```

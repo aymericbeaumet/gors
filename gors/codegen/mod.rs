@@ -1,8 +1,4 @@
 use std::fmt;
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
 
 #[derive(Debug)]
 pub enum CodegenError {
@@ -17,33 +13,21 @@ impl fmt::Display for CodegenError {
     }
 }
 
-pub fn fprint<W: std::io::Write>(
+pub fn fprint<W: std::io::Write, R: Fn(&str) -> String>(
     mut w: W,
     file: syn::File,
-    pretty: bool,
+    rustfmt: R,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ugly = (quote::quote! { #file }).to_string();
+    let pretty = rustfmt(&ugly);
 
-    if !pretty {
-        w.write_all(ugly.as_bytes())?;
-        return Ok(());
+    for (i, line) in pretty.lines().enumerate() {
+        if i > 0 && (line.starts_with("fn") || line.starts_with("pub fn")) {
+            w.write_all(b"\n")?;
+        }
+        w.write_all(line.as_bytes())?;
+        w.write_all(b"\n")?;
     }
 
-    let mut cmd = Command::new("rustfmt")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let stdin = cmd.stdin.as_mut().unwrap();
-    stdin.write_all(ugly.as_bytes())?;
-
-    let output = cmd.wait_with_output()?;
-    if !output.status.success() {
-        return Err(Box::new(CodegenError::Rustfmt(
-            String::from_utf8(output.stderr).unwrap(),
-        )));
-    }
-
-    w.write_all(&output.stdout)?;
     Ok(())
 }

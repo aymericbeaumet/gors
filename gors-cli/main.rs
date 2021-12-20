@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
@@ -102,14 +102,14 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     // shortcut when rust code is to be emitted
     if matches!(cmd.emit.as_deref(), Some("rust")) {
         let mut w = std::fs::File::create("main.rs")?;
-        gors::codegen::fprint(&mut w, compiled, true)?;
+        gors::codegen::fprint(&mut w, compiled, rustfmt)?;
         return Ok(());
     }
 
     let tmp_dir = tempdir::TempDir::new("gors")?;
     let source_file = tmp_dir.path().join("main.rs");
     let mut w = std::fs::File::create(&source_file)?;
-    gors::codegen::fprint(&mut w, compiled, true)?;
+    gors::codegen::fprint(&mut w, compiled, rustfmt)?;
     w.sync_all()?;
 
     let rustc = Command::new("rustc")
@@ -138,7 +138,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.file)?;
     let ast = gors::parser::parse_file(&cmd.file, &buffer)?;
     let compiled = gors::compiler::compile(ast)?;
-    gors::codegen::fprint(&mut w, compiled, true)?;
+    gors::codegen::fprint(&mut w, compiled, rustfmt)?;
     w.sync_all()?;
 
     let rustc = Command::new("rustc")
@@ -214,4 +214,23 @@ impl<'a> IntoIterator for RustcArgs<'a> {
     fn into_iter(self) -> Self::IntoIter {
         Vec::from(self).into_iter()
     }
+}
+
+fn rustfmt(input: &str) -> String {
+    let mut cmd = Command::new("rustfmt")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdin = cmd.stdin.as_mut().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+
+    let output = cmd.wait_with_output().unwrap();
+    if !output.status.success() {
+        panic!("{:?}", output.stderr);
+    }
+
+    String::from_utf8(output.stdout).unwrap()
 }
