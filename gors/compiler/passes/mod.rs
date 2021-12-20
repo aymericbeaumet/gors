@@ -31,11 +31,7 @@ mod tests {
     #[test]
     fn it_should_remove_unnecessary_returns() {
         test(rust! { fn a() { return 0; } }, rust! { fn a() { 0 } });
-        test(rust! { fn b() { return 0 } }, rust! { fn b() { 0 } });
-    }
-
-    #[test]
-    fn it_should_remove_unnecessary_returns_but_only_in_last_func_stmt() {
+        test(rust! { fn a() { return 0 } }, rust! { fn a() { 0 } });
         test(
             rust! { fn a() { if true { return 0; } return 2; } },
             rust! { fn a() { if true { return 0; } 2 } },
