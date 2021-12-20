@@ -20,18 +20,21 @@ cargo install --path=/tmp/gors/gors-cli
 
 ```
 brew install rustup go@1.17 watchexec
-rustup toolchain install stable && rustup default stable
+rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
 curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+cargo install --force cargo-fuzz
 ```
 
 ```
-cargo build
 cargo clippy
-cargo test
+cargo build
 cargo test -- --nocapture --test-threads=1
-RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
+cargo +nightly fuzz run <lexer|parser|compiler>
 ```
 
-## TODO
-
-- fuzzing (https://lcamtuf.coredump.cx/afl)
+```
+RUST_LOG=trace cargo run -- tokens gors-cli/tests/files/comment.go
+RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
+RUST_LOG=debug cargo run -- build --emit=rust gors-cli/tests/programs/fizzbuzz.go
+RUST_LOG=debug cargo run -- run gors-cli/tests/programs/fizzbuzz.go
+```
