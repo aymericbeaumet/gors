@@ -2,7 +2,8 @@
   "name": "www",
   "scripts": {
     "start": "webpack serve --mode=development",
-    "build": "webpack --mode=production"
+    "build": "webpack --mode=production",
+    "lint": "eslint ."
   },
   "dependencies": {
     "gors": "file:../gors-wasm/pkg",
@@ -11,6 +12,11 @@
   },
   "devDependencies": {
     "css-loader": "6.5.1",
+    "eslint": "^8.5.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.25.3",
+    "favicons": "^6.2.2",
+    "favicons-webpack-plugin": "^5.0.2",
     "file-loader": "6.2.0",
     "html-webpack-plugin": "5.5.0",
     "monaco-editor-webpack-plugin": "7.0.1",

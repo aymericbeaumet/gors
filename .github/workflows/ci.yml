@@ -69,7 +69,7 @@ jobs:
           command: test
           args: --all-targets --all-features --workspace --package=gors-cli lexer -- --nocapture --test-threads=1
 
-  build-www:
+  www:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -91,11 +91,15 @@ jobs:
         working-directory: ./gors-wasm
         run: wasm-pack build --release
 
-      - name: Install www dependencies
+      - name: Install dependencies
         working-directory: ./www
         run: npm ci
 
-      - name: Build www
+      - name: Lint code
+        working-directory: ./www
+        run: npm run lint
+
+      - name: Build code
         working-directory: ./www
         run: npm run build
 
@@ -107,7 +111,7 @@ jobs:
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
-    needs: [lint, build, test, build-www]
+    needs: [lint, build, test, www]
     steps:
       - uses: actions/checkout@v2
 

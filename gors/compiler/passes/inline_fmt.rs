@@ -13,6 +13,8 @@ struct InlineFmt;
 
 impl VisitMut for InlineFmt {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        visit_mut::visit_expr_mut(self, expr); // depth-first
+
         if let syn::Expr::Call(call) = expr {
             if let syn::Expr::Path(path) = call.func.as_mut() {
                 let sgmts = &path.path.segments;
@@ -34,8 +36,6 @@ impl VisitMut for InlineFmt {
                 }
             }
         }
-
-        visit_mut::visit_expr_mut(self, expr);
     }
 }
 

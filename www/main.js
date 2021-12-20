@@ -2,64 +2,88 @@ import * as gors from 'gors';
 import * as rustfmt from 'rustfmt';
 import * as monaco from 'monaco-editor';
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', onDOMContentLoaded);
-} else {
-  onDOMContentLoaded();
-}
-
 function onDOMContentLoaded() {
-  const input = document.getElementById("input");
-  const output = document.getElementById("output");
-  const error = document.getElementById("error");
+  const input = document.getElementById('input');
+  const output = document.getElementById('output');
+  const error = document.getElementById('error');
 
   const opts = {
-    fontSize: "13px",
-    minimap: {enabled: false},
-    renderFinalNewline: false,
-    renderLineHighlight: "none",
-    // https://stackoverflow.com/a/53448744/1071486
-    lineNumbers: 'off',
-    glyphMargin: false,
+    cursorSurroundingLines: 5,
     folding: false,
+    fontSize: '13px',
+    glyphMargin: false,
     lineDecorationsWidth: 0,
-    lineNumbersMinChars: 0,
+    lineNumbers: 'off',
+    lineNumbersMinChars: 2,
+    minimap: { enabled: false },
+    occurrencesHighlight: false,
+    overviewRulerLanes: 0,
+    renderFinalNewline: false,
+    renderIndentGuides: false,
+    renderLineHighlight: 'none',
+    scrollBeyondLastLine: false,
+    selectionHighlight: false,
   };
+
+  // setup input editor
 
   const inputEditor = monaco.editor.create(input, {
     ...opts,
     language: 'go',
-    value: `// You can edit this code!
-// Click here and start typing.
-package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("Hello, 世界")
-}`,
   });
   const inputModel = inputEditor.getModel();
+
+  // setup output editor
 
   const outputEditor = monaco.editor.create(output, {
     ...opts,
     language: 'rust',
+    contextmenu: false,
+    matchBrackets: 'never',
     readOnly: true,
   });
   const outputModel = outputEditor.getModel();
 
-  inputModel.onDidChangeContent(onChange)
-  onChange()
+  // register handlers
 
-  function onChange() {
+  inputModel.onDidChangeContent(() => {
     try {
       const code = inputModel.getValue();
-      const compiled = gors.compile(code);
-      const formatted = rustfmt.format(compiled);
-      outputModel.setValue(formatted);
+      const built = gors.build(code, rustfmt.format);
+      outputModel.setValue(built);
       error.innerHTML = '';
     } catch (err) {
       error.innerHTML = err;
     }
-  }
+  });
+
+  outputEditor.onKeyDown((event) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  });
+
+  // initialization
+
+  inputEditor.focus();
+  inputModel.setValue([
+    'package main',
+    '',
+    'import "fmt"',
+    '',
+    'func main() {',
+    '\tfmt.Println("Hello, 世界")',
+    '',
+    '\t// Start typing and see the changes!',
+    '\t',
+    '}',
+  ].join('\n'));
+  inputEditor.setPosition({ lineNumber: 9, column: 2 });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', onDOMContentLoaded);
+} else {
+  onDOMContentLoaded();
 }

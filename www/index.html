@@ -5,28 +5,34 @@
     <title>gors: experimental go compiler</title>
 
     <style>
-      #input, #output {
-        height: 100%;
+      #input {
+        border-width: 3px 1px 1px 1px;
+        border-style: solid;
+        border-color: #00ADD8;
       }
 
-      #output .cursors-layer > .cursor {
+      #output {
+        border-width: 3px 1px 1px 1px;
+        border-style: solid;
+        border-color: #FFC832;
+      }
+
+      #output .cursor {
         display: none !important;
       }
 
-      pre {
-        margin: 0;
-      }
-
-      .row {
+      .editors {
         display: flex;
         gap: 12px;
         height: 600px;
       }
 
-      .col {
-        width: 600px;
-        border: 1px solid gray;
-        padding: 5px;
+      .editors > * {
+        width: 500px;
+      }
+
+      .monaco-editor .lines-content {
+        padding-left: 5px;
       }
     </style>
   </head>
@@ -34,14 +40,9 @@
     <main>
       <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p>
 
-      <div class="row">
-        <div class="col">
-          <div id="input"></div>
-        </div>
-
-        <div class="col">
-          <div id="output"></div>
-        </div>
+      <div class="editors">
+        <div id="input"></div>
+        <div id="output"></div>
       </div>
 
       <pre id="error"></pre>
