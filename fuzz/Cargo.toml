@@ -1,22 +1,11 @@
 [package]
-name = "gors-fuzz"
-version = "0.0.0"
-authors = ["Automatically generated"]
+name = "fuzz"
+version = "0.1.0"
+edition = "2021"
 publish = false
-edition = "2018"
 
 [package.metadata]
 cargo-fuzz = true
-
-[dependencies]
-libfuzzer-sys = "0.4"
-
-[dependencies.gors]
-path = "../gors"
-
-# Prevent this from interfering with workspaces
-[workspace]
-members = ["."]
 
 [[bin]]
 name = "scanner"
@@ -29,3 +18,10 @@ name = "parser"
 path = "fuzz_targets/parser.rs"
 test = false
 doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4.2"
+gors = { path = "../gors" }
+
+[workspace]
+members = ["."]

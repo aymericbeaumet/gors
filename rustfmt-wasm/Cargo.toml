@@ -2,6 +2,7 @@
 name = "rustfmt"
 version = "0.1.0"
 edition = "2018"
+publish = false
 
 [lib]
 name = "rustfmt"
@@ -13,9 +14,5 @@ rustfmt-nightly = { git = "https://github.com/rust-lang/rustfmt.git", rev = "v1.
 console_error_panic_hook = "0.1.7"
 wasm-bindgen = "0.2.78"
 
-# Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false

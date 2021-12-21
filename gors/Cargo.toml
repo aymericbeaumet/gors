@@ -2,6 +2,10 @@
 name = "gors"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Experimental go toolchain written in rust (parser, compiler) "
+homepage = "https://aymericbeaumet.github.io/gors/"
+repository = "https://github.com/aymericbeaumet/gors/"
 
 [lib]
 name = "gors"
@@ -9,10 +13,9 @@ path = "lib.rs"
 
 [dependencies]
 log = { version = "0.4.14", features = ["release_max_level_warn"] }
-phf = { version = "0.10.0", features = ["macros"] }
-proc-macro2 = "1.0.33"
+phf = { version = "0.10.1", features = ["macros"] }
+proc-macro2 = "1.0.34"
 quote = "1.0.10"
-serde = "1.0.131"
-serde_json = "1.0.72"
+serde = "1.0.132"
 syn = { version = "1.0.82", features = ["full", "visit-mut"] }
 unicode-general-category = "0.4.0"
