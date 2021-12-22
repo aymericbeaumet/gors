@@ -557,37 +557,41 @@ impl<'scanner> Parser<'scanner> {
     //         PrimaryExpr Slice |
     //         PrimaryExpr TypeAssertion |
     //         PrimaryExpr Arguments .
+    // Selector       = "." identifier .
+    // Index          = "[" Expression "]" .
+    // Slice          = "[" [ Expression ] ":" [ Expression ] "]" |
+    //                  "[" [ Expression ] ":" Expression ":" Expression "]" .
+    // TypeAssertion  = "." "(" Type ")" .
     fn PrimaryExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::PrimaryExpr()");
 
-        let mut primary_expr = match self.Operand_or_Conversion_or_MethodExpr()? {
+        let mut primary_expr = match self.Operand()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         loop {
-            // TODO: match
+            match self.current_token()? {}
+            //if let Some((lbrack, expr, rbrack)) = self.Index()? {
+            //primary_expr = ast::Expr::IndexExpr(ast::IndexExpr {
+            //x: Box::new(primary_expr),
+            //rbrack,
+            //index: Box::new(expr),
+            //lbrack,
+            //});
+            //continue;
+            //}
 
-            if let Some((lbrack, expr, rbrack)) = self.Index()? {
-                primary_expr = ast::Expr::IndexExpr(ast::IndexExpr {
-                    x: Box::new(primary_expr),
-                    rbrack,
-                    index: Box::new(expr),
-                    lbrack,
-                });
-                continue;
-            }
-
-            if let Some((lparen, args, rparen)) = self.Arguments()? {
-                primary_expr = ast::Expr::CallExpr(ast::CallExpr {
-                    fun: Box::new(primary_expr),
-                    lparen,
-                    args: Some(args),
-                    ellipsis: None,
-                    rparen,
-                });
-                continue;
-            }
+            //if let Some((lparen, args, rparen)) = self.Arguments()? {
+            //primary_expr = ast::Expr::CallExpr(ast::CallExpr {
+            //fun: Box::new(primary_expr),
+            //lparen,
+            //args: Some(args),
+            //ellipsis: None,
+            //rparen,
+            //});
+            //continue;
+            //}
 
             break;
         }
@@ -657,6 +661,7 @@ impl<'scanner> Parser<'scanner> {
 
     // CompositeLit = LiteralType LiteralValue .
     // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
+    // ElementList  = KeyedElement { "," KeyedElement } .
     fn CompositeLit(&mut self) -> Result<Option<ast::CompositeLit<'scanner>>> {
         log::debug!("Parser::CompositeLit()");
 
@@ -664,8 +669,20 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
+
         let lbrace = self.token(Token::LBRACE).required()?;
-        let elts = self.ElementList()?; // TODO: add support for trailing comma from grammar
+
+        let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
+        if let Some(elts) = elts.as_mut() {
+            while self.token(Token::COMMA)?.is_some() {
+                if let Some(k) = self.KeyedElement()? {
+                    elts.push(k);
+                } else {
+                    break;
+                }
+            }
+        }
+
         let rbrace = self.token(Token::RBRACE).required()?;
 
         Ok(Some(ast::CompositeLit {
@@ -682,37 +699,25 @@ impl<'scanner> Parser<'scanner> {
     fn LiteralType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::LiteralType()");
 
+        // TODO: match
+
         if let Some(t) = self.StructType()? {
             return Ok(Some(ast::Expr::StructType(t)));
+        }
+
+        if let Some(t) = self.ArrayType_or_SliceType::<true>()? {
+            return Ok(Some(ast::Expr::ArrayType(t)));
         }
 
         if let Some(t) = self.MapType()? {
             return Ok(Some(ast::Expr::MapType(t)));
         }
 
-        Ok(None)
-    }
-
-    // ElementList = KeyedElement { "," KeyedElement } .
-    fn ElementList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
-        log::debug!("Parser::ElementList()");
-
-        let mut out = match self.KeyedElement()? {
-            Some(v) => vec![v],
-            None => return Ok(None),
-        };
-
-        // TODO: peek instead of consuming to distinguish a trailing comma from a new comma+keyed
-        // pair.
-        while self.token(Token::COMMA)?.is_some() {
-            if let Some(k) = self.KeyedElement()? {
-                out.push(k);
-            } else {
-                break;
-            }
+        if let Some(t) = self.TypeName()? {
+            return Ok(Some(t));
         }
 
-        Ok(Some(out))
+        Ok(None)
     }
 
     // KeyedElement = [ Key ":" ] Element .
@@ -763,27 +768,15 @@ impl<'scanner> Parser<'scanner> {
     fn BasicLit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::BasicLit()");
 
-        if let Some(int_lit) = self.int_lit()? {
-            return Ok(Some(int_lit));
-        }
-
-        if let Some(float_lit) = self.float_lit()? {
-            return Ok(Some(float_lit));
-        }
-
-        if let Some(imaginary_lit) = self.imaginary_lit()? {
-            return Ok(Some(imaginary_lit));
-        }
-
-        if let Some(rune_lit) = self.rune_lit()? {
-            return Ok(Some(rune_lit));
-        }
-
-        if let Some(string_lit) = self.string_lit()? {
-            return Ok(Some(string_lit));
-        }
-
-        Ok(None)
+        use Token::*;
+        Ok(match self.current_token()? {
+            (_, INT, _) => Some(self.int_lit().required()?),
+            (_, FLOAT, _) => Some(self.float_lit().required()?),
+            (_, IMAG, _) => Some(self.imaginary_lit().required()?),
+            (_, CHAR, _) => Some(self.rune_lit().required()?),
+            (_, STRING, _) => Some(self.string_lit().required()?),
+            _ => None,
+        })
     }
 
     // Type = TypeName | TypeLit | "(" Type ")" .
@@ -819,29 +812,56 @@ impl<'scanner> Parser<'scanner> {
     fn TypeLit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeLit()");
 
-        // TODO: match
+        use Token::*;
+        Ok(match self.current_token()? {
+            (_, LBRACK, _) => Some(ast::Expr::ArrayType(
+                self.ArrayType_or_SliceType::<false>().required()?,
+            )),
+            (_, STRUCT, _) => Some(ast::Expr::StructType(self.StructType().required()?)),
+            (_, MUL, _) => Some(ast::Expr::StarExpr(self.PointerType().required()?)),
+            // TODO: FunctionType
+            (_, INTERFACE, _) => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
+            (_, MAP, _) => Some(ast::Expr::MapType(self.MapType().required()?)),
+            (_, CHAN, _) => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
+            _ => None,
+        })
+    }
 
-        if let Some(t) = self.StructType()? {
-            return Ok(Some(ast::Expr::StructType(t)));
-        }
+    // ArrayType   = "[" ArrayLength "]" ElementType .
+    // ArrayLength = Expression .
+    // SliceType   = "[" "]" ElementType .
+    fn ArrayType_or_SliceType<const ELLIPSIS: bool>(
+        &mut self,
+    ) -> Result<Option<ast::ArrayType<'scanner>>> {
+        log::debug!("Parser::ArrayType_or_SliceType::<ELLIPSIS={}>()", ELLIPSIS);
 
-        if let Some(t) = self.PointerType()? {
-            return Ok(Some(ast::Expr::StarExpr(t)));
-        }
+        let lbrack = match self.token(Token::LBRACK)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-        if let Some(t) = self.InterfaceType()? {
-            return Ok(Some(ast::Expr::InterfaceType(t)));
-        }
+        let len = if ELLIPSIS {
+            if let Some(ellipsis) = self.token(Token::ELLIPSIS)? {
+                Some(ast::Expr::Ellipsis(ast::Ellipsis {
+                    ellipsis: ellipsis.0,
+                    elt: None,
+                }))
+            } else {
+                self.Expression()?
+            }
+        } else {
+            self.Expression()?
+        };
 
-        if let Some(t) = self.MapType()? {
-            return Ok(Some(ast::Expr::MapType(t)));
-        }
+        self.token(Token::RBRACK).required()?;
 
-        if let Some(t) = self.ChannelType()? {
-            return Ok(Some(ast::Expr::ChanType(t)));
-        }
+        let element_type = self.ElementType().required()?;
 
-        Ok(None)
+        Ok(Some(ast::ArrayType {
+            lbrack: lbrack.0,
+            len: len.map(Box::new),
+            elt: Box::new(element_type),
+        }))
     }
 
     // MapType = "map" "[" KeyType "]" ElementType .
@@ -1131,7 +1151,6 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
-
         let results = self.Result()?;
 
         Ok(Some(ast::FuncType {
@@ -1235,7 +1254,7 @@ impl<'scanner> Parser<'scanner> {
                     comment: None,
                     type_: Some(ast::Expr::Ellipsis(ast::Ellipsis {
                         ellipsis: ellipsis.0,
-                        elt: Box::new(type_),
+                        elt: Some(Box::new(type_)),
                     })),
                     tag: None,
                     names: Some(idents),
@@ -1263,7 +1282,8 @@ impl<'scanner> Parser<'scanner> {
         self.Block()
     }
 
-    // Block = "{" StatementList "}" .
+    // Block         = "{" StatementList "}" .
+    // StatementList = { Statement ";" } .
     fn Block(&mut self) -> Result<Option<ast::BlockStmt<'scanner>>> {
         log::debug!("Parser::Block()");
 
@@ -1272,7 +1292,13 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
-        let list = self.StatementList().required()?;
+        let mut list = vec![];
+        while let Some(statement) = self.Statement()? {
+            list.push(statement);
+            if self.token(Token::SEMICOLON)?.is_none() {
+                break;
+            }
+        }
 
         let rbrace = self.token(Token::RBRACE).required()?;
 
@@ -1283,21 +1309,6 @@ impl<'scanner> Parser<'scanner> {
         }))
     }
 
-    // StatementList = { Statement ";" } .
-    fn StatementList(&mut self) -> Result<Option<Vec<ast::Stmt<'scanner>>>> {
-        log::debug!("Parser::StatementList()");
-
-        let mut out = vec![];
-        while let Some(statement) = self.Statement()? {
-            out.push(statement);
-            if self.token(Token::SEMICOLON)?.is_none() {
-                break;
-            }
-        }
-
-        Ok(Some(out))
-    }
-
     // Statement =
     //         Declaration | LabeledStmt | SimpleStmt |
     //         GoStmt | ReturnStmt | BreakStmt | ContinueStmt | GotoStmt |
@@ -1306,34 +1317,31 @@ impl<'scanner> Parser<'scanner> {
     fn Statement(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
         log::debug!("Parser::Statement()");
 
-        if let Some((_, tok, lit)) = self.peek_token()? {
-            use Token::*;
-            return match tok {
-                CONST | TYPE | VAR => Ok(Some(ast::Stmt::DeclStmt(ast::DeclStmt {
-                    decl: self.Declaration().required()?,
-                }))),
+        use Token::*;
+        Ok(match self.current_token()? {
+            (_, CONST | TYPE | VAR, _) => Some(ast::Stmt::DeclStmt(ast::DeclStmt {
+                decl: self.Declaration().required()?,
+            })),
+            (_,
                 IDENT | INT | FLOAT | IMAG | CHAR | STRING | FUNC | LPAREN | // operands
                 LBRACK | STRUCT | MAP | CHAN | INTERFACE | // composite types
                 ADD | SUB | MUL | AND | XOR | ARROW | NOT // unary operators
-                  => Ok(Some(self.SimpleStmt().required()?)),
-                GO => Ok(Some(ast::Stmt::GoStmt(self.GoStmt().required()?))),
-                // case token.DEFER:
-                RETURN => Ok(Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?))),
-                //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
-                //case token.LBRACE:
-                IF => Ok(Some(ast::Stmt::IfStmt(self.IfStmt().required()?))),
-                //case token.SWITCH:
-                //case token.SELECT:
-                FOR => Ok(Some(self.ForStmt().required()?)),
-                SEMICOLON => Ok(Some(ast::Stmt::EmptyStmt(ast::EmptyStmt{
-                    semicolon: self.token(SEMICOLON).required()?.0,
-                    implicit: lit == "\n",
-                }))),
-                _ => Ok(None),
-            };
-        }
-
-        Ok(None)
+            , _) => Some(self.SimpleStmt().required()?),
+            (_, GO, _) => Some(ast::Stmt::GoStmt(self.GoStmt().required()?)),
+            // case token.DEFER:
+            (_, RETURN, _) => Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?)),
+            //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
+            //case token.LBRACE:
+            (_, IF, _) => Some(ast::Stmt::IfStmt(self.IfStmt().required()?)),
+            //case token.SWITCH:
+            //case token.SELECT:
+            (_, FOR, _) => Some(self.ForStmt().required()?),
+            (_, SEMICOLON, lit) => Some(ast::Stmt::EmptyStmt(ast::EmptyStmt{
+                semicolon: self.token(SEMICOLON).required()?.0,
+                implicit: lit == "\n",
+            })),
+            _ => None,
+        })
     }
 
     // ForStmt = "for" [ Condition | ForClause | RangeClause ] Block .
@@ -1655,10 +1663,6 @@ impl<'scanner> Parser<'scanner> {
         self.Parameters()
     }
 
-    /*
-     * Intermediate productions (simplify/factorize code + help with ambiguous look-ahead)
-     */
-
     // identifier | QualifiedIdent
     // QualifiedIdent = PackageName "." identifier .
     // PackageName    = identifier .
@@ -1700,17 +1704,6 @@ impl<'scanner> Parser<'scanner> {
         Ok(None)
     }
 
-    // Operand | Conversion | MethodExpr
-    fn Operand_or_Conversion_or_MethodExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Operand_or_Conversion_or_MethodExpr()");
-
-        if let Some(operand) = self.Operand()? {
-            return Ok(Some(operand));
-        }
-
-        Ok(None)
-    }
-
     // FunctionDecl | MethodDecl
     // FunctionDecl = "func" FunctionName Signature [ FunctionBody ] .
     // MethodDecl   = "func" Receiver MethodName Signature [ FunctionBody ] .
@@ -1723,13 +1716,9 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
-
         let recv = self.Receiver()?;
-
         let name = self.identifier().required()?;
-
         let type_ = self.Signature(Some(func.0)).required()?;
-
         let body = self.FunctionBody()?;
 
         Ok(Some(ast::FuncDecl {
@@ -1752,22 +1741,20 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::assign_op()");
 
         use Token::*;
-        if let Some(current) = self.peek_token()? {
-            if matches!(
-                current.1,
+        Ok(match self.current_token()? {
+            current @ (_,
                 /* "=" */
                 ASSIGN |
                 /* add_op "=" */
                 ADD_ASSIGN | SUB_ASSIGN | OR_ASSIGN | XOR_ASSIGN |
                 /* mul_op "=" */
                 MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
-            ) {
+            , _) => {
                 self.next()?;
-                return Ok(Some(current));
+                Some(current)
             }
-        }
-
-        Ok(None)
+            _ => None,
+        })
     }
 
     // binary_op = "||" | "&&" | rel_op | add_op | mul_op .
@@ -1777,10 +1764,9 @@ impl<'scanner> Parser<'scanner> {
     fn peek_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
         log::debug!("Parser::binary_op()");
 
-        if let Some(current) = self.peek_token()? {
-            use Token::*;
-            if matches!(
-                current.1,
+        use Token::*;
+        Ok(match self.current_token()? {
+            current @ (_,
                 /* binary_op */
                 LOR | LAND |
                 /* rel_op */
@@ -1789,13 +1775,12 @@ impl<'scanner> Parser<'scanner> {
                 ADD | SUB | OR | XOR |
                 /* mul_op */
                 MUL | QUO | REM | SHL | SHR | AND | AND_NOT
-            ) && current.1.precedence() >= min_precedence
-            {
-                return Ok(Some(current));
+            , _) if current.1.precedence() >= min_precedence => {
+                self.next()?;
+                Some(current)
             }
-        }
-
-        Ok(None)
+            _ => None,
+        })
     }
 
     // unary_op = "+" | "-" | "!" | "^" | "*" | "&" | "<-" .
@@ -1803,110 +1788,110 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::unary_op()");
 
         use Token::*;
-        if let Some(current) = self.peek_token()? {
-            if matches!(current.1, ADD | SUB | NOT | MUL | XOR | AND | ARROW) {
+        Ok(match self.current_token()? {
+            current @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
                 self.next()?;
-                return Ok(Some(current));
+                Some(current)
             }
-        }
-
-        Ok(None)
+            _ => None,
+        })
     }
 
     fn identifier(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
         log::debug!("Parser::identifier()");
 
-        self.token(Token::IDENT)?.map_or(Ok(None), |ident| {
-            Ok(Some(ast::Ident {
-                name_pos: ident.0,
-                name: ident.2,
-                obj: None,
-            }))
-        })
+        self.token(Token::IDENT)?
+            .map_or(Ok(None), |(name_pos, _, name)| {
+                Ok(Some(ast::Ident {
+                    name_pos,
+                    name,
+                    obj: None,
+                }))
+            })
     }
 
     fn int_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::int_lit()");
 
-        self.token(Token::INT)?.map_or(Ok(None), |int_lit| {
-            Ok(Some(ast::BasicLit {
-                kind: int_lit.1,
-                value: int_lit.2,
-                value_pos: int_lit.0,
-            }))
-        })
+        self.token(Token::INT)?
+            .map_or(Ok(None), |(value_pos, kind, value)| {
+                Ok(Some(ast::BasicLit {
+                    value_pos,
+                    kind,
+                    value,
+                }))
+            })
     }
 
     fn float_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::float_lit()");
 
-        self.token(Token::FLOAT)?.map_or(Ok(None), |float_lit| {
-            Ok(Some(ast::BasicLit {
-                kind: float_lit.1,
-                value: float_lit.2,
-                value_pos: float_lit.0,
-            }))
-        })
+        self.token(Token::FLOAT)?
+            .map_or(Ok(None), |(value_pos, kind, value)| {
+                Ok(Some(ast::BasicLit {
+                    value_pos,
+                    kind,
+                    value,
+                }))
+            })
     }
 
     fn imaginary_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::imaginary_lit()");
 
-        self.token(Token::IMAG)?.map_or(Ok(None), |imag_lit| {
-            Ok(Some(ast::BasicLit {
-                kind: imag_lit.1,
-                value: imag_lit.2,
-                value_pos: imag_lit.0,
-            }))
-        })
+        self.token(Token::IMAG)?
+            .map_or(Ok(None), |(value_pos, kind, value)| {
+                Ok(Some(ast::BasicLit {
+                    value_pos,
+                    kind,
+                    value,
+                }))
+            })
     }
 
     fn rune_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::rune_lit()");
 
-        self.token(Token::CHAR)?.map_or(Ok(None), |rune_lit| {
-            Ok(Some(ast::BasicLit {
-                kind: rune_lit.1,
-                value: rune_lit.2,
-                value_pos: rune_lit.0,
-            }))
-        })
+        self.token(Token::CHAR)?
+            .map_or(Ok(None), |(value_pos, kind, value)| {
+                Ok(Some(ast::BasicLit {
+                    value_pos,
+                    kind,
+                    value,
+                }))
+            })
     }
 
     fn string_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::string_lit()");
 
-        self.token(Token::STRING)?.map_or(Ok(None), |string_lit| {
-            Ok(Some(ast::BasicLit {
-                value_pos: string_lit.0,
-                kind: string_lit.1,
-                value: string_lit.2,
-            }))
+        self.token(Token::STRING)?
+            .map_or(Ok(None), |(value_pos, kind, value)| {
+                Ok(Some(ast::BasicLit {
+                    value_pos,
+                    kind,
+                    value,
+                }))
+            })
+    }
+
+    /// Returns the current token and advance to the next one, but only if it matches the expected
+    /// token.
+    fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
+        Ok(match self.current_token()? {
+            current @ (_, tok, _) if tok == expected => Some(current),
+            _ => None,
         })
     }
 
-    fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
-        while let Some(current) = self.peek_token()? {
-            if current.1 == expected {
-                self.next()?;
-                return Ok(Some(current));
-            } else if current.1 == Token::COMMENT {
-                self.next()?;
-                continue;
-            } else {
-                return Ok(None);
-            }
-        }
-        Err(ParserError::UnexpectedEndOfFile)
-    }
-
-    fn peek_token(&mut self) -> Result<Option<scanner::Step<'scanner>>> {
-        while let Some(current) = self.current {
-            if current.1 != Token::COMMENT {
-                break;
+    /// Returns the current token. Automatically skip all the comments tokens.
+    fn current_token(&mut self) -> Result<scanner::Step<'scanner>> {
+        while let Some(current @ (_, tok, _)) = self.current {
+            if tok != Token::COMMENT {
+                return Ok(current);
             }
             self.next()?;
         }
-        Ok(self.current)
+        Err(ParserError::UnexpectedEndOfFile)
     }
 }

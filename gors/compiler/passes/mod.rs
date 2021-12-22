@@ -17,12 +17,17 @@ pub fn pass(file: &mut syn::File) {
 
 #[cfg(test)]
 mod tests {
+    //! This module contains the passes tests (the Rust -> Rust step, after the initial Go -> Rust
+    //! step).
+
+    use super::pass;
+    use quote::quote;
     use syn::parse_quote as rust;
 
     fn test(mut input: syn::File, expected: syn::File) {
-        super::pass(&mut input); // mutates in place, becomes the output
-        let output = (quote::quote! {#input}).to_string();
-        let expected = (quote::quote! {#expected}).to_string();
+        pass(&mut input); // mutates in place, becomes the output
+        let output = (quote! {#input}).to_string();
+        let expected = (quote! {#expected}).to_string();
         if output != expected {
             panic!("\n    output: {}\n  expected: {}\n", output, expected);
         }

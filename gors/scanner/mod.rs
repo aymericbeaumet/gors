@@ -503,7 +503,7 @@ impl<'a> Scanner<'a> {
         self.next();
 
         match self.current() {
-            Some('\\') => self.require_escaped_char('\'')?,
+            Some('\\') => self.require_escaped_char::<'\''>()?,
             Some(_) => self.next(),
             _ => return Err(ScannerError::UnterminatedRune),
         }
@@ -527,7 +527,7 @@ impl<'a> Scanner<'a> {
                     self.next();
                     return Ok((self.position(), Token::STRING, self.literal()));
                 }
-                '\\' => self.require_escaped_char('"')?,
+                '\\' => self.require_escaped_char::<'"'>()?,
                 _ => self.next(),
             }
         }
@@ -760,12 +760,18 @@ impl<'a> Scanner<'a> {
         &self.buffer[self.start_offset..self.offset]
     }
 
-    fn require_escaped_char(&mut self, delim: char) -> Result<()> {
+    fn require_escaped_char<const DELIM: char>(&mut self) -> Result<()> {
         self.next();
 
         let c = self
             .current()
             .ok_or(ScannerError::UnterminatedEscapedChar)?;
+
+        // TODO: move this to the match when const generics can be referenced in patterns
+        if c == DELIM {
+            self.next();
+            return Ok(());
+        }
 
         match c {
             'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' => self.next(),
@@ -782,14 +788,7 @@ impl<'a> Scanner<'a> {
                 self.require_hex_digits(8)?;
             }
             '0'..='7' => self.require_octal_digits(3)?,
-            _ => {
-                // TODO: use const generics over &str when available and include in match above
-                if c == delim {
-                    self.next();
-                } else {
-                    return Err(ScannerError::UnterminatedEscapedChar);
-                }
-            }
+            _ => return Err(ScannerError::UnterminatedEscapedChar),
         }
 
         Ok(())

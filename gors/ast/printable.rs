@@ -1151,6 +1151,29 @@ impl<W: Write> Printable<W> for ast::RangeStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::ArrayType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ArrayType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Len: ")?;
+        self.len.print(p)?;
+
+        p.prefix()?;
+        p.write("Elt: ")?;
+        self.elt.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -1200,6 +1223,7 @@ impl<W: Write> Printable<W> for ast::ValueSpec<'_> {
 impl<W: Write> Printable<W> for ast::Expr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
+            ast::Expr::ArrayType(node) => node.print(p),
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::CallExpr(node) => node.print(p),

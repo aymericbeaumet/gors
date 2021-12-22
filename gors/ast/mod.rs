@@ -147,6 +147,13 @@ pub struct Object<'a> {
     pub type_: Option<()>,         // placeholder for type information; may be nil
 }
 
+// https://pkg.go.dev/go/ast#Ellipsis
+#[derive(Debug)]
+pub struct Ellipsis<'a> {
+    pub ellipsis: Position<'a>,     // position of "..."
+    pub elt: Option<Box<Expr<'a>>>, // ellipsis element type (parameter lists only); or nil
+}
+
 // https://pkg.go.dev/go/ast#ObjKind
 #[derive(Debug)]
 pub enum ObjKind {
@@ -212,13 +219,6 @@ pub struct BinaryExpr<'a> {
 pub struct ReturnStmt<'a> {
     pub return_: Position<'a>,  // position of "return" keyword
     pub results: Vec<Expr<'a>>, // result expressions; or nil
-}
-
-// https://pkg.go.dev/go/ast#Ellipsis
-#[derive(Debug)]
-pub struct Ellipsis<'a> {
-    pub ellipsis: Position<'a>, // position of "..."
-    pub elt: Box<Expr<'a>>,     // ellipsis element type (parameter lists only); or nil
 }
 
 // https://pkg.go.dev/go/ast#TypeSpec
@@ -412,6 +412,14 @@ pub struct KeyValueExpr<'a> {
     pub value: Box<Expr<'a>>,
 }
 
+// https://pkg.go.dev/go/ast#ArrayType
+#[derive(Debug)]
+pub struct ArrayType<'a> {
+    pub lbrack: Position<'a>,       // position of "["
+    pub len: Option<Box<Expr<'a>>>, // Ellipsis node for [...]T array types, nil for slice types
+    pub elt: Box<Expr<'a>>,         // element type
+}
+
 // https://pkg.go.dev/go/ast#ChanDir
 #[derive(Debug)]
 pub enum ChanDir {
@@ -430,6 +438,7 @@ pub enum Spec<'a> {
 // https://pkg.go.dev/go/ast#Expr
 #[derive(Debug)]
 pub enum Expr<'a> {
+    ArrayType(ArrayType<'a>),
     BasicLit(BasicLit<'a>),
     BinaryExpr(BinaryExpr<'a>),
     CallExpr(CallExpr<'a>),
