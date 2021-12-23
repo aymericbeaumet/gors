@@ -12,4 +12,7 @@ func main() {
 	var s []int = primes[1:]
 	var s []int = primes[:]
 	fmt.Println(s)
+
+	t := a[1:3:5]
+	t := a[:3:5]
 }

@@ -30,6 +30,7 @@ cargo clippy
 cargo build
 cargo test -- --nocapture --test-threads=1
 cargo +nightly fuzz run <scanner|parser>
+cargo doc -p gors --open
 ```
 
 ```

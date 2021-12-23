@@ -223,34 +223,26 @@ impl<'scanner> Parser<'scanner> {
     fn TopLevelDecl(&mut self) -> Result<Option<ast::Decl<'scanner>>> {
         log::debug!("Parser::TopLevelDecl()");
 
-        if let Some(decl) = self.Declaration()? {
-            return Ok(Some(ast::Decl::GenDecl(decl)));
-        }
-
-        if let Some(decl) = self.FunctionDecl_or_MethodDecl()? {
-            return Ok(Some(ast::Decl::FuncDecl(decl)));
-        }
-
-        Ok(None)
+        use Token::*;
+        Ok(match self.current_token()?.1 {
+            CONST | TYPE | VAR => Some(ast::Decl::GenDecl(self.Declaration().required()?)),
+            FUNC => Some(ast::Decl::FuncDecl(
+                self.FunctionDecl_or_MethodDecl().required()?,
+            )),
+            _ => None,
+        })
     }
 
     // Declaration = ConstDecl | TypeDecl | VarDecl .
     fn Declaration(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
         log::debug!("Parser::Declaration()");
 
-        if let Some(declaration) = self.ConstDecl()? {
-            return Ok(Some(declaration));
-        }
-
-        if let Some(declaration) = self.TypeDecl()? {
-            return Ok(Some(declaration));
-        }
-
-        if let Some(declaration) = self.VarDecl()? {
-            return Ok(Some(declaration));
-        }
-
-        Ok(None)
+        Ok(match self.current_token()?.1 {
+            Token::CONST => Some(self.ConstDecl().required()?),
+            Token::TYPE => Some(self.TypeDecl().required()?),
+            Token::VAR => Some(self.VarDecl().required()?),
+            _ => None,
+        })
     }
 
     // TypeDecl = "type" ( TypeSpec | "(" { TypeSpec ";" } ")" ) .
@@ -557,11 +549,6 @@ impl<'scanner> Parser<'scanner> {
     //         PrimaryExpr Slice |
     //         PrimaryExpr TypeAssertion |
     //         PrimaryExpr Arguments .
-    // Selector       = "." identifier .
-    // Index          = "[" Expression "]" .
-    // Slice          = "[" [ Expression ] ":" [ Expression ] "]" |
-    //                  "[" [ Expression ] ":" Expression ":" Expression "]" .
-    // TypeAssertion  = "." "(" Type ")" .
     fn PrimaryExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::PrimaryExpr()");
 
@@ -571,48 +558,149 @@ impl<'scanner> Parser<'scanner> {
         };
 
         loop {
-            match self.current_token()? {}
-            //if let Some((lbrack, expr, rbrack)) = self.Index()? {
-            //primary_expr = ast::Expr::IndexExpr(ast::IndexExpr {
-            //x: Box::new(primary_expr),
-            //rbrack,
-            //index: Box::new(expr),
-            //lbrack,
-            //});
-            //continue;
-            //}
-
-            //if let Some((lparen, args, rparen)) = self.Arguments()? {
-            //primary_expr = ast::Expr::CallExpr(ast::CallExpr {
-            //fun: Box::new(primary_expr),
-            //lparen,
-            //args: Some(args),
-            //ellipsis: None,
-            //rparen,
-            //});
-            //continue;
-            //}
-
-            break;
+            match self.current_token()?.1 {
+                Token::PERIOD => {
+                    primary_expr = self.Selector_or_TypeAssertion(primary_expr).required()?;
+                }
+                Token::LBRACK => {
+                    primary_expr = self.Index_or_Slice(primary_expr).required()?;
+                }
+                Token::LPAREN => {
+                    primary_expr = self.Arguments(primary_expr).required()?;
+                }
+                Token::LBRACE => {
+                    unimplemented!("composite literal");
+                }
+                _ => break,
+            }
         }
 
         Ok(Some(primary_expr))
     }
 
-    // Index = "[" Expression "]" .
-    fn Index(
+    // Selector      = "." identifier .
+    // TypeAssertion = "." "(" Type ")" .
+    fn Selector_or_TypeAssertion(
         &mut self,
-    ) -> Result<Option<(Position<'scanner>, ast::Expr<'scanner>, Position<'scanner>)>> {
-        log::debug!("Parser::Index()");
+        x: ast::Expr<'scanner>,
+    ) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::Selector_or_TypeAssertion()");
+
+        if self.token(Token::PERIOD)?.is_none() {
+            return Ok(None);
+        }
+
+        if let Some(lparen) = self.token(Token::LPAREN)? {
+            let type_ = self.Type().required()?;
+            let rparen = self.token(Token::RPAREN).required()?;
+            return Ok(Some(ast::Expr::TypeAssertExpr(ast::TypeAssertExpr {
+                x: Box::new(x),
+                lparen: lparen.0,
+                type_: Box::new(type_),
+                rparen: rparen.0,
+            })));
+        }
+
+        Ok(Some(ast::Expr::SelectorExpr(ast::SelectorExpr {
+            x: Box::new(x),
+            sel: self.identifier().required()?,
+        })))
+    }
+
+    // Index = "[" Expression "]" .
+    // Slice = "[" [ Expression ] ":" [ Expression ] "]" |
+    //         "[" [ Expression ] ":" Expression ":" Expression "]" .
+    fn Index_or_Slice(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::Index_or_Slice()");
 
         let lbrack = match self.token(Token::LBRACK)? {
             Some(v) => v,
             None => return Ok(None),
         };
-        let expr = self.Expression().required()?;
+
+        let low = self.Expression()?;
+
+        if low.is_some() {
+            if let Some(rbrack) = self.token(Token::RBRACK)? {
+                return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
+                    x: Box::new(x),                // expression
+                    lbrack: lbrack.0,              // position of "["
+                    index: Box::new(low.unwrap()), // index expression
+                    rbrack: rbrack.0,              // position of "]"
+                })));
+            }
+        }
+
+        self.token(Token::COLON).required()?;
+
+        let high = self.Expression()?;
+
+        if high.is_some() && self.token(Token::COLON)?.is_some() {
+            let max = self.Expression().required()?;
+            let rbrack = self.token(Token::RBRACK).required()?;
+            return Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
+                x: Box::new(x),                      // expression
+                lbrack: lbrack.0,                    // position of "["
+                low: low.map(Box::new),              // begin of slice range; or nil
+                high: Some(Box::new(high.unwrap())), // end of slice range; or nil
+                max: Some(Box::new(max)),            // maximum capacity of slice; or nil
+                slice3: true,                        // true if 3-index slice (2 colons present)
+                rbrack: rbrack.0,                    // position of "]"
+            })));
+        }
+
         let rbrack = self.token(Token::RBRACK).required()?;
 
-        Ok(Some((lbrack.0, expr, rbrack.0)))
+        Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
+            x: Box::new(x),           // expression
+            lbrack: lbrack.0,         // position of "["
+            low: low.map(Box::new),   // begin of slice range; or nil
+            high: high.map(Box::new), // end of slice range; or nil
+            max: None,                // maximum capacity of slice; or nil
+            slice3: false,            // true if 3-index slice (2 colons present)
+            rbrack: rbrack.0,         // position of "]"
+        })))
+    }
+
+    // Arguments = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
+    fn Arguments(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::Arguments()");
+
+        let lparen = match self.token(Token::LPAREN)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut args = if let Some(exprs) = self.ExpressionList()? {
+            exprs
+        } else if let Some(type_) = self.Type()? {
+            vec![type_]
+        } else {
+            vec![]
+        };
+
+        if self.token(Token::COMMA)?.is_some() {
+            let mut exprs = self.ExpressionList().required()?;
+            args.append(&mut exprs);
+        }
+
+        let ellipsis = if !args.is_empty() {
+            let ellipsis = self.token(Token::ELLIPSIS)?;
+            self.token(Token::COMMA)?;
+            ellipsis
+        } else {
+            None
+        };
+
+        let rparen = self.token(Token::RPAREN).required()?;
+
+        Ok(Some(ast::Expr::CallExpr(ast::CallExpr {
+            fun: Box::new(x),
+            lparen: lparen.0,
+            args: Some(args),
+            ellipsis: ellipsis.map(|(pos, _, _)| pos),
+            rparen: rparen.0,
+        })))
     }
 
     // Operand = Literal | OperandName | "(" Expression ")" .
@@ -644,19 +732,14 @@ impl<'scanner> Parser<'scanner> {
     fn Literal(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::Literal()");
 
-        if let Some(l) = self.BasicLit()? {
-            return Ok(Some(ast::Expr::BasicLit(l)));
-        }
-
-        if let Some(l) = self.CompositeLit()? {
-            return Ok(Some(ast::Expr::CompositeLit(l)));
-        }
-
-        if let Some(l) = self.FunctionLit()? {
-            return Ok(Some(ast::Expr::FuncLit(l)));
-        }
-
-        Ok(None)
+        use Token::*;
+        Ok(match self.current_token()?.1 {
+            INT | FLOAT | IMAG | CHAR | STRING => {
+                Some(ast::Expr::BasicLit(self.BasicLit().required()?))
+            }
+            FUNC => Some(ast::Expr::FuncLit(self.FunctionLit().required()?)),
+            _ => self.CompositeLit()?.map(ast::Expr::CompositeLit),
+        })
     }
 
     // CompositeLit = LiteralType LiteralValue .
@@ -768,13 +851,12 @@ impl<'scanner> Parser<'scanner> {
     fn BasicLit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::BasicLit()");
 
-        use Token::*;
-        Ok(match self.current_token()? {
-            (_, INT, _) => Some(self.int_lit().required()?),
-            (_, FLOAT, _) => Some(self.float_lit().required()?),
-            (_, IMAG, _) => Some(self.imaginary_lit().required()?),
-            (_, CHAR, _) => Some(self.rune_lit().required()?),
-            (_, STRING, _) => Some(self.string_lit().required()?),
+        Ok(match self.current_token()?.1 {
+            Token::INT => Some(self.int_lit().required()?),
+            Token::FLOAT => Some(self.float_lit().required()?),
+            Token::IMAG => Some(self.imaginary_lit().required()?),
+            Token::CHAR => Some(self.rune_lit().required()?),
+            Token::STRING => Some(self.string_lit().required()?),
             _ => None,
         })
     }
@@ -812,17 +894,16 @@ impl<'scanner> Parser<'scanner> {
     fn TypeLit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeLit()");
 
-        use Token::*;
-        Ok(match self.current_token()? {
-            (_, LBRACK, _) => Some(ast::Expr::ArrayType(
+        Ok(match self.current_token()?.1 {
+            Token::LBRACK => Some(ast::Expr::ArrayType(
                 self.ArrayType_or_SliceType::<false>().required()?,
             )),
-            (_, STRUCT, _) => Some(ast::Expr::StructType(self.StructType().required()?)),
-            (_, MUL, _) => Some(ast::Expr::StarExpr(self.PointerType().required()?)),
+            Token::STRUCT => Some(ast::Expr::StructType(self.StructType().required()?)),
+            Token::MUL => Some(ast::Expr::StarExpr(self.PointerType().required()?)),
             // TODO: FunctionType
-            (_, INTERFACE, _) => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
-            (_, MAP, _) => Some(ast::Expr::MapType(self.MapType().required()?)),
-            (_, CHAN, _) => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
+            Token::INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
+            Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
+            Token::CHAN => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
             _ => None,
         })
     }
@@ -1207,8 +1288,8 @@ impl<'scanner> Parser<'scanner> {
         }))
     }
 
-    // ParameterList  = ParameterDecl { "," ParameterDecl } .
-    // ParameterDecl  = [ IdentifierList ] [ "..." ] Type .
+    // ParameterList = ParameterDecl { "," ParameterDecl } .
+    // ParameterDecl = [ IdentifierList ] [ "..." ] Type .
     fn ParameterList(&mut self) -> Result<Option<Vec<ast::Field<'scanner>>>> {
         log::debug!("Parser::ParameterList()");
 
@@ -1606,41 +1687,6 @@ impl<'scanner> Parser<'scanner> {
         Ok(None)
     }
 
-    // Arguments = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
-    fn Arguments(
-        &mut self,
-    ) -> Result<
-        Option<(
-            Position<'scanner>,
-            Vec<ast::Expr<'scanner>>,
-            Position<'scanner>,
-        )>,
-    > {
-        log::debug!("Parser::Arguments()");
-
-        let lparen = match self.token(Token::LPAREN)? {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        let mut args = if let Some(exprs) = self.ExpressionList()? {
-            exprs
-        } else if let Some(type_) = self.Type()? {
-            vec![type_]
-        } else {
-            vec![]
-        };
-
-        if self.token(Token::COMMA)?.is_some() {
-            let mut exprs = self.ExpressionList().required()?;
-            args.append(&mut exprs);
-        }
-
-        let rparen = self.token(Token::RPAREN).required()?;
-
-        Ok(Some((lparen.0, args, rparen.0)))
-    }
-
     // ReturnStmt = "return" [ ExpressionList ] .
     fn ReturnStmt(&mut self) -> Result<Option<ast::ReturnStmt<'scanner>>> {
         log::debug!("Parser::ReturnStmt()");
@@ -1875,16 +1921,20 @@ impl<'scanner> Parser<'scanner> {
             })
     }
 
-    /// Returns the current token and advance to the next one, but only if it matches the expected
-    /// token.
+    /// Returns the current token and advances to the next one, but only if it matches the expected
+    /// token. [`Parser::next`] is automatically called for you.
     fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
         Ok(match self.current_token()? {
-            current @ (_, tok, _) if tok == expected => Some(current),
+            current @ (_, tok, _) if tok == expected => {
+                self.next()?;
+                Some(current)
+            }
             _ => None,
         })
     }
 
-    /// Returns the current token. Automatically skip all the comments tokens.
+    /// Returns the current token. Skips all the comments tokens. Depending on your use-case, you
+    /// might have to manually call [`Parser::next`].
     fn current_token(&mut self) -> Result<scanner::Step<'scanner>> {
         while let Some(current @ (_, tok, _)) = self.current {
             if tok != Token::COMMENT {

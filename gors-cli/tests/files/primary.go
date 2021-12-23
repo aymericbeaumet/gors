@@ -10,4 +10,5 @@ func main() {
 	s[i : j+1]
 	obj.color
 	f.p[i].x()
+	x.(T)
 }

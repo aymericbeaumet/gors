@@ -154,6 +154,27 @@ pub struct Ellipsis<'a> {
     pub elt: Option<Box<Expr<'a>>>, // ellipsis element type (parameter lists only); or nil
 }
 
+// https://pkg.go.dev/go/ast#Ellipsis
+#[derive(Debug)]
+pub struct TypeAssertExpr<'a> {
+    pub x: Box<Expr<'a>>,     // expression
+    pub lparen: Position<'a>, // position of "("
+    pub type_: Box<Expr<'a>>, // asserted type; nil means type switch X.(type)
+    pub rparen: Position<'a>, // position of ")"
+}
+
+// https://pkg.go.dev/go/ast#SliceExpr
+#[derive(Debug)]
+pub struct SliceExpr<'a> {
+    pub x: Box<Expr<'a>>,            // expression
+    pub lbrack: Position<'a>,        // position of "["
+    pub low: Option<Box<Expr<'a>>>,  // begin of slice range; or nil
+    pub high: Option<Box<Expr<'a>>>, // end of slice range; or nil
+    pub max: Option<Box<Expr<'a>>>,  // maximum capacity of slice; or nil
+    pub slice3: bool,                // true if 3-index slice (2 colons present)
+    pub rbrack: Position<'a>,        // position of "]"
+}
+
 // https://pkg.go.dev/go/ast#ObjKind
 #[derive(Debug)]
 pub enum ObjKind {
@@ -454,8 +475,10 @@ pub enum Expr<'a> {
     MapType(MapType<'a>),
     ParenExpr(ParenExpr<'a>),
     SelectorExpr(SelectorExpr<'a>),
+    SliceExpr(SliceExpr<'a>),
     StarExpr(StarExpr<'a>),
     StructType(StructType<'a>),
+    TypeAssertExpr(TypeAssertExpr<'a>),
     UnaryExpr(UnaryExpr<'a>),
 }
 

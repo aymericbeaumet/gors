@@ -22,7 +22,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --all-targets --all-features -- -D warnings
+          args: --workspace --all-features -- -D warnings
+
+      - name: Run `cargo doc`
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --package=gors
 
   build:
     runs-on: ubuntu-latest
@@ -38,7 +44,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all-targets --all-features --release
+          args: --workspace --all-features --release
 
   test:
     runs-on: ubuntu-latest
@@ -61,13 +67,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-targets --all-features --workspace --exclude=gors-cli
+          args: --workspace --all-features --exclude=gors-cli
 
       - name: Run integration tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-targets --all-features --workspace --package=gors-cli lexer -- --nocapture --test-threads=1
+          args: --workspace --all-features --package=gors-cli lexer -- --nocapture --test-threads=1
 
   www:
     runs-on: ubuntu-latest
