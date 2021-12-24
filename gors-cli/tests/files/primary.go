@@ -5,10 +5,10 @@ func main() {
 	2
 	(s + ".txt")
 	f(3.1415, true)
-	Point{1, 2}
+	//Point{1, 2}
 	m["foo"]
 	s[i : j+1]
 	obj.color
 	f.p[i].x()
-	x.(T)
+	//x.(T)
 }

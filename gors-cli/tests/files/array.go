@@ -9,8 +9,12 @@ func main() {
 	fmt.Println(a[0], a[1])
 	fmt.Println(a)
 
+	b := [...]string{}
+	b := [...]string{"a"}
 	b := [...]string{"a", "b", "c"}
 
+	primes := [6]int{}
+	primes := [6]int{2}
 	primes := [6]int{2, 3, 5, 7, 11, 13}
 	fmt.Println(primes)
 }

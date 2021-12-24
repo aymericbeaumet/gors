@@ -47,45 +47,28 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     let scanner = scanner::Scanner::new(filename, buffer);
     let mut parser = Parser::new(scanner);
     parser.next()?;
-    parser
-        .SourceFile()
-        .required()
-        .map_err(|err| match (err, parser.current) {
-            (ParserError::UnexpectedToken, Some(current)) => ParserError::UnexpectedTokenAt {
-                at: current.0.to_string(),
-                token: current.1,
-                literal: current.2.to_owned(),
-            },
-            (err, _) => err,
-        })
+    parser.SourceFile().required().map_err(|err| match err {
+        ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
+            at: parser.current_step.0.to_string(),
+            token: parser.current_step.1,
+            literal: parser.current_step.2.to_owned(),
+        },
+        err => err,
+    })
 }
 
 struct Parser<'scanner> {
-    scanner: scanner::IntoIter<'scanner>,
-    current: Option<scanner::Step<'scanner>>,
+    steps: scanner::IntoIter<'scanner>,
+    current_step: scanner::Step<'scanner>,
 }
 
 impl<'scanner> Parser<'scanner> {
     pub fn new(scanner: scanner::Scanner<'scanner>) -> Self {
         Self {
-            current: None,
-            scanner: scanner.into_iter(),
+            steps: scanner.into_iter(),
+            current_step: (Position::default(), Token::EOF, ""),
         }
     }
-
-    fn next(&mut self) -> Result<()> {
-        self.current = if let Some(step) = self.scanner.next() {
-            Some(step?)
-        } else {
-            None
-        };
-        log::debug!("self.current = {:?}", self.current);
-        Ok(())
-    }
-
-    /*
-     * Non-terminal productions
-     */
 
     // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     fn SourceFile(&mut self) -> Result<Option<ast::File<'scanner>>> {
@@ -224,7 +207,7 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::TopLevelDecl()");
 
         use Token::*;
-        Ok(match self.current_token()?.1 {
+        Ok(match self.current_step.1 {
             CONST | TYPE | VAR => Some(ast::Decl::GenDecl(self.Declaration().required()?)),
             FUNC => Some(ast::Decl::FuncDecl(
                 self.FunctionDecl_or_MethodDecl().required()?,
@@ -237,7 +220,7 @@ impl<'scanner> Parser<'scanner> {
     fn Declaration(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
         log::debug!("Parser::Declaration()");
 
-        Ok(match self.current_token()?.1 {
+        Ok(match self.current_step.1 {
             Token::CONST => Some(self.ConstDecl().required()?),
             Token::TYPE => Some(self.TypeDecl().required()?),
             Token::VAR => Some(self.VarDecl().required()?),
@@ -500,11 +483,11 @@ impl<'scanner> Parser<'scanner> {
         mut lhs: ast::Expr<'scanner>,
         min_precedence: u8,
     ) -> Result<Option<ast::Expr<'scanner>>> {
-        while let Some(op) = self.peek_binary_op(min_precedence)? {
+        while let Some(op) = self.try_binary_op(min_precedence)? {
             self.next()?;
 
             let mut rhs = self.UnaryExpr().required()?;
-            while self.peek_binary_op(op.1.precedence() + 1)?.is_some() {
+            while self.try_binary_op(op.1.precedence() + 1)?.is_some() {
                 rhs = self.expression(rhs, op.1.precedence() + 1).required()?;
             }
 
@@ -558,7 +541,7 @@ impl<'scanner> Parser<'scanner> {
         };
 
         loop {
-            match self.current_token()?.1 {
+            match self.current_step.1 {
                 Token::PERIOD => {
                     primary_expr = self.Selector_or_TypeAssertion(primary_expr).required()?;
                 }
@@ -568,9 +551,9 @@ impl<'scanner> Parser<'scanner> {
                 Token::LPAREN => {
                     primary_expr = self.Arguments(primary_expr).required()?;
                 }
-                Token::LBRACE => {
-                    unimplemented!("composite literal");
-                }
+                //Token::LBRACE => {
+                //unimplemented!("composite literal");
+                //}
                 _ => break,
             }
         }
@@ -623,10 +606,10 @@ impl<'scanner> Parser<'scanner> {
         if low.is_some() {
             if let Some(rbrack) = self.token(Token::RBRACK)? {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
-                    x: Box::new(x),                // expression
-                    lbrack: lbrack.0,              // position of "["
-                    index: Box::new(low.unwrap()), // index expression
-                    rbrack: rbrack.0,              // position of "]"
+                    x: Box::new(x),
+                    lbrack: lbrack.0,
+                    index: Box::new(low.unwrap()),
+                    rbrack: rbrack.0,
                 })));
             }
         }
@@ -639,26 +622,26 @@ impl<'scanner> Parser<'scanner> {
             let max = self.Expression().required()?;
             let rbrack = self.token(Token::RBRACK).required()?;
             return Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
-                x: Box::new(x),                      // expression
-                lbrack: lbrack.0,                    // position of "["
-                low: low.map(Box::new),              // begin of slice range; or nil
-                high: Some(Box::new(high.unwrap())), // end of slice range; or nil
-                max: Some(Box::new(max)),            // maximum capacity of slice; or nil
-                slice3: true,                        // true if 3-index slice (2 colons present)
-                rbrack: rbrack.0,                    // position of "]"
+                x: Box::new(x),
+                lbrack: lbrack.0,
+                low: low.map(Box::new),
+                high: Some(Box::new(high.unwrap())),
+                max: Some(Box::new(max)),
+                slice3: true,
+                rbrack: rbrack.0,
             })));
         }
 
         let rbrack = self.token(Token::RBRACK).required()?;
 
         Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
-            x: Box::new(x),           // expression
-            lbrack: lbrack.0,         // position of "["
-            low: low.map(Box::new),   // begin of slice range; or nil
-            high: high.map(Box::new), // end of slice range; or nil
-            max: None,                // maximum capacity of slice; or nil
-            slice3: false,            // true if 3-index slice (2 colons present)
-            rbrack: rbrack.0,         // position of "]"
+            x: Box::new(x),
+            lbrack: lbrack.0,
+            low: low.map(Box::new),
+            high: high.map(Box::new),
+            max: None,
+            slice3: false,
+            rbrack: rbrack.0,
         })))
     }
 
@@ -704,38 +687,26 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Operand = Literal | OperandName | "(" Expression ")" .
+    // Literal = BasicLit | CompositeLit | FunctionLit .
+    // OperandName = identifier | QualifiedIdent .
     fn Operand(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::Operand()");
 
-        if let Some(literal) = self.Literal()? {
-            return Ok(Some(literal));
-        }
-
-        if let Some(operand_name) = self.OperandName()? {
-            return Ok(Some(operand_name));
-        }
-
-        if let Some(lparen) = self.token(Token::LPAREN)? {
-            let expr = self.Expression().required()?;
-            let rparen = self.token(Token::RPAREN).required()?;
-            return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
-                lparen: lparen.0,
-                x: Box::new(expr),
-                rparen: rparen.0,
-            })));
-        }
-
-        Ok(None)
-    }
-
-    // Literal = BasicLit | CompositeLit | FunctionLit .
-    fn Literal(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Literal()");
-
         use Token::*;
-        Ok(match self.current_token()?.1 {
+        Ok(match self.current_step.1 {
+            IDENT => self.identifier_or_QualifiedIdent()?,
             INT | FLOAT | IMAG | CHAR | STRING => {
                 Some(ast::Expr::BasicLit(self.BasicLit().required()?))
+            }
+            LPAREN => {
+                let lparen = self.token(Token::LPAREN).required()?;
+                let expr = self.Expression().required()?;
+                let rparen = self.token(Token::RPAREN).required()?;
+                return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
+                    lparen: lparen.0,
+                    x: Box::new(expr),
+                    rparen: rparen.0,
+                })));
             }
             FUNC => Some(ast::Expr::FuncLit(self.FunctionLit().required()?)),
             _ => self.CompositeLit()?.map(ast::Expr::CompositeLit),
@@ -782,25 +753,15 @@ impl<'scanner> Parser<'scanner> {
     fn LiteralType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::LiteralType()");
 
-        // TODO: match
-
-        if let Some(t) = self.StructType()? {
-            return Ok(Some(ast::Expr::StructType(t)));
-        }
-
-        if let Some(t) = self.ArrayType_or_SliceType::<true>()? {
-            return Ok(Some(ast::Expr::ArrayType(t)));
-        }
-
-        if let Some(t) = self.MapType()? {
-            return Ok(Some(ast::Expr::MapType(t)));
-        }
-
-        if let Some(t) = self.TypeName()? {
-            return Ok(Some(t));
-        }
-
-        Ok(None)
+        Ok(match self.current_step.1 {
+            Token::STRUCT => Some(ast::Expr::StructType(self.StructType().required()?)),
+            Token::LBRACK => Some(ast::Expr::ArrayType(
+                self.ArrayType_or_SliceType::<true>().required()?,
+            )),
+            Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
+            Token::IDENT => Some(self.TypeName().required()?),
+            _ => None,
+        })
     }
 
     // KeyedElement = [ Key ":" ] Element .
@@ -808,20 +769,23 @@ impl<'scanner> Parser<'scanner> {
     // FieldName    = identifier .
     // Element      = Expression | LiteralValue .
     fn KeyedElement(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::KeyedElement()");
+
         let key = match self.Expression()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         if let Some(colon) = self.token(Token::COLON)? {
+            let value = self.Expression().required()?;
             return Ok(Some(ast::Expr::KeyValueExpr(ast::KeyValueExpr {
                 key: Box::new(key),
                 colon: colon.0,
-                value: Box::new(self.Expression().required()?),
+                value: Box::new(value),
             })));
         }
 
-        self.Expression()
+        Ok(Some(key))
     }
 
     // FunctionLit = "func" Signature FunctionBody .
@@ -832,26 +796,17 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
-
         let type_ = self.Signature(Some(func.0)).required()?;
-
         let body = self.FunctionBody().required()?;
 
         Ok(Some(ast::FuncLit { type_, body }))
-    }
-
-    // OperandName = identifier | QualifiedIdent .
-    fn OperandName(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::OperandName()");
-
-        self.identifier_or_QualifiedIdent()
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
     fn BasicLit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::BasicLit()");
 
-        Ok(match self.current_token()?.1 {
+        Ok(match self.current_step.1 {
             Token::INT => Some(self.int_lit().required()?),
             Token::FLOAT => Some(self.float_lit().required()?),
             Token::IMAG => Some(self.imaginary_lit().required()?),
@@ -894,7 +849,7 @@ impl<'scanner> Parser<'scanner> {
     fn TypeLit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeLit()");
 
-        Ok(match self.current_token()?.1 {
+        Ok(match self.current_step.1 {
             Token::LBRACK => Some(ast::Expr::ArrayType(
                 self.ArrayType_or_SliceType::<false>().required()?,
             )),
@@ -1399,7 +1354,7 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::Statement()");
 
         use Token::*;
-        Ok(match self.current_token()? {
+        Ok(match self.current_step {
             (_, CONST | TYPE | VAR, _) => Some(ast::Stmt::DeclStmt(ast::DeclStmt {
                 decl: self.Declaration().required()?,
             })),
@@ -1480,7 +1435,7 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
 
-            let mut tok: Option<scanner::Step> = None;
+            let mut tok = None;
 
             // for a, b := range x {}
             if let Some(define) = self.token(Token::DEFINE)? {
@@ -1776,10 +1731,6 @@ impl<'scanner> Parser<'scanner> {
         }))
     }
 
-    /*
-     * Terminal productions (lexical tokens)
-     */
-
     // assign_op = [ add_op | mul_op ] "=" .
     // add_op    = "+" | "-" | "|" | "^" .
     // mul_op    = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
@@ -1787,8 +1738,8 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::assign_op()");
 
         use Token::*;
-        Ok(match self.current_token()? {
-            current @ (_,
+        Ok(match self.current_step {
+            step @ (_,
                 /* "=" */
                 ASSIGN |
                 /* add_op "=" */
@@ -1797,33 +1748,7 @@ impl<'scanner> Parser<'scanner> {
                 MUL_ASSIGN | QUO_ASSIGN | REM_ASSIGN | SHL_ASSIGN | SHR_ASSIGN | AND_ASSIGN | AND_NOT_ASSIGN
             , _) => {
                 self.next()?;
-                Some(current)
-            }
-            _ => None,
-        })
-    }
-
-    // binary_op = "||" | "&&" | rel_op | add_op | mul_op .
-    // rel_op    = "==" | "!=" | "<" | "<=" | ">" | ">=" .
-    // add_op    = "+" | "-" | "|" | "^" .
-    // mul_op    = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
-    fn peek_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
-        log::debug!("Parser::binary_op()");
-
-        use Token::*;
-        Ok(match self.current_token()? {
-            current @ (_,
-                /* binary_op */
-                LOR | LAND |
-                /* rel_op */
-                EQL | NEQ | LSS | LEQ | GTR | GEQ |
-                /* add_op */
-                ADD | SUB | OR | XOR |
-                /* mul_op */
-                MUL | QUO | REM | SHL | SHR | AND | AND_NOT
-            , _) if current.1.precedence() >= min_precedence => {
-                self.next()?;
-                Some(current)
+                Some(step)
             }
             _ => None,
         })
@@ -1834,10 +1759,35 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::unary_op()");
 
         use Token::*;
-        Ok(match self.current_token()? {
-            current @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
+        Ok(match self.current_step {
+            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
                 self.next()?;
-                Some(current)
+                Some(step)
+            }
+            _ => None,
+        })
+    }
+
+    // binary_op = "||" | "&&" | rel_op | add_op | mul_op .
+    // rel_op    = "==" | "!=" | "<" | "<=" | ">" | ">=" .
+    // add_op    = "+" | "-" | "|" | "^" .
+    // mul_op    = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
+    fn try_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
+        log::debug!("Parser::binary_op()");
+
+        use Token::*;
+        Ok(match self.current_step {
+            step @ (_,
+                /* binary_op */
+                LOR | LAND |
+                /* rel_op */
+                EQL | NEQ | LSS | LEQ | GTR | GEQ |
+                /* add_op */
+                ADD | SUB | OR | XOR |
+                /* mul_op */
+                MUL | QUO | REM | SHL | SHR | AND | AND_NOT
+            , _) if step.1.precedence() >= min_precedence => {
+                Some(step)
             }
             _ => None,
         })
@@ -1921,26 +1871,29 @@ impl<'scanner> Parser<'scanner> {
             })
     }
 
-    /// Returns the current token and advances to the next one, but only if it matches the expected
+    /// Returns the current step and advances to the next one, but only if it matches the expected
     /// token. [`Parser::next`] is automatically called for you.
     fn token(&mut self, expected: Token) -> Result<Option<scanner::Step<'scanner>>> {
-        Ok(match self.current_token()? {
-            current @ (_, tok, _) if tok == expected => {
-                self.next()?;
-                Some(current)
+        Ok(match self.current_step {
+            step @ (_, tok, _) if tok == expected => {
+                if expected != Token::EOF {
+                    self.next()?;
+                }
+                Some(step)
             }
             _ => None,
         })
     }
 
-    /// Returns the current token. Skips all the comments tokens. Depending on your use-case, you
-    /// might have to manually call [`Parser::next`].
-    fn current_token(&mut self) -> Result<scanner::Step<'scanner>> {
-        while let Some(current @ (_, tok, _)) = self.current {
-            if tok != Token::COMMENT {
-                return Ok(current);
-            }
-            self.next()?;
+    /// Advances to the next token. Skips all the comments tokens.
+    fn next(&mut self) -> Result<()> {
+        if let Some(step) = self
+            .steps
+            .find(|step| !matches!(step, Ok((_, Token::COMMENT, _))))
+        {
+            self.current_step = step?;
+            log::debug!("self.current_step = {:?}", self.current_step);
+            return Ok(());
         }
         Err(ParserError::UnexpectedEndOfFile)
     }

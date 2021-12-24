@@ -5,11 +5,10 @@
 use serde::{ser::SerializeMap, Serialize, Serializer};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Position<'a> {
     pub directory: &'a str,
     pub file: &'a str,
-
     pub offset: usize,
     pub line: usize,
     pub column: usize,

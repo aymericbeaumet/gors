@@ -163,7 +163,13 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     let after = std::time::Instant::now();
 
     if !output.status.success() {
-        eprintln!("STATUS: {}", output.status.code().unwrap());
+        eprintln!(
+            "STATUS: {}",
+            output
+                .status
+                .code()
+                .unwrap_or_else(|| panic!("{:?} {:?}", bin, args))
+        );
         eprintln!(
             "STDOUT: {}",
             std::str::from_utf8(&output.stdout).unwrap().blue(),

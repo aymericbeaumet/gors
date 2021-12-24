@@ -1026,6 +1026,34 @@ impl<W: Write> Printable<W> for ast::SliceExpr<'_> {
         p.write("*ast.SliceExpr ")?;
         p.open_bracket()?;
 
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Low: ")?;
+        self.low.print(p)?;
+
+        p.prefix()?;
+        p.write("High: ")?;
+        self.high.print(p)?;
+
+        p.prefix()?;
+        p.write("Max: ")?;
+        self.max.print(p)?;
+
+        p.prefix()?;
+        p.write("Slice3: ")?;
+        self.slice3.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrack: ")?;
+        self.rbrack.print(p)?;
+
         p.close_bracket()?;
 
         Ok(())

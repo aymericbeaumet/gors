@@ -34,8 +34,8 @@ cargo doc -p gors --open
 ```
 
 ```
-RUST_LOG=trace cargo run -- tokens gors-cli/tests/files/comment.go
-RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
+RUST_LOG=debug cargo run -- tokens gors-cli/tests/programs/fizzbuzz.go
+RUST_LOG=debug cargo run -- ast gors-cli/tests/programs/fizzbuzz.go
 RUST_LOG=debug cargo run -- build --emit=rust gors-cli/tests/programs/fizzbuzz.go
 RUST_LOG=debug cargo run -- run gors-cli/tests/programs/fizzbuzz.go
 ```

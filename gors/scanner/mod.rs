@@ -84,7 +84,7 @@ impl<'a> Scanner<'a> {
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             self.reset_start();
 
             match c {
@@ -103,11 +103,11 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if let Some(c) = self.current() {
+        if let Some(c) = self.current_char {
             match c {
                 '+' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::ADD_ASSIGN, ""));
@@ -123,7 +123,7 @@ impl<'a> Scanner<'a> {
 
                 '-' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::SUB_ASSIGN, ""));
@@ -139,7 +139,7 @@ impl<'a> Scanner<'a> {
 
                 '*' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::MUL_ASSIGN, ""));
@@ -174,7 +174,7 @@ impl<'a> Scanner<'a> {
 
                 '%' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::REM_ASSIGN, ""));
@@ -185,7 +185,7 @@ impl<'a> Scanner<'a> {
 
                 '&' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::AND_ASSIGN, ""));
@@ -196,7 +196,7 @@ impl<'a> Scanner<'a> {
                         }
                         Some('^') => {
                             self.next();
-                            match self.current() {
+                            match self.current_char {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::AND_NOT_ASSIGN, ""));
@@ -210,7 +210,7 @@ impl<'a> Scanner<'a> {
 
                 '|' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::OR_ASSIGN, ""));
@@ -225,7 +225,7 @@ impl<'a> Scanner<'a> {
 
                 '^' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::XOR_ASSIGN, ""));
@@ -236,10 +236,10 @@ impl<'a> Scanner<'a> {
 
                 '<' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('<') => {
                             self.next();
-                            match self.current() {
+                            match self.current_char {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::SHL_ASSIGN, ""));
@@ -261,10 +261,10 @@ impl<'a> Scanner<'a> {
 
                 '>' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('>') => {
                             self.next();
-                            match self.current() {
+                            match self.current_char {
                                 Some('=') => {
                                     self.next();
                                     return Ok((self.position(), Token::SHR_ASSIGN, ""));
@@ -284,7 +284,7 @@ impl<'a> Scanner<'a> {
 
                 ':' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::DEFINE, ""));
@@ -295,7 +295,7 @@ impl<'a> Scanner<'a> {
 
                 '!' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::NEQ, ""));
@@ -349,7 +349,7 @@ impl<'a> Scanner<'a> {
 
                 '.' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('0'..='9') => return self.scan_int_or_float_or_imag(true),
                         Some('.') => match self.peek() {
                             Some('.') => {
@@ -365,7 +365,7 @@ impl<'a> Scanner<'a> {
 
                 '=' => {
                     self.next();
-                    match self.current() {
+                    match self.current_char {
                         Some('=') => {
                             self.next();
                             return Ok((self.position(), Token::EQL, ""));
@@ -395,7 +395,7 @@ impl<'a> Scanner<'a> {
     fn scan_pkg_or_keyword_or_ident(&mut self) -> Result<Step<'a>> {
         self.next();
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             if !(is_letter(c) || is_unicode_digit(c)) {
                 break;
             }
@@ -430,9 +430,9 @@ impl<'a> Scanner<'a> {
         let mut exp = "eE";
 
         if !preceding_dot {
-            if matches!(self.current(), Some('0')) {
+            if matches!(self.current_char, Some('0')) {
                 self.next();
-                match self.current() {
+                match self.current_char {
                     Some('b' | 'B') => {
                         digits = "_01";
                         exp = "";
@@ -452,7 +452,7 @@ impl<'a> Scanner<'a> {
                 };
             }
 
-            while let Some(c) = self.current() {
+            while let Some(c) = self.current_char {
                 if !digits.contains(c) {
                     break;
                 }
@@ -460,10 +460,10 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if preceding_dot || matches!(self.current(), Some('.')) {
+        if preceding_dot || matches!(self.current_char, Some('.')) {
             token = Token::FLOAT;
             self.next();
-            while let Some(c) = self.current() {
+            while let Some(c) = self.current_char {
                 if !digits.contains(c) {
                     break;
                 }
@@ -472,14 +472,14 @@ impl<'a> Scanner<'a> {
         }
 
         if !exp.is_empty() {
-            if let Some(c) = self.current() {
+            if let Some(c) = self.current_char {
                 if exp.contains(c) {
                     token = Token::FLOAT;
                     self.next();
-                    if matches!(self.current(), Some('-' | '+')) {
+                    if matches!(self.current_char, Some('-' | '+')) {
                         self.next();
                     }
-                    while let Some(c) = self.current() {
+                    while let Some(c) = self.current_char {
                         if !matches!(c, '_' | '0'..='9') {
                             break;
                         }
@@ -489,7 +489,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if matches!(self.current(), Some('i')) {
+        if matches!(self.current_char, Some('i')) {
             token = Token::IMAG;
             self.next();
         }
@@ -502,13 +502,13 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        match self.current() {
+        match self.current_char {
             Some('\\') => self.require_escaped_char::<'\''>()?,
             Some(_) => self.next(),
             _ => return Err(ScannerError::UnterminatedRune),
         }
 
-        if matches!(self.current(), Some('\'')) {
+        if matches!(self.current_char, Some('\'')) {
             self.next();
             return Ok((self.position(), Token::CHAR, self.literal()));
         }
@@ -521,7 +521,7 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             match c {
                 '"' => {
                     self.next();
@@ -540,7 +540,7 @@ impl<'a> Scanner<'a> {
         self.insert_semi = true;
         self.next();
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             match c {
                 '`' => {
                     self.next();
@@ -558,11 +558,11 @@ impl<'a> Scanner<'a> {
         self.next();
         self.next();
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             match c {
                 '*' => {
                     self.next();
-                    if matches!(self.current(), Some('/')) {
+                    if matches!(self.current_char, Some('/')) {
                         self.next();
 
                         let pos = self.position();
@@ -586,7 +586,7 @@ impl<'a> Scanner<'a> {
         self.next();
         self.next();
 
-        while let Some(c) = self.current() {
+        while let Some(c) = self.current_char {
             if is_newline(c) {
                 break;
             }
@@ -702,13 +702,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn current(&mut self) -> Option<char> {
-        log::trace!("self.current()");
-        self.current_char
-    }
-
     fn peek(&mut self) -> Option<char> {
-        log::trace!("self.peek()");
         self.chars.peek().copied()
     }
 
@@ -725,14 +719,16 @@ impl<'a> Scanner<'a> {
                 self.column = 1;
                 self.consume_pending_line_info();
             }
+        } else {
+            self.current_char_len = 0
         }
 
         log::trace!(
-            "self.next() offset={} line={} column={} current_char={:?}",
+            "self.current_char={:?} offset={} line={} column={}",
+            self.current_char,
             self.offset,
             self.line,
             self.column,
-            self.current_char,
         );
     }
 
@@ -764,7 +760,7 @@ impl<'a> Scanner<'a> {
         self.next();
 
         let c = self
-            .current()
+            .current_char
             .ok_or(ScannerError::UnterminatedEscapedChar)?;
 
         // TODO: move this to the match when const generics can be referenced in patterns
@@ -796,7 +792,7 @@ impl<'a> Scanner<'a> {
 
     fn require_octal_digits(&mut self, count: usize) -> Result<()> {
         for _ in 0..count {
-            let c = self.current().ok_or(ScannerError::OctalNotFound)?;
+            let c = self.current_char.ok_or(ScannerError::OctalNotFound)?;
 
             if !is_octal_digit(c) {
                 return Err(ScannerError::OctalNotFound);
@@ -810,7 +806,7 @@ impl<'a> Scanner<'a> {
 
     fn require_hex_digits(&mut self, count: usize) -> Result<()> {
         for _ in 0..count {
-            let c = self.current().ok_or(ScannerError::HexadecimalNotFound)?;
+            let c = self.current_char.ok_or(ScannerError::HexadecimalNotFound)?;
 
             if !is_hex_digit(c) {
                 return Err(ScannerError::HexadecimalNotFound);
