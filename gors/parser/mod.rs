@@ -60,6 +60,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
 struct Parser<'scanner> {
     steps: scanner::IntoIter<'scanner>,
     current_step: scanner::Step<'scanner>,
+    expr_level: isize,
 }
 
 impl<'scanner> Parser<'scanner> {
@@ -67,6 +68,7 @@ impl<'scanner> Parser<'scanner> {
         Self {
             steps: scanner.into_iter(),
             current_step: (Position::default(), Token::EOF, ""),
+            expr_level: -1,
         }
     }
 
@@ -483,11 +485,11 @@ impl<'scanner> Parser<'scanner> {
         mut lhs: ast::Expr<'scanner>,
         min_precedence: u8,
     ) -> Result<Option<ast::Expr<'scanner>>> {
-        while let Some(op) = self.try_binary_op(min_precedence)? {
+        while let Some(op) = self.get_binary_op(min_precedence)? {
             self.next()?;
 
             let mut rhs = self.UnaryExpr().required()?;
-            while self.try_binary_op(op.1.precedence() + 1)?.is_some() {
+            while self.get_binary_op(op.1.precedence() + 1)?.is_some() {
                 rhs = self.expression(rhs, op.1.precedence() + 1).required()?;
             }
 
@@ -551,9 +553,9 @@ impl<'scanner> Parser<'scanner> {
                 Token::LPAREN => {
                     primary_expr = self.Arguments(primary_expr).required()?;
                 }
-                //Token::LBRACE => {
-                //unimplemented!("composite literal");
-                //}
+                Token::LBRACE if self.expr_level >= 0 => {
+                    unimplemented!("composite literal");
+                }
                 _ => break,
             }
         }
@@ -694,7 +696,7 @@ impl<'scanner> Parser<'scanner> {
 
         use Token::*;
         Ok(match self.current_step.1 {
-            IDENT => self.identifier_or_QualifiedIdent()?,
+            IDENT => Some(ast::Expr::Ident(self.identifier().required()?)),
             INT | FLOAT | IMAG | CHAR | STRING => {
                 Some(ast::Expr::BasicLit(self.BasicLit().required()?))
             }
@@ -1772,8 +1774,8 @@ impl<'scanner> Parser<'scanner> {
     // rel_op    = "==" | "!=" | "<" | "<=" | ">" | ">=" .
     // add_op    = "+" | "-" | "|" | "^" .
     // mul_op    = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" .
-    fn try_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
-        log::debug!("Parser::binary_op()");
+    fn get_binary_op(&mut self, min_precedence: u8) -> Result<Option<scanner::Step<'scanner>>> {
+        log::debug!("Parser::get_binary_op()");
 
         use Token::*;
         Ok(match self.current_step {
@@ -1885,7 +1887,7 @@ impl<'scanner> Parser<'scanner> {
         })
     }
 
-    /// Advances to the next token. Skips all the comments tokens.
+    /// Advances to the next token. Skips all the comment tokens.
     fn next(&mut self) -> Result<()> {
         if let Some(step) = self
             .steps

@@ -773,25 +773,25 @@ impl<'a> Scanner<'a> {
             'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' => self.next(),
             'x' => {
                 self.next();
-                self.require_hex_digits(2)?
+                self.require_hex_digits::<2>()?
             }
             'u' => {
                 self.next();
-                self.require_hex_digits(4)?;
+                self.require_hex_digits::<4>()?;
             }
             'U' => {
                 self.next();
-                self.require_hex_digits(8)?;
+                self.require_hex_digits::<8>()?;
             }
-            '0'..='7' => self.require_octal_digits(3)?,
+            '0'..='7' => self.require_octal_digits::<3>()?,
             _ => return Err(ScannerError::UnterminatedEscapedChar),
         }
 
         Ok(())
     }
 
-    fn require_octal_digits(&mut self, count: usize) -> Result<()> {
-        for _ in 0..count {
+    fn require_octal_digits<const COUNT: usize>(&mut self) -> Result<()> {
+        for _ in 0..COUNT {
             let c = self.current_char.ok_or(ScannerError::OctalNotFound)?;
 
             if !is_octal_digit(c) {
@@ -804,8 +804,8 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    fn require_hex_digits(&mut self, count: usize) -> Result<()> {
-        for _ in 0..count {
+    fn require_hex_digits<const COUNT: usize>(&mut self) -> Result<()> {
+        for _ in 0..COUNT {
             let c = self.current_char.ok_or(ScannerError::HexadecimalNotFound)?;
 
             if !is_hex_digit(c) {

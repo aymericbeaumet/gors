@@ -10,5 +10,8 @@ func main() {
 	s[i : j+1]
 	obj.color
 	f.p[i].x()
-	//x.(T)
+	(x).(T)
+	x.(T)
+	(x.y).(T)
+	x.y.(T)
 }

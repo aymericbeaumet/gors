@@ -29,7 +29,7 @@ cargo install --force cargo-fuzz
 cargo clippy
 cargo build
 cargo test -- --nocapture --test-threads=1
-cargo +nightly fuzz run <scanner|parser>
+cargo +nightly fuzz run scanner
 cargo doc -p gors --open
 ```
 

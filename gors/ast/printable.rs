@@ -992,6 +992,22 @@ impl<W: Write> Printable<W> for ast::TypeAssertExpr<'_> {
         p.write("*ast.TypeAssertExpr ")?;
         p.open_bracket()?;
 
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lparen: ")?;
+        self.lparen.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Rparen: ")?;
+        self.rparen.print(p)?;
+
         p.close_bracket()?;
 
         Ok(())
