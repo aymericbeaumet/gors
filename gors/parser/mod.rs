@@ -603,37 +603,40 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
-        let low = self.Expression()?;
-
-        if low.is_some() {
+        let low = if let Some(low) = self.Expression()? {
             if let Some(rbrack) = self.token(Token::RBRACK)? {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
                     x: Box::new(x),
                     lbrack: lbrack.0,
-                    index: Box::new(low.unwrap()),
+                    index: Box::new(low),
                     rbrack: rbrack.0,
                 })));
             }
-        }
+            Some(low)
+        } else {
+            None
+        };
 
         self.token(Token::COLON).required()?;
 
-        let high = self.Expression()?;
-
-        if high.is_some() && self.token(Token::COLON)?.is_some() {
-            let max = self.Expression().required()?;
-            let rbrack = self.token(Token::RBRACK).required()?;
-            return Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
-                x: Box::new(x),
-                lbrack: lbrack.0,
-                low: low.map(Box::new),
-                high: Some(Box::new(high.unwrap())),
-                max: Some(Box::new(max)),
-                slice3: true,
-                rbrack: rbrack.0,
-            })));
-        }
-
+        let high = if let Some(high) = self.Expression()? {
+            if self.token(Token::COLON)?.is_some() {
+                let max = self.Expression().required()?;
+                let rbrack = self.token(Token::RBRACK).required()?;
+                return Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
+                    x: Box::new(x),
+                    lbrack: lbrack.0,
+                    low: low.map(Box::new),
+                    high: Some(Box::new(high)),
+                    max: Some(Box::new(max)),
+                    slice3: true,
+                    rbrack: rbrack.0,
+                })));
+            }
+            Some(high)
+        } else {
+            None
+        };
         let rbrack = self.token(Token::RBRACK).required()?;
 
         Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
