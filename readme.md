@@ -29,12 +29,13 @@ cargo install --force cargo-fuzz
 cargo clippy
 cargo build
 cargo test -- --nocapture --test-threads=1
-cargo +nightly fuzz run <scanner|parser>
+cargo +nightly fuzz run scanner
+cargo doc -p gors --open
 ```
 
 ```
-RUST_LOG=trace cargo run -- tokens gors-cli/tests/files/comment.go
-RUST_LOG=debug cargo run -- ast gors-cli/tests/files/comment.go
+RUST_LOG=debug cargo run -- tokens gors-cli/tests/programs/fizzbuzz.go
+RUST_LOG=debug cargo run -- ast gors-cli/tests/programs/fizzbuzz.go
 RUST_LOG=debug cargo run -- build --emit=rust gors-cli/tests/programs/fizzbuzz.go
 RUST_LOG=debug cargo run -- run gors-cli/tests/programs/fizzbuzz.go
 ```

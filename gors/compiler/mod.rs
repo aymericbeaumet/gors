@@ -540,10 +540,10 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 panic!("only supports a single lhs element")
             }
             return vec![syn::Stmt::Semi(
-                syn::Expr::Assign(syn::ExprAssign {
+                syn::Expr::AssignOp(syn::ExprAssignOp {
                     attrs: vec![],
                     left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
-                    eq_token: <Token![=]>::default(),
+                    op: assign_stmt.tok.into(),
                     right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
                 }),
                 <Token![;]>::default(),
@@ -590,7 +590,60 @@ impl From<token::Token> for syn::BinOp {
             NEQ => Self::Ne(<Token![!=]>::default()),
             GEQ => Self::Ge(<Token![>=]>::default()),
             GTR => Self::Gt(<Token![>]>::default()),
+            //
+            ADD_ASSIGN => Self::AddEq(<Token![+=]>::default()),
+            SUB_ASSIGN => Self::SubEq(<Token![-=]>::default()),
+            MUL_ASSIGN => Self::MulEq(<Token![*=]>::default()),
+            QUO_ASSIGN => Self::DivEq(<Token![/=]>::default()),
+            REM_ASSIGN => Self::RemEq(<Token![%=]>::default()),
+            XOR_ASSIGN => Self::BitXorEq(<Token![^=]>::default()),
+            AND_ASSIGN => Self::BitAndEq(<Token![&=]>::default()),
+            OR_ASSIGN => Self::BitOrEq(<Token![|=]>::default()),
+            SHL_ASSIGN => Self::ShlEq(<Token![<<=]>::default()),
+            SHR_ASSIGN => Self::ShrEq(<Token![>>=]>::default()),
+            //
             _ => unreachable!("unsupported binary op: {:?}", token),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! This module contains the compiler tests (the initial Go -> Rust step, followed by the
+    //! compiler passes).
+
+    use super::compile;
+    use crate::parser::parse_file;
+    use quote::quote;
+    use syn::parse_quote as rust;
+
+    fn test(go_input: &str, expected: syn::File) {
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = (quote! {#compiled}).to_string();
+        let expected = (quote! {#expected}).to_string();
+        if output != expected {
+            panic!("\n    output: {}\n  expected: {}\n", output, expected);
+        }
+    }
+
+    #[test]
+    fn it_should_support_binary_operators() {
+        test(
+            r#"
+                package main;
+
+                func main() {
+                    i += 2;
+                    i *= 2;
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    i += 2;
+                    i *= 2;
+                }
+            },
+        )
     }
 }

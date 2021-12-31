@@ -13,12 +13,6 @@ path = "fuzz_targets/scanner.rs"
 test = false
 doc = false
 
-[[bin]]
-name = "parser"
-path = "fuzz_targets/parser.rs"
-test = false
-doc = false
-
 [dependencies]
 libfuzzer-sys = "0.4.2"
 gors = { path = "../gors" }

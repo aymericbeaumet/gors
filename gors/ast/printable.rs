@@ -987,6 +987,33 @@ impl<W: Write> Printable<W> for ast::CompositeLit<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::TypeAssertExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.TypeAssertExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lparen: ")?;
+        self.lparen.print(p)?;
+
+        p.prefix()?;
+        p.write("Type: ")?;
+        self.type_.print(p)?;
+
+        p.prefix()?;
+        p.write("Rparen: ")?;
+        self.rparen.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::KeyValueExpr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.KeyValueExpr ")?;
@@ -1003,6 +1030,45 @@ impl<W: Write> Printable<W> for ast::KeyValueExpr<'_> {
         p.prefix()?;
         p.write("Value: ")?;
         self.value.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::SliceExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.SliceExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Low: ")?;
+        self.low.print(p)?;
+
+        p.prefix()?;
+        p.write("High: ")?;
+        self.high.print(p)?;
+
+        p.prefix()?;
+        p.write("Max: ")?;
+        self.max.print(p)?;
+
+        p.prefix()?;
+        p.write("Slice3: ")?;
+        self.slice3.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrack: ")?;
+        self.rbrack.print(p)?;
 
         p.close_bracket()?;
 
@@ -1151,6 +1217,29 @@ impl<W: Write> Printable<W> for ast::RangeStmt<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::ArrayType<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.ArrayType ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Len: ")?;
+        self.len.print(p)?;
+
+        p.prefix()?;
+        p.write("Elt: ")?;
+        self.elt.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::DeclStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.DeclStmt ")?;
@@ -1200,6 +1289,7 @@ impl<W: Write> Printable<W> for ast::ValueSpec<'_> {
 impl<W: Write> Printable<W> for ast::Expr<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         match self {
+            ast::Expr::ArrayType(node) => node.print(p),
             ast::Expr::BasicLit(node) => node.print(p),
             ast::Expr::BinaryExpr(node) => node.print(p),
             ast::Expr::CallExpr(node) => node.print(p),
@@ -1215,8 +1305,10 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::MapType(node) => node.print(p),
             ast::Expr::ParenExpr(node) => node.print(p),
             ast::Expr::SelectorExpr(node) => node.print(p),
+            ast::Expr::SliceExpr(node) => node.print(p),
             ast::Expr::StarExpr(node) => node.print(p),
             ast::Expr::StructType(node) => node.print(p),
+            ast::Expr::TypeAssertExpr(node) => node.print(p),
             ast::Expr::UnaryExpr(node) => node.print(p),
         }
     }
