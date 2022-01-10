@@ -1076,6 +1076,25 @@ impl<W: Write> Printable<W> for ast::SliceExpr<'_> {
     }
 }
 
+impl<W: Write> Printable<W> for ast::DeferStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.DeferStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Defer: ")?;
+        self.defer.print(p)?;
+
+        p.prefix()?;
+        p.write("Call: ")?;
+        self.call.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
 impl<W: Write> Printable<W> for ast::GoStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.GoStmt ")?;
@@ -1417,6 +1436,7 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
             ast::Stmt::BlockStmt(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
+            ast::Stmt::DeferStmt(stmt) => stmt.print(p),
             ast::Stmt::EmptyStmt(stmt) => stmt.print(p),
             ast::Stmt::ExprStmt(stmt) => stmt.print(p),
             ast::Stmt::ForStmt(stmt) => stmt.print(p),

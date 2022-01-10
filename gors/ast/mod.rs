@@ -441,6 +441,13 @@ pub struct ArrayType<'a> {
     pub elt: Box<Expr<'a>>,         // element type
 }
 
+// https://pkg.go.dev/go/ast#DeferStmt
+#[derive(Debug)]
+pub struct DeferStmt<'a> {
+    pub defer: Position<'a>, // position of "defer" keyword
+    pub call: CallExpr<'a>,
+}
+
 // https://pkg.go.dev/go/ast#ChanDir
 #[derive(Debug)]
 pub enum ChanDir {
@@ -488,6 +495,7 @@ pub enum Stmt<'a> {
     AssignStmt(AssignStmt<'a>),
     BlockStmt(BlockStmt<'a>),
     DeclStmt(DeclStmt<'a>),
+    DeferStmt(DeferStmt<'a>),
     EmptyStmt(EmptyStmt<'a>),
     ExprStmt(ExprStmt<'a>),
     ForStmt(ForStmt<'a>),
