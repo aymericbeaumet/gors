@@ -1369,7 +1369,7 @@ impl<'scanner> Parser<'scanner> {
                 ADD | SUB | MUL | AND | XOR | ARROW | NOT // unary operators
             , _) => Some(self.SimpleStmt().required()?),
             (_, GO, _) => Some(ast::Stmt::GoStmt(self.GoStmt().required()?)),
-            // case token.DEFER:
+            (_, DEFER, _) => Some(ast::Stmt::DeferStmt(self.DeferStmt().required()?)),
             (_, RETURN, _) => Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?)),
             //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
             //case token.LBRACE:
@@ -1645,6 +1645,26 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(None)
+    }
+
+    // DeferStmt = "defer" Expression .
+    fn DeferStmt(&mut self) -> Result<Option<ast::DeferStmt<'scanner>>> {
+        log::debug!("Parser::DeferStmt()");
+
+        let defer = match self.token(Token::DEFER)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let call = match self.Expression().required()? {
+            ast::Expr::CallExpr(v) => v,
+            _ => return Err(ParserError::UnexpectedToken),
+        };
+
+        Ok(Some(ast::DeferStmt {
+            defer: defer.0,
+            call,
+        }))
     }
 
     // ReturnStmt = "return" [ ExpressionList ] .
