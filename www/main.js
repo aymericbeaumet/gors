@@ -1,5 +1,4 @@
 import * as gors from 'gors';
-import * as rustfmt from 'rustfmt';
 import * as monaco from 'monaco-editor';
 
 function onDOMContentLoaded() {
@@ -49,7 +48,7 @@ function onDOMContentLoaded() {
   inputModel.onDidChangeContent(() => {
     try {
       const code = inputModel.getValue();
-      const built = gors.build(code, rustfmt.format);
+      const built = gors.build(code);
       outputModel.setValue(built);
       error.innerHTML = '';
     } catch (err) {
