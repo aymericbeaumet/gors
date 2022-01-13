@@ -1,27 +1,10 @@
-use std::fmt;
-
-#[derive(Debug)]
-pub enum CodegenError {
-    Rustfmt(String),
-}
-
-impl std::error::Error for CodegenError {}
-
-impl fmt::Display for CodegenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "codegen error: {:?}", self)
-    }
-}
-
-pub fn fprint<W: std::io::Write, R: Fn(&str) -> String>(
+pub fn fprint<W: std::io::Write>(
     mut w: W,
     file: syn::File,
-    rustfmt: R,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ugly = (quote::quote! { #file }).to_string();
-    let pretty = rustfmt(&ugly);
+    let formatted = prettyplease::unparse(&file);
 
-    for (i, line) in pretty.lines().enumerate() {
+    for (i, line) in formatted.lines().enumerate() {
         if i > 0 && (line.starts_with("fn") || line.starts_with("pub fn")) {
             w.write_all(b"\n")?;
         }
