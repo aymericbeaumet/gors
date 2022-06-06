@@ -586,9 +586,9 @@ checksum = "f2f96b10ec2560088a8e76961b00d47107b3a625fecb76dedb29ee7ccbf98235"
 
 [[package]]
 name = "lock_api"
-version = "0.4.1"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28247cc5a5be2f05fbcd76dd0cf2c7d3b5400cb978a28042abcd4fa0b3f8261c"
+checksum = "88943dd7ef4a2e5a4bfa2753aaab3013e34ce2533d1996fb18ef591e315e2b3b"
 dependencies = [
  "scopeguard",
 ]
@@ -1272,6 +1272,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustfmt"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "rustfmt-nightly",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "rustfmt-config_proc_macro"
 version = "0.2.0"
 source = "git+https://github.com/rust-lang/rustfmt.git?rev=v1.4.37#5292bc55138505d5b6f65b5f411fecba4dfc4efa"
@@ -1319,15 +1328,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "unicode_categories",
-]
-
-[[package]]
-name = "rustfmt-wasm"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "rustfmt-nightly",
- "wasm-bindgen",
 ]
 
 [[package]]
