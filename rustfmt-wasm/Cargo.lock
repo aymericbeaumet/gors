@@ -264,9 +264,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-deque"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f02af974daeee82218205558e51ec8768b48cf524bd01d550abe5573a608285"
+checksum = "c20ff29ded3204c5106278a81a38f4b482636ed4fa1e6cfbeef193291beb29ed"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils 0.7.0",
@@ -1272,6 +1272,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustfmt"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "rustfmt-nightly",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "rustfmt-config_proc_macro"
 version = "0.2.0"
 source = "git+https://github.com/rust-lang/rustfmt.git?rev=v1.4.37#5292bc55138505d5b6f65b5f411fecba4dfc4efa"
@@ -1319,15 +1328,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "unicode_categories",
-]
-
-[[package]]
-name = "rustfmt-wasm"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "rustfmt-nightly",
- "wasm-bindgen",
 ]
 
 [[package]]
