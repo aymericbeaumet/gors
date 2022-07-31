@@ -1,7 +1,7 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
 [gors](https://github.com/aymericbeaumet/gors) is an experimental go toolchain
-written in rust (parser, compiler).
+written in rust (parser, compiler, codegen).
 
 ## Install
 
