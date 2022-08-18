@@ -52,7 +52,7 @@ impl<'a> Serialize for Position<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Token {
     EOF,
     COMMENT,
