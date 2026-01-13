@@ -489,11 +489,73 @@ pub enum Expr<'a> {
     UnaryExpr(UnaryExpr<'a>),
 }
 
+// https://pkg.go.dev/go/ast#SwitchStmt
+#[derive(Debug)]
+pub struct SwitchStmt<'a> {
+    pub switch: Position<'a>,         // position of "switch" keyword
+    pub init: Option<Box<Stmt<'a>>>,  // initialization statement; or nil
+    pub tag: Option<Expr<'a>>,        // tag expression; or nil
+    pub body: BlockStmt<'a>,          // CaseClauses only
+}
+
+// https://pkg.go.dev/go/ast#TypeSwitchStmt
+#[derive(Debug)]
+pub struct TypeSwitchStmt<'a> {
+    pub switch: Position<'a>,        // position of "switch" keyword
+    pub init: Option<Box<Stmt<'a>>>, // initialization statement; or nil
+    pub assign: Box<Stmt<'a>>,       // x := y.(type) or y.(type)
+    pub body: BlockStmt<'a>,         // CaseClauses only
+}
+
+// https://pkg.go.dev/go/ast#CaseClause
+#[derive(Debug)]
+pub struct CaseClause<'a> {
+    pub case: Position<'a>,           // position of "case" or "default" keyword
+    pub list: Option<Vec<Expr<'a>>>,  // list of expressions or types; nil means default case
+    pub colon: Position<'a>,          // position of ":"
+    pub body: Vec<Stmt<'a>>,          // statement list; or nil
+}
+
+// https://pkg.go.dev/go/ast#SelectStmt
+#[derive(Debug)]
+pub struct SelectStmt<'a> {
+    pub select: Position<'a>, // position of "select" keyword
+    pub body: BlockStmt<'a>,  // CommClauses only
+}
+
+// https://pkg.go.dev/go/ast#CommClause
+#[derive(Debug)]
+pub struct CommClause<'a> {
+    pub case: Position<'a>,          // position of "case" or "default" keyword
+    pub comm: Option<Box<Stmt<'a>>>, // send or receive statement; nil means default case
+    pub colon: Position<'a>,         // position of ":"
+    pub body: Vec<Stmt<'a>>,         // statement list; or nil
+}
+
+// https://pkg.go.dev/go/ast#BranchStmt
+#[derive(Debug)]
+pub struct BranchStmt<'a> {
+    pub tok_pos: Position<'a>,      // position of Tok
+    pub tok: Token,                 // keyword token (BREAK, CONTINUE, GOTO, FALLTHROUGH)
+    pub label: Option<Ident<'a>>,   // label name; or nil
+}
+
+// https://pkg.go.dev/go/ast#LabeledStmt
+#[derive(Debug)]
+pub struct LabeledStmt<'a> {
+    pub label: Ident<'a>,
+    pub colon: Position<'a>,    // position of ":"
+    pub stmt: Box<Stmt<'a>>,
+}
+
 // https://pkg.go.dev/go/ast#Stmt
 #[derive(Debug)]
 pub enum Stmt<'a> {
     AssignStmt(AssignStmt<'a>),
     BlockStmt(BlockStmt<'a>),
+    BranchStmt(BranchStmt<'a>),
+    CaseClause(CaseClause<'a>),
+    CommClause(CommClause<'a>),
     DeclStmt(DeclStmt<'a>),
     DeferStmt(DeferStmt<'a>),
     EmptyStmt(EmptyStmt<'a>),
@@ -502,7 +564,11 @@ pub enum Stmt<'a> {
     GoStmt(GoStmt<'a>),
     IfStmt(IfStmt<'a>),
     IncDecStmt(IncDecStmt<'a>),
+    LabeledStmt(LabeledStmt<'a>),
     RangeStmt(RangeStmt<'a>),
     ReturnStmt(ReturnStmt<'a>),
+    SelectStmt(SelectStmt<'a>),
     SendStmt(SendStmt<'a>),
+    SwitchStmt(SwitchStmt<'a>),
+    TypeSwitchStmt(TypeSwitchStmt<'a>),
 }

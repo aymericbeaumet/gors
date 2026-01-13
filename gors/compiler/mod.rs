@@ -51,9 +51,7 @@ impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
 impl From<ast::BlockStmt<'_>> for syn::Block {
     fn from(block_stmt: ast::BlockStmt) -> Self {
         Self {
-            brace_token: syn::token::Brace {
-                span: Span::mixed_site(),
-            },
+            brace_token: syn::token::Brace::default(),
             stmts: block_stmt.list.into_iter().flat_map(Vec::from).collect(),
         }
     }
@@ -100,9 +98,7 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
         Self {
             attrs: vec![],
             func: Box::new(func),
-            paren_token: syn::token::Paren {
-                span: Span::mixed_site(),
-            },
+            paren_token: syn::token::Paren::default(),
             args,
         }
     }
@@ -116,6 +112,32 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::CallExpr(call_expr) => Self::Call(call_expr.into()),
             ast::Expr::Ident(ident) => Self::Path(ident.into()),
             ast::Expr::SelectorExpr(selector_expr) => Self::Path(selector_expr.into()),
+            ast::Expr::ParenExpr(paren_expr) => Self::Paren(syn::ExprParen {
+                attrs: vec![],
+                paren_token: syn::token::Paren::default(),
+                expr: Box::new((*paren_expr.x).into()),
+            }),
+            ast::Expr::UnaryExpr(unary_expr) => Self::Unary(syn::ExprUnary {
+                attrs: vec![],
+                op: match unary_expr.op {
+                    token::Token::SUB => syn::UnOp::Neg(<Token![-]>::default()),
+                    token::Token::NOT => syn::UnOp::Not(<Token![!]>::default()),
+                    token::Token::MUL => syn::UnOp::Deref(<Token![*]>::default()),
+                    _ => unimplemented!("unary op: {:?}", unary_expr.op),
+                },
+                expr: Box::new((*unary_expr.x).into()),
+            }),
+            ast::Expr::IndexExpr(index_expr) => Self::Index(syn::ExprIndex {
+                attrs: vec![],
+                expr: Box::new((*index_expr.x).into()),
+                bracket_token: syn::token::Bracket::default(),
+                index: Box::new((*index_expr.index).into()),
+            }),
+            ast::Expr::StarExpr(star_expr) => Self::Unary(syn::ExprUnary {
+                attrs: vec![],
+                op: syn::UnOp::Deref(<Token![*]>::default()),
+                expr: Box::new((*star_expr.x).into()),
+            }),
             _ => unimplemented!("{:?}", expr),
         }
     }
@@ -195,9 +217,7 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
                     .body
                     .map(|body| body.into())
                     .unwrap_or_else(|| syn::Block {
-                        brace_token: syn::token::Brace {
-                            span: Span::mixed_site(),
-                        },
+                        brace_token: syn::token::Brace::default(),
                         stmts: vec![],
                     }),
             );
@@ -233,9 +253,7 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
                 gt_token: None,
                 where_clause: None,
             },
-            paren_token: syn::token::Paren {
-                span: Span::mixed_site(),
-            },
+            paren_token: syn::token::Paren::default(),
             inputs,
             variadic: None,
             output,
@@ -272,9 +290,7 @@ impl From<ast::Ident<'_>> for syn::ExprPath {
 impl From<&ast::Ident<'_>> for syn::Visibility {
     fn from(name: &ast::Ident) -> Self {
         if name.name == "main" || matches!(name.name.chars().next(), Some('A'..='Z')) {
-            Self::Public(syn::VisPublic {
-                pub_token: <Token![pub]>::default(),
-            })
+            syn::parse_quote! { pub }
         } else {
             Self::Inherited
         }
@@ -338,35 +354,127 @@ impl From<ast::IfStmt<'_>> for syn::ExprIf {
 
 impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
     fn from(stmt: ast::Stmt) -> Self {
-        let semi = <Token![;]>::default();
         match stmt {
             ast::Stmt::AssignStmt(s) => s.into(),
+            ast::Stmt::BlockStmt(s) => vec![syn::Stmt::Expr(
+                syn::Expr::Block(s.into()),
+                None,
+            )],
+            ast::Stmt::BranchStmt(s) => s.into(),
             ast::Stmt::DeclStmt(s) => s.into(),
-            ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Semi(s.x.into(), semi)],
-            ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into())],
-            ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()))],
-            ast::Stmt::IncDecStmt(s) => vec![syn::Stmt::Semi(syn::Expr::AssignOp(s.into()), semi)],
-            ast::Stmt::ReturnStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Return(s.into()))],
+            ast::Stmt::DeferStmt(_) => {
+                // Rust doesn't have defer, would need to use Drop/scope guards
+                // For now, we skip it
+                vec![]
+            }
+            ast::Stmt::EmptyStmt(_) => vec![],
+            ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))],
+            ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into(), None)],
+            ast::Stmt::GoStmt(_) => {
+                // Goroutines would need to be converted to threads/async
+                // For now, we skip it
+                vec![]
+            }
+            ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()), None)],
+            ast::Stmt::IncDecStmt(s) => s.into(),
+            ast::Stmt::LabeledStmt(s) => s.into(),
+            ast::Stmt::ReturnStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)],
+            ast::Stmt::SendStmt(_) => {
+                // Channel send would need different semantics
+                vec![]
+            }
             _ => unimplemented!("{:?}", stmt),
         }
     }
 }
 
-impl From<ast::IncDecStmt<'_>> for syn::ExprAssignOp {
+impl From<ast::IncDecStmt<'_>> for Vec<syn::Stmt> {
     fn from(inc_dec_stmt: ast::IncDecStmt) -> Self {
-        Self {
-            attrs: vec![],
-            op: match inc_dec_stmt.tok {
-                token::Token::INC => syn::BinOp::AddEq(<Token![+=]>::default()),
-                token::Token::DEC => syn::BinOp::SubEq(<Token![-=]>::default()),
-                _ => unreachable!("implementation error"),
-            },
-            left: Box::new(inc_dec_stmt.x.into()),
-            right: Box::new(syn::Expr::Lit(syn::ExprLit {
-                attrs: vec![],
-                lit: syn::Lit::Int(syn::LitInt::new("1", Span::mixed_site())),
-            })),
+        let x: syn::Expr = inc_dec_stmt.x.into();
+        match inc_dec_stmt.tok {
+            token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
+            token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
+            _ => unreachable!("implementation error"),
         }
+    }
+}
+
+impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
+    fn from(branch_stmt: ast::BranchStmt) -> Self {
+        use token::Token::*;
+        match branch_stmt.tok {
+            BREAK => {
+                if let Some(label) = branch_stmt.label {
+                    let label_ident: syn::Ident = label.into();
+                    let lifetime = syn::Lifetime {
+                        apostrophe: Span::call_site(),
+                        ident: label_ident,
+                    };
+                    vec![syn::Stmt::Expr(
+                        syn::Expr::Break(syn::ExprBreak {
+                            attrs: vec![],
+                            break_token: <Token![break]>::default(),
+                            label: Some(lifetime),
+                            expr: None,
+                        }),
+                        Some(<Token![;]>::default()),
+                    )]
+                } else {
+                    vec![syn::parse_quote! { break; }]
+                }
+            }
+            CONTINUE => {
+                if let Some(label) = branch_stmt.label {
+                    let label_ident: syn::Ident = label.into();
+                    let lifetime = syn::Lifetime {
+                        apostrophe: Span::call_site(),
+                        ident: label_ident,
+                    };
+                    vec![syn::Stmt::Expr(
+                        syn::Expr::Continue(syn::ExprContinue {
+                            attrs: vec![],
+                            continue_token: <Token![continue]>::default(),
+                            label: Some(lifetime),
+                        }),
+                        Some(<Token![;]>::default()),
+                    )]
+                } else {
+                    vec![syn::parse_quote! { continue; }]
+                }
+            }
+            // Rust doesn't have goto - would need restructuring
+            GOTO => vec![],
+            // Rust doesn't have fallthrough - switch is match which doesn't fall through
+            FALLTHROUGH => vec![],
+            _ => unreachable!("invalid branch token"),
+        }
+    }
+}
+
+impl From<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
+    fn from(labeled_stmt: ast::LabeledStmt) -> Self {
+        // Convert to Rust labeled block/loop
+        let label_ident: syn::Ident = labeled_stmt.label.into();
+        let inner_stmts: Vec<syn::Stmt> = Vec::from(*labeled_stmt.stmt);
+        
+        // Create a labeled block
+        vec![syn::Stmt::Expr(
+            syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: Some(syn::Label {
+                    name: syn::Lifetime {
+                        apostrophe: Span::call_site(),
+                        ident: label_ident,
+                    },
+                    colon_token: <Token![:]>::default(),
+                }),
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: inner_stmts,
+                },
+            }),
+            None,
+        )]
     }
 }
 
@@ -383,40 +491,72 @@ impl From<ast::ForStmt<'_>> for syn::Expr {
             body.stmts.extend(Vec::from(*post));
         }
 
-        stmts.push(syn::Stmt::Expr(if let Some(cond) = for_stmt.cond {
-            Self::While(syn::ExprWhile {
-                attrs: vec![],
-                label: None,
-                cond: Box::new(cond.into()),
-                body,
-                while_token: <Token![while]>::default(),
-            })
-        } else {
-            Self::Loop(syn::ExprLoop {
-                attrs: vec![],
-                label: None,
-                body,
-                loop_token: <Token![loop]>::default(),
-            })
-        }));
+        stmts.push(syn::Stmt::Expr(
+            if let Some(cond) = for_stmt.cond {
+                Self::While(syn::ExprWhile {
+                    attrs: vec![],
+                    label: None,
+                    cond: Box::new(cond.into()),
+                    body,
+                    while_token: <Token![while]>::default(),
+                })
+            } else {
+                Self::Loop(syn::ExprLoop {
+                    attrs: vec![],
+                    label: None,
+                    body,
+                    loop_token: <Token![loop]>::default(),
+                })
+            },
+            None,
+        ));
 
         Self::Block(syn::ExprBlock {
             attrs: vec![],
             label: None,
             block: syn::Block {
                 stmts,
-                brace_token: syn::token::Brace {
-                    ..Default::default()
-                },
+                brace_token: syn::token::Brace::default(),
             },
         })
     }
 }
 
 impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
-    fn from(_decl_stmt: ast::DeclStmt) -> Self {
-        // TODO
-        vec![]
+    fn from(decl_stmt: ast::DeclStmt) -> Self {
+        let gen_decl = decl_stmt.decl;
+        let mut stmts = vec![];
+        
+        for spec in gen_decl.specs {
+            if let ast::Spec::ValueSpec(value_spec) = spec {
+                // Convert to let statement
+                let names = value_spec.names;
+                let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
+                
+                for name in names {
+                    let ident: syn::Ident = name.into();
+                    
+                    // Get the init value if available
+                    let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
+
+                    // For type annotation, we'd need to pass type_ through properly
+                    // For now, just use the init expression without type annotation
+                    if let Some(init) = init_expr {
+                        stmts.push(syn::parse_quote! {
+                            let mut #ident = #init;
+                        });
+                    } else {
+                        // Variable declared without initialization
+                        // Would need default value or explicit type
+                        stmts.push(syn::parse_quote! {
+                            let mut #ident = Default::default();
+                        });
+                    }
+                }
+            }
+            // Skip type specs and import specs in statement context
+        }
+        stmts
     }
 }
 
@@ -492,7 +632,11 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             return vec![syn::Stmt::Local(syn::Local {
                 attrs: vec![],
                 pat,
-                init: Some((<Token![=]>::default(), Box::new(init))),
+                init: Some(syn::LocalInit {
+                    eq_token: <Token![=]>::default(),
+                    expr: Box::new(init),
+                    diverge: None,
+                }),
                 let_token: <Token![let]>::default(),
                 semi_token: <Token![;]>::default(),
             })];
@@ -539,15 +683,10 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             if assign_stmt.lhs.len() != 1 {
                 panic!("only supports a single lhs element")
             }
-            return vec![syn::Stmt::Semi(
-                syn::Expr::AssignOp(syn::ExprAssignOp {
-                    attrs: vec![],
-                    left: Box::new(assign_stmt.lhs.into_iter().next().unwrap().into()),
-                    op: assign_stmt.tok.into(),
-                    right: Box::new(assign_stmt.rhs.into_iter().next().unwrap().into()),
-                }),
-                <Token![;]>::default(),
-            )];
+            let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
+            let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
+            let op: syn::BinOp = assign_stmt.tok.into();
+            return vec![syn::parse_quote! { #left #op #right; }];
         }
 
         unimplemented!(
@@ -591,16 +730,16 @@ impl From<token::Token> for syn::BinOp {
             GEQ => Self::Ge(<Token![>=]>::default()),
             GTR => Self::Gt(<Token![>]>::default()),
             //
-            ADD_ASSIGN => Self::AddEq(<Token![+=]>::default()),
-            SUB_ASSIGN => Self::SubEq(<Token![-=]>::default()),
-            MUL_ASSIGN => Self::MulEq(<Token![*=]>::default()),
-            QUO_ASSIGN => Self::DivEq(<Token![/=]>::default()),
-            REM_ASSIGN => Self::RemEq(<Token![%=]>::default()),
-            XOR_ASSIGN => Self::BitXorEq(<Token![^=]>::default()),
-            AND_ASSIGN => Self::BitAndEq(<Token![&=]>::default()),
-            OR_ASSIGN => Self::BitOrEq(<Token![|=]>::default()),
-            SHL_ASSIGN => Self::ShlEq(<Token![<<=]>::default()),
-            SHR_ASSIGN => Self::ShrEq(<Token![>>=]>::default()),
+            ADD_ASSIGN => Self::AddAssign(<Token![+=]>::default()),
+            SUB_ASSIGN => Self::SubAssign(<Token![-=]>::default()),
+            MUL_ASSIGN => Self::MulAssign(<Token![*=]>::default()),
+            QUO_ASSIGN => Self::DivAssign(<Token![/=]>::default()),
+            REM_ASSIGN => Self::RemAssign(<Token![%=]>::default()),
+            XOR_ASSIGN => Self::BitXorAssign(<Token![^=]>::default()),
+            AND_ASSIGN => Self::BitAndAssign(<Token![&=]>::default()),
+            OR_ASSIGN => Self::BitOrAssign(<Token![|=]>::default()),
+            SHL_ASSIGN => Self::ShlAssign(<Token![<<=]>::default()),
+            SHR_ASSIGN => Self::ShrAssign(<Token![>>=]>::default()),
             //
             _ => unreachable!("unsupported binary op: {:?}", token),
         }

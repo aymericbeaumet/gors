@@ -12,11 +12,11 @@ name = "gors"
 path = "lib.rs"
 
 [dependencies]
-log = { version = "0.4.14", features = ["release_max_level_warn"] }
-phf = { version = "0.10.1", features = ["macros"] }
-prettyplease = "0.1.0"
-proc-macro2 = "1.0.34"
-quote = "1.0.10"
-serde = "1.0.132"
-syn = { version = "1.0.82", features = ["full", "visit-mut"] }
-unicode-general-category = "0.4.0"
+log = { version = "0.4", features = ["release_max_level_warn"] }
+phf = { version = "0.11", features = ["macros"] }
+prettyplease = "0.2"
+proc-macro2 = "1.0"
+quote = "1.0"
+serde = "1.0"
+syn = { version = "2.0", features = ["full", "visit-mut"] }
+unicode-general-category = "0.6"

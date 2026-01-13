@@ -1,7 +1,7 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 use syn::punctuated::Punctuated;
-use syn::token::{Colon2, Comma};
+use syn::token::Comma;
 use syn::visit_mut::{self, VisitMut};
 use syn::{Expr, PathSegment, Token};
 
@@ -28,9 +28,7 @@ impl VisitMut for InlineFmt {
                             },
                             bang_token: <Token![!]>::default(),
                             tokens: tokens(&call.args),
-                            delimiter: syn::MacroDelimiter::Paren(syn::token::Paren {
-                                span: Span::mixed_site(),
-                            }),
+                            delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
                         },
                     });
                 }
@@ -39,7 +37,7 @@ impl VisitMut for InlineFmt {
     }
 }
 
-fn segments() -> Punctuated<PathSegment, Colon2> {
+fn segments() -> Punctuated<PathSegment, Token![::]> {
     let mut segments = syn::punctuated::Punctuated::new();
     segments.push(syn::PathSegment {
         ident: quote::format_ident!("std"),

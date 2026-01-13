@@ -554,7 +554,8 @@ impl<'scanner> Parser<'scanner> {
                     primary_expr = self.Arguments(primary_expr).required()?;
                 }
                 Token::LBRACE if self.expr_level >= 0 => {
-                    unimplemented!("composite literal");
+                    // Composite literal with type already parsed
+                    primary_expr = self.LiteralValue(primary_expr).required()?;
                 }
                 _ => break,
             }
@@ -563,8 +564,42 @@ impl<'scanner> Parser<'scanner> {
         Ok(Some(primary_expr))
     }
 
+    // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
+    // ElementList  = KeyedElement { "," KeyedElement } .
+    // Used when type is already known from PrimaryExpr
+    fn LiteralValue(&mut self, type_: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::LiteralValue()");
+
+        let lbrace = match self.token(Token::LBRACE)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
+        if let Some(elts) = elts.as_mut() {
+            while self.token(Token::COMMA)?.is_some() {
+                if let Some(k) = self.KeyedElement()? {
+                    elts.push(k);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(Some(ast::Expr::CompositeLit(ast::CompositeLit {
+            type_: Box::new(type_),
+            lbrace: lbrace.0,
+            elts,
+            rbrace: rbrace.0,
+            incomplete: false,
+        })))
+    }
+
     // Selector      = "." identifier .
     // TypeAssertion = "." "(" Type ")" .
+    // TypeSwitchGuard = "." "(" "type" ")" .
     fn Selector_or_TypeAssertion(
         &mut self,
         x: ast::Expr<'scanner>,
@@ -576,6 +611,20 @@ impl<'scanner> Parser<'scanner> {
         }
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
+            // Check for type switch guard: x.(type)
+            if let Some(type_keyword) = self.token(Token::TYPE)? {
+                let rparen = self.token(Token::RPAREN).required()?;
+                return Ok(Some(ast::Expr::TypeAssertExpr(ast::TypeAssertExpr {
+                    x: Box::new(x),
+                    lparen: lparen.0,
+                    type_: Box::new(ast::Expr::Ident(ast::Ident {
+                        name_pos: type_keyword.0,
+                        name: "type",
+                        obj: None,
+                    })),
+                    rparen: rparen.0,
+                })));
+            }
             let type_ = self.Type().required()?;
             let rparen = self.token(Token::RPAREN).required()?;
             return Ok(Some(ast::Expr::TypeAssertExpr(ast::TypeAssertExpr {
@@ -860,7 +909,7 @@ impl<'scanner> Parser<'scanner> {
             )),
             Token::STRUCT => Some(ast::Expr::StructType(self.StructType().required()?)),
             Token::MUL => Some(ast::Expr::StarExpr(self.PointerType().required()?)),
-            // TODO: FunctionType
+            Token::FUNC => Some(ast::Expr::FuncType(self.FunctionType().required()?)),
             Token::INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
             Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
             Token::CHAN => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
@@ -968,6 +1017,20 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(None)
+    }
+
+    // FunctionType = "func" Signature .
+    fn FunctionType(&mut self) -> Result<Option<ast::FuncType<'scanner>>> {
+        log::debug!("Parser::FunctionType()");
+
+        let func = match self.token(Token::FUNC)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut signature = self.Signature(None).required()?;
+        signature.func = Some(func.0);
+        Ok(Some(signature))
     }
 
     // ElementType = Type .
@@ -1367,15 +1430,18 @@ impl<'scanner> Parser<'scanner> {
                 IDENT | INT | FLOAT | IMAG | CHAR | STRING | FUNC | LPAREN | // operands
                 LBRACK | STRUCT | MAP | CHAN | INTERFACE | // composite types
                 ADD | SUB | MUL | AND | XOR | ARROW | NOT // unary operators
-            , _) => Some(self.SimpleStmt().required()?),
+            , _) => Some(self.LabeledStmt_or_SimpleStmt().required()?),
             (_, GO, _) => Some(ast::Stmt::GoStmt(self.GoStmt().required()?)),
             (_, DEFER, _) => Some(ast::Stmt::DeferStmt(self.DeferStmt().required()?)),
             (_, RETURN, _) => Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?)),
-            //case token.BREAK, token.CONTINUE, token.GOTO, token.FALLTHROUGH:
-            //case token.LBRACE:
+            (_, BREAK, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
+            (_, CONTINUE, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
+            (_, GOTO, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
+            (_, FALLTHROUGH, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
+            (_, LBRACE, _) => Some(ast::Stmt::BlockStmt(self.Block().required()?)),
             (_, IF, _) => Some(ast::Stmt::IfStmt(self.IfStmt().required()?)),
-            //case token.SWITCH:
-            //case token.SELECT:
+            (_, SWITCH, _) => Some(self.SwitchStmt().required()?),
+            (_, SELECT, _) => Some(ast::Stmt::SelectStmt(self.SelectStmt().required()?)),
             (_, FOR, _) => Some(self.ForStmt().required()?),
             (_, SEMICOLON, lit) => Some(ast::Stmt::EmptyStmt(ast::EmptyStmt{
                 semicolon: self.token(SEMICOLON).required()?.0,
@@ -1682,6 +1748,289 @@ impl<'scanner> Parser<'scanner> {
         }
     }
 
+    // BranchStmt = ( "break" | "continue" | "goto" | "fallthrough" ) [ Label ] .
+    // Label = identifier .
+    fn BranchStmt(&mut self) -> Result<Option<ast::BranchStmt<'scanner>>> {
+        log::debug!("Parser::BranchStmt()");
+
+        use Token::*;
+        let tok_step = match self.current_step.1 {
+            BREAK | CONTINUE | GOTO | FALLTHROUGH => {
+                let step = self.current_step;
+                self.next()?;
+                step
+            }
+            _ => return Ok(None),
+        };
+
+        let label = if tok_step.1 != FALLTHROUGH {
+            self.identifier()?
+        } else {
+            None
+        };
+
+        Ok(Some(ast::BranchStmt {
+            tok_pos: tok_step.0,
+            tok: tok_step.1,
+            label,
+        }))
+    }
+
+    // SwitchStmt = ExprSwitchStmt | TypeSwitchStmt .
+    // ExprSwitchStmt = "switch" [ SimpleStmt ";" ] [ Expression ] "{" { ExprCaseClause } "}" .
+    // TypeSwitchStmt = "switch" [ SimpleStmt ";" ] TypeSwitchGuard "{" { TypeCaseClause } "}" .
+    // TypeSwitchGuard = [ identifier ":=" ] PrimaryExpr "." "(" "type" ")" .
+    fn SwitchStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::SwitchStmt()");
+
+        let switch = match self.token(Token::SWITCH)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut init: Option<ast::Stmt<'scanner>> = None;
+        let mut tag: Option<ast::Expr<'scanner>> = None;
+
+        // Parse optional init and/or tag
+        if self.current_step.1 != Token::LBRACE {
+            if let Some(simple_stmt) = self.SimpleStmt()? {
+                if self.token(Token::SEMICOLON)?.is_some() {
+                    init = Some(simple_stmt);
+                    // Check for type switch guard or expression
+                    if self.current_step.1 != Token::LBRACE {
+                        if let Some(expr_or_stmt) = self.SimpleStmt()? {
+                            // Check if this is a type switch guard
+                            if let ast::Stmt::ExprStmt(expr_stmt) = &expr_or_stmt {
+                                if is_type_switch_guard(&expr_stmt.x) {
+                                    let body = self.parse_switch_body(true)?;
+                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                        switch: switch.0,
+                                        init: init.map(Box::new),
+                                        assign: Box::new(expr_or_stmt),
+                                        body,
+                                    })));
+                                }
+                            }
+                            if let ast::Stmt::AssignStmt(ref assign) = expr_or_stmt {
+                                if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                                    let body = self.parse_switch_body(true)?;
+                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                        switch: switch.0,
+                                        init: init.map(Box::new),
+                                        assign: Box::new(expr_or_stmt),
+                                        body,
+                                    })));
+                                }
+                            }
+                            // It's an expression switch
+                            if let ast::Stmt::ExprStmt(expr_stmt) = expr_or_stmt {
+                                tag = Some(expr_stmt.x);
+                            }
+                        }
+                    }
+                } else {
+                    // Check if simple_stmt is a type switch guard
+                    if let ast::Stmt::ExprStmt(expr_stmt) = &simple_stmt {
+                        if is_type_switch_guard(&expr_stmt.x) {
+                            let body = self.parse_switch_body(true)?;
+                            return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                switch: switch.0,
+                                init: None,
+                                assign: Box::new(simple_stmt),
+                                body,
+                            })));
+                        }
+                    }
+                    if let ast::Stmt::AssignStmt(ref assign) = simple_stmt {
+                        if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                            let body = self.parse_switch_body(true)?;
+                            return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                switch: switch.0,
+                                init: None,
+                                assign: Box::new(simple_stmt),
+                                body,
+                            })));
+                        }
+                    }
+                    // It's an expression switch tag
+                    if let ast::Stmt::ExprStmt(expr_stmt) = simple_stmt {
+                        tag = Some(expr_stmt.x);
+                    }
+                }
+            }
+        }
+
+        let body = self.parse_switch_body(false)?;
+        Ok(Some(ast::Stmt::SwitchStmt(ast::SwitchStmt {
+            switch: switch.0,
+            init: init.map(Box::new),
+            tag,
+            body,
+        })))
+    }
+
+    fn parse_switch_body(&mut self, is_type_switch: bool) -> Result<ast::BlockStmt<'scanner>> {
+        let lbrace = self.token(Token::LBRACE).required()?;
+
+        let mut list = vec![];
+        while let Some(case_clause) = self.CaseClause(is_type_switch)? {
+            list.push(ast::Stmt::CaseClause(case_clause));
+        }
+
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(ast::BlockStmt {
+            lbrace: lbrace.0,
+            list,
+            rbrace: rbrace.0,
+        })
+    }
+
+    // ExprCaseClause = ExprSwitchCase ":" StatementList .
+    // ExprSwitchCase = "case" ExpressionList | "default" .
+    // TypeCaseClause = TypeSwitchCase ":" StatementList .
+    // TypeSwitchCase = "case" TypeList | "default" .
+    fn CaseClause(&mut self, _is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
+        log::debug!("Parser::CaseClause()");
+
+        let case = if let Some(case) = self.token(Token::CASE)? {
+            case
+        } else if let Some(default) = self.token(Token::DEFAULT)? {
+            let colon = self.token(Token::COLON).required()?;
+            let body = self.StatementList()?;
+            return Ok(Some(ast::CaseClause {
+                case: default.0,
+                list: None,
+                colon: colon.0,
+                body,
+            }));
+        } else {
+            return Ok(None);
+        };
+
+        let list = self.ExpressionList()?;
+        let colon = self.token(Token::COLON).required()?;
+        let body = self.StatementList()?;
+
+        Ok(Some(ast::CaseClause {
+            case: case.0,
+            list,
+            colon: colon.0,
+            body,
+        }))
+    }
+
+    // StatementList = { Statement ";" } .
+    fn StatementList(&mut self) -> Result<Vec<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::StatementList()");
+
+        let mut list = vec![];
+        while let Some(stmt) = self.Statement()? {
+            list.push(stmt);
+            if self.token(Token::SEMICOLON)?.is_none() {
+                break;
+            }
+        }
+        Ok(list)
+    }
+
+    // SelectStmt = "select" "{" { CommClause } "}" .
+    fn SelectStmt(&mut self) -> Result<Option<ast::SelectStmt<'scanner>>> {
+        log::debug!("Parser::SelectStmt()");
+
+        let select = match self.token(Token::SELECT)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let lbrace = self.token(Token::LBRACE).required()?;
+
+        let mut list = vec![];
+        while let Some(comm_clause) = self.CommClause()? {
+            list.push(ast::Stmt::CommClause(comm_clause));
+        }
+
+        let rbrace = self.token(Token::RBRACE).required()?;
+
+        Ok(Some(ast::SelectStmt {
+            select: select.0,
+            body: ast::BlockStmt {
+                lbrace: lbrace.0,
+                list,
+                rbrace: rbrace.0,
+            },
+        }))
+    }
+
+    // CommClause = CommCase ":" StatementList .
+    // CommCase   = "case" ( SendStmt | RecvStmt ) | "default" .
+    // RecvStmt   = [ ExpressionList "=" | IdentifierList ":=" ] RecvExpr .
+    // RecvExpr   = Expression .
+    fn CommClause(&mut self) -> Result<Option<ast::CommClause<'scanner>>> {
+        log::debug!("Parser::CommClause()");
+
+        let case = if let Some(case) = self.token(Token::CASE)? {
+            case
+        } else if let Some(default) = self.token(Token::DEFAULT)? {
+            let colon = self.token(Token::COLON).required()?;
+            let body = self.StatementList()?;
+            return Ok(Some(ast::CommClause {
+                case: default.0,
+                comm: None,
+                colon: colon.0,
+                body,
+            }));
+        } else {
+            return Ok(None);
+        };
+
+        // Parse send/recv statement
+        let comm = self.SimpleStmt()?;
+        let colon = self.token(Token::COLON).required()?;
+        let body = self.StatementList()?;
+
+        Ok(Some(ast::CommClause {
+            case: case.0,
+            comm: comm.map(Box::new),
+            colon: colon.0,
+            body,
+        }))
+    }
+
+    // LabeledStmt = Label ":" Statement .
+    // Label = identifier .
+    // Or SimpleStmt if not a labeled statement
+    fn LabeledStmt_or_SimpleStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::LabeledStmt_or_SimpleStmt()");
+
+        // Try to parse as SimpleStmt first
+        let stmt = self.SimpleStmt()?;
+
+        // Check if it's a labeled statement (identifier followed by colon)
+        if let Some(ast::Stmt::ExprStmt(ref expr_stmt)) = stmt {
+            if let ast::Expr::Ident(ref ident) = expr_stmt.x {
+                if let Some(colon) = self.token(Token::COLON)? {
+                    let label = ast::Ident {
+                        name_pos: ident.name_pos,
+                        name: ident.name,
+                        obj: None,
+                    };
+                    let inner_stmt = self.Statement()?;
+                    return Ok(Some(ast::Stmt::LabeledStmt(ast::LabeledStmt {
+                        label,
+                        colon: colon.0,
+                        stmt: Box::new(inner_stmt.unwrap_or(ast::Stmt::EmptyStmt(ast::EmptyStmt {
+                            semicolon: colon.0,
+                            implicit: true,
+                        }))),
+                    })));
+                }
+            }
+        }
+
+        Ok(stmt)
+    }
+
     // Receiver = Parameters .
     fn Receiver(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
         log::debug!("Parser::Receiver()");
@@ -1922,4 +2271,17 @@ impl<'scanner> Parser<'scanner> {
         }
         Err(ParserError::UnexpectedEndOfFile)
     }
+}
+
+/// Check if an expression is a type switch guard: x.(type)
+fn is_type_switch_guard(expr: &ast::Expr) -> bool {
+    if let ast::Expr::TypeAssertExpr(type_assert) = expr {
+        // Check if type_ is nil (which represents .(type))
+        // In Go's AST, a type switch guard has a nil Type field
+        // We represent this as a special Ident "type"
+        if let ast::Expr::Ident(ident) = type_assert.type_.as_ref() {
+            return ident.name == "type";
+        }
+    }
+    false
 }

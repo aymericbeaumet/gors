@@ -17,68 +17,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Parser)]
-#[clap(
+#[command(
     version = "1.0",
     name = "gors",
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
     about = "gors is a go toolbelt written in rust; providing a parser and rust transpiler"
 )]
 struct Opts {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     subcmd: SubCommand,
 }
 
 #[derive(Parser)]
 enum SubCommand {
-    #[clap(about = "Parse the named Go file and print the AST")]
+    /// Parse the named Go file and print the AST
     Ast(Ast),
-    #[clap(about = "Compile the named Go file")]
+    /// Compile the named Go file
     Build(Build),
-    #[clap(about = "Compile and run the named Go file")]
+    /// Compile and run the named Go file
     Run(Run),
-    #[clap(about = "Scan the named Go file and print the tokens")]
+    /// Scan the named Go file and print the tokens
     Tokens(Tokens),
 }
 
 #[derive(Parser)]
 struct Ast {
-    #[clap(name = "file", help = "The file to parse")]
+    /// The file to parse
     file: String,
 }
 
 #[derive(Parser)]
 struct Build {
-    #[clap(name = "file", help = "The file to build")]
+    /// The file to build
     file: String,
-    #[clap(
-        long,
-        name = "release",
-        help = "Build in release mode, with optimizations"
-    )]
+    /// Build in release mode, with optimizations
+    #[arg(long)]
     release: bool,
-    #[clap(
-        long,
-        name = "emit",
-        help = "Type of output for the compiler to emit:\nrust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir"
-    )]
+    /// Type of output for the compiler to emit: rust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir
+    #[arg(long)]
     emit: Option<String>,
 }
 
 #[derive(Parser)]
 struct Run {
-    #[clap(name = "file", help = "The file to run")]
+    /// The file to run
     file: String,
-    #[clap(
-        long,
-        name = "release",
-        help = "Build in release mode, with optimizations"
-    )]
+    /// Build in release mode, with optimizations
+    #[arg(long)]
     release: bool,
 }
 
 #[derive(Parser)]
 struct Tokens {
-    #[clap(name = "file", help = "The file to lex")]
+    /// The file to lex
     file: String,
 }
 
@@ -106,7 +97,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let tmp_dir = tempdir::TempDir::new("gors")?;
+    let tmp_dir = tempfile::tempdir()?;
     let source_file = tmp_dir.path().join("main.rs");
     let mut w = std::fs::File::create(&source_file)?;
     gors::codegen::fprint(&mut w, compiled)?;
@@ -130,7 +121,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp_dir = tempdir::TempDir::new("gors")?;
+    let tmp_dir = tempfile::tempdir()?;
     let out_rust = tmp_dir.path().join("main.rs");
     let out_bin = tmp_dir.path().join("main");
     let mut w = std::fs::File::create(&out_rust)?;
