@@ -27,6 +27,26 @@ fn parser() {
     RUNNER.test("ast", &["files", "programs"]);
 }
 
+/// Test specific files passed via GORS_TEST_FILES environment variable.
+/// Files should be separated by newlines or commas.
+/// Example: GORS_TEST_FILES="tests/files/go/test/foo.go,tests/files/go/test/bar.go" cargo test specific_files
+#[test]
+fn specific_files() {
+    if let Ok(files) = std::env::var("GORS_TEST_FILES") {
+        let files: Vec<String> = files
+            .split(|c| c == '\n' || c == ',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if !files.is_empty() {
+            // Use the command from GORS_TEST_CMD env var, defaulting to "ast"
+            let command = std::env::var("GORS_TEST_CMD").unwrap_or_else(|_| "ast".to_string());
+            RUNNER.test_files(&command, files);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct TestRunner<'a> {
     gors_bin: &'a str,
@@ -49,38 +69,11 @@ impl<'a> TestRunner<'a> {
             .wait()
             .unwrap();
 
-        let (gors_bin, pattern, thread_count) = match std::option_env!("CI") {
-            Some("true") => {
-                println!("\n| building release gors binary...");
-                Command::new("cargo")
-                    .args(["build", "--release"])
-                    .current_dir(&go_dir)
-                    .spawn()
-                    .unwrap()
-                    .wait()
-                    .unwrap();
-
-                println!("| initializing submodules...");
-                Command::new("git")
-                    .args(["submodule", "update", "--init", "--depth=1"])
-                    .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
-                    .spawn()
-                    .unwrap()
-                    .wait()
-                    .unwrap();
-
-                (
-                    concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/gors"),
-                    "**/*.go",
-                    num_cpus::get(),
-                )
-            }
-            _ => (
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../target/debug/gors"),
-                "*.go",
-                1,
-            ),
-        };
+        // Always test all .go files recursively (including submodules)
+        // Run `make setup` first to initialize submodules
+        let gors_bin = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/gors");
+        let pattern = "**/*.go";
+        let thread_count = num_cpus::get();
 
         Self {
             gors_bin,
@@ -104,7 +97,14 @@ impl<'a> TestRunner<'a> {
                 }
             })
             .collect();
+        self.test_files(command, go_files);
+    }
+
+    fn test_files(&self, command: &str, go_files: Vec<String>) {
         println!("\n| found {} go files", go_files.len());
+        if go_files.is_empty() {
+            return;
+        }
 
         let (go_elapsed, rust_elapsed) = thread::scope(|scope| {
             #[allow(clippy::needless_collect)] // We collect to start the threads in parallel
@@ -117,7 +117,7 @@ impl<'a> TestRunner<'a> {
                         chunk.iter().fold(
                             (Duration::new(0, 0), Duration::new(0, 0)),
                             |acc, go_file| {
-                                let args = &[command, go_file];
+                                let args = &[command, go_file.as_str()];
                                 let (go_output, go_elapsed) = exec(self.gors_go_bin, args).unwrap();
                                 let (rust_output, rust_elapsed) =
                                     exec(self.gors_bin, args).unwrap();
@@ -184,13 +184,10 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     Ok((output, after.checked_duration_since(before).unwrap()))
 }
 
-// Some files cannot successfully be parsed by the Go compiler. So we exclude them from the
-// testing/benchmarking for now.
+// Files that cannot be parsed by the Go compiler (intentionally invalid test data).
+// These files are used to test error handling in the Go compiler.
 static IGNORE_FILES: Set<&'static str> = phf_set! {
-    "tests/files/go/src/cmd/api/testdata/src/pkg/p4/p4.go",
-    "tests/files/go/src/constraints/constraints.go",
-    "tests/files/go/src/go/doc/testdata/generics.go",
-    "tests/files/go/src/go/parser/testdata/issue42951/not_a_file.go",
+    // Go compiler test files with intentional syntax errors
     "tests/files/go/test/bombad.go",
     "tests/files/go/test/char_lit1.go",
     "tests/files/go/test/fixedbugs/bug014.go",
@@ -205,35 +202,9 @@ static IGNORE_FILES: Set<&'static str> = phf_set! {
     "tests/files/go/test/fixedbugs/issue32133.go",
     "tests/files/go/test/fixedbugs/issue4405.go",
     "tests/files/go/test/fixedbugs/issue9036.go",
-    "tests/files/go/test/typeparam/absdiff.go",
-    "tests/files/go/test/typeparam/absdiffimp.dir/a.go",
-    "tests/files/go/test/typeparam/append.go",
-    "tests/files/go/test/typeparam/boundmethod.go",
-    "tests/files/go/test/typeparam/builtins.go",
-    "tests/files/go/test/typeparam/double.go",
-    "tests/files/go/test/typeparam/fact.go",
-    "tests/files/go/test/typeparam/issue39755.go",
-    "tests/files/go/test/typeparam/issue48137.go",
-    "tests/files/go/test/typeparam/issue48424.go",
-    "tests/files/go/test/typeparam/issue48453.go",
-    "tests/files/go/test/typeparam/issue48538.go",
-    "tests/files/go/test/typeparam/issue48609.go",
-    "tests/files/go/test/typeparam/issue48711.go",
-    "tests/files/go/test/typeparam/issue49295.go",
-    "tests/files/go/test/typeparam/list.go",
-    "tests/files/go/test/typeparam/listimp.dir/a.go",
-    "tests/files/go/test/typeparam/min.go",
-    "tests/files/go/test/typeparam/minimp.dir/a.go",
-    "tests/files/go/test/typeparam/nested.go",
-    "tests/files/go/test/typeparam/ordered.go",
-    "tests/files/go/test/typeparam/orderedmap.go",
-    "tests/files/go/test/typeparam/orderedmapsimp.dir/a.go",
-    "tests/files/go/test/typeparam/settable.go",
-    "tests/files/go/test/typeparam/sliceimp.dir/a.go",
-    "tests/files/go/test/typeparam/sliceimp.dir/main.go",
-    "tests/files/go/test/typeparam/slices.go",
-    "tests/files/go/test/typeparam/smallest.go",
-    "tests/files/go/test/typeparam/typelist.go",
+    "tests/files/go/test/slice3err.go",
+    // Intentionally missing file (referenced in Go parser testdata)
+    "tests/files/go/src/go/parser/testdata/issue42951/not_a_file.go",
 };
 
 // https://github.com/mitsuhiko/similar/blob/main/examples/terminal-inline.rs

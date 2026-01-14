@@ -107,6 +107,7 @@ pub enum Token {
     GEQ,      // >=
     DEFINE,   // :=
     ELLIPSIS, // ...
+    TILDE,    // ~ (Go 1.18+ generics: underlying type constraint)
 
     LPAREN, // (
     LBRACK, // [
@@ -249,6 +250,7 @@ impl From<&Token> for &'static str {
             GEQ => ">=",
             DEFINE => ":=",
             ELLIPSIS => "...",
+            TILDE => "~",
 
             LPAREN => "(",
             LBRACK => "[",

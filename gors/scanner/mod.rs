@@ -48,6 +48,8 @@ pub struct Scanner<'a> {
     hide_column: bool,
     insert_semi: bool,
     pending_line_info: Option<LineInfo<'a>>,
+    pending_semi: bool, // true if a semicolon should be returned immediately on next scan
+    pending_semi_pos: Option<(usize, usize, usize)>, // (offset, line, column) for semicolon after multi-line comment
 }
 
 type LineInfo<'a> = (Option<&'a str>, usize, Option<usize>, bool);
@@ -74,6 +76,8 @@ impl<'a> Scanner<'a> {
             hide_column: false,
             insert_semi: false,
             pending_line_info: None,
+            pending_semi: false,
+            pending_semi_pos: None,
         };
         s.next(); // read the first character
         s
@@ -81,6 +85,23 @@ impl<'a> Scanner<'a> {
 
     #[allow(clippy::cognitive_complexity)] // Allow complex scan function
     pub fn scan(&mut self) -> Result<Step<'a>> {
+        // Check for pending semicolon (from multi-line comment with newlines)
+        if self.pending_semi {
+            self.pending_semi = false;
+            let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take() {
+                Position {
+                    directory: self.directory,
+                    file: self.file,
+                    offset,
+                    line,
+                    column: if self.hide_column { 0 } else { column },
+                }
+            } else {
+                self.position()
+            };
+            return Ok((pos, Token::SEMICOLON, "\n"));
+        }
+
         let insert_semi = self.insert_semi;
         self.insert_semi = false;
 
@@ -95,7 +116,19 @@ impl<'a> Scanner<'a> {
                 '\n' => {
                     self.next();
                     if insert_semi {
-                        return Ok((self.position(), Token::SEMICOLON, "\n"));
+                        let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take()
+                        {
+                            Position {
+                                directory: self.directory,
+                                file: self.file,
+                                offset,
+                                line,
+                                column: if self.hide_column { 0 } else { column },
+                            }
+                        } else {
+                            self.position()
+                        };
+                        return Ok((pos, Token::SEMICOLON, "\n"));
                     }
                 }
 
@@ -155,16 +188,22 @@ impl<'a> Scanner<'a> {
                         return Ok((self.position(), Token::QUO_ASSIGN, ""));
                     }
                     Some('/') => {
+                        // Line comments: scan the comment first, preserve semicolon insertion
+                        // for the newline that follows. This matches Go's scanner behavior.
                         if insert_semi {
-                            return Ok((self.position(), Token::SEMICOLON, "\n"));
+                            self.insert_semi = true;
                         }
                         return self.scan_line_comment();
                     }
                     Some('*') => {
-                        if insert_semi && self.find_line_end() {
-                            return Ok((self.position(), Token::SEMICOLON, "\n"));
-                        }
-                        return self.scan_general_comment();
+                        // General comments: scan the comment first, preserve semicolon insertion
+                        // if this comment extends to end of line. This matches Go's scanner behavior.
+                        let track_semi_pos = insert_semi && self.find_line_end();
+                        // Note: we don't set self.insert_semi here - scan_general_comment will
+                        // set pending_semi if the comment contains newlines, which handles the
+                        // semicolon insertion. If the comment doesn't contain newlines but
+                        // find_line_end() returned true, we need to preserve insert_semi.
+                        return self.scan_general_comment(track_semi_pos);
                     }
                     _ => {
                         self.next();
@@ -342,6 +381,11 @@ impl<'a> Scanner<'a> {
                     return Ok((self.position(), Token::RBRACE, ""));
                 }
 
+                '~' => {
+                    self.next();
+                    return Ok((self.position(), Token::TILDE, ""));
+                }
+
                 ';' => {
                     self.next();
                     return Ok((self.position(), Token::SEMICOLON, ";"));
@@ -384,7 +428,18 @@ impl<'a> Scanner<'a> {
 
         self.reset_start();
         if insert_semi {
-            Ok((self.position(), Token::SEMICOLON, "\n"))
+            let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take() {
+                Position {
+                    directory: self.directory,
+                    file: self.file,
+                    offset,
+                    line,
+                    column: if self.hide_column { 0 } else { column },
+                }
+            } else {
+                self.position()
+            };
+            Ok((pos, Token::SEMICOLON, "\n"))
         } else {
             Ok((self.position(), Token::EOF, ""))
         }
@@ -554,16 +609,33 @@ impl<'a> Scanner<'a> {
     }
 
     // https://golang.org/ref/spec#Comments
-    fn scan_general_comment(&mut self) -> Result<Step<'a>> {
+    fn scan_general_comment(&mut self, track_semi_pos: bool) -> Result<Step<'a>> {
         self.next();
         self.next();
 
+        let mut first_newline_pos: Option<(usize, usize, usize)> = None;
+
         while let Some(c) = self.current_char {
+            // Track position of first newline for semicolon insertion
+            if track_semi_pos && c == '\n' && first_newline_pos.is_none() {
+                first_newline_pos = Some((self.offset, self.line, self.column));
+            }
+
             match c {
                 '*' => {
                     self.next();
                     if matches!(self.current_char, Some('/')) {
                         self.next();
+
+                        // If the comment contained newlines, schedule a semicolon to be returned next
+                        if let Some(pos) = first_newline_pos {
+                            self.pending_semi = true;
+                            self.pending_semi_pos = Some(pos);
+                        } else if track_semi_pos {
+                            // Comment doesn't contain newlines but find_line_end() was true,
+                            // meaning there's a newline after the comment. Preserve insert_semi.
+                            self.insert_semi = true;
+                        }
 
                         let pos = self.position();
                         let lit = self.literal();
@@ -948,12 +1020,74 @@ static KEYWORDS: Map<&'static str, Token> = phf_map! {
 
 #[cfg(test)]
 mod tests {
-    use super::Scanner;
+    use super::{Scanner, Token};
 
     #[test] // fuzz
     fn it_should_return_an_error_on_missing_line_number() {
         let input = "/*line :*/";
         let mut out: Vec<_> = Scanner::new(file!(), input).into_iter().collect();
         assert!(out.pop().unwrap().is_err());
+    }
+
+    #[test]
+    fn it_should_insert_semicolon_after_multiline_comment_with_newlines() {
+        // When an identifier is followed by a multi-line comment containing newlines,
+        // and then a non-newline token, a semicolon should be inserted after the comment
+        // with position at the first newline inside the comment.
+        let input = "x /* comment\n */y";
+        let tokens: Vec<_> = Scanner::new("test.go", input)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .map(|(pos, tok, lit)| (pos.line, pos.column, tok, lit))
+            .collect();
+
+        // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1, column 13), IDENT "y", SEMICOLON, EOF
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens[1].2, Token::COMMENT);
+        assert_eq!(tokens[2], (1, 13, Token::SEMICOLON, "\n")); // Position at first newline
+        assert_eq!(tokens[3].2, Token::IDENT);
+        assert_eq!(tokens[4].2, Token::SEMICOLON); // Semicolon after y at EOF
+        assert_eq!(tokens[5].2, Token::EOF);
+    }
+
+    #[test]
+    fn it_should_insert_semicolon_after_multiline_comment_followed_by_rparen() {
+        // Test case from issue14520.go: identifier followed by multi-line comment, then )
+        let input = "x /* comment\n\n*/)";
+        let tokens: Vec<_> = Scanner::new("test.go", input)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .map(|(pos, tok, lit)| (pos.line, pos.column, tok, lit))
+            .collect();
+
+        // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1), RPAREN, SEMICOLON, EOF
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens[1].2, Token::COMMENT);
+        assert_eq!(tokens[2].0, 1); // Semicolon at line 1
+        assert_eq!(tokens[2].2, Token::SEMICOLON);
+        assert_eq!(tokens[3].2, Token::RPAREN);
+    }
+
+    #[test]
+    fn it_should_insert_semicolon_after_multiline_comment_without_internal_newlines() {
+        // When a multi-line comment has no internal newlines but is followed by a newline,
+        // semicolon should be inserted with normal position (after the comment).
+        let input = "x /* comment */\ny";
+        let tokens: Vec<_> = Scanner::new("test.go", input)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .map(|(pos, tok, lit)| (pos.line, pos.column, tok, lit))
+            .collect();
+
+        // Expected: IDENT "x", COMMENT, SEMICOLON, IDENT "y", SEMICOLON, EOF
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens[1].2, Token::COMMENT);
+        assert_eq!(tokens[2].2, Token::SEMICOLON);
+        assert_eq!(tokens[3].2, Token::IDENT);
+        assert_eq!(tokens[4].2, Token::SEMICOLON); // Semicolon after y at EOF
+        assert_eq!(tokens[5].2, Token::EOF);
     }
 }

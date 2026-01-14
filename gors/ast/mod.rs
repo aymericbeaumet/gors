@@ -46,10 +46,13 @@ pub struct File<'a> {
     pub package: Position<'a>,     // position of "package" keyword
     pub name: Ident<'a>,           // package name
     pub decls: Vec<Decl<'a>>,      // top-level declarations; or nil
+    pub file_start: Position<'a>,  // start of entire file
+    pub file_end: Position<'a>,    // end of entire file
     pub scope: Option<Scope<'a>>,  // package scope (this file only)
     //pub imports: Vec<&'a ImportSpec<'a>>, // imports in this file
     pub unresolved: Vec<Ident<'a>>, // unresolved identifiers in this file
     pub comments: Vec<CommentGroup>, // list of all comments in the source file
+    pub go_version: &'a str,        // minimum Go version required (e.g., "go1.21")
 }
 
 impl<'a> File<'a> {
@@ -97,6 +100,7 @@ pub struct BlockStmt<'a> {
 #[derive(Debug)]
 pub struct FuncType<'a> {
     pub func: Option<Position<'a>>, // position of "func" keyword (token.NoPos if there is no "func")
+    pub type_params: Option<FieldList<'a>>, // type parameters; or nil (Go 1.18+ generics)
     pub params: FieldList<'a>,      // (incoming) parameters; non-nil
     pub results: Option<FieldList<'a>>, // (outgoing) results; or nil
 }
@@ -154,13 +158,13 @@ pub struct Ellipsis<'a> {
     pub elt: Option<Box<Expr<'a>>>, // ellipsis element type (parameter lists only); or nil
 }
 
-// https://pkg.go.dev/go/ast#Ellipsis
+// https://pkg.go.dev/go/ast#TypeAssertExpr
 #[derive(Debug)]
 pub struct TypeAssertExpr<'a> {
-    pub x: Box<Expr<'a>>,     // expression
-    pub lparen: Position<'a>, // position of "("
-    pub type_: Box<Expr<'a>>, // asserted type; nil means type switch X.(type)
-    pub rparen: Position<'a>, // position of ")"
+    pub x: Box<Expr<'a>>,             // expression
+    pub lparen: Position<'a>,         // position of "("
+    pub type_: Option<Box<Expr<'a>>>, // asserted type; nil means type switch X.(type)
+    pub rparen: Position<'a>,         // position of ")"
 }
 
 // https://pkg.go.dev/go/ast#SliceExpr
@@ -245,9 +249,10 @@ pub struct ReturnStmt<'a> {
 // https://pkg.go.dev/go/ast#TypeSpec
 #[derive(Debug)]
 pub struct TypeSpec<'a> {
-    pub doc: Option<CommentGroup>,     // associated documentation; or nil
-    pub name: Option<Ident<'a>>,       // type name
-    pub assign: Option<Position<'a>>,  // position of '=', if any
+    pub doc: Option<CommentGroup>, // associated documentation; or nil
+    pub name: Option<Ident<'a>>,   // type name
+    pub type_params: Option<FieldList<'a>>, // type parameters; or nil (Go 1.18+ generics)
+    pub assign: Option<Position<'a>>, // position of '=', if any
     pub type_: Expr<'a>, // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
     pub comment: Option<CommentGroup>, // line comments; or nil
 }
@@ -387,6 +392,7 @@ pub struct RangeStmt<'a> {
     pub value: Option<Expr<'a>>,       // Key, Value may be nil
     pub tok_pos: Option<Position<'a>>, // position of Tok; invalid if Key == nil
     pub tok: Option<Token>,            // ILLEGAL if Key == nil, ASSIGN, DEFINE
+    pub range: Position<'a>,           // position of "range" keyword
     pub x: Expr<'a>,                   // value to range over
     pub body: BlockStmt<'a>,
 }
@@ -407,6 +413,16 @@ pub struct IndexExpr<'a> {
     pub rbrack: Position<'a>, // position of "]"
 }
 
+// https://pkg.go.dev/go/ast#IndexListExpr (Go 1.18+ generics)
+// Represents an expression followed by multiple indices/type arguments: X[I1, I2, ...]
+#[derive(Debug)]
+pub struct IndexListExpr<'a> {
+    pub x: Box<Expr<'a>>,      // expression
+    pub lbrack: Position<'a>,  // position of "["
+    pub indices: Vec<Expr<'a>>, // index expressions (type arguments)
+    pub rbrack: Position<'a>,  // position of "]"
+}
+
 // https://pkg.go.dev/go/ast#MapType
 #[derive(Debug)]
 pub struct MapType<'a> {
@@ -418,11 +434,11 @@ pub struct MapType<'a> {
 // https://pkg.go.dev/go/ast#CompositeLit
 #[derive(Debug)]
 pub struct CompositeLit<'a> {
-    pub type_: Box<Expr<'a>>,        // literal type; or nil
-    pub lbrace: Position<'a>,        // position of "{"
-    pub elts: Option<Vec<Expr<'a>>>, // list of composite elements; or nil
-    pub rbrace: Position<'a>,        // position of "}"
-    pub incomplete: bool,            // true if (source) expressions are missing in the Elts list
+    pub type_: Option<Box<Expr<'a>>>, // literal type; or None for elided type in nested literals
+    pub lbrace: Position<'a>,         // position of "{"
+    pub elts: Option<Vec<Expr<'a>>>,  // list of composite elements; or nil
+    pub rbrace: Position<'a>,         // position of "}"
+    pub incomplete: bool,             // true if (source) expressions are missing in the Elts list
 }
 
 // https://pkg.go.dev/go/ast#KeyValueExpr
@@ -477,6 +493,7 @@ pub enum Expr<'a> {
     FuncType(FuncType<'a>),
     Ident(Ident<'a>),
     IndexExpr(IndexExpr<'a>),
+    IndexListExpr(IndexListExpr<'a>), // Go 1.18+ generics
     InterfaceType(InterfaceType<'a>),
     KeyValueExpr(KeyValueExpr<'a>),
     MapType(MapType<'a>),
@@ -492,10 +509,10 @@ pub enum Expr<'a> {
 // https://pkg.go.dev/go/ast#SwitchStmt
 #[derive(Debug)]
 pub struct SwitchStmt<'a> {
-    pub switch: Position<'a>,         // position of "switch" keyword
-    pub init: Option<Box<Stmt<'a>>>,  // initialization statement; or nil
-    pub tag: Option<Expr<'a>>,        // tag expression; or nil
-    pub body: BlockStmt<'a>,          // CaseClauses only
+    pub switch: Position<'a>,        // position of "switch" keyword
+    pub init: Option<Box<Stmt<'a>>>, // initialization statement; or nil
+    pub tag: Option<Expr<'a>>,       // tag expression; or nil
+    pub body: BlockStmt<'a>,         // CaseClauses only
 }
 
 // https://pkg.go.dev/go/ast#TypeSwitchStmt
@@ -510,10 +527,10 @@ pub struct TypeSwitchStmt<'a> {
 // https://pkg.go.dev/go/ast#CaseClause
 #[derive(Debug)]
 pub struct CaseClause<'a> {
-    pub case: Position<'a>,           // position of "case" or "default" keyword
-    pub list: Option<Vec<Expr<'a>>>,  // list of expressions or types; nil means default case
-    pub colon: Position<'a>,          // position of ":"
-    pub body: Vec<Stmt<'a>>,          // statement list; or nil
+    pub case: Position<'a>,          // position of "case" or "default" keyword
+    pub list: Option<Vec<Expr<'a>>>, // list of expressions or types; nil means default case
+    pub colon: Position<'a>,         // position of ":"
+    pub body: Vec<Stmt<'a>>,         // statement list; or nil
 }
 
 // https://pkg.go.dev/go/ast#SelectStmt
@@ -535,16 +552,16 @@ pub struct CommClause<'a> {
 // https://pkg.go.dev/go/ast#BranchStmt
 #[derive(Debug)]
 pub struct BranchStmt<'a> {
-    pub tok_pos: Position<'a>,      // position of Tok
-    pub tok: Token,                 // keyword token (BREAK, CONTINUE, GOTO, FALLTHROUGH)
-    pub label: Option<Ident<'a>>,   // label name; or nil
+    pub tok_pos: Position<'a>,    // position of Tok
+    pub tok: Token,               // keyword token (BREAK, CONTINUE, GOTO, FALLTHROUGH)
+    pub label: Option<Ident<'a>>, // label name; or nil
 }
 
 // https://pkg.go.dev/go/ast#LabeledStmt
 #[derive(Debug)]
 pub struct LabeledStmt<'a> {
     pub label: Ident<'a>,
-    pub colon: Position<'a>,    // position of ":"
+    pub colon: Position<'a>, // position of ":"
     pub stmt: Box<Stmt<'a>>,
 }
 

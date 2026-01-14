@@ -4,6 +4,78 @@ use crate::token;
 use std::collections::BTreeMap;
 use std::io::Write;
 
+/// Print a string using Go-compatible escape format.
+/// Go's %q format preserves printable unicode characters and only escapes
+/// control characters and non-printable characters.
+fn print_go_string<W: Write>(w: &mut W, s: &str) -> std::io::Result<()> {
+    write!(w, "\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => write!(w, "\\\"")?,
+            '\\' => write!(w, "\\\\")?,
+            '\n' => write!(w, "\\n")?,
+            '\r' => write!(w, "\\r")?,
+            '\t' => write!(w, "\\t")?,
+            // Control characters, surrogate pairs, and non-printable characters
+            c if !is_go_printable(c) => {
+                let code = c as u32;
+                if code <= 0xFFFF {
+                    write!(w, "\\u{:04x}", code)?;
+                } else {
+                    write!(w, "\\U{:08x}", code)?;
+                }
+            }
+            // All other characters (printable unicode) are kept as-is
+            c => write!(w, "{}", c)?,
+        }
+    }
+    write!(w, "\"")?;
+    Ok(())
+}
+
+/// Check if a character is printable according to Go's strconv.IsPrint.
+/// This matches Go's behavior for the %q format.
+fn is_go_printable(c: char) -> bool {
+    let code = c as u32;
+    
+    // Control characters are not printable
+    if c.is_control() {
+        return false;
+    }
+    
+    // BMP Private Use Area (U+E000-U+F8FF) - not printable in Go
+    if (0xE000..=0xF8FF).contains(&code) {
+        return false;
+    }
+    
+    // Supplementary Private Use Area-A (U+F0000-U+FFFFF)
+    if (0xF0000..=0xFFFFF).contains(&code) {
+        return false;
+    }
+    
+    // Supplementary Private Use Area-B (U+100000-U+10FFFF)
+    if (0x100000..=0x10FFFF).contains(&code) {
+        return false;
+    }
+    
+    // Non-characters in Unicode (Go treats these as non-printable)
+    // FDD0-FDEF and all codepoints ending in FFFE or FFFF
+    if (0xFDD0..=0xFDEF).contains(&code) {
+        return false;
+    }
+    if code & 0xFFFF == 0xFFFE || code & 0xFFFF == 0xFFFF {
+        return false;
+    }
+    
+    // Unicode replacement character is printable
+    if code == 0xFFFD {
+        return true;
+    }
+    
+    // Most other unicode chars are printable
+    true
+}
+
 impl<W: Write, T: Printable<W>> Printable<W> for Box<T> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         (**self).print(p)?;
@@ -227,7 +299,8 @@ impl<W: Write> Printable<W> for ast::BasicLit<'_> {
 
         p.prefix()?;
         p.write("Value: ")?;
-        write!(p.w, "{:?}", self.value)?;
+        // Print string using Go-compatible escape format (use \uXXXX instead of \u{XXXX})
+        print_go_string(&mut p.w, self.value)?;
         p.newline()?;
 
         p.close_bracket()?;
@@ -335,6 +408,14 @@ impl<W: Write> Printable<W> for ast::EmptyStmt<'_> {
         p.write("*ast.EmptyStmt ")?;
         p.open_bracket()?;
 
+        p.prefix()?;
+        p.write("Semicolon: ")?;
+        self.semicolon.print(p)?;
+
+        p.prefix()?;
+        p.write("Implicit: ")?;
+        self.implicit.print(p)?;
+
         p.close_bracket()?;
 
         Ok(())
@@ -404,6 +485,10 @@ impl<W: Write> Printable<W> for ast::FuncType<'_> {
             p.write("-")?;
             p.newline()?;
         }
+
+        p.prefix()?;
+        p.write("TypeParams: ")?;
+        self.type_params.print(p)?;
 
         p.prefix()?;
         p.write("Params: ")?;
@@ -518,6 +603,14 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         self.decls.print(p)?;
 
         p.prefix()?;
+        p.write("FileStart: ")?;
+        self.file_start.print(p)?;
+
+        p.prefix()?;
+        p.write("FileEnd: ")?;
+        self.file_end.print(p)?;
+
+        p.prefix()?;
         p.write("Scope: ")?;
         self.scope.print(p)?;
 
@@ -532,6 +625,11 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         p.prefix()?;
         p.write("Comments: ")?;
         self.comments.print(p)?;
+
+        p.prefix()?;
+        p.write("GoVersion: ")?;
+        write!(p.w, "{:?}", self.go_version)?;
+        p.newline()?;
 
         p.close_bracket()?;
 
@@ -638,6 +736,10 @@ impl<W: Write> Printable<W> for ast::TypeSpec<'_> {
         p.prefix()?;
         p.write("Name: ")?;
         self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("TypeParams: ")?;
+        self.type_params.print(p)?;
 
         p.prefix()?;
         p.write("Assign: ")?;
@@ -779,6 +881,33 @@ impl<W: Write> Printable<W> for ast::IndexExpr<'_> {
         p.prefix()?;
         p.write("Index: ")?;
         self.index.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrack: ")?;
+        self.rbrack.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::IndexListExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.IndexListExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Indices: ")?;
+        self.indices.print(p)?;
 
         p.prefix()?;
         p.write("Rbrack: ")?;
@@ -1223,6 +1352,10 @@ impl<W: Write> Printable<W> for ast::RangeStmt<'_> {
         }
 
         p.prefix()?;
+        p.write("Range: ")?;
+        self.range.print(p)?;
+
+        p.prefix()?;
         p.write("X: ")?;
         self.x.print(p)?;
 
@@ -1319,6 +1452,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::IndexExpr(node) => node.print(p),
+            ast::Expr::IndexListExpr(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
             ast::Expr::KeyValueExpr(node) => node.print(p),
             ast::Expr::MapType(node) => node.print(p),
@@ -1645,11 +1779,20 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        write!(
-            p.w,
-            "{}/{}:{}:{}",
-            self.directory, self.file, self.line, self.column,
-        )?;
+        // Go doesn't display column when it's 0
+        if self.column == 0 {
+            write!(
+                p.w,
+                "{}/{}:{}",
+                self.directory, self.file, self.line,
+            )?;
+        } else {
+            write!(
+                p.w,
+                "{}/{}:{}:{}",
+                self.directory, self.file, self.line, self.column,
+            )?;
+        }
         p.newline()?;
         Ok(())
     }

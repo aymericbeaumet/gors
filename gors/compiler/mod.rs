@@ -356,10 +356,7 @@ impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
     fn from(stmt: ast::Stmt) -> Self {
         match stmt {
             ast::Stmt::AssignStmt(s) => s.into(),
-            ast::Stmt::BlockStmt(s) => vec![syn::Stmt::Expr(
-                syn::Expr::Block(s.into()),
-                None,
-            )],
+            ast::Stmt::BlockStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Block(s.into()), None)],
             ast::Stmt::BranchStmt(s) => s.into(),
             ast::Stmt::DeclStmt(s) => s.into(),
             ast::Stmt::DeferStmt(_) => {
@@ -368,7 +365,9 @@ impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 vec![]
             }
             ast::Stmt::EmptyStmt(_) => vec![],
-            ast::Stmt::ExprStmt(s) => vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))],
+            ast::Stmt::ExprStmt(s) => {
+                vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))]
+            }
             ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into(), None)],
             ast::Stmt::GoStmt(_) => {
                 // Goroutines would need to be converted to threads/async
@@ -456,7 +455,7 @@ impl From<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
         // Convert to Rust labeled block/loop
         let label_ident: syn::Ident = labeled_stmt.label.into();
         let inner_stmts: Vec<syn::Stmt> = Vec::from(*labeled_stmt.stmt);
-        
+
         // Create a labeled block
         vec![syn::Stmt::Expr(
             syn::Expr::Block(syn::ExprBlock {
@@ -526,16 +525,16 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     fn from(decl_stmt: ast::DeclStmt) -> Self {
         let gen_decl = decl_stmt.decl;
         let mut stmts = vec![];
-        
+
         for spec in gen_decl.specs {
             if let ast::Spec::ValueSpec(value_spec) = spec {
                 // Convert to let statement
                 let names = value_spec.names;
                 let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
-                
+
                 for name in names {
                     let ident: syn::Ident = name.into();
-                    
+
                     // Get the init value if available
                     let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
 
