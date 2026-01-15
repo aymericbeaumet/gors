@@ -35,45 +35,37 @@ fn print_go_string<W: Write>(w: &mut W, s: &str) -> std::io::Result<()> {
 
 /// Check if a character is printable according to Go's strconv.IsPrint.
 /// This matches Go's behavior for the %q format.
+/// Go's IsPrint uses unicode.IsPrint which returns true only for:
+/// - Letters (L category)
+/// - Marks (M category)
+/// - Numbers (N category)
+/// - Punctuation (P category)
+/// - Symbols (S category)
+/// - ASCII space (U+0020)
 fn is_go_printable(c: char) -> bool {
-    let code = c as u32;
+    use unicode_general_category::GeneralCategory::*;
     
-    // Control characters are not printable
-    if c.is_control() {
-        return false;
-    }
-    
-    // BMP Private Use Area (U+E000-U+F8FF) - not printable in Go
-    if (0xE000..=0xF8FF).contains(&code) {
-        return false;
-    }
-    
-    // Supplementary Private Use Area-A (U+F0000-U+FFFFF)
-    if (0xF0000..=0xFFFFF).contains(&code) {
-        return false;
-    }
-    
-    // Supplementary Private Use Area-B (U+100000-U+10FFFF)
-    if (0x100000..=0x10FFFF).contains(&code) {
-        return false;
-    }
-    
-    // Non-characters in Unicode (Go treats these as non-printable)
-    // FDD0-FDEF and all codepoints ending in FFFE or FFFF
-    if (0xFDD0..=0xFDEF).contains(&code) {
-        return false;
-    }
-    if code & 0xFFFF == 0xFFFE || code & 0xFFFF == 0xFFFF {
-        return false;
-    }
-    
-    // Unicode replacement character is printable
-    if code == 0xFFFD {
+    // ASCII space is explicitly printable
+    if c == ' ' {
         return true;
     }
     
-    // Most other unicode chars are printable
-    true
+    // Use whitelist approach: only specific categories are printable
+    match unicode_general_category::get_general_category(c) {
+        // Letters (L)
+        UppercaseLetter | LowercaseLetter | TitlecaseLetter | ModifierLetter | OtherLetter => true,
+        // Marks (M)
+        NonspacingMark | SpacingMark | EnclosingMark => true,
+        // Numbers (N)
+        DecimalNumber | LetterNumber | OtherNumber => true,
+        // Punctuation (P)
+        ConnectorPunctuation | DashPunctuation | OpenPunctuation | ClosePunctuation |
+        InitialPunctuation | FinalPunctuation | OtherPunctuation => true,
+        // Symbols (S)
+        MathSymbol | CurrencySymbol | ModifierSymbol | OtherSymbol => true,
+        // Everything else is not printable (including Unassigned, Control, Private Use, etc.)
+        _ => false,
+    }
 }
 
 impl<W: Write, T: Printable<W>> Printable<W> for Box<T> {

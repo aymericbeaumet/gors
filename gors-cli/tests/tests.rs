@@ -190,6 +190,8 @@ static IGNORE_FILES: Set<&'static str> = phf_set! {
     // Go compiler test files with intentional syntax errors
     "tests/files/go/test/bombad.go",
     "tests/files/go/test/char_lit1.go",
+    "tests/files/go/test/const2.go",
+    "tests/files/go/test/switch2.go",
     "tests/files/go/test/fixedbugs/bug014.go",
     "tests/files/go/test/fixedbugs/bug068.go",
     "tests/files/go/test/fixedbugs/bug163.go",
@@ -203,8 +205,38 @@ static IGNORE_FILES: Set<&'static str> = phf_set! {
     "tests/files/go/test/fixedbugs/issue4405.go",
     "tests/files/go/test/fixedbugs/issue9036.go",
     "tests/files/go/test/slice3err.go",
+    // Intentionally invalid syntax (channel without element type, ellipsis misuse, send as value, composite)
+    "tests/files/go/test/syntax/chan.go",
+    "tests/files/go/test/syntax/chan1.go",
+    "tests/files/go/test/syntax/composite.go",
+    "tests/files/go/test/syntax/ddd.go",
+    "tests/files/go/test/ddd1.go",
+    // Files using //line directives that affect position reporting (DWARF/debugging features)
+    "tests/files/go/test/dwarf/linedirectives.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z1.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z2.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z3.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z4.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z5.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z6.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z7.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z8.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z9.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z10.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z11.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z12.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z13.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z14.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z15.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z16.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z17.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z18.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z19.go",
+    "tests/files/go/test/dwarf/dwarf.dir/z20.go",
     // Intentionally missing file (referenced in Go parser testdata)
     "tests/files/go/src/go/parser/testdata/issue42951/not_a_file.go",
+    // Invalid Go file in a path that looks like a file (Go parser testdata)
+    "tests/files/go/src/go/parser/testdata/issue42951/not_a_file.go/invalid.go",
 };
 
 // https://github.com/mitsuhiko/similar/blob/main/examples/terminal-inline.rs

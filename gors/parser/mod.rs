@@ -87,14 +87,45 @@ fn extract_go_version(buffer: &str) -> &str {
 }
 
 /// Find go version pattern (goX.Y or goX.YZ) in a build constraint
+/// Returns None if:
+/// - The version is negated (e.g., !go1.17)
+/// - There's an OR (||) at the top level (outside parentheses), since the
+///   constraint can be satisfied without the go version in that case
 fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
-    // Split constraint into tokens (by whitespace, &&, ||, !, parentheses, etc.)
-    let mut i = 0;
     let bytes = constraint.as_bytes();
     
+    // First, check if there's an OR at the top level (not inside parentheses)
+    // If so, we can't reliably extract a go version since the constraint
+    // might be satisfied without it
+    let mut paren_depth: i32 = 0;
+    let mut i = 0;
     while i < bytes.len() {
-        // Skip non-alphanumeric
+        match bytes[i] {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'|' if paren_depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
+                // Found || at top level
+                return None;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    
+    // No top-level OR, proceed to find go version
+    i = 0;
+    while i < bytes.len() {
+        // Track if we saw a '!' before this token (negation)
+        let mut is_negated = false;
+        
+        // Skip non-alphanumeric, but track '!' for negation
         while i < bytes.len() && !bytes[i].is_ascii_alphanumeric() {
+            if bytes[i] == b'!' {
+                is_negated = true;
+            } else if !matches!(bytes[i], b' ' | b'\t' | b'(' | b')') {
+                // Reset negation on other operators like && or ||
+                is_negated = false;
+            }
             i += 1;
         }
         
@@ -107,8 +138,8 @@ fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
         
         if i > start {
             let token = &constraint[start..i];
-            // Check if it matches goX.Y or goX.YZ pattern
-            if token.starts_with("go") && token.len() >= 4 {
+            // Check if it matches goX.Y or goX.YZ pattern and is not negated
+            if !is_negated && token.starts_with("go") && token.len() >= 4 {
                 let rest = &token[2..];
                 if rest.contains('.') && rest.chars().all(|c| c.is_ascii_digit() || c == '.') {
                     return Some(token);
@@ -134,6 +165,16 @@ impl<'scanner> Parser<'scanner> {
             current_step: (Position::default(), Token::EOF, ""),
             expr_level: 0,
             go_version,
+        }
+    }
+
+    /// Check if a statement already consumed its terminating semicolon.
+    /// This is true for EmptyStmt and for LabeledStmt whose inner statement consumed its semicolon.
+    fn stmt_consumed_semicolon(stmt: &ast::Stmt) -> bool {
+        match stmt {
+            ast::Stmt::EmptyStmt(_) => true,
+            ast::Stmt::LabeledStmt(ls) => Self::stmt_consumed_semicolon(&ls.stmt),
+            _ => false,
         }
     }
 
@@ -677,6 +718,43 @@ impl<'scanner> Parser<'scanner> {
     fn UnaryExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::UnaryExpr()");
 
+        // Special case: <- followed by chan is a receive-only channel type, not receive expression
+        // This happens in contexts like make(<-chan T)
+        // We need to check if <- is followed by chan WITHOUT consuming the <-
+        if self.current_step.1 == Token::ARROW {
+            // Look ahead to see if next token after <- is chan
+            // Save current position and try to parse channel type
+            // Since we can't easily peek 2 tokens, we use the scanner iterator state
+            // For now, manually check: consume <- and check if chan follows
+            // If chan follows, parse as channel type; otherwise put it back (return as unary)
+            
+            // Actually, we need a different approach. Let's check if we're in a type context.
+            // Better approach: just consume <- and check immediately
+            let arrow_step = self.current_step.clone();
+            self.next()?; // consume <-
+            
+            if self.current_step.1 == Token::CHAN {
+                // It's <-chan, parse the rest as channel type
+                self.next()?; // consume chan
+                let value = Box::new(self.ElementType().required()?);
+                return Ok(Some(ast::Expr::ChanType(ast::ChanType {
+                    begin: arrow_step.0,
+                    arrow: Some(arrow_step.0),
+                    dir: ast::ChanDir::RECV as u8,
+                    value,
+                })));
+            }
+            
+            // Not followed by chan - it's a receive expression
+            // The <- was already consumed, so parse the operand
+            let x = Box::new(self.UnaryExpr().required()?);
+            return Ok(Some(ast::Expr::UnaryExpr(ast::UnaryExpr {
+                op: Token::ARROW,
+                op_pos: arrow_step.0,
+                x,
+            })));
+        }
+
         if let Some(op) = self.unary_op()? {
             let x = Box::new(self.UnaryExpr().required()?);
             let expr = if op.1 == Token::MUL {
@@ -744,6 +822,11 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
+        // Inside composite literal, allow nested composite literals with elided types
+        // Use max(1, ...) to ensure expr_level is positive even if it was -1
+        let prev_expr_level = self.expr_level;
+        self.expr_level = std::cmp::max(1, self.expr_level + 1);
+
         let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
         if let Some(elts) = elts.as_mut() {
             while self.token(Token::COMMA)?.is_some() {
@@ -756,6 +839,7 @@ impl<'scanner> Parser<'scanner> {
         }
 
         let rbrace = self.token(Token::RBRACE).required()?;
+        self.expr_level = prev_expr_level;
 
         Ok(Some(ast::Expr::CompositeLit(ast::CompositeLit {
             type_: Some(Box::new(type_)),
@@ -955,16 +1039,55 @@ impl<'scanner> Parser<'scanner> {
                 let lparen = self.token(Token::LPAREN).required()?;
                 // Inside parentheses, composite literals are always allowed
                 self.expr_level += 1;
-                let expr = self.Expression().required()?;
-                let rparen = self.token(Token::RPAREN).required()?;
+                
+                // First, try to parse as expression
+                if let Some(expr) = self.Expression()? {
+                    let rparen = self.token(Token::RPAREN).required()?;
+                    self.expr_level -= 1;
+                    return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
+                        lparen: lparen.0,
+                        x: Box::new(expr),
+                        rparen: rparen.0,
+                    })));
+                }
+                
+                // If expression parsing failed, try to parse as type
+                // This handles cases like (func(string))(nil)
+                if let Some(type_) = self.Type()? {
+                    let rparen = self.token(Token::RPAREN).required()?;
+                    self.expr_level -= 1;
+                    // Return the type wrapped in parens - can be used for type conversion
+                    return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
+                        lparen: lparen.0,
+                        x: Box::new(type_),
+                        rparen: rparen.0,
+                    })));
+                }
+                
+                // Neither expression nor type could be parsed
                 self.expr_level -= 1;
-                return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
-                    lparen: lparen.0,
-                    x: Box::new(expr),
-                    rparen: rparen.0,
-                })));
+                return Err(ParserError::UnexpectedToken);
             }
-            FUNC => Some(ast::Expr::FuncLit(self.FunctionLit().required()?)),
+            FUNC => {
+                // Try function literal first; if no body, fall back to function type
+                // (for use in type conversions like func(string)(nil))
+                let func = self.token(Token::FUNC).required()?;
+                let signature = self.Signature(Some(func.0)).required()?;
+                // Reset expr_level when parsing function body to allow composite literals
+                // inside the function, even if we're in a context (like if condition) that
+                // normally disables them
+                let saved_expr_level = self.expr_level;
+                self.expr_level = 0;
+                let body = self.FunctionBody()?;
+                self.expr_level = saved_expr_level;
+                if let Some(body) = body {
+                    // It's a function literal
+                    Some(ast::Expr::FuncLit(ast::FuncLit { type_: signature, body }))
+                } else {
+                    // It's a function type (no body)
+                    Some(ast::Expr::FuncType(signature))
+                }
+            },
             // Interface type for type conversions like interface{}(x)
             INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
             // Handle nested composite literals without explicit type
@@ -1046,6 +1169,7 @@ impl<'scanner> Parser<'scanner> {
                 self.ArrayType_or_SliceType::<true>().required()?,
             )),
             Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
+            Token::CHAN => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
             Token::IDENT => Some(self.TypeName().required()?),
             _ => None,
         })
@@ -1127,6 +1251,28 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(None)
+    }
+
+    // TypeList = Type { "," Type } .
+    fn TypeList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
+        log::debug!("Parser::TypeList()");
+
+        let first_type = match self.Type()? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut types = vec![first_type];
+
+        while self.token(Token::COMMA)?.is_some() {
+            // Allow trailing comma
+            if matches!(self.current_step.1, Token::COLON | Token::RBRACK | Token::RPAREN) {
+                break;
+            }
+            types.push(self.Type().required()?);
+        }
+
+        Ok(Some(types))
     }
 
     // TypeName = identifier [ TypeArgs ] | QualifiedIdent [ TypeArgs ] .
@@ -1379,6 +1525,36 @@ impl<'scanner> Parser<'scanner> {
                 });
                 
                 // Check for union types
+                while let Some(or_tok) = self.token(Token::OR)? {
+                    let next_term = self.TypeTerm().required()?;
+                    type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
+                        x: Box::new(type_elem),
+                        op_pos: or_tok.0,
+                        op: Token::OR,
+                        y: Box::new(next_term),
+                    });
+                }
+                
+                fields.push(ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(type_elem),
+                    tag: None,
+                    comment: None,
+                });
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
+                continue;
+            }
+
+            // Handle embedded type literals in interface (struct, slice, array, map, func, chan, pointer)
+            // These are type constraints in Go 1.18+ generics
+            if matches!(self.current_step.1, Token::STRUCT | Token::LBRACK | Token::MAP | Token::FUNC | Token::CHAN | Token::ARROW | Token::MUL) {
+                let type_ = self.Type().required()?;
+                
+                // Check for union types
+                let mut type_elem = type_;
                 while let Some(or_tok) = self.token(Token::OR)? {
                     let next_term = self.TypeTerm().required()?;
                     type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
@@ -1777,6 +1953,10 @@ impl<'scanner> Parser<'scanner> {
                 }];
                 // Parse more unnamed parameters
                 while self.token(Token::COMMA)?.is_some() {
+                    // Handle trailing comma
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
                     let type_ = self.Type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
@@ -1840,6 +2020,10 @@ impl<'scanner> Parser<'scanner> {
                 
                 // Parse remaining types after comma
                 while self.token(Token::COMMA)?.is_some() {
+                    // Handle trailing comma
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
                     let type_ = self.Type().required()?;
                     fields.push(ast::Field {
                         doc: None,
@@ -1862,25 +2046,52 @@ impl<'scanner> Parser<'scanner> {
                     comment: None,
                 })
                 .collect();
-            // Parse the type that comes after the trailing comma
-            let type_ = self.Type().required()?;
-            fields.push(ast::Field {
-                doc: None,
-                names: None,
-                type_: Some(type_),
-                tag: None,
-                comment: None,
-            });
-            // Parse remaining types after comma
-            while self.token(Token::COMMA)?.is_some() {
+            // The trailing comma was already consumed by IdentifierList.
+            // Check if there's more to parse after that comma (the comma wasn't truly trailing)
+            // by checking if we can parse another type
+            if self.current_step.1 != Token::RPAREN {
+                // Parse the type that comes after the consumed comma (may be variadic like ...string)
+                let ellipsis = self.token(Token::ELLIPSIS)?;
                 let type_ = self.Type().required()?;
+                let field_type = if let Some(ellipsis) = ellipsis {
+                    ast::Expr::Ellipsis(ast::Ellipsis {
+                        ellipsis: ellipsis.0,
+                        elt: Some(Box::new(type_)),
+                    })
+                } else {
+                    type_
+                };
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
-                    type_: Some(type_),
+                    type_: Some(field_type),
                     tag: None,
                     comment: None,
                 });
+                // Parse remaining types after comma
+                while self.token(Token::COMMA)?.is_some() {
+                    // Handle trailing comma
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let type_ = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(type_)),
+                        })
+                    } else {
+                        type_
+                    };
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(field_type),
+                        tag: None,
+                        comment: None,
+                    });
+                }
             }
             return Ok(Some(fields));
         }
@@ -1912,11 +2123,24 @@ impl<'scanner> Parser<'scanner> {
                 }];
                 // Parse remaining types after comma
                 while self.token(Token::COMMA)?.is_some() {
+                    // Handle trailing comma
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
                     let type_ = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(type_)),
+                        })
+                    } else {
+                        type_
+                    };
                     fields.push(ast::Field {
                         doc: None,
                         names: None,
-                        type_: Some(type_),
+                        type_: Some(field_type),
                         tag: None,
                         comment: None,
                     });
@@ -1936,11 +2160,24 @@ impl<'scanner> Parser<'scanner> {
                 .collect();
             // Parse remaining types after comma
             while self.token(Token::COMMA)?.is_some() {
+                // Handle trailing comma
+                if self.current_step.1 == Token::RPAREN {
+                    break;
+                }
+                let ellipsis = self.token(Token::ELLIPSIS)?;
                 let type_ = self.Type().required()?;
+                let field_type = if let Some(ellipsis) = ellipsis {
+                    ast::Expr::Ellipsis(ast::Ellipsis {
+                        ellipsis: ellipsis.0,
+                        elt: Some(Box::new(type_)),
+                    })
+                } else {
+                    type_
+                };
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
-                    type_: Some(type_),
+                    type_: Some(field_type),
                     tag: None,
                     comment: None,
                 });
@@ -1975,6 +2212,10 @@ impl<'scanner> Parser<'scanner> {
         let mut fields = vec![first_field];
 
         while self.token(Token::COMMA)?.is_some() {
+            // Handle trailing comma
+            if self.current_step.1 == Token::RPAREN {
+                break;
+            }
             let (idents, _, _) = self.IdentifierList().required()?;
             let ellipsis = self.token(Token::ELLIPSIS)?;
             let type_ = self.Type().required()?;
@@ -2024,8 +2265,10 @@ impl<'scanner> Parser<'scanner> {
 
         let mut list = vec![];
         while let Some(statement) = self.Statement()? {
+            // Some statements (EmptyStmt, LabeledStmt with EmptyStmt) already consumed their semicolon
+            let consumed_semi = Self::stmt_consumed_semicolon(&statement);
             list.push(statement);
-            if self.token(Token::SEMICOLON)?.is_none() {
+            if !consumed_semi && self.token(Token::SEMICOLON)?.is_none() {
                 break;
             }
         }
@@ -2164,28 +2407,26 @@ impl<'scanner> Parser<'scanner> {
                     })));
                 }
 
-            // for a, b = range x {}
-            } else if exprs.iter().all(|expr| matches!(expr, ast::Expr::Ident(_))) {
-                if let Some(assign) = self.token(Token::ASSIGN)? {
-                    tok = Some(assign);
-                    if let Some(range_tok) = self.token(Token::RANGE)? {
-                        let mut exprs = exprs.into_iter();
-                        let key = exprs.next();
-                        let value = exprs.next();
-                        let x = self.Expression().required()?;
-                        self.expr_level = prev_expr_level;
-                        let body = self.Block().required()?;
-                        return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
-                            for_: for_.0,
-                            key,
-                            value,
-                            tok_pos: Some(assign.0),
-                            tok: Some(assign.1),
-                            range: range_tok.0,
-                            x,
-                            body,
-                        })));
-                    }
+            // for a, b = range x {} (left side can be any expressions, not just identifiers)
+            } else if let Some(assign) = self.token(Token::ASSIGN)? {
+                tok = Some(assign);
+                if let Some(range_tok) = self.token(Token::RANGE)? {
+                    let mut exprs = exprs.into_iter();
+                    let key = exprs.next();
+                    let value = exprs.next();
+                    let x = self.Expression().required()?;
+                    self.expr_level = prev_expr_level;
+                    let body = self.Block().required()?;
+                    return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
+                        for_: for_.0,
+                        key,
+                        value,
+                        tok_pos: Some(assign.0),
+                        tok: Some(assign.1),
+                        range: range_tok.0,
+                        x,
+                        body,
+                    })));
                 }
             }
 
@@ -2196,7 +2437,39 @@ impl<'scanner> Parser<'scanner> {
                     tok: tok.1,
                     rhs: self.ExpressionList().required()?,
                 })),
-                _ => return Err(ParserError::UnexpectedToken),
+                _ => {
+                    // Handle assignment statements (e.g., for s.start = s.next; ...)
+                    if let Some(assign_op) = self.assign_op()? {
+                        let rhs = self.ExpressionList().required()?;
+                        Some(ast::Stmt::AssignStmt(ast::AssignStmt {
+                            lhs: exprs,
+                            tok_pos: assign_op.0,
+                            tok: assign_op.1,
+                            rhs,
+                        }))
+                    } else if exprs.len() == 1 {
+                        // Handle IncDecStmt (e.g., for p.seq++; ; p.seq++ {})
+                        let expr = exprs.into_iter().next().unwrap();
+                        if let Some(inc) = self.token(Token::INC)? {
+                            Some(ast::Stmt::IncDecStmt(ast::IncDecStmt {
+                                tok: inc.1,
+                                tok_pos: inc.0,
+                                x: expr,
+                            }))
+                        } else if let Some(dec) = self.token(Token::DEC)? {
+                            Some(ast::Stmt::IncDecStmt(ast::IncDecStmt {
+                                tok: dec.1,
+                                tok_pos: dec.0,
+                                x: expr,
+                            }))
+                        } else {
+                            // ExpressionStmt (e.g., for f(); cond; {})
+                            Some(ast::Stmt::ExprStmt(ast::ExprStmt { x: expr }))
+                        }
+                    } else {
+                        return Err(ParserError::UnexpectedToken);
+                    }
+                }
             }
         } else {
             self.SimpleStmt()?
@@ -2248,7 +2521,11 @@ impl<'scanner> Parser<'scanner> {
         let prev_expr_level = self.expr_level;
         self.expr_level = -1;
 
-        let (init, cond) = if let Some(simple_stmt) = self.SimpleStmt()? {
+        // Handle: if cond {}, if init; cond {}, if ; cond {} (empty init)
+        let (init, cond) = if self.token(Token::SEMICOLON)?.is_some() {
+            // Empty init statement: if ; cond {}
+            (None, self.Expression().required()?)
+        } else if let Some(simple_stmt) = self.SimpleStmt()? {
             if self.token(Token::SEMICOLON)?.is_some() {
                 (Some(simple_stmt), self.Expression().required()?)
             } else if let ast::Stmt::ExprStmt(expr_stmt) = simple_stmt {
@@ -2444,7 +2721,41 @@ impl<'scanner> Parser<'scanner> {
 
         // Parse optional init and/or tag
         if self.current_step.1 != Token::LBRACE {
-            if let Some(simple_stmt) = self.SimpleStmt()? {
+            // Handle empty init statement: switch ; { ... }
+            if self.token(Token::SEMICOLON)?.is_some() {
+                // Empty init, continue to parse tag if present
+                if self.current_step.1 != Token::LBRACE {
+                    if let Some(expr_or_stmt) = self.SimpleStmt()? {
+                        if let ast::Stmt::ExprStmt(expr_stmt) = &expr_or_stmt {
+                            if is_type_switch_guard(&expr_stmt.x) {
+                                self.expr_level = prev_expr_level;
+                                let body = self.parse_switch_body(true)?;
+                                return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                    switch: switch.0,
+                                    init: None,
+                                    assign: Box::new(expr_or_stmt),
+                                    body,
+                                })));
+                            }
+                        }
+                        if let ast::Stmt::AssignStmt(ref assign) = expr_or_stmt {
+                            if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                                self.expr_level = prev_expr_level;
+                                let body = self.parse_switch_body(true)?;
+                                return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
+                                    switch: switch.0,
+                                    init: None,
+                                    assign: Box::new(expr_or_stmt),
+                                    body,
+                                })));
+                            }
+                        }
+                        if let ast::Stmt::ExprStmt(expr_stmt) = expr_or_stmt {
+                            tag = Some(expr_stmt.x);
+                        }
+                    }
+                }
+            } else if let Some(simple_stmt) = self.SimpleStmt()? {
                 if self.token(Token::SEMICOLON)?.is_some() {
                     init = Some(simple_stmt);
                     // Check for type switch guard or expression
@@ -2546,7 +2857,7 @@ impl<'scanner> Parser<'scanner> {
     // ExprSwitchCase = "case" ExpressionList | "default" .
     // TypeCaseClause = TypeSwitchCase ":" StatementList .
     // TypeSwitchCase = "case" TypeList | "default" .
-    fn CaseClause(&mut self, _is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
+    fn CaseClause(&mut self, is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
         log::debug!("Parser::CaseClause()");
 
         let case = if let Some(case) = self.token(Token::CASE)? {
@@ -2564,7 +2875,12 @@ impl<'scanner> Parser<'scanner> {
             return Ok(None);
         };
 
-        let list = self.ExpressionList()?;
+        // In type switch, parse types; otherwise parse expressions
+        let list = if is_type_switch {
+            self.TypeList()?
+        } else {
+            self.ExpressionList()?
+        };
         let colon = self.token(Token::COLON).required()?;
         let body = self.StatementList()?;
 
@@ -2582,8 +2898,10 @@ impl<'scanner> Parser<'scanner> {
 
         let mut list = vec![];
         while let Some(stmt) = self.Statement()? {
+            // Some statements (EmptyStmt, LabeledStmt with EmptyStmt) already consumed their semicolon
+            let consumed_semi = Self::stmt_consumed_semicolon(&stmt);
             list.push(stmt);
-            if self.token(Token::SEMICOLON)?.is_none() {
+            if !consumed_semi && self.token(Token::SEMICOLON)?.is_none() {
                 break;
             }
         }
@@ -2837,11 +3155,129 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
         
-        let mut fields = vec![];
+        // We have [ident... - need to distinguish between:
+        // - [ident] or [pkg.ident] for array type (ident is length expression)
+        // - [ident constraint] for type parameters
+        // Parse the identifier first
+        let first_ident = self.identifier().required()?;
         
-        // Parse first type parameter declaration
-        if let Some(field) = self.TypeParamDecl()? {
-            fields.push(field);
+        // If followed by period, it's a qualified identifier like pkg.Const
+        // This is an array type [pkg.Const]Type
+        if self.current_step.1 == Token::PERIOD {
+            self.token(Token::PERIOD)?;
+            let sel = self.identifier().required()?;
+            let len_expr = ast::Expr::SelectorExpr(ast::SelectorExpr {
+                x: Box::new(ast::Expr::Ident(first_ident)),
+                sel,
+            });
+            let rbrack = self.token(Token::RBRACK).required()?;
+            return Ok(Some(ast::FieldList {
+                opening: Some(lbrack.0),
+                list: vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(len_expr),
+                    tag: None,
+                    comment: None,
+                }],
+                closing: Some(rbrack.0),
+            }));
+        }
+        
+        // If followed by ], this is [ident] for array type
+        if self.current_step.1 == Token::RBRACK {
+            let rbrack = self.token(Token::RBRACK).required()?;
+            return Ok(Some(ast::FieldList {
+                opening: Some(lbrack.0),
+                list: vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(ast::Expr::Ident(first_ident)),
+                    tag: None,
+                    comment: None,
+                }],
+                closing: Some(rbrack.0),
+            }));
+        }
+        
+        // If followed by a binary operator (like / + - *), this is an array type [ident op expr]
+        // where the length is a binary expression
+        if matches!(self.current_step.1, 
+            Token::ADD | Token::SUB | Token::MUL | Token::QUO | Token::REM |
+            Token::AND | Token::OR | Token::XOR | Token::SHL | Token::SHR | Token::AND_NOT |
+            Token::LOR | Token::LAND | Token::EQL | Token::NEQ | Token::LSS | Token::GTR |
+            Token::LEQ | Token::GEQ
+        ) {
+            // We need to continue parsing this as a binary expression
+            // The first_ident becomes the left operand
+            let left = ast::Expr::Ident(first_ident);
+            // Parse the rest of the expression using binary expression parsing
+            let len_expr = self.expression(left, Token::lowest_precedence()).required()?;
+            let rbrack = self.token(Token::RBRACK).required()?;
+            return Ok(Some(ast::FieldList {
+                opening: Some(lbrack.0),
+                list: vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(len_expr),
+                    tag: None,
+                    comment: None,
+                }],
+                closing: Some(rbrack.0),
+            }));
+        }
+        
+        // If followed by comma, could be multiple idents like [T, U any]
+        // If followed by type constraint, it's type parameters [T any]
+        // For now, assume type parameters and parse accordingly
+        let mut names = vec![first_ident];
+        
+        // Check for more identifiers (like T, U in [T, U any])
+        while self.current_step.1 == Token::COMMA {
+            self.token(Token::COMMA)?;
+            // If immediately followed by ], this was a trailing comma
+            if self.current_step.1 == Token::RBRACK {
+                break;
+            }
+            // Check if this is another identifier (for type params) or something else
+            if self.current_step.1 == Token::IDENT {
+                names.push(self.identifier().required()?);
+            } else {
+                break;
+            }
+        }
+        
+        // Try to parse the constraint
+        let constraint = match self.TypeConstraint()? {
+            Some(c) => c,
+            None => {
+                // No constraint found - this might be an array type [T] where T is a type
+                // But we already handled [ident] above, so this is an error or
+                // partial type parameter. For now, treat single ident without constraint
+                // as type parameter with inferred 'any' constraint (Go 1.18 behavior)
+                ast::Expr::Ident(ast::Ident {
+                    name_pos: names[0].name_pos.clone(),
+                    name: "any",
+                    obj: None,
+                })
+            }
+        };
+        
+        let mut fields = vec![ast::Field {
+            doc: None,
+            names: Some(names),
+            type_: Some(constraint),
+            tag: None,
+            comment: None,
+        }];
+        
+        // Parse additional type parameter declarations
+        while self.token(Token::COMMA)?.is_some() {
+            // Allow trailing comma
+            if self.current_step.1 == Token::RBRACK {
+                break;
+            }
+            fields.push(self.TypeParamDecl().required()?);
             
             // Parse additional type parameter declarations
             while self.token(Token::COMMA)?.is_some() {
