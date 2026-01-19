@@ -1,10 +1,19 @@
-// https://cs.opensource.google/go/go/+/refs/tags/go1.17.2:src/go/token/token.go
+//! Go token types and source positions.
+//!
+//! This module defines token types corresponding to Go lexical elements
+//! and position tracking for source locations.
+//!
+//! Based on the [Go token package](https://cs.opensource.google/go/go/+/refs/tags/go1.17.2:src/go/token/token.go).
 
 #![allow(non_camel_case_types)] // For consistency with the Go tokens
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::fmt;
 
+/// Source position within a file.
+///
+/// Tracks the location of a token or AST node in the source code,
+/// including file path, byte offset, line number, and column number.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Position<'a> {
     pub directory: &'a str,
@@ -42,8 +51,8 @@ impl<'a> Serialize for Position<'a> {
         } else if self.file.starts_with('/') {
             map.serialize_entry("Filename", self.file)?;
         } else {
-            // TODO: remove alloc
-            map.serialize_entry("Filename", &[self.directory, "/", self.file].join(""))?;
+            // Allocation is required here to construct the full path string
+            map.serialize_entry("Filename", &format!("{}/{}", self.directory, self.file))?;
         }
         map.serialize_entry("Offset", &self.offset)?;
         map.serialize_entry("Line", &self.line)?;
@@ -52,17 +61,32 @@ impl<'a> Serialize for Position<'a> {
     }
 }
 
+/// Go token types.
+///
+/// Represents all lexical tokens in the Go language, including:
+/// - Literals (identifiers, numbers, strings)
+/// - Operators and delimiters
+/// - Keywords
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Token {
+    /// End of file
     EOF,
+    /// Comment (single-line or multi-line)
     COMMENT,
 
-    IDENT,  // main
-    INT,    // 12345
-    FLOAT,  // 123.45
-    IMAG,   // 123.45i
-    CHAR,   // 'a'
-    STRING, // "abc"
+    // Literals
+    /// Identifier (e.g., `main`)
+    IDENT,
+    /// Integer literal (e.g., `12345`)
+    INT,
+    /// Float literal (e.g., `123.45`)
+    FLOAT,
+    /// Imaginary literal (e.g., `123.45i`)
+    IMAG,
+    /// Character literal (e.g., `'a'`)
+    CHAR,
+    /// String literal (e.g., `"abc"`)
+    STRING,
 
     ADD, // +
     SUB, // -

@@ -12,7 +12,9 @@ pub fn pass(file: &mut syn::File) {
     hoist_use::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
-    // TODO: remove useless mut
+    // Future enhancement: Add a pass to remove unnecessary `mut` keywords
+    // by tracking variable mutability usage. This would require implementing
+    // data flow analysis to determine which variables are actually mutated.
 }
 
 #[cfg(test)]

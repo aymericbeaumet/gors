@@ -1,12 +1,23 @@
-// https://golang.org/ref/spec#Lexical_elements
+//! Go lexical scanner.
+//!
+//! This module implements lexical analysis for Go source code as defined
+//! in the [Go language specification](https://golang.org/ref/spec#Lexical_elements).
 
 use crate::token::{Position, Token};
 use phf::{Map, phf_map};
 use std::fmt;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
+/// A scan step containing position, token, and literal value.
+///
+/// Each step represents a single token from the source code along with
+/// its position and the original literal text.
 pub type Step<'a> = (Position<'a>, Token, &'a str);
 
+/// Error type for scanner failures.
+///
+/// Contains the kind of error, along with line, column, and offset
+/// information for error reporting.
 #[derive(Debug, Clone)]
 pub struct ScannerError {
     pub kind: ScannerErrorKind,
@@ -50,6 +61,17 @@ impl fmt::Display for ScannerError {
 
 pub type Result<T> = std::result::Result<T, ScannerError>;
 
+/// Go source code scanner (lexer).
+///
+/// The Scanner performs lexical analysis on Go source code, breaking it
+/// into tokens according to the Go language specification. It handles:
+///
+/// - Keywords and identifiers
+/// - Numeric, string, and character literals
+/// - Operators and delimiters
+/// - Comments (single-line and multi-line)
+/// - Automatic semicolon insertion
+/// - Line directives (`//line` and `/*line`)
 #[derive(Debug)]
 pub struct Scanner<'a> {
     directory: &'a str,
@@ -77,6 +99,12 @@ pub struct Scanner<'a> {
 type LineInfo<'a> = (Option<&'a str>, usize, Option<usize>, bool);
 
 impl<'a> Scanner<'a> {
+    /// Create a new Scanner for the given source file.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` - The name of the source file (may include path)
+    /// * `buffer` - The Go source code to scan
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
         let (directory, file) = filename.rsplit_once('/').unwrap_or(("", filename));
         let mut s = Scanner {
@@ -868,7 +896,8 @@ impl<'a> Scanner<'a> {
             .current_char
             .ok_or_else(|| self.error(ScannerErrorKind::UnterminatedEscapedChar))?;
 
-        // TODO: move this to the match when const generics can be referenced in patterns
+        // Note: This check is separate because Rust doesn't support const generic parameters
+        // in match patterns (e.g., `DELIM => ...`). See rust-lang/rust#76001.
         if c == DELIM {
             self.next();
             return Ok(());

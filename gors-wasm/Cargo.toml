@@ -9,6 +9,9 @@ name = "gors"
 path = "lib.rs"
 crate-type = ["cdylib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 console_error_panic_hook = "0.1"
 gors = { path = "../gors" }

@@ -79,51 +79,6 @@ impl BuildResult {
     }
 
     fn error_result(diagnostic: Diagnostic) -> Self {
-        // Calculate end column: try to find the end of the current token/word
-        let end_column = if let Some(ref source_line) = diagnostic.source_line {
-            let col = diagnostic.column.saturating_sub(1); // 0-indexed
-            let chars: Vec<char> = source_line.chars().collect();
-            if col < chars.len() {
-                // Find the end of the current token
-                let mut end = col;
-                let start_char = chars[col];
-                
-                if start_char.is_alphanumeric() || start_char == '_' {
-                    // Identifier or keyword - find end of word
-                    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
-                        end += 1;
-                    }
-                } else if start_char == '"' || start_char == '\'' || start_char == '`' {
-                    // String literal - find closing quote or end of line
-                    end += 1;
-                    while end < chars.len() && chars[end] != start_char {
-                        if chars[end] == '\\' && end + 1 < chars.len() {
-                            end += 1; // Skip escaped char
-                        }
-                        end += 1;
-                    }
-                    if end < chars.len() {
-                        end += 1; // Include closing quote
-                    }
-                } else {
-                    // Single character token or operator
-                    end += 1;
-                    // Check for multi-character operators
-                    if end < chars.len() {
-                        let two_char: String = [start_char, chars[end]].iter().collect();
-                        if matches!(two_char.as_str(), ":=" | "==" | "!=" | "<=" | ">=" | "&&" | "||" | "++" | "--" | "+=" | "-=" | "*=" | "/=" | "<<" | ">>") {
-                            end += 1;
-                        }
-                    }
-                }
-                (end + 1) as u32 // Convert back to 1-indexed
-            } else {
-                diagnostic.column as u32 + 1
-            }
-        } else {
-            diagnostic.column as u32 + 1
-        };
-
         Self {
             success: false,
             output: String::new(),
@@ -131,7 +86,7 @@ impl BuildResult {
             error_file: diagnostic.file.clone(),
             error_line: diagnostic.line as u32,
             error_column: diagnostic.column as u32,
-            error_end_column: end_column,
+            error_end_column: diagnostic.end_column as u32,
             error_kind: match diagnostic.kind {
                 DiagnosticKind::Scanner => "scanner".to_string(),
                 DiagnosticKind::Parser => "parser".to_string(),

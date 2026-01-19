@@ -7,6 +7,25 @@ members = [
   "gors-fuzz",
 ]
 
+# Workspace-level lints configuration
+[workspace.lints.rust]
+# No workspace-level Rust lints currently set
+
+[workspace.lints.clippy]
+# Enable all pedantic lints as warnings, with specific exceptions
+# Use priority -1 so individual lints can override the group
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Allow lints that are too pedantic for this codebase
+collapsible_if = "allow"           # Let chains are suggested but not always clearer
+option_if_let_else = "allow"       # map_or_else is not always clearer
+use_self = "allow"                 # Explicit type names can improve readability
+missing_const_for_fn = "allow"     # Not all functions need to be const
+unnecessary_struct_initialization = "allow"  # Sometimes explicit initialization is clearer
+needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
+large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
+fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
+
 [profile.dev]
 opt-level = 0
 

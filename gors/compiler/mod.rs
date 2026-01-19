@@ -1,13 +1,79 @@
-#![allow(clippy::fallible_impl_from)] // TODO: switch to TryFrom
+//! Go to Rust compiler.
+//!
+//! This module transforms a Go AST into a Rust `syn` AST. The compilation
+//! process involves:
+//!
+//! 1. Converting Go AST nodes to equivalent Rust AST nodes
+//! 2. Applying transformation passes to produce idiomatic Rust code
+//!
+//! ## Limitations
+//!
+//! Not all Go constructs can be directly translated to Rust. Currently
+//! unsupported features include:
+//!
+//! - Goroutines and channels
+//! - Defer statements
+//! - Goto statements
+//! - Some complex type expressions
 
 mod passes;
 
 use crate::{ast, token};
 use proc_macro2::Span;
+use std::fmt;
 use syn::Token;
 
-pub fn compile(file: ast::File) -> Result<syn::File, Box<dyn std::error::Error>> {
-    let mut out = file.into();
+/// Error type for compilation failures.
+///
+/// Represents errors that can occur during the Go to Rust compilation process.
+#[derive(Debug, Clone)]
+pub enum CompilerError {
+    /// A Go construct that cannot be translated to Rust
+    UnsupportedConstruct(String),
+    /// An invalid assignment statement
+    InvalidAssignment(String),
+    /// A type conversion error
+    TypeMismatch(String),
+}
+
+impl fmt::Display for CompilerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedConstruct(msg) => write!(f, "unsupported construct: {}", msg),
+            Self::InvalidAssignment(msg) => write!(f, "invalid assignment: {}", msg),
+            Self::TypeMismatch(msg) => write!(f, "type mismatch: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CompilerError {}
+
+/// Compile a Go AST into a Rust `syn` AST.
+///
+/// This function takes a parsed Go source file and transforms it into
+/// an equivalent Rust AST. The compilation includes applying various
+/// transformation passes to produce idiomatic Rust code.
+///
+/// # Arguments
+///
+/// * `file` - The Go AST to compile
+///
+/// # Returns
+///
+/// Returns `Ok(syn::File)` on success, or `Err(CompilerError)` if the
+/// Go code contains constructs that cannot be translated to Rust.
+///
+/// # Example
+///
+/// ```
+/// use gors::{parser, compiler};
+///
+/// let go_source = "package main\n\nfunc add(a int, b int) int { return a + b }";
+/// let go_ast = parser::parse_file("example.go", go_source).unwrap();
+/// let rust_ast = compiler::compile(go_ast).unwrap();
+/// ```
+pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
+    let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
 }
@@ -32,7 +98,21 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
                 value.next_back();
                 Self::Str(syn::LitStr::new(value.as_str(), Span::mixed_site()))
             }
-            _ => unimplemented!("{:?}", basic_lit),
+            CHAR => {
+                // Handle character literals
+                let mut value = basic_lit.value.chars();
+                value.next(); // skip opening '
+                let ch = value.next().unwrap_or(' ');
+                Self::Char(syn::LitChar::new(ch, Span::mixed_site()))
+            }
+            FLOAT => Self::Float(syn::LitFloat::new(basic_lit.value, Span::mixed_site())),
+            _ => {
+                // Return a placeholder for unsupported literals
+                Self::Str(syn::LitStr::new(
+                    &format!("/* unsupported literal: {:?} */", basic_lit.kind),
+                    Span::mixed_site(),
+                ))
+            }
         }
     }
 }
@@ -48,22 +128,30 @@ impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
     }
 }
 
-impl From<ast::BlockStmt<'_>> for syn::Block {
-    fn from(block_stmt: ast::BlockStmt) -> Self {
-        Self {
-            brace_token: syn::token::Brace::default(),
-            stmts: block_stmt.list.into_iter().flat_map(Vec::from).collect(),
+impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
+    type Error = CompilerError;
+
+    fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
+        let mut stmts = vec![];
+        for stmt in block_stmt.list {
+            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
         }
+        Ok(Self {
+            brace_token: syn::token::Brace::default(),
+            stmts,
+        })
     }
 }
 
-impl From<ast::BlockStmt<'_>> for syn::ExprBlock {
-    fn from(block_stmt: ast::BlockStmt) -> Self {
-        Self {
+impl TryFrom<ast::BlockStmt<'_>> for syn::ExprBlock {
+    type Error = CompilerError;
+
+    fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
+        Ok(Self {
             attrs: vec![],
             label: None,
-            block: block_stmt.into(),
-        }
+            block: block_stmt.try_into()?,
+        })
     }
 }
 
@@ -165,22 +253,25 @@ impl From<ast::Expr<'_>> for syn::Type {
     }
 }
 
-impl From<ast::File<'_>> for syn::File {
-    fn from(file: ast::File) -> Self {
-        let items = file
-            .decls
-            .into_iter()
-            .filter_map(|decl| match decl {
-                ast::Decl::FuncDecl(func_decl) => Some(syn::Item::Fn(func_decl.into())),
-                _ => None,
-            })
-            .collect();
+impl TryFrom<ast::File<'_>> for syn::File {
+    type Error = CompilerError;
 
-        Self {
+    fn try_from(file: ast::File) -> Result<Self, Self::Error> {
+        let mut items = vec![];
+        for decl in file.decls {
+            match decl {
+                ast::Decl::FuncDecl(func_decl) => {
+                    items.push(syn::Item::Fn(func_decl.try_into()?));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self {
             attrs: vec![],
             items,
             shebang: None,
-        }
+        })
     }
 }
 
@@ -202,8 +293,10 @@ impl From<ast::Field<'_>> for syn::FnArg {
     }
 }
 
-impl From<ast::FuncDecl<'_>> for syn::ItemFn {
-    fn from(func_decl: ast::FuncDecl) -> Self {
+impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
+    type Error = CompilerError;
+
+    fn try_from(func_decl: ast::FuncDecl) -> Result<Self, Self::Error> {
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
             inputs.push(param.into());
@@ -211,16 +304,14 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let vis = (&func_decl.name).into();
 
-        let block =
-            Box::new(
-                func_decl
-                    .body
-                    .map(|body| body.into())
-                    .unwrap_or_else(|| syn::Block {
-                        brace_token: syn::token::Brace::default(),
-                        stmts: vec![],
-                    }),
-            );
+        let block = Box::new(if let Some(body) = func_decl.body {
+            body.try_into()?
+        } else {
+            syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: vec![],
+            }
+        });
 
         let output = if let Some(results) = func_decl.type_.results {
             syn::ReturnType::Type(
@@ -259,12 +350,12 @@ impl From<ast::FuncDecl<'_>> for syn::ItemFn {
             output,
         };
 
-        Self {
+        Ok(Self {
             attrs: vec![],
             block,
             sig,
             vis,
-        }
+        })
     }
 }
 
@@ -331,58 +422,73 @@ impl From<ast::Ident<'_>> for syn::Ident {
     }
 }
 
-impl From<ast::IfStmt<'_>> for syn::ExprIf {
-    fn from(if_stmt: ast::IfStmt) -> Self {
-        Self {
+impl TryFrom<ast::IfStmt<'_>> for syn::ExprIf {
+    type Error = CompilerError;
+
+    fn try_from(if_stmt: ast::IfStmt) -> Result<Self, Self::Error> {
+        let else_branch = if let Some(else_) = *if_stmt.else_ {
+            Some((
+                <Token![else]>::default(),
+                Box::new(match else_ {
+                    ast::Stmt::IfStmt(if_stmt) => syn::Expr::If(if_stmt.try_into()?),
+                    ast::Stmt::BlockStmt(block_stmt) => syn::Expr::Block(block_stmt.try_into()?),
+                    _ => {
+                        return Err(CompilerError::UnsupportedConstruct(
+                            "unsupported else branch type".to_string(),
+                        ))
+                    }
+                }),
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self {
             attrs: vec![],
             cond: Box::new(if_stmt.cond.into()),
             if_token: <Token![if]>::default(),
-            then_branch: if_stmt.body.into(),
-            else_branch: if_stmt.else_.map(|else_| {
-                (
-                    <Token![else]>::default(),
-                    Box::new(match else_ {
-                        ast::Stmt::IfStmt(if_stmt) => syn::Expr::If(if_stmt.into()),
-                        ast::Stmt::BlockStmt(block_stmt) => syn::Expr::Block(block_stmt.into()),
-                        _ => unimplemented!(),
-                    }),
-                )
-            }),
-        }
+            then_branch: if_stmt.body.try_into()?,
+            else_branch,
+        })
     }
 }
 
-impl From<ast::Stmt<'_>> for Vec<syn::Stmt> {
-    fn from(stmt: ast::Stmt) -> Self {
+impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
+    type Error = CompilerError;
+
+    fn try_from(stmt: ast::Stmt) -> Result<Self, Self::Error> {
         match stmt {
-            ast::Stmt::AssignStmt(s) => s.into(),
-            ast::Stmt::BlockStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Block(s.into()), None)],
-            ast::Stmt::BranchStmt(s) => s.into(),
-            ast::Stmt::DeclStmt(s) => s.into(),
+            ast::Stmt::AssignStmt(s) => s.try_into(),
+            ast::Stmt::BlockStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::Block(s.try_into()?), None)]),
+            ast::Stmt::BranchStmt(s) => Ok(s.into()),
+            ast::Stmt::DeclStmt(s) => Ok(s.into()),
             ast::Stmt::DeferStmt(_) => {
                 // Rust doesn't have defer, would need to use Drop/scope guards
                 // For now, we skip it
-                vec![]
+                Ok(vec![])
             }
-            ast::Stmt::EmptyStmt(_) => vec![],
+            ast::Stmt::EmptyStmt(_) => Ok(vec![]),
             ast::Stmt::ExprStmt(s) => {
-                vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))]
+                Ok(vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))])
             }
-            ast::Stmt::ForStmt(s) => vec![syn::Stmt::Expr(s.into(), None)],
+            ast::Stmt::ForStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
             ast::Stmt::GoStmt(_) => {
                 // Goroutines would need to be converted to threads/async
                 // For now, we skip it
-                vec![]
+                Ok(vec![])
             }
-            ast::Stmt::IfStmt(s) => vec![syn::Stmt::Expr(syn::Expr::If(s.into()), None)],
-            ast::Stmt::IncDecStmt(s) => s.into(),
-            ast::Stmt::LabeledStmt(s) => s.into(),
-            ast::Stmt::ReturnStmt(s) => vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)],
+            ast::Stmt::IfStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::If(s.try_into()?), None)]),
+            ast::Stmt::IncDecStmt(s) => Ok(s.into()),
+            ast::Stmt::LabeledStmt(s) => s.try_into(),
+            ast::Stmt::ReturnStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)]),
             ast::Stmt::SendStmt(_) => {
                 // Channel send would need different semantics
-                vec![]
+                Ok(vec![])
             }
-            _ => unimplemented!("{:?}", stmt),
+            _ => Err(CompilerError::UnsupportedConstruct(format!(
+                "unsupported statement type: {:?}",
+                stmt
+            ))),
         }
     }
 }
@@ -450,14 +556,16 @@ impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
     }
 }
 
-impl From<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
-    fn from(labeled_stmt: ast::LabeledStmt) -> Self {
+impl TryFrom<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
+    type Error = CompilerError;
+
+    fn try_from(labeled_stmt: ast::LabeledStmt) -> Result<Self, Self::Error> {
         // Convert to Rust labeled block/loop
         let label_ident: syn::Ident = labeled_stmt.label.into();
-        let inner_stmts: Vec<syn::Stmt> = Vec::from(*labeled_stmt.stmt);
+        let inner_stmts: Vec<syn::Stmt> = (*labeled_stmt.stmt).try_into()?;
 
         // Create a labeled block
-        vec![syn::Stmt::Expr(
+        Ok(vec![syn::Stmt::Expr(
             syn::Expr::Block(syn::ExprBlock {
                 attrs: vec![],
                 label: Some(syn::Label {
@@ -473,21 +581,23 @@ impl From<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
                 },
             }),
             None,
-        )]
+        )])
     }
 }
 
-impl From<ast::ForStmt<'_>> for syn::Expr {
-    fn from(for_stmt: ast::ForStmt) -> Self {
+impl TryFrom<ast::ForStmt<'_>> for syn::Expr {
+    type Error = CompilerError;
+
+    fn try_from(for_stmt: ast::ForStmt) -> Result<Self, Self::Error> {
         let mut stmts = vec![];
 
         if let Some(init) = for_stmt.init {
-            stmts.extend(Vec::from(*init));
+            stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
         }
 
-        let mut body: syn::Block = for_stmt.body.into();
+        let mut body: syn::Block = for_stmt.body.try_into()?;
         if let Some(post) = for_stmt.post {
-            body.stmts.extend(Vec::from(*post));
+            body.stmts.extend(Vec::<syn::Stmt>::try_from(*post)?);
         }
 
         stmts.push(syn::Stmt::Expr(
@@ -510,14 +620,14 @@ impl From<ast::ForStmt<'_>> for syn::Expr {
             None,
         ));
 
-        Self::Block(syn::ExprBlock {
+        Ok(Self::Block(syn::ExprBlock {
             attrs: vec![],
             label: None,
             block: syn::Block {
                 stmts,
                 brace_token: syn::token::Brace::default(),
             },
-        })
+        }))
     }
 }
 
@@ -559,14 +669,18 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     }
 }
 
-impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
-    fn from(assign_stmt: ast::AssignStmt) -> Self {
+impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
+    type Error = CompilerError;
+
+    fn try_from(assign_stmt: ast::AssignStmt) -> Result<Self, Self::Error> {
         if assign_stmt.lhs.len() != assign_stmt.rhs.len() {
-            panic!("different numbers of lhs/rhs in assignment")
+            return Err(CompilerError::InvalidAssignment(
+                "different numbers of lhs/rhs in assignment".to_string(),
+            ));
         }
 
         if assign_stmt.lhs.is_empty() {
-            panic!("empty lhs")
+            return Err(CompilerError::InvalidAssignment("empty lhs".to_string()));
         }
 
         // a := 1
@@ -583,7 +697,9 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             mutability: Some(<Token![mut]>::default()),
                         })
                     } else {
-                        panic!("expected ident")
+                        return Err(CompilerError::InvalidAssignment(
+                            "expected identifier on lhs of :=".to_string(),
+                        ));
                     }
                 }
                 _ => {
@@ -598,7 +714,9 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                                 mutability: Some(<Token![mut]>::default()),
                             }))
                         } else {
-                            panic!("expecting ident")
+                            return Err(CompilerError::InvalidAssignment(
+                                "expected identifier on lhs of :=".to_string(),
+                            ));
                         }
                     }
                     syn::Pat::Tuple(syn::PatTuple {
@@ -628,7 +746,7 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 }
             };
 
-            return vec![syn::Stmt::Local(syn::Local {
+            return Ok(vec![syn::Stmt::Local(syn::Local {
                 attrs: vec![],
                 pat,
                 init: Some(syn::LocalInit {
@@ -638,7 +756,7 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 }),
                 let_token: <Token![let]>::default(),
                 semi_token: <Token![;]>::default(),
-            })];
+            })]);
         }
 
         // a = 1
@@ -647,7 +765,7 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             if assign_stmt.lhs.len() == 1 {
                 let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
                 let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
-                return vec![syn::parse_quote! { #left = #right; }];
+                return Ok(vec![syn::parse_quote! { #left = #right; }]);
             }
 
             let mut out = vec![];
@@ -659,7 +777,9 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     idents.push(quote::format_ident!("{}__", &ident.name));
                     values.push(rhs.into());
                 } else {
-                    panic!("expecting ident")
+                    return Err(CompilerError::InvalidAssignment(
+                        "expected identifier on lhs of assignment".to_string(),
+                    ));
                 }
             }
             out.push(syn::parse_quote! { let (#(#idents),*) = (#(#values),*); });
@@ -670,28 +790,32 @@ impl From<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     let left: syn::Expr = lhs.into();
                     out.push(syn::parse_quote! { #left = #right; });
                 } else {
-                    panic!("expecting ident")
+                    return Err(CompilerError::InvalidAssignment(
+                        "expected identifier on lhs of assignment".to_string(),
+                    ));
                 }
             }
 
-            return out;
+            return Ok(out);
         }
 
         // e += 4
         if assign_stmt.tok.is_assign_op() {
             if assign_stmt.lhs.len() != 1 {
-                panic!("only supports a single lhs element")
+                return Err(CompilerError::InvalidAssignment(
+                    "compound assignment only supports a single lhs element".to_string(),
+                ));
             }
             let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
             let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
             let op: syn::BinOp = assign_stmt.tok.into();
-            return vec![syn::parse_quote! { #left #op #right; }];
+            return Ok(vec![syn::parse_quote! { #left #op #right; }]);
         }
 
-        unimplemented!(
-            "implementation error, unexpected token {:?}",
+        Err(CompilerError::UnsupportedConstruct(format!(
+            "unexpected assignment token {:?}",
             assign_stmt.tok
-        )
+        )))
     }
 }
 

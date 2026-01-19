@@ -11,6 +11,9 @@ repository = "https://github.com/aymericbeaumet/gors/"
 name = "gors"
 path = "lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_warn"] }
 phf = { version = "0.11", features = ["macros"] }

@@ -1,4 +1,18 @@
-#![allow(clippy::large_enum_variant)] // TODO: we allow large enum variant for now, let's profile properly to see if we want to box.
+//! Go Abstract Syntax Tree data structures.
+//!
+//! This module contains types representing the Go AST, based on the
+//! [Go `ast` package](https://pkg.go.dev/go/ast). Each type corresponds
+//! to a node in the Go AST.
+//!
+//! ## Main Types
+//!
+//! - [`File`] - A complete Go source file
+//! - [`Decl`] - Top-level declarations (functions, types, etc.)
+//! - [`Stmt`] - Statements (if, for, return, etc.)
+//! - [`Expr`] - Expressions (literals, identifiers, operators, etc.)
+
+// Large enum variants are allowed at workspace level. Boxing would add indirection
+// overhead which may not be worth the memory savings for AST nodes.
 
 mod hashable;
 mod printable;
@@ -7,6 +21,9 @@ mod printer;
 use crate::token::{Position, Token};
 use std::collections::BTreeMap;
 
+/// Print an AST node in Go source format.
+///
+/// Writes a Go-compatible representation of the AST node to the given writer.
 pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
     w: W,
     node: T,
@@ -15,13 +32,17 @@ pub fn fprint<W: std::io::Write, T: printer::Printable<W>>(
     node.print(&mut p)
 }
 
-// https://pkg.go.dev/go/ast#CommentGroup
+/// A group of comments.
+///
+/// See [Go ast.CommentGroup](https://pkg.go.dev/go/ast#CommentGroup).
 #[derive(Debug)]
 pub struct CommentGroup {
     // List []*Comment // len(List) > 0
 }
 
-// https://pkg.go.dev/go/ast#FieldList
+/// A list of fields (parameters, results, struct fields, etc.).
+///
+/// See [Go ast.FieldList](https://pkg.go.dev/go/ast#FieldList).
 #[derive(Debug)]
 pub struct FieldList<'a> {
     pub opening: Option<Position<'a>>, // position of opening parenthesis/brace, if any
@@ -29,7 +50,9 @@ pub struct FieldList<'a> {
     pub closing: Option<Position<'a>>, // position of closing parenthesis/brace, if any
 }
 
-// https://pkg.go.dev/go/ast#Field
+/// A field declaration in a struct, interface, or parameter list.
+///
+/// See [Go ast.Field](https://pkg.go.dev/go/ast#Field).
 #[derive(Debug)]
 pub struct Field<'a> {
     pub doc: Option<CommentGroup>,     // associated documentation; or nil
@@ -39,7 +62,11 @@ pub struct Field<'a> {
     pub comment: Option<CommentGroup>, // line comments; or nil
 }
 
-// https://pkg.go.dev/go/ast#File
+/// A Go source file.
+///
+/// This is the root node of the AST for a single Go source file.
+///
+/// See [Go ast.File](https://pkg.go.dev/go/ast#File).
 #[derive(Debug)]
 pub struct File<'a> {
     pub doc: Option<CommentGroup>, // associated documentation; or nil
@@ -78,7 +105,9 @@ impl<'a> File<'a> {
     }
 }
 
-// https://pkg.go.dev/go/ast#FuncDecl
+/// A function or method declaration.
+///
+/// See [Go ast.FuncDecl](https://pkg.go.dev/go/ast#FuncDecl).
 #[derive(Debug)]
 pub struct FuncDecl<'a> {
     pub doc: Option<CommentGroup>,   // associated documentation; or nil
@@ -88,7 +117,9 @@ pub struct FuncDecl<'a> {
     pub body: Option<BlockStmt<'a>>, // function body; or nil for external (non-Go) function
 }
 
-// https://pkg.go.dev/go/ast#BlockStmt
+/// A braced statement list (block).
+///
+/// See [Go ast.BlockStmt](https://pkg.go.dev/go/ast#BlockStmt).
 #[derive(Debug)]
 pub struct BlockStmt<'a> {
     pub lbrace: Position<'a>, // position of "{"

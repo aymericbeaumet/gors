@@ -1,4 +1,4 @@
-#![allow(non_snake_case)] // TODO: switch to parse_* function naming
+// Go parser implementation following the Go language specification
 
 use crate::ast;
 use crate::scanner;
@@ -96,6 +96,30 @@ impl<T> ResultExt<T> for Result<Option<T>> {
     }
 }
 
+/// Parse a Go source file into an Abstract Syntax Tree.
+///
+/// This is the main entry point for parsing Go source code. It performs
+/// lexical analysis and parsing to produce a complete AST.
+///
+/// # Arguments
+///
+/// * `filename` - The name of the source file (used in error messages)
+/// * `buffer` - The Go source code to parse
+///
+/// # Returns
+///
+/// Returns `Ok(ast::File)` on successful parsing, or `Err(ParserError)`
+/// if the source contains syntax errors.
+///
+/// # Example
+///
+/// ```
+/// use gors::parser::parse_file;
+///
+/// let source = "package main\n\nfunc main() {}";
+/// let ast = parse_file("example.go", source).unwrap();
+/// assert_eq!(ast.name.name, "main");
+/// ```
 pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a>> {
     // Extract go version from //go:build directive before parsing
     let go_version = extract_go_version(buffer);
@@ -103,7 +127,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     let scanner = scanner::Scanner::new(filename, buffer);
     let mut parser = Parser::new(scanner, go_version);
     parser.next()?;
-    parser.SourceFile().required().map_err(|err| match err {
+    parser.parse_source_file().required().map_err(|err| match err {
         ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
             file: format!(
                 "{}/{}",
@@ -238,10 +262,10 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
-    fn SourceFile(&mut self) -> Result<Option<ast::File<'scanner>>> {
-        log::debug!("Parser::SourceFile()");
+    fn parse_source_file(&mut self) -> Result<Option<ast::File<'scanner>>> {
+        log::debug!("Parser::parse_source_file()");
 
-        let (package, package_name) = match self.PackageClause()? {
+        let (package, package_name) = match self.parse_package_clause()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -270,12 +294,12 @@ impl<'scanner> Parser<'scanner> {
             go_version: self.go_version,
         };
 
-        while let Some(import_decl) = self.ImportDecl()? {
+        while let Some(import_decl) = self.parse_import_decl()? {
             self.token(Token::SEMICOLON).required()?;
             out.decls.push(ast::Decl::GenDecl(import_decl));
         }
 
-        while let Some(top_level_decl) = self.TopLevelDecl()? {
+        while let Some(top_level_decl) = self.parse_top_level_decl()? {
             self.token(Token::SEMICOLON).required()?;
             out.decls.push(top_level_decl);
         }
@@ -287,29 +311,29 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // PackageClause = "package" PackageName .
-    fn PackageClause(&mut self) -> Result<Option<(scanner::Step<'scanner>, ast::Ident<'scanner>)>> {
-        log::debug!("Parser::PackageClause()");
+    fn parse_package_clause(&mut self) -> Result<Option<(scanner::Step<'scanner>, ast::Ident<'scanner>)>> {
+        log::debug!("Parser::parse_package_clause()");
 
         let package = match self.token(Token::PACKAGE)? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let package_name = self.PackageName().required()?;
+        let package_name = self.parse_package_name().required()?;
 
         Ok(Some((package, package_name)))
     }
 
     // PackageName = identifier .
-    fn PackageName(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
-        log::debug!("Parser::PackageName()");
+    fn parse_package_name(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
+        log::debug!("Parser::parse_package_name()");
 
         self.identifier()
     }
 
     // ImportDecl = "import" ( ImportSpec | "(" { ImportSpec ";" } ")" ) .
-    fn ImportDecl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::ImportDecl()");
+    fn parse_import_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_import_decl()");
 
         let import = match self.token(Token::IMPORT)? {
             Some(v) => v,
@@ -318,7 +342,7 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(import_spec) = self.ImportSpec()? {
+            while let Some(import_spec) = self.parse_import_spec()? {
                 specs.push(ast::Spec::ImportSpec(import_spec));
                 if self.token(Token::SEMICOLON)?.is_none() {
                     break;
@@ -337,7 +361,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ImportSpec(self.ImportSpec().required()?)];
+        let specs = vec![ast::Spec::ImportSpec(self.parse_import_spec().required()?)];
         Ok(Some(ast::GenDecl {
             doc: None,
             tok_pos: import.0,
@@ -349,11 +373,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ImportSpec = [ "." | PackageName ] ImportPath .
-    fn ImportSpec(&mut self) -> Result<Option<ast::ImportSpec<'scanner>>> {
-        log::debug!("Parser::ImportSpec()");
+    fn parse_import_spec(&mut self) -> Result<Option<ast::ImportSpec<'scanner>>> {
+        log::debug!("Parser::parse_import_spec()");
 
-        if let Some(name) = self.period_or_PackageName()? {
-            let path = self.ImportPath().required()?;
+        if let Some(name) = self.parse_period_or_package_name()? {
+            let path = self.parse_import_path().required()?;
             return Ok(Some(ast::ImportSpec {
                 doc: None,
                 name: Some(name),
@@ -362,7 +386,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let import_path = match self.ImportPath()? {
+        let import_path = match self.parse_import_path()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -376,41 +400,41 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ImportPath = string_lit .
-    fn ImportPath(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
-        log::debug!("Parser::ImportPath()");
+    fn parse_import_path(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
+        log::debug!("Parser::parse_import_path()");
 
         self.string_lit()
     }
 
     // TopLevelDecl = Declaration | FunctionDecl | MethodDecl .
-    fn TopLevelDecl(&mut self) -> Result<Option<ast::Decl<'scanner>>> {
-        log::debug!("Parser::TopLevelDecl()");
+    fn parse_top_level_decl(&mut self) -> Result<Option<ast::Decl<'scanner>>> {
+        log::debug!("Parser::parse_top_level_decl()");
 
         use Token::*;
         Ok(match self.current_step.1 {
-            CONST | TYPE | VAR => Some(ast::Decl::GenDecl(self.Declaration().required()?)),
+            CONST | TYPE | VAR => Some(ast::Decl::GenDecl(self.parse_declaration().required()?)),
             FUNC => Some(ast::Decl::FuncDecl(
-                self.FunctionDecl_or_MethodDecl().required()?,
+                self.parse_function_decl_or_method_decl().required()?,
             )),
             _ => None,
         })
     }
 
     // Declaration = ConstDecl | TypeDecl | VarDecl .
-    fn Declaration(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::Declaration()");
+    fn parse_declaration(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_declaration()");
 
         Ok(match self.current_step.1 {
-            Token::CONST => Some(self.ConstDecl().required()?),
-            Token::TYPE => Some(self.TypeDecl().required()?),
-            Token::VAR => Some(self.VarDecl().required()?),
+            Token::CONST => Some(self.parse_const_decl().required()?),
+            Token::TYPE => Some(self.parse_type_decl().required()?),
+            Token::VAR => Some(self.parse_var_decl().required()?),
             _ => None,
         })
     }
 
     // TypeDecl = "type" ( TypeSpec | "(" { TypeSpec ";" } ")" ) .
-    fn TypeDecl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::TypeDecl()");
+    fn parse_type_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_type_decl()");
 
         let type_ = match self.token(Token::TYPE)? {
             Some(v) => v,
@@ -419,7 +443,7 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(type_spec) = self.TypeSpec()? {
+            while let Some(type_spec) = self.parse_type_spec()? {
                 specs.push(ast::Spec::TypeSpec(type_spec));
                 if self.token(Token::SEMICOLON)?.is_none() {
                     break;
@@ -438,7 +462,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::TypeSpec(self.TypeSpec().required()?)];
+        let specs = vec![ast::Spec::TypeSpec(self.parse_type_spec().required()?)];
         Ok(Some(ast::GenDecl {
             doc: None,
             tok_pos: type_.0,
@@ -452,8 +476,8 @@ impl<'scanner> Parser<'scanner> {
     // TypeSpec  = AliasDecl | TypeDef .
     // AliasDecl = identifier "=" Type .
     // TypeDef   = identifier [ TypeParameters ] Type .
-    fn TypeSpec(&mut self) -> Result<Option<ast::TypeSpec<'scanner>>> {
-        log::debug!("Parser::TypeSpec()");
+    fn parse_type_spec(&mut self) -> Result<Option<ast::TypeSpec<'scanner>>> {
+        log::debug!("Parser::parse_type_spec()");
 
         let name = match self.identifier()? {
             Some(v) => v,
@@ -469,7 +493,7 @@ impl<'scanner> Parser<'scanner> {
             // - type Foo [5]int    (array type - [ followed by expression)
             // Type parameters always have: [ identifier constraint ]
             // So we look for [ followed by identifier
-            let result = self.TypeParameters()?;
+            let result = self.parse_type_parameters()?;
             // If we got an empty list, this was [] for a slice type
             // TypeParameters already consumed [] so we need to account for that when parsing type
             match result {
@@ -477,7 +501,7 @@ impl<'scanner> Parser<'scanner> {
                     // This was [] - it's a slice type, not type params
                     // We need to construct the slice type here since [ ] was consumed
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
-                    let element_type = self.Type().required()?;
+                    let element_type = self.parse_type().required()?;
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
                         name: Some(name),
@@ -497,7 +521,7 @@ impl<'scanner> Parser<'scanner> {
                     // This was [expr] - it's an array type, not type params
                     // TypeParameters stored the length expression in the type_ field
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
-                    let element_type = self.Type().required()?;
+                    let element_type = self.parse_type().required()?;
                     let len_expr = field_list.list.pop().and_then(|f| f.type_);
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
@@ -520,7 +544,7 @@ impl<'scanner> Parser<'scanner> {
 
         let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
 
-        let type_ = self.Type().required()?;
+        let type_ = self.parse_type().required()?;
 
         Ok(Some(ast::TypeSpec {
             doc: None,
@@ -533,8 +557,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ConstDecl = "const" ( ConstSpec | "(" { ConstSpec ";" } ")" ) .
-    fn ConstDecl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::ConstDecl()");
+    fn parse_const_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_const_decl()");
 
         let const_ = match self.token(Token::CONST)? {
             Some(v) => v,
@@ -543,7 +567,7 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(const_spec) = self.ConstSpec()? {
+            while let Some(const_spec) = self.parse_const_spec()? {
                 specs.push(ast::Spec::ValueSpec(const_spec));
                 if self.token(Token::SEMICOLON)?.is_none() {
                     break;
@@ -562,7 +586,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ValueSpec(self.ConstSpec().required()?)];
+        let specs = vec![ast::Spec::ValueSpec(self.parse_const_spec().required()?)];
         Ok(Some(ast::GenDecl {
             doc: None,
             tok_pos: const_.0,
@@ -574,19 +598,19 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] .
-    fn ConstSpec(&mut self) -> Result<Option<ast::ValueSpec<'scanner>>> {
-        log::debug!("Parser::ConstSpec()");
+    fn parse_const_spec(&mut self) -> Result<Option<ast::ValueSpec<'scanner>>> {
+        log::debug!("Parser::parse_const_spec()");
 
-        let (names, _, _) = match self.IdentifierList()? {
+        let (names, _, _) = match self.parse_identifier_list()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         let (type_, values) = if self.token(Token::ASSIGN)?.is_some() {
-            (None, Some(self.ExpressionList().required()?))
-        } else if let Some(type_) = self.Type()? {
+            (None, Some(self.parse_expression_list().required()?))
+        } else if let Some(type_) = self.parse_type()? {
             self.token(Token::ASSIGN).required()?;
-            (Some(type_), Some(self.ExpressionList().required()?))
+            (Some(type_), Some(self.parse_expression_list().required()?))
         } else {
             (None, None)
         };
@@ -601,8 +625,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // VarDecl = "var" ( VarSpec | "(" { VarSpec ";" } ")" ) .
-    fn VarDecl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::VarDecl()");
+    fn parse_var_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_var_decl()");
 
         let var = match self.token(Token::VAR)? {
             Some(v) => v,
@@ -611,7 +635,7 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(var_spec) = self.VarSpec()? {
+            while let Some(var_spec) = self.parse_var_spec()? {
                 specs.push(ast::Spec::ValueSpec(var_spec));
                 if self.token(Token::SEMICOLON)?.is_none() {
                     break;
@@ -630,7 +654,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ValueSpec(self.VarSpec().required()?)];
+        let specs = vec![ast::Spec::ValueSpec(self.parse_var_spec().required()?)];
         Ok(Some(ast::GenDecl {
             doc: None,
             tok_pos: var.0,
@@ -642,21 +666,21 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // VarSpec = IdentifierList ( Type [ "=" ExpressionList ] | "=" ExpressionList ) .
-    fn VarSpec(&mut self) -> Result<Option<ast::ValueSpec<'scanner>>> {
-        log::debug!("Parser::VarSpec()");
+    fn parse_var_spec(&mut self) -> Result<Option<ast::ValueSpec<'scanner>>> {
+        log::debug!("Parser::parse_var_spec()");
 
-        let (names, _, _) = match self.IdentifierList()? {
+        let (names, _, _) = match self.parse_identifier_list()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         let (type_, values) = if self.token(Token::ASSIGN)?.is_some() {
-            (None, Some(self.ExpressionList().required()?))
+            (None, Some(self.parse_expression_list().required()?))
         } else {
             (
-                Some(self.Type().required()?),
+                Some(self.parse_type().required()?),
                 if self.token(Token::ASSIGN)?.is_some() {
-                    Some(self.ExpressionList().required()?)
+                    Some(self.parse_expression_list().required()?)
                 } else {
                     None
                 },
@@ -676,8 +700,8 @@ impl<'scanner> Parser<'scanner> {
     // Returns (identifiers, has_trailing_comma, last_is_qualified) where:
     // - has_trailing_comma is true if a comma was consumed but no identifier followed (e.g., "int," in "(int, map[...])")
     // - last_is_qualified is true if the last identifier is followed by "." (making it a qualified type)
-    fn IdentifierList(&mut self) -> Result<Option<(Vec<ast::Ident<'scanner>>, bool, bool)>> {
-        log::debug!("Parser::IdentifierList()");
+    fn parse_identifier_list(&mut self) -> Result<Option<(Vec<ast::Ident<'scanner>>, bool, bool)>> {
+        log::debug!("Parser::parse_identifier_list()");
 
         let first_ident = match self.identifier()? {
             Some(v) => v,
@@ -716,10 +740,10 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ExpressionList = Expression { "," Expression } .
-    fn ExpressionList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
-        log::debug!("Parser::ExpressionList()");
+    fn parse_expression_list(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
+        log::debug!("Parser::parse_expression_list()");
 
-        let mut out = match self.Expression()? {
+        let mut out = match self.parse_expression()? {
             Some(v) => vec![v],
             None => return Ok(None),
         };
@@ -732,17 +756,17 @@ impl<'scanner> Parser<'scanner> {
             ) {
                 break;
             }
-            out.push(self.Expression().required()?);
+            out.push(self.parse_expression().required()?);
         }
 
         Ok(Some(out))
     }
 
     // Expression = UnaryExpr | Expression binary_op Expression .
-    fn Expression(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Expression()");
+    fn parse_expression(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_expression()");
 
-        let unary_expr = match self.UnaryExpr()? {
+        let unary_expr = match self.parse_unary_expr()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -759,7 +783,7 @@ impl<'scanner> Parser<'scanner> {
         while let Some(op) = self.get_binary_op(min_precedence)? {
             self.next()?;
 
-            let mut rhs = self.UnaryExpr().required()?;
+            let mut rhs = self.parse_unary_expr().required()?;
             while self.get_binary_op(op.1.precedence() + 1)?.is_some() {
                 rhs = self.expression(rhs, op.1.precedence() + 1).required()?;
             }
@@ -776,8 +800,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // UnaryExpr = PrimaryExpr | unary_op UnaryExpr .
-    fn UnaryExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::UnaryExpr()");
+    fn parse_unary_expr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_unary_expr()");
 
         // Special case: <- followed by chan is a receive-only channel type, not receive expression
         // This happens in contexts like make(<-chan T)
@@ -797,7 +821,7 @@ impl<'scanner> Parser<'scanner> {
             if self.current_step.1 == Token::CHAN {
                 // It's <-chan, parse the rest as channel type
                 self.next()?; // consume chan
-                let value = Box::new(self.ElementType().required()?);
+                let value = Box::new(self.parse_element_type().required()?);
                 return Ok(Some(ast::Expr::ChanType(ast::ChanType {
                     begin: arrow_step.0,
                     arrow: Some(arrow_step.0),
@@ -808,7 +832,7 @@ impl<'scanner> Parser<'scanner> {
 
             // Not followed by chan - it's a receive expression
             // The <- was already consumed, so parse the operand
-            let x = Box::new(self.UnaryExpr().required()?);
+            let x = Box::new(self.parse_unary_expr().required()?);
             return Ok(Some(ast::Expr::UnaryExpr(ast::UnaryExpr {
                 op: Token::ARROW,
                 op_pos: arrow_step.0,
@@ -817,7 +841,7 @@ impl<'scanner> Parser<'scanner> {
         }
 
         if let Some(op) = self.unary_op()? {
-            let x = Box::new(self.UnaryExpr().required()?);
+            let x = Box::new(self.parse_unary_expr().required()?);
             let expr = if op.1 == Token::MUL {
                 ast::Expr::StarExpr(ast::StarExpr { star: op.0, x })
             } else {
@@ -830,7 +854,7 @@ impl<'scanner> Parser<'scanner> {
             return Ok(Some(expr));
         }
 
-        self.PrimaryExpr()
+        self.parse_primary_expr()
     }
 
     // PrimaryExpr =
@@ -842,10 +866,10 @@ impl<'scanner> Parser<'scanner> {
     //         PrimaryExpr Slice |
     //         PrimaryExpr TypeAssertion |
     //         PrimaryExpr Arguments .
-    fn PrimaryExpr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::PrimaryExpr()");
+    fn parse_primary_expr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_primary_expr()");
 
-        let mut primary_expr = match self.Operand()? {
+        let mut primary_expr = match self.parse_operand()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -853,17 +877,17 @@ impl<'scanner> Parser<'scanner> {
         loop {
             match self.current_step.1 {
                 Token::PERIOD => {
-                    primary_expr = self.Selector_or_TypeAssertion(primary_expr).required()?;
+                    primary_expr = self.parse_selector_or_type_assertion(primary_expr).required()?;
                 }
                 Token::LBRACK => {
-                    primary_expr = self.Index_or_Slice(primary_expr).required()?;
+                    primary_expr = self.parse_index_or_slice(primary_expr).required()?;
                 }
                 Token::LPAREN => {
-                    primary_expr = self.Arguments(primary_expr).required()?;
+                    primary_expr = self.parse_arguments(primary_expr).required()?;
                 }
                 Token::LBRACE if self.expr_level >= 0 => {
                     // Composite literal with type already parsed
-                    primary_expr = self.LiteralValue(primary_expr).required()?;
+                    primary_expr = self.parse_literal_value(primary_expr).required()?;
                 }
                 _ => break,
             }
@@ -875,8 +899,8 @@ impl<'scanner> Parser<'scanner> {
     // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
     // ElementList  = KeyedElement { "," KeyedElement } .
     // Used when type is already known from PrimaryExpr
-    fn LiteralValue(&mut self, type_: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::LiteralValue()");
+    fn parse_literal_value(&mut self, type_: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_literal_value()");
 
         let lbrace = match self.token(Token::LBRACE)? {
             Some(v) => v,
@@ -888,10 +912,10 @@ impl<'scanner> Parser<'scanner> {
         let prev_expr_level = self.expr_level;
         self.expr_level = std::cmp::max(1, self.expr_level + 1);
 
-        let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
+        let mut elts = self.parse_keyed_element()?.map(|elt| vec![elt]);
         if let Some(elts) = elts.as_mut() {
             while self.token(Token::COMMA)?.is_some() {
-                if let Some(k) = self.KeyedElement()? {
+                if let Some(k) = self.parse_keyed_element()? {
                     elts.push(k);
                 } else {
                     break;
@@ -914,11 +938,11 @@ impl<'scanner> Parser<'scanner> {
     // Selector      = "." identifier .
     // TypeAssertion = "." "(" Type ")" .
     // TypeSwitchGuard = "." "(" "type" ")" .
-    fn Selector_or_TypeAssertion(
+    fn parse_selector_or_type_assertion(
         &mut self,
         x: ast::Expr<'scanner>,
     ) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Selector_or_TypeAssertion()");
+        log::debug!("Parser::parse_selector_or_type_assertion()");
 
         if self.token(Token::PERIOD)?.is_none() {
             return Ok(None);
@@ -935,7 +959,7 @@ impl<'scanner> Parser<'scanner> {
                     rparen: rparen.0,
                 })));
             }
-            let type_ = self.Type().required()?;
+            let type_ = self.parse_type().required()?;
             let rparen = self.token(Token::RPAREN).required()?;
             return Ok(Some(ast::Expr::TypeAssertExpr(ast::TypeAssertExpr {
                 x: Box::new(x),
@@ -955,8 +979,8 @@ impl<'scanner> Parser<'scanner> {
     // Slice = "[" [ Expression ] ":" [ Expression ] "]" |
     //         "[" [ Expression ] ":" Expression ":" Expression "]" .
     // IndexListExpr (Go 1.18+ generics) = "[" Expression { "," Expression } "]" .
-    fn Index_or_Slice(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Index_or_Slice()");
+    fn parse_index_or_slice(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_index_or_slice()");
 
         let lbrack = match self.token(Token::LBRACK)? {
             Some(v) => v,
@@ -966,18 +990,18 @@ impl<'scanner> Parser<'scanner> {
         // Inside brackets, composite literals are always allowed
         self.expr_level += 1;
 
-        let low = if let Some(low) = self.Expression()? {
+        let low = if let Some(low) = self.parse_expression()? {
             // Check for comma (generic instantiation with multiple type args)
             if self.token(Token::COMMA)?.is_some() {
                 let mut indices = vec![low];
                 // Allow trailing comma
                 if self.current_step.1 != Token::RBRACK {
-                    indices.push(self.Expression().required()?);
+                    indices.push(self.parse_expression().required()?);
                     while self.token(Token::COMMA)?.is_some() {
                         if self.current_step.1 == Token::RBRACK {
                             break;
                         }
-                        indices.push(self.Expression().required()?);
+                        indices.push(self.parse_expression().required()?);
                     }
                 }
                 let rbrack = self.token(Token::RBRACK).required()?;
@@ -1006,9 +1030,9 @@ impl<'scanner> Parser<'scanner> {
 
         self.token(Token::COLON).required()?;
 
-        let high = if let Some(high) = self.Expression()? {
+        let high = if let Some(high) = self.parse_expression()? {
             if self.token(Token::COLON)?.is_some() {
-                let max = self.Expression().required()?;
+                let max = self.parse_expression().required()?;
                 let rbrack = self.token(Token::RBRACK).required()?;
                 self.expr_level -= 1;
                 return Ok(Some(ast::Expr::SliceExpr(ast::SliceExpr {
@@ -1040,8 +1064,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Arguments = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
-    fn Arguments(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Arguments()");
+    fn parse_arguments(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_arguments()");
 
         let lparen = match self.token(Token::LPAREN)? {
             Some(v) => v,
@@ -1051,16 +1075,16 @@ impl<'scanner> Parser<'scanner> {
         // Inside parentheses, composite literals are always allowed
         self.expr_level += 1;
 
-        let mut args = if let Some(exprs) = self.ExpressionList()? {
+        let mut args = if let Some(exprs) = self.parse_expression_list()? {
             exprs
-        } else if let Some(type_) = self.Type()? {
+        } else if let Some(type_) = self.parse_type()? {
             vec![type_]
         } else {
             vec![]
         };
 
         if self.token(Token::COMMA)?.is_some() {
-            let mut exprs = self.ExpressionList().required()?;
+            let mut exprs = self.parse_expression_list().required()?;
             args.append(&mut exprs);
         }
 
@@ -1087,14 +1111,14 @@ impl<'scanner> Parser<'scanner> {
     // Operand = Literal | OperandName | "(" Expression ")" .
     // Literal = BasicLit | CompositeLit | FunctionLit .
     // OperandName = identifier | QualifiedIdent .
-    fn Operand(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Operand()");
+    fn parse_operand(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_operand()");
 
         use Token::*;
         Ok(match self.current_step.1 {
             IDENT => Some(ast::Expr::Ident(self.identifier().required()?)),
             INT | FLOAT | IMAG | CHAR | STRING => {
-                Some(ast::Expr::BasicLit(self.BasicLit().required()?))
+                Some(ast::Expr::BasicLit(self.parse_basic_lit().required()?))
             }
             LPAREN => {
                 let lparen = self.token(Token::LPAREN).required()?;
@@ -1102,7 +1126,7 @@ impl<'scanner> Parser<'scanner> {
                 self.expr_level += 1;
 
                 // First, try to parse as expression
-                if let Some(expr) = self.Expression()? {
+                if let Some(expr) = self.parse_expression()? {
                     let rparen = self.token(Token::RPAREN).required()?;
                     self.expr_level -= 1;
                     return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
@@ -1114,7 +1138,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // If expression parsing failed, try to parse as type
                 // This handles cases like (func(string))(nil)
-                if let Some(type_) = self.Type()? {
+                if let Some(type_) = self.parse_type()? {
                     let rparen = self.token(Token::RPAREN).required()?;
                     self.expr_level -= 1;
                     // Return the type wrapped in parens - can be used for type conversion
@@ -1133,13 +1157,13 @@ impl<'scanner> Parser<'scanner> {
                 // Try function literal first; if no body, fall back to function type
                 // (for use in type conversions like func(string)(nil))
                 let func = self.token(Token::FUNC).required()?;
-                let signature = self.Signature(Some(func.0)).required()?;
+                let signature = self.parse_signature(Some(func.0)).required()?;
                 // Reset expr_level when parsing function body to allow composite literals
                 // inside the function, even if we're in a context (like if condition) that
                 // normally disables them
                 let saved_expr_level = self.expr_level;
                 self.expr_level = 0;
-                let body = self.FunctionBody()?;
+                let body = self.parse_function_body()?;
                 self.expr_level = saved_expr_level;
                 if let Some(body) = body {
                     // It's a function literal
@@ -1153,17 +1177,17 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
             // Interface type for type conversions like interface{}(x)
-            INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
+            INTERFACE => Some(ast::Expr::InterfaceType(self.parse_interface_type().required()?)),
             // Handle nested composite literals without explicit type
             // Go allows eliding the type for nested composite literals
             LBRACE if self.expr_level > 0 => {
                 let lbrace = self.token(Token::LBRACE).required()?;
                 // Inside composite literal, allow nested composite literals
                 self.expr_level += 1;
-                let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
+                let mut elts = self.parse_keyed_element()?.map(|elt| vec![elt]);
                 if let Some(elts) = elts.as_mut() {
                     while self.token(Token::COMMA)?.is_some() {
-                        if let Some(k) = self.KeyedElement()? {
+                        if let Some(k) = self.parse_keyed_element()? {
                             elts.push(k);
                         } else {
                             break;
@@ -1183,7 +1207,7 @@ impl<'scanner> Parser<'scanner> {
             }
             _ => {
                 // Try to parse a composite literal, or just a type if no { follows
-                if let Some(type_) = self.LiteralType()? {
+                if let Some(type_) = self.parse_literal_type()? {
                     if self.current_step.1 == Token::LBRACE {
                         // After a LiteralType, a { is always a composite literal
                         // (the ambiguity with blocks only exists at statement level)
@@ -1192,10 +1216,10 @@ impl<'scanner> Parser<'scanner> {
                         // Use max(1, ...) to ensure expr_level is positive even if it was -1
                         let prev_expr_level = self.expr_level;
                         self.expr_level = std::cmp::max(1, self.expr_level + 1);
-                        let mut elts = self.KeyedElement()?.map(|elt| vec![elt]);
+                        let mut elts = self.parse_keyed_element()?.map(|elt| vec![elt]);
                         if let Some(elts) = elts.as_mut() {
                             while self.token(Token::COMMA)?.is_some() {
-                                if let Some(k) = self.KeyedElement()? {
+                                if let Some(k) = self.parse_keyed_element()? {
                                     elts.push(k);
                                 } else {
                                     break;
@@ -1224,17 +1248,17 @@ impl<'scanner> Parser<'scanner> {
 
     // LiteralType = StructType | ArrayType | "[" "..." "]" ElementType |
     //               SliceType | MapType | TypeName .
-    fn LiteralType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::LiteralType()");
+    fn parse_literal_type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_literal_type()");
 
         Ok(match self.current_step.1 {
-            Token::STRUCT => Some(ast::Expr::StructType(self.StructType().required()?)),
+            Token::STRUCT => Some(ast::Expr::StructType(self.parse_struct_type().required()?)),
             Token::LBRACK => Some(ast::Expr::ArrayType(
-                self.ArrayType_or_SliceType::<true>().required()?,
+                self.parse_array_type_or_slice_type::<true>().required()?,
             )),
-            Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
-            Token::CHAN => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
-            Token::IDENT => Some(self.TypeName().required()?),
+            Token::MAP => Some(ast::Expr::MapType(self.parse_map_type().required()?)),
+            Token::CHAN => Some(ast::Expr::ChanType(self.parse_channel_type().required()?)),
+            Token::IDENT => Some(self.parse_type_name().required()?),
             _ => None,
         })
     }
@@ -1243,16 +1267,16 @@ impl<'scanner> Parser<'scanner> {
     // Key          = FieldName | Expression | LiteralValue .
     // FieldName    = identifier .
     // Element      = Expression | LiteralValue .
-    fn KeyedElement(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::KeyedElement()");
+    fn parse_keyed_element(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_keyed_element()");
 
-        let key = match self.Expression()? {
+        let key = match self.parse_expression()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         if let Some(colon) = self.token(Token::COLON)? {
-            let value = self.Expression().required()?;
+            let value = self.parse_expression().required()?;
             return Ok(Some(ast::Expr::KeyValueExpr(ast::KeyValueExpr {
                 key: Box::new(key),
                 colon: colon.0,
@@ -1264,22 +1288,22 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // FunctionLit = "func" Signature FunctionBody .
-    fn FunctionLit(&mut self) -> Result<Option<ast::FuncLit<'scanner>>> {
-        log::debug!("Parser::FunctionLit()");
+    fn parse_function_lit(&mut self) -> Result<Option<ast::FuncLit<'scanner>>> {
+        log::debug!("Parser::parse_function_lit()");
 
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
         };
-        let type_ = self.Signature(Some(func.0)).required()?;
-        let body = self.FunctionBody().required()?;
+        let type_ = self.parse_signature(Some(func.0)).required()?;
+        let body = self.parse_function_body().required()?;
 
         Ok(Some(ast::FuncLit { type_, body }))
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
-    fn BasicLit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
-        log::debug!("Parser::BasicLit()");
+    fn parse_basic_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
+        log::debug!("Parser::parse_basic_lit()");
 
         Ok(match self.current_step.1 {
             Token::INT => Some(self.int_lit().required()?),
@@ -1292,11 +1316,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Type = TypeName | TypeLit | "(" Type ")" .
-    fn Type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::Type()");
+    fn parse_type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type()");
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
-            let type_ = self.Type().required()?;
+            let type_ = self.parse_type().required()?;
             let rparen = self.token(Token::RPAREN).required()?;
             // Preserve the parentheses by wrapping in ParenExpr
             return Ok(Some(ast::Expr::ParenExpr(ast::ParenExpr {
@@ -1306,11 +1330,11 @@ impl<'scanner> Parser<'scanner> {
             })));
         }
 
-        if let Some(type_name) = self.TypeName()? {
+        if let Some(type_name) = self.parse_type_name()? {
             return Ok(Some(type_name));
         }
 
-        if let Some(type_lit) = self.TypeLit()? {
+        if let Some(type_lit) = self.parse_type_lit()? {
             return Ok(Some(type_lit));
         }
 
@@ -1318,10 +1342,10 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // TypeList = Type { "," Type } .
-    fn TypeList(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
-        log::debug!("Parser::TypeList()");
+    fn parse_type_list(&mut self) -> Result<Option<Vec<ast::Expr<'scanner>>>> {
+        log::debug!("Parser::parse_type_list()");
 
-        let first_type = match self.Type()? {
+        let first_type = match self.parse_type()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -1336,7 +1360,7 @@ impl<'scanner> Parser<'scanner> {
             ) {
                 break;
             }
-            types.push(self.Type().required()?);
+            types.push(self.parse_type().required()?);
         }
 
         Ok(Some(types))
@@ -1344,10 +1368,10 @@ impl<'scanner> Parser<'scanner> {
 
     // TypeName = identifier [ TypeArgs ] | QualifiedIdent [ TypeArgs ] .
     // TypeArgs = "[" TypeList [ "," ] "]" .
-    fn TypeName(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::TypeName()");
+    fn parse_type_name(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type_name()");
 
-        let type_name = match self.identifier_or_QualifiedIdent()? {
+        let type_name = match self.parse_identifier_or_qualified_ident()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -1372,12 +1396,12 @@ impl<'scanner> Parser<'scanner> {
                 })));
             }
 
-            let mut indices = vec![self.Type().required()?];
+            let mut indices = vec![self.parse_type().required()?];
             while self.token(Token::COMMA)?.is_some() {
                 if self.current_step.1 == Token::RBRACK {
                     break;
                 }
-                indices.push(self.Type().required()?);
+                indices.push(self.parse_type().required()?);
             }
             let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -1403,20 +1427,20 @@ impl<'scanner> Parser<'scanner> {
 
     // TypeLit = ArrayType | StructType | PointerType | FunctionType | InterfaceType |
     //           SliceType | MapType | ChannelType .
-    fn TypeLit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::TypeLit()");
+    fn parse_type_lit(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type_lit()");
 
         Ok(match self.current_step.1 {
             Token::LBRACK => Some(ast::Expr::ArrayType(
-                self.ArrayType_or_SliceType::<false>().required()?,
+                self.parse_array_type_or_slice_type::<false>().required()?,
             )),
-            Token::STRUCT => Some(ast::Expr::StructType(self.StructType().required()?)),
-            Token::MUL => Some(ast::Expr::StarExpr(self.PointerType().required()?)),
-            Token::FUNC => Some(ast::Expr::FuncType(self.FunctionType().required()?)),
-            Token::INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
-            Token::MAP => Some(ast::Expr::MapType(self.MapType().required()?)),
-            Token::CHAN => Some(ast::Expr::ChanType(self.ChannelType().required()?)),
-            Token::ARROW => Some(ast::Expr::ChanType(self.ChannelType().required()?)), // <-chan (receive-only)
+            Token::STRUCT => Some(ast::Expr::StructType(self.parse_struct_type().required()?)),
+            Token::MUL => Some(ast::Expr::StarExpr(self.parse_pointer_type().required()?)),
+            Token::FUNC => Some(ast::Expr::FuncType(self.parse_function_type().required()?)),
+            Token::INTERFACE => Some(ast::Expr::InterfaceType(self.parse_interface_type().required()?)),
+            Token::MAP => Some(ast::Expr::MapType(self.parse_map_type().required()?)),
+            Token::CHAN => Some(ast::Expr::ChanType(self.parse_channel_type().required()?)),
+            Token::ARROW => Some(ast::Expr::ChanType(self.parse_channel_type().required()?)), // <-chan (receive-only)
             _ => None,
         })
     }
@@ -1424,10 +1448,10 @@ impl<'scanner> Parser<'scanner> {
     // ArrayType   = "[" ArrayLength "]" ElementType .
     // ArrayLength = Expression .
     // SliceType   = "[" "]" ElementType .
-    fn ArrayType_or_SliceType<const ELLIPSIS: bool>(
+    fn parse_array_type_or_slice_type<const ELLIPSIS: bool>(
         &mut self,
     ) -> Result<Option<ast::ArrayType<'scanner>>> {
-        log::debug!("Parser::ArrayType_or_SliceType::<ELLIPSIS={}>()", ELLIPSIS);
+        log::debug!("Parser::parse_array_type_or_slice_type::<ELLIPSIS={}>()", ELLIPSIS);
 
         let lbrack = match self.token(Token::LBRACK)? {
             Some(v) => v,
@@ -1441,15 +1465,15 @@ impl<'scanner> Parser<'scanner> {
                     elt: None,
                 }))
             } else {
-                self.Expression()?
+                self.parse_expression()?
             }
         } else {
-            self.Expression()?
+            self.parse_expression()?
         };
 
         self.token(Token::RBRACK).required()?;
 
-        let element_type = self.ElementType().required()?;
+        let element_type = self.parse_element_type().required()?;
 
         Ok(Some(ast::ArrayType {
             lbrack: lbrack.0,
@@ -1459,17 +1483,17 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // MapType = "map" "[" KeyType "]" ElementType .
-    fn MapType(&mut self) -> Result<Option<ast::MapType<'scanner>>> {
-        log::debug!("Parser::MapType()");
+    fn parse_map_type(&mut self) -> Result<Option<ast::MapType<'scanner>>> {
+        log::debug!("Parser::parse_map_type()");
 
         let map = match self.token(Token::MAP)? {
             Some(v) => v,
             None => return Ok(None),
         };
         self.token(Token::LBRACK).required()?;
-        let key_type = self.KeyType().required()?;
+        let key_type = self.parse_key_type().required()?;
         self.token(Token::RBRACK).required()?;
-        let element_type = self.ElementType().required()?;
+        let element_type = self.parse_element_type().required()?;
 
         Ok(Some(ast::MapType {
             map: map.0,
@@ -1479,19 +1503,19 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // KeyType = Type .
-    fn KeyType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::KeyType()");
+    fn parse_key_type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_key_type()");
 
-        self.Type()
+        self.parse_type()
     }
 
     // ChannelType = ( "chan" | "chan" "<-" | "<-" "chan" ) ElementType .
-    fn ChannelType(&mut self) -> Result<Option<ast::ChanType<'scanner>>> {
-        log::debug!("Parser::ChannelType()");
+    fn parse_channel_type(&mut self) -> Result<Option<ast::ChanType<'scanner>>> {
+        log::debug!("Parser::parse_channel_type()");
 
         if let Some(chan) = self.token(Token::CHAN)? {
             if let Some(arrow) = self.token(Token::ARROW)? {
-                let value = Box::new(self.ElementType().required()?);
+                let value = Box::new(self.parse_element_type().required()?);
                 return Ok(Some(ast::ChanType {
                     begin: chan.0,
                     arrow: Some(arrow.0),
@@ -1500,7 +1524,7 @@ impl<'scanner> Parser<'scanner> {
                 }));
             }
 
-            let value = Box::new(self.ElementType().required()?);
+            let value = Box::new(self.parse_element_type().required()?);
             return Ok(Some(ast::ChanType {
                 begin: chan.0,
                 arrow: None,
@@ -1511,7 +1535,7 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(arrow) = self.token(Token::ARROW)? {
             self.token(Token::CHAN).required()?;
-            let value = Box::new(self.ElementType().required()?);
+            let value = Box::new(self.parse_element_type().required()?);
             return Ok(Some(ast::ChanType {
                 begin: arrow.0,
                 arrow: Some(arrow.0), // <-chan has arrow at the start
@@ -1524,44 +1548,44 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // FunctionType = "func" Signature .
-    fn FunctionType(&mut self) -> Result<Option<ast::FuncType<'scanner>>> {
-        log::debug!("Parser::FunctionType()");
+    fn parse_function_type(&mut self) -> Result<Option<ast::FuncType<'scanner>>> {
+        log::debug!("Parser::parse_function_type()");
 
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let mut signature = self.Signature(None).required()?;
+        let mut signature = self.parse_signature(None).required()?;
         signature.func = Some(func.0);
         Ok(Some(signature))
     }
 
     // ElementType = Type .
-    fn ElementType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::ElementType()");
+    fn parse_element_type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_element_type()");
 
-        self.Type()
+        self.parse_type()
     }
 
     // PointerType = "*" BaseType .
-    fn PointerType(&mut self) -> Result<Option<ast::StarExpr<'scanner>>> {
-        log::debug!("Parser::PointerType()");
+    fn parse_pointer_type(&mut self) -> Result<Option<ast::StarExpr<'scanner>>> {
+        log::debug!("Parser::parse_pointer_type()");
 
         let star = match self.token(Token::MUL)? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let x = Box::new(self.BaseType().required()?);
+        let x = Box::new(self.parse_base_type().required()?);
         Ok(Some(ast::StarExpr { star: star.0, x }))
     }
 
     // BaseType = Type .
-    fn BaseType(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::BaseType()");
+    fn parse_base_type(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_base_type()");
 
-        self.Type()
+        self.parse_type()
     }
 
     // InterfaceType = "interface" "{" { InterfaceElem ";" } "}" .
@@ -1570,8 +1594,8 @@ impl<'scanner> Parser<'scanner> {
     // TypeElem      = TypeTerm { "|" TypeTerm } .
     // TypeTerm      = Type | UnderlyingType .
     // UnderlyingType = "~" Type .
-    fn InterfaceType(&mut self) -> Result<Option<ast::InterfaceType<'scanner>>> {
-        log::debug!("Parser::InterfaceType()");
+    fn parse_interface_type(&mut self) -> Result<Option<ast::InterfaceType<'scanner>>> {
+        log::debug!("Parser::parse_interface_type()");
 
         let interface = match self.token(Token::INTERFACE)? {
             Some(v) => v,
@@ -1584,7 +1608,7 @@ impl<'scanner> Parser<'scanner> {
         loop {
             // Check for underlying type constraint (~Type)
             if let Some(tilde) = self.token(Token::TILDE)? {
-                let type_ = self.Type().required()?;
+                let type_ = self.parse_type().required()?;
                 let mut type_elem = ast::Expr::UnaryExpr(ast::UnaryExpr {
                     op_pos: tilde.0,
                     op: Token::TILDE,
@@ -1593,7 +1617,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // Check for union types
                 while let Some(or_tok) = self.token(Token::OR)? {
-                    let next_term = self.TypeTerm().required()?;
+                    let next_term = self.parse_type_term().required()?;
                     type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
                         x: Box::new(type_elem),
                         op_pos: or_tok.0,
@@ -1627,12 +1651,12 @@ impl<'scanner> Parser<'scanner> {
                     | Token::ARROW
                     | Token::MUL
             ) {
-                let type_ = self.Type().required()?;
+                let type_ = self.parse_type().required()?;
 
                 // Check for union types
                 let mut type_elem = type_;
                 while let Some(or_tok) = self.token(Token::OR)? {
-                    let next_term = self.TypeTerm().required()?;
+                    let next_term = self.parse_type_term().required()?;
                     type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
                         x: Box::new(type_elem),
                         op_pos: or_tok.0,
@@ -1654,7 +1678,7 @@ impl<'scanner> Parser<'scanner> {
                 continue;
             }
 
-            if let Some(method_spec) = self.MethodName()? {
+            if let Some(method_spec) = self.parse_method_name()? {
                 // Check if this is a qualified interface name (e.g., io.Writer)
                 if self.current_step.1 == Token::PERIOD {
                     self.token(Token::PERIOD)?;
@@ -1678,12 +1702,12 @@ impl<'scanner> Parser<'scanner> {
                 // Check for type parameters on the embedded type (e.g., Comparable[T])
                 if self.current_step.1 == Token::LBRACK {
                     let lbrack = self.token(Token::LBRACK).required()?;
-                    let mut indices = vec![self.Type().required()?];
+                    let mut indices = vec![self.parse_type().required()?];
                     while self.token(Token::COMMA)?.is_some() {
                         if self.current_step.1 == Token::RBRACK {
                             break;
                         }
-                        indices.push(self.Type().required()?);
+                        indices.push(self.parse_type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -1706,7 +1730,7 @@ impl<'scanner> Parser<'scanner> {
                     // Check for union with other types
                     let mut type_elem = type_expr;
                     while let Some(or_tok) = self.token(Token::OR)? {
-                        let next_term = self.TypeTerm().required()?;
+                        let next_term = self.parse_type_term().required()?;
                         type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
                             x: Box::new(type_elem),
                             op_pos: or_tok.0,
@@ -1728,7 +1752,7 @@ impl<'scanner> Parser<'scanner> {
                     continue;
                 }
 
-                if let Some(signature) = self.Signature(None)? {
+                if let Some(signature) = self.parse_signature(None)? {
                     fields.push(ast::Field {
                         doc: None,
                         names: Some(vec![method_spec]),
@@ -1747,7 +1771,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // Check for union types (Type1 | Type2)
                 while let Some(or_tok) = self.token(Token::OR)? {
-                    let next_term = self.TypeTerm().required()?;
+                    let next_term = self.parse_type_term().required()?;
                     type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
                         x: Box::new(type_elem),
                         op_pos: or_tok.0,
@@ -1769,7 +1793,7 @@ impl<'scanner> Parser<'scanner> {
                 continue;
             };
 
-            if let Some(interface_type_name) = self.InterfaceTypeName()? {
+            if let Some(interface_type_name) = self.parse_interface_type_name()? {
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
@@ -1800,22 +1824,22 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // MethodName = identifier .
-    fn MethodName(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
-        log::debug!("Parser::MethodName()");
+    fn parse_method_name(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
+        log::debug!("Parser::parse_method_name()");
 
         self.identifier()
     }
 
     // InterfaceTypeName = TypeName .
-    fn InterfaceTypeName(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::InterfaceTypeName()");
+    fn parse_interface_type_name(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_interface_type_name()");
 
-        self.TypeName()
+        self.parse_type_name()
     }
 
     // StructType = "struct" "{" { FieldDecl ";" } "}" .
-    fn StructType(&mut self) -> Result<Option<ast::StructType<'scanner>>> {
-        log::debug!("Parser::StructType()");
+    fn parse_struct_type(&mut self) -> Result<Option<ast::StructType<'scanner>>> {
+        log::debug!("Parser::parse_struct_type()");
 
         let struct_ = match self.token(Token::STRUCT)? {
             Some(v) => v,
@@ -1825,7 +1849,7 @@ impl<'scanner> Parser<'scanner> {
         let lbrace = self.token(Token::LBRACE).required()?;
 
         let mut fields = vec![];
-        while let Some(field_decl) = self.FieldDecl()? {
+        while let Some(field_decl) = self.parse_field_decl()? {
             fields.push(field_decl);
             if self.token(Token::SEMICOLON)?.is_none() {
                 break;
@@ -1847,12 +1871,12 @@ impl<'scanner> Parser<'scanner> {
 
     // FieldDecl     = (IdentifierList Type | EmbeddedField) [ Tag ] .
     // EmbeddedField = [ "*" ] TypeName .
-    fn FieldDecl(&mut self) -> Result<Option<ast::Field<'scanner>>> {
-        log::debug!("Parser::FieldDecl()");
+    fn parse_field_decl(&mut self) -> Result<Option<ast::Field<'scanner>>> {
+        log::debug!("Parser::parse_field_decl()");
 
         if let Some(star) = self.token(Token::MUL)? {
-            let type_name = Box::new(self.TypeName().required()?);
-            let tag = self.Tag()?;
+            let type_name = Box::new(self.parse_type_name().required()?);
+            let tag = self.parse_tag()?;
             return Ok(Some(ast::Field {
                 doc: None,
                 type_: Some(ast::Expr::StarExpr(ast::StarExpr {
@@ -1865,7 +1889,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         };
 
-        if let Some((names, _, last_is_qualified)) = self.IdentifierList()? {
+        if let Some((names, _, last_is_qualified)) = self.parse_identifier_list()? {
             // Check if this is a qualified identifier for an embedded field (e.g., sync.RWMutex)
             // or a qualified generic type (e.g., listers.ResourceIndexer[*Deployment])
             if names.len() == 1 && (self.current_step.1 == Token::PERIOD || last_is_qualified) {
@@ -1876,12 +1900,12 @@ impl<'scanner> Parser<'scanner> {
                 // Check for generic type arguments [T] or [T1, T2]
                 let type_expr = if self.current_step.1 == Token::LBRACK {
                     let lbrack = self.token(Token::LBRACK).required()?;
-                    let mut indices = vec![self.Type().required()?];
+                    let mut indices = vec![self.parse_type().required()?];
                     while self.token(Token::COMMA)?.is_some() {
                         if self.current_step.1 == Token::RBRACK {
                             break;
                         }
-                        indices.push(self.Type().required()?);
+                        indices.push(self.parse_type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -1912,7 +1936,7 @@ impl<'scanner> Parser<'scanner> {
                     })
                 };
 
-                let tag = self.Tag()?;
+                let tag = self.parse_tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
                     type_: Some(type_expr),
@@ -1938,13 +1962,13 @@ impl<'scanner> Parser<'scanner> {
                 // Handle slice type []T first
                 if self.current_step.1 == Token::RBRACK {
                     let _rbrack = self.token(Token::RBRACK).required()?;
-                    let elt = Box::new(self.Type().required()?);
+                    let elt = Box::new(self.parse_type().required()?);
                     let array_type = ast::Expr::ArrayType(ast::ArrayType {
                         lbrack: lbrack.0,
                         len: None,
                         elt,
                     });
-                    let tag = self.Tag()?;
+                    let tag = self.parse_tag()?;
                     return Ok(Some(ast::Field {
                         doc: None,
                         names: Some(vec![name]),
@@ -1957,7 +1981,7 @@ impl<'scanner> Parser<'scanner> {
                 // Parse what's inside [...] - could be:
                 // - Single expression (array size or single type arg)
                 // - Multiple types separated by commas (multiple type args)
-                let first_inner = self.Expression().required()?;
+                let first_inner = self.parse_expression().required()?;
 
                 // Check for comma (multiple type arguments)
                 if self.current_step.1 == Token::COMMA {
@@ -1967,7 +1991,7 @@ impl<'scanner> Parser<'scanner> {
                         if self.current_step.1 == Token::RBRACK {
                             break;
                         }
-                        indices.push(self.Type().required()?);
+                        indices.push(self.parse_type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -1977,7 +2001,7 @@ impl<'scanner> Parser<'scanner> {
                         indices,
                         rbrack: rbrack.0,
                     });
-                    let tag = self.Tag()?;
+                    let tag = self.parse_tag()?;
                     return Ok(Some(ast::Field {
                         doc: None,
                         type_: Some(type_expr),
@@ -1992,14 +2016,14 @@ impl<'scanner> Parser<'scanner> {
                 // Check what follows ]
                 // If a type follows, this is field 'name' with array type [inner]element
                 // Otherwise, it's an embedded generic field name[inner]
-                if let Some(elt) = self.Type()? {
+                if let Some(elt) = self.parse_type()? {
                     // Array type: 'name' is field name, [inner] is array size
                     let array_type = ast::Expr::ArrayType(ast::ArrayType {
                         lbrack: lbrack.0,
                         len: Some(Box::new(first_inner)),
                         elt: Box::new(elt),
                     });
-                    let tag = self.Tag()?;
+                    let tag = self.parse_tag()?;
                     return Ok(Some(ast::Field {
                         doc: None,
                         names: Some(vec![name]),
@@ -2015,7 +2039,7 @@ impl<'scanner> Parser<'scanner> {
                         index: Box::new(first_inner),
                         rbrack: rbrack.0,
                     });
-                    let tag = self.Tag()?;
+                    let tag = self.parse_tag()?;
                     return Ok(Some(ast::Field {
                         doc: None,
                         type_: Some(type_expr),
@@ -2026,8 +2050,8 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
 
-            if let Some(type_) = self.Type()? {
-                let tag = self.Tag()?;
+            if let Some(type_) = self.parse_type()? {
+                let tag = self.parse_tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
                     names: Some(names),
@@ -2039,7 +2063,7 @@ impl<'scanner> Parser<'scanner> {
 
             if names.len() == 1 {
                 let name = names.into_iter().next().unwrap();
-                let tag = self.Tag()?;
+                let tag = self.parse_tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
                     type_: Some(ast::Expr::Ident(name)),
@@ -2052,8 +2076,8 @@ impl<'scanner> Parser<'scanner> {
             return Err(ParserError::UnexpectedToken);
         }
 
-        if let Some(type_) = self.TypeName()? {
-            let tag = self.Tag()?;
+        if let Some(type_) = self.parse_type_name()? {
+            let tag = self.parse_tag()?;
             return Ok(Some(ast::Field {
                 doc: None,
                 type_: Some(type_),
@@ -2067,24 +2091,24 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Tag = string_lit .
-    fn Tag(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
-        log::debug!("Parser::Tag()");
+    fn parse_tag(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
+        log::debug!("Parser::parse_tag()");
 
         self.string_lit()
     }
 
     // Signature = Parameters [ Result ] .
-    fn Signature(
+    fn parse_signature(
         &mut self,
         func: Option<Position<'scanner>>,
     ) -> Result<Option<ast::FuncType<'scanner>>> {
-        log::debug!("Parser::Signature()");
+        log::debug!("Parser::parse_signature()");
 
-        let params = match self.Parameters()? {
+        let params = match self.parse_parameters()? {
             Some(v) => v,
             None => return Ok(None),
         };
-        let results = self.Result()?;
+        let results = self.parse_result()?;
 
         Ok(Some(ast::FuncType {
             func,
@@ -2095,12 +2119,12 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Result = Parameters | Type .
-    fn Result(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
-        log::debug!("Parser::Result()");
+    fn parse_result(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
+        log::debug!("Parser::parse_result()");
 
-        if let Some(parameters) = self.Parameters()? {
+        if let Some(parameters) = self.parse_parameters()? {
             Ok(Some(parameters))
-        } else if let Some(type_) = self.Type()? {
+        } else if let Some(type_) = self.parse_type()? {
             Ok(Some(ast::FieldList {
                 opening: None,
                 list: vec![ast::Field {
@@ -2118,15 +2142,15 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Parameters = "(" [ ParameterList [ "," ] ] ")" .
-    fn Parameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
-        log::debug!("Parser::Parameters()");
+    fn parse_parameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
+        log::debug!("Parser::parse_parameters()");
 
         let lparen = match self.token(Token::LPAREN)? {
             Some(v) => v,
             None => return Ok(None),
         };
         let list = self
-            .ParameterList()?
+            .parse_parameter_list()?
             .inspect(|_| {
                 let _ = self.token(Token::COMMA);
             })
@@ -2142,16 +2166,16 @@ impl<'scanner> Parser<'scanner> {
 
     // ParameterList = ParameterDecl { "," ParameterDecl } .
     // ParameterDecl = [ IdentifierList ] [ "..." ] Type .
-    fn ParameterList(&mut self) -> Result<Option<Vec<ast::Field<'scanner>>>> {
-        log::debug!("Parser::ParameterList()");
+    fn parse_parameter_list(&mut self) -> Result<Option<Vec<ast::Field<'scanner>>>> {
+        log::debug!("Parser::parse_parameter_list()");
 
         // First, try to parse identifiers
-        let idents_result = self.IdentifierList()?;
+        let idents_result = self.parse_identifier_list()?;
 
         // If no identifiers, try to parse just a type (unnamed parameter like "*T" or "interface{}")
         if idents_result.is_none() {
             let ellipsis = self.token(Token::ELLIPSIS)?;
-            let type_ = self.Type()?;
+            let type_ = self.parse_type()?;
             if let Some(type_) = type_ {
                 let field_type = if let Some(ellipsis) = ellipsis {
                     ast::Expr::Ellipsis(ast::Ellipsis {
@@ -2175,7 +2199,7 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2241,7 +2265,7 @@ impl<'scanner> Parser<'scanner> {
                     if self.current_step.1 == Token::RPAREN {
                         break;
                     }
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     fields.push(ast::Field {
                         doc: None,
                         names: None,
@@ -2269,7 +2293,7 @@ impl<'scanner> Parser<'scanner> {
             if self.current_step.1 != Token::RPAREN {
                 // Parse the type that comes after the consumed comma (may be variadic like ...string)
                 let ellipsis = self.token(Token::ELLIPSIS)?;
-                let type_ = self.Type().required()?;
+                let type_ = self.parse_type().required()?;
                 let field_type = if let Some(ellipsis) = ellipsis {
                     ast::Expr::Ellipsis(ast::Ellipsis {
                         ellipsis: ellipsis.0,
@@ -2292,7 +2316,7 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2330,12 +2354,12 @@ impl<'scanner> Parser<'scanner> {
             // Check if this qualified type has generic args [T]
             let type_expr = if self.current_step.1 == Token::LBRACK {
                 let lbrack = self.token(Token::LBRACK).required()?;
-                let mut indices = vec![self.Type().required()?];
+                let mut indices = vec![self.parse_type().required()?];
                 while self.token(Token::COMMA)?.is_some() {
                     if self.current_step.1 == Token::RBRACK {
                         break;
                     }
-                    indices.push(self.Type().required()?);
+                    indices.push(self.parse_type().required()?);
                 }
                 let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -2382,7 +2406,7 @@ impl<'scanner> Parser<'scanner> {
                     break;
                 }
                 let ellipsis = self.token(Token::ELLIPSIS)?;
-                let type_ = self.Type().required()?;
+                let type_ = self.parse_type().required()?;
                 let field_type = if let Some(ellipsis) = ellipsis {
                     ast::Expr::Ellipsis(ast::Ellipsis {
                         ellipsis: ellipsis.0,
@@ -2417,7 +2441,7 @@ impl<'scanner> Parser<'scanner> {
             if self.current_step.1 == Token::RBRACK {
                 // This is `ident []Type` - ident is param name, []Type is slice type
                 let _rbrack = self.token(Token::RBRACK).required()?;
-                let elt = self.Type().required()?;
+                let elt = self.parse_type().required()?;
                 let type_ = ast::Expr::ArrayType(ast::ArrayType {
                     lbrack: lbrack.0,
                     len: None,
@@ -2436,9 +2460,9 @@ impl<'scanner> Parser<'scanner> {
                     if self.current_step.1 == Token::RPAREN {
                         break;
                     }
-                    let (param_names, _, _) = self.IdentifierList().required()?;
+                    let (param_names, _, _) = self.parse_identifier_list().required()?;
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let param_type = self.Type().required()?;
+                    let param_type = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2461,7 +2485,7 @@ impl<'scanner> Parser<'scanner> {
             // Parse what's inside the brackets as an expression/type
             // This could be: a type arg (T), array length (10), or array length expr (n*2)
             // Or multiple type args (K, V)
-            let first_inner = self.Expression().required()?;
+            let first_inner = self.parse_expression().required()?;
 
             // Check for comma (multiple type arguments like [K, V])
             if self.current_step.1 == Token::COMMA {
@@ -2471,7 +2495,7 @@ impl<'scanner> Parser<'scanner> {
                     if self.current_step.1 == Token::RBRACK {
                         break;
                     }
-                    indices.push(self.Type().required()?);
+                    indices.push(self.parse_type().required()?);
                 }
                 let rbrack = self.token(Token::RBRACK).required()?;
 
@@ -2497,7 +2521,7 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2522,7 +2546,7 @@ impl<'scanner> Parser<'scanner> {
             // Check what follows ]
             // If a type follows, this is `ident [expr]Type` (array type with ident as param name)
             // If ) or , follows, this is `ident[expr]` (generic type instantiation)
-            if let Some(elt) = self.Type()? {
+            if let Some(elt) = self.parse_type()? {
                 // Case 1: Array type - ident is parameter name
                 let type_ = ast::Expr::ArrayType(ast::ArrayType {
                     lbrack: lbrack.0,
@@ -2542,9 +2566,9 @@ impl<'scanner> Parser<'scanner> {
                     if self.current_step.1 == Token::RPAREN {
                         break;
                     }
-                    let (param_names, _, _) = self.IdentifierList().required()?;
+                    let (param_names, _, _) = self.parse_identifier_list().required()?;
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let param_type = self.Type().required()?;
+                    let param_type = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2586,7 +2610,7 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2607,7 +2631,7 @@ impl<'scanner> Parser<'scanner> {
             }
         }
 
-        let type_ = self.Type()?;
+        let type_ = self.parse_type()?;
 
         // If no type can be found and no ellipsis, then the idents might be types
         // Handle qualified types like (cipher.AEAD, error) where the first ident (cipher)
@@ -2637,7 +2661,7 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let ellipsis = self.token(Token::ELLIPSIS)?;
-                    let type_ = self.Type().required()?;
+                    let type_ = self.parse_type().required()?;
                     let field_type = if let Some(ellipsis) = ellipsis {
                         ast::Expr::Ellipsis(ast::Ellipsis {
                             ellipsis: ellipsis.0,
@@ -2674,7 +2698,7 @@ impl<'scanner> Parser<'scanner> {
                     break;
                 }
                 let ellipsis = self.token(Token::ELLIPSIS)?;
-                let type_ = self.Type().required()?;
+                let type_ = self.parse_type().required()?;
                 let field_type = if let Some(ellipsis) = ellipsis {
                     ast::Expr::Ellipsis(ast::Ellipsis {
                         ellipsis: ellipsis.0,
@@ -2725,9 +2749,9 @@ impl<'scanner> Parser<'scanner> {
             if self.current_step.1 == Token::RPAREN {
                 break;
             }
-            let (idents, _, _) = self.IdentifierList().required()?;
+            let (idents, _, _) = self.parse_identifier_list().required()?;
             let ellipsis = self.token(Token::ELLIPSIS)?;
-            let type_ = self.Type().required()?;
+            let type_ = self.parse_type().required()?;
 
             if let Some(ellipsis) = ellipsis {
                 fields.push(ast::Field {
@@ -2756,16 +2780,16 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // FunctionBody = Block .
-    fn FunctionBody(&mut self) -> Result<Option<ast::BlockStmt<'scanner>>> {
-        log::debug!("Parser::FunctionBody()");
+    fn parse_function_body(&mut self) -> Result<Option<ast::BlockStmt<'scanner>>> {
+        log::debug!("Parser::parse_function_body()");
 
-        self.Block()
+        self.parse_block()
     }
 
     // Block         = "{" StatementList "}" .
     // StatementList = { Statement ";" } .
-    fn Block(&mut self) -> Result<Option<ast::BlockStmt<'scanner>>> {
-        log::debug!("Parser::Block()");
+    fn parse_block(&mut self) -> Result<Option<ast::BlockStmt<'scanner>>> {
+        log::debug!("Parser::parse_block()");
 
         let lbrace = match self.token(Token::LBRACE)? {
             Some(v) => v,
@@ -2773,7 +2797,7 @@ impl<'scanner> Parser<'scanner> {
         };
 
         let mut list = vec![];
-        while let Some(statement) = self.Statement()? {
+        while let Some(statement) = self.parse_statement()? {
             // Some statements (EmptyStmt, LabeledStmt with EmptyStmt) already consumed their semicolon
             let consumed_semi = Self::stmt_consumed_semicolon(&statement);
             list.push(statement);
@@ -2796,31 +2820,31 @@ impl<'scanner> Parser<'scanner> {
     //         GoStmt | ReturnStmt | BreakStmt | ContinueStmt | GotoStmt |
     //         FallthroughStmt | Block | IfStmt | SwitchStmt | SelectStmt | ForStmt |
     //         DeferStmt .
-    fn Statement(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::Statement()");
+    fn parse_statement(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_statement()");
 
         use Token::*;
         Ok(match self.current_step {
             (_, CONST | TYPE | VAR, _) => Some(ast::Stmt::DeclStmt(ast::DeclStmt {
-                decl: self.Declaration().required()?,
+                decl: self.parse_declaration().required()?,
             })),
             (_,
                 IDENT | INT | FLOAT | IMAG | CHAR | STRING | FUNC | LPAREN | // operands
                 LBRACK | STRUCT | MAP | CHAN | INTERFACE | // composite types
                 ADD | SUB | MUL | AND | XOR | ARROW | NOT // unary operators
-            , _) => Some(self.LabeledStmt_or_SimpleStmt().required()?),
-            (_, GO, _) => Some(ast::Stmt::GoStmt(self.GoStmt().required()?)),
-            (_, DEFER, _) => Some(ast::Stmt::DeferStmt(self.DeferStmt().required()?)),
-            (_, RETURN, _) => Some(ast::Stmt::ReturnStmt(self.ReturnStmt().required()?)),
-            (_, BREAK, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
-            (_, CONTINUE, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
-            (_, GOTO, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
-            (_, FALLTHROUGH, _) => Some(ast::Stmt::BranchStmt(self.BranchStmt().required()?)),
-            (_, LBRACE, _) => Some(ast::Stmt::BlockStmt(self.Block().required()?)),
-            (_, IF, _) => Some(ast::Stmt::IfStmt(self.IfStmt().required()?)),
-            (_, SWITCH, _) => Some(self.SwitchStmt().required()?),
-            (_, SELECT, _) => Some(ast::Stmt::SelectStmt(self.SelectStmt().required()?)),
-            (_, FOR, _) => Some(self.ForStmt().required()?),
+            , _) => Some(self.parse_labeled_stmt_or_simple_stmt().required()?),
+            (_, GO, _) => Some(ast::Stmt::GoStmt(self.parse_go_stmt().required()?)),
+            (_, DEFER, _) => Some(ast::Stmt::DeferStmt(self.parse_defer_stmt().required()?)),
+            (_, RETURN, _) => Some(ast::Stmt::ReturnStmt(self.parse_return_stmt().required()?)),
+            (_, BREAK, _) => Some(ast::Stmt::BranchStmt(self.parse_branch_stmt().required()?)),
+            (_, CONTINUE, _) => Some(ast::Stmt::BranchStmt(self.parse_branch_stmt().required()?)),
+            (_, GOTO, _) => Some(ast::Stmt::BranchStmt(self.parse_branch_stmt().required()?)),
+            (_, FALLTHROUGH, _) => Some(ast::Stmt::BranchStmt(self.parse_branch_stmt().required()?)),
+            (_, LBRACE, _) => Some(ast::Stmt::BlockStmt(self.parse_block().required()?)),
+            (_, IF, _) => Some(ast::Stmt::IfStmt(self.parse_if_stmt().required()?)),
+            (_, SWITCH, _) => Some(self.parse_switch_stmt().required()?),
+            (_, SELECT, _) => Some(ast::Stmt::SelectStmt(self.parse_select_stmt().required()?)),
+            (_, FOR, _) => Some(self.parse_for_stmt().required()?),
             (_, SEMICOLON, lit) => Some(ast::Stmt::EmptyStmt(ast::EmptyStmt{
                 semicolon: self.token(SEMICOLON).required()?.0,
                 implicit: lit == "\n",
@@ -2835,8 +2859,8 @@ impl<'scanner> Parser<'scanner> {
     // InitStmt = SimpleStmt .
     // Condition = Expression .
     // PostStmt = SimpleStmt .
-    fn ForStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::ForStmt()");
+    fn parse_for_stmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_for_stmt()");
 
         let for_ = match self.token(Token::FOR)? {
             Some(v) => v,
@@ -2844,7 +2868,7 @@ impl<'scanner> Parser<'scanner> {
         };
 
         // for {}
-        if let Some(body) = self.Block()? {
+        if let Some(body) = self.parse_block()? {
             return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
                 for_: for_.0,
                 init: None,
@@ -2860,9 +2884,9 @@ impl<'scanner> Parser<'scanner> {
 
         // for range x {}
         if let Some(range_tok) = self.token(Token::RANGE)? {
-            let x = self.Expression().required()?;
+            let x = self.parse_expression().required()?;
             self.expr_level = prev_expr_level;
-            let body = self.Block().required()?;
+            let body = self.parse_block().required()?;
             return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
                 for_: for_.0,
                 key: None,
@@ -2875,11 +2899,11 @@ impl<'scanner> Parser<'scanner> {
             })));
         }
 
-        let init = if let Some(exprs) = self.ExpressionList()? {
+        let init = if let Some(exprs) = self.parse_expression_list()? {
             // for a < b {}
             if exprs.len() == 1 {
                 self.expr_level = prev_expr_level;
-                if let Some(body) = self.Block()? {
+                if let Some(body) = self.parse_block()? {
                     let cond = exprs.into_iter().next().unwrap();
                     return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
                         for_: for_.0,
@@ -2901,9 +2925,9 @@ impl<'scanner> Parser<'scanner> {
                     let mut exprs = exprs.into_iter();
                     let key = exprs.next();
                     let value = exprs.next();
-                    let x = self.Expression().required()?;
+                    let x = self.parse_expression().required()?;
                     self.expr_level = prev_expr_level;
-                    let body = self.Block().required()?;
+                    let body = self.parse_block().required()?;
                     return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
                         for_: for_.0,
                         key,
@@ -2923,9 +2947,9 @@ impl<'scanner> Parser<'scanner> {
                     let mut exprs = exprs.into_iter();
                     let key = exprs.next();
                     let value = exprs.next();
-                    let x = self.Expression().required()?;
+                    let x = self.parse_expression().required()?;
                     self.expr_level = prev_expr_level;
-                    let body = self.Block().required()?;
+                    let body = self.parse_block().required()?;
                     return Ok(Some(ast::Stmt::RangeStmt(ast::RangeStmt {
                         for_: for_.0,
                         key,
@@ -2944,12 +2968,12 @@ impl<'scanner> Parser<'scanner> {
                     lhs: exprs,
                     tok_pos: tok.0,
                     tok: tok.1,
-                    rhs: self.ExpressionList().required()?,
+                    rhs: self.parse_expression_list().required()?,
                 })),
                 _ => {
                     // Handle assignment statements (e.g., for s.start = s.next; ...)
                     if let Some(assign_op) = self.assign_op()? {
-                        let rhs = self.ExpressionList().required()?;
+                        let rhs = self.parse_expression_list().required()?;
                         Some(ast::Stmt::AssignStmt(ast::AssignStmt {
                             lhs: exprs,
                             tok_pos: assign_op.0,
@@ -2981,16 +3005,16 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
         } else {
-            self.SimpleStmt()?
+            self.parse_simple_stmt()?
         };
 
         // for a;b;c {}
         self.token(Token::SEMICOLON).required()?;
-        let cond = self.Expression()?;
+        let cond = self.parse_expression()?;
         self.token(Token::SEMICOLON).required()?;
-        let post = self.SimpleStmt()?;
+        let post = self.parse_simple_stmt()?;
         self.expr_level = prev_expr_level;
-        let body = self.Block().required()?;
+        let body = self.parse_block().required()?;
         Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
             for_: for_.0,
             init: init.map(Box::new),
@@ -3001,15 +3025,15 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // GoStmt = "go" Expression .
-    fn GoStmt(&mut self) -> Result<Option<ast::GoStmt<'scanner>>> {
-        log::debug!("Parser::GoStmt()");
+    fn parse_go_stmt(&mut self) -> Result<Option<ast::GoStmt<'scanner>>> {
+        log::debug!("Parser::parse_go_stmt()");
 
         let go = match self.token(Token::GO)? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let call = match self.Expression().required()? {
+        let call = match self.parse_expression().required()? {
             ast::Expr::CallExpr(v) => v,
             _ => return Err(ParserError::UnexpectedToken),
         };
@@ -3018,8 +3042,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // IfStmt = "if" [ SimpleStmt ";" ] Expression Block [ "else" ( IfStmt | Block ) ] .
-    fn IfStmt(&mut self) -> Result<Option<ast::IfStmt<'scanner>>> {
-        log::debug!("Parser::IfStmt()");
+    fn parse_if_stmt(&mut self) -> Result<Option<ast::IfStmt<'scanner>>> {
+        log::debug!("Parser::parse_if_stmt()");
 
         let if_ = match self.token(Token::IF)? {
             Some(v) => v,
@@ -3033,26 +3057,26 @@ impl<'scanner> Parser<'scanner> {
         // Handle: if cond {}, if init; cond {}, if ; cond {} (empty init)
         let (init, cond) = if self.token(Token::SEMICOLON)?.is_some() {
             // Empty init statement: if ; cond {}
-            (None, self.Expression().required()?)
-        } else if let Some(simple_stmt) = self.SimpleStmt()? {
+            (None, self.parse_expression().required()?)
+        } else if let Some(simple_stmt) = self.parse_simple_stmt()? {
             if self.token(Token::SEMICOLON)?.is_some() {
-                (Some(simple_stmt), self.Expression().required()?)
+                (Some(simple_stmt), self.parse_expression().required()?)
             } else if let ast::Stmt::ExprStmt(expr_stmt) = simple_stmt {
                 (None, expr_stmt.x)
             } else {
                 return Err(ParserError::UnexpectedToken);
             }
         } else {
-            (None, self.Expression().required()?)
+            (None, self.parse_expression().required()?)
         };
 
         self.expr_level = prev_expr_level;
-        let body = self.Block().required()?;
+        let body = self.parse_block().required()?;
 
         let else_ = if self.token(Token::ELSE)?.is_some() {
-            if let Some(if_stmt) = self.IfStmt()? {
+            if let Some(if_stmt) = self.parse_if_stmt()? {
                 Some(ast::Stmt::IfStmt(if_stmt))
-            } else if let Some(block_stmt) = self.Block()? {
+            } else if let Some(block_stmt) = self.parse_block()? {
                 Some(ast::Stmt::BlockStmt(block_stmt))
             } else {
                 return Err(ParserError::UnexpectedToken);
@@ -3077,14 +3101,14 @@ impl<'scanner> Parser<'scanner> {
     // ShortVarDecl   = IdentifierList ":=" ExpressionList .
     // SendStmt       = Channel "<-" Expression .
     // Channel        = Expression .
-    fn SimpleStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::SimpleStmt()");
+    fn parse_simple_stmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_simple_stmt()");
 
-        if let Some(mut exprs) = self.ExpressionList()? {
+        if let Some(mut exprs) = self.parse_expression_list()? {
             // ShortVarDecl
             if exprs.iter().all(|expr| matches!(expr, ast::Expr::Ident(_))) {
                 if let Some(define_op) = self.token(Token::DEFINE)? {
-                    let rhs = self.ExpressionList().required()?;
+                    let rhs = self.parse_expression_list().required()?;
                     return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
                         lhs: exprs,
                         tok_pos: define_op.0,
@@ -3096,7 +3120,7 @@ impl<'scanner> Parser<'scanner> {
 
             // Assignment
             if let Some(assign_op) = self.assign_op()? {
-                let rhs = self.ExpressionList().required()?;
+                let rhs = self.parse_expression_list().required()?;
                 return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
                     lhs: exprs,
                     tok_pos: assign_op.0,
@@ -3128,7 +3152,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // SendStmt
                 if let Some(arrow) = self.token(Token::ARROW)? {
-                    let value = self.Expression().required()?;
+                    let value = self.parse_expression().required()?;
                     return Ok(Some(ast::Stmt::SendStmt(ast::SendStmt {
                         chan: expr,
                         arrow: arrow.0,
@@ -3147,15 +3171,15 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // DeferStmt = "defer" Expression .
-    fn DeferStmt(&mut self) -> Result<Option<ast::DeferStmt<'scanner>>> {
-        log::debug!("Parser::DeferStmt()");
+    fn parse_defer_stmt(&mut self) -> Result<Option<ast::DeferStmt<'scanner>>> {
+        log::debug!("Parser::parse_defer_stmt()");
 
         let defer = match self.token(Token::DEFER)? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let call = match self.Expression().required()? {
+        let call = match self.parse_expression().required()? {
             ast::Expr::CallExpr(v) => v,
             _ => return Err(ParserError::UnexpectedToken),
         };
@@ -3167,11 +3191,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ReturnStmt = "return" [ ExpressionList ] .
-    fn ReturnStmt(&mut self) -> Result<Option<ast::ReturnStmt<'scanner>>> {
-        log::debug!("Parser::ReturnStmt()");
+    fn parse_return_stmt(&mut self) -> Result<Option<ast::ReturnStmt<'scanner>>> {
+        log::debug!("Parser::parse_return_stmt()");
 
         if let Some(return_) = self.token(Token::RETURN)? {
-            let results = self.ExpressionList()?.unwrap_or_default();
+            let results = self.parse_expression_list()?.unwrap_or_default();
             Ok(Some(ast::ReturnStmt {
                 return_: return_.0,
                 results,
@@ -3183,8 +3207,8 @@ impl<'scanner> Parser<'scanner> {
 
     // BranchStmt = ( "break" | "continue" | "goto" | "fallthrough" ) [ Label ] .
     // Label = identifier .
-    fn BranchStmt(&mut self) -> Result<Option<ast::BranchStmt<'scanner>>> {
-        log::debug!("Parser::BranchStmt()");
+    fn parse_branch_stmt(&mut self) -> Result<Option<ast::BranchStmt<'scanner>>> {
+        log::debug!("Parser::parse_branch_stmt()");
 
         use Token::*;
         let tok_step = match self.current_step.1 {
@@ -3213,8 +3237,8 @@ impl<'scanner> Parser<'scanner> {
     // ExprSwitchStmt = "switch" [ SimpleStmt ";" ] [ Expression ] "{" { ExprCaseClause } "}" .
     // TypeSwitchStmt = "switch" [ SimpleStmt ";" ] TypeSwitchGuard "{" { TypeCaseClause } "}" .
     // TypeSwitchGuard = [ identifier ":=" ] PrimaryExpr "." "(" "type" ")" .
-    fn SwitchStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::SwitchStmt()");
+    fn parse_switch_stmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_switch_stmt()");
 
         let switch = match self.token(Token::SWITCH)? {
             Some(v) => v,
@@ -3234,7 +3258,7 @@ impl<'scanner> Parser<'scanner> {
             if self.token(Token::SEMICOLON)?.is_some() {
                 // Empty init, continue to parse tag if present
                 if self.current_step.1 != Token::LBRACE {
-                    if let Some(expr_or_stmt) = self.SimpleStmt()? {
+                    if let Some(expr_or_stmt) = self.parse_simple_stmt()? {
                         if let ast::Stmt::ExprStmt(expr_stmt) = &expr_or_stmt {
                             if is_type_switch_guard(&expr_stmt.x) {
                                 self.expr_level = prev_expr_level;
@@ -3264,12 +3288,12 @@ impl<'scanner> Parser<'scanner> {
                         }
                     }
                 }
-            } else if let Some(simple_stmt) = self.SimpleStmt()? {
+            } else if let Some(simple_stmt) = self.parse_simple_stmt()? {
                 if self.token(Token::SEMICOLON)?.is_some() {
                     init = Some(simple_stmt);
                     // Check for type switch guard or expression
                     if self.current_step.1 != Token::LBRACE {
-                        if let Some(expr_or_stmt) = self.SimpleStmt()? {
+                        if let Some(expr_or_stmt) = self.parse_simple_stmt()? {
                             // Check if this is a type switch guard
                             if let ast::Stmt::ExprStmt(expr_stmt) = &expr_or_stmt {
                                 if is_type_switch_guard(&expr_stmt.x) {
@@ -3353,7 +3377,7 @@ impl<'scanner> Parser<'scanner> {
         let lbrace = self.token(Token::LBRACE).required()?;
 
         let mut list = vec![];
-        while let Some(case_clause) = self.CaseClause(is_type_switch)? {
+        while let Some(case_clause) = self.parse_case_clause(is_type_switch)? {
             list.push(ast::Stmt::CaseClause(case_clause));
         }
 
@@ -3370,14 +3394,14 @@ impl<'scanner> Parser<'scanner> {
     // ExprSwitchCase = "case" ExpressionList | "default" .
     // TypeCaseClause = TypeSwitchCase ":" StatementList .
     // TypeSwitchCase = "case" TypeList | "default" .
-    fn CaseClause(&mut self, is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
-        log::debug!("Parser::CaseClause()");
+    fn parse_case_clause(&mut self, is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
+        log::debug!("Parser::parse_case_clause()");
 
         let case = if let Some(case) = self.token(Token::CASE)? {
             case
         } else if let Some(default) = self.token(Token::DEFAULT)? {
             let colon = self.token(Token::COLON).required()?;
-            let body = self.StatementList()?;
+            let body = self.parse_statement_list()?;
             return Ok(Some(ast::CaseClause {
                 case: default.0,
                 list: None,
@@ -3390,12 +3414,12 @@ impl<'scanner> Parser<'scanner> {
 
         // In type switch, parse types; otherwise parse expressions
         let list = if is_type_switch {
-            self.TypeList()?
+            self.parse_type_list()?
         } else {
-            self.ExpressionList()?
+            self.parse_expression_list()?
         };
         let colon = self.token(Token::COLON).required()?;
-        let body = self.StatementList()?;
+        let body = self.parse_statement_list()?;
 
         Ok(Some(ast::CaseClause {
             case: case.0,
@@ -3406,11 +3430,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // StatementList = { Statement ";" } .
-    fn StatementList(&mut self) -> Result<Vec<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::StatementList()");
+    fn parse_statement_list(&mut self) -> Result<Vec<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_statement_list()");
 
         let mut list = vec![];
-        while let Some(stmt) = self.Statement()? {
+        while let Some(stmt) = self.parse_statement()? {
             // Some statements (EmptyStmt, LabeledStmt with EmptyStmt) already consumed their semicolon
             let consumed_semi = Self::stmt_consumed_semicolon(&stmt);
             list.push(stmt);
@@ -3422,8 +3446,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // SelectStmt = "select" "{" { CommClause } "}" .
-    fn SelectStmt(&mut self) -> Result<Option<ast::SelectStmt<'scanner>>> {
-        log::debug!("Parser::SelectStmt()");
+    fn parse_select_stmt(&mut self) -> Result<Option<ast::SelectStmt<'scanner>>> {
+        log::debug!("Parser::parse_select_stmt()");
 
         let select = match self.token(Token::SELECT)? {
             Some(v) => v,
@@ -3433,7 +3457,7 @@ impl<'scanner> Parser<'scanner> {
         let lbrace = self.token(Token::LBRACE).required()?;
 
         let mut list = vec![];
-        while let Some(comm_clause) = self.CommClause()? {
+        while let Some(comm_clause) = self.parse_comm_clause()? {
             list.push(ast::Stmt::CommClause(comm_clause));
         }
 
@@ -3453,14 +3477,14 @@ impl<'scanner> Parser<'scanner> {
     // CommCase   = "case" ( SendStmt | RecvStmt ) | "default" .
     // RecvStmt   = [ ExpressionList "=" | IdentifierList ":=" ] RecvExpr .
     // RecvExpr   = Expression .
-    fn CommClause(&mut self) -> Result<Option<ast::CommClause<'scanner>>> {
-        log::debug!("Parser::CommClause()");
+    fn parse_comm_clause(&mut self) -> Result<Option<ast::CommClause<'scanner>>> {
+        log::debug!("Parser::parse_comm_clause()");
 
         let case = if let Some(case) = self.token(Token::CASE)? {
             case
         } else if let Some(default) = self.token(Token::DEFAULT)? {
             let colon = self.token(Token::COLON).required()?;
-            let body = self.StatementList()?;
+            let body = self.parse_statement_list()?;
             return Ok(Some(ast::CommClause {
                 case: default.0,
                 comm: None,
@@ -3472,9 +3496,9 @@ impl<'scanner> Parser<'scanner> {
         };
 
         // Parse send/recv statement
-        let comm = self.SimpleStmt()?;
+        let comm = self.parse_simple_stmt()?;
         let colon = self.token(Token::COLON).required()?;
-        let body = self.StatementList()?;
+        let body = self.parse_statement_list()?;
 
         Ok(Some(ast::CommClause {
             case: case.0,
@@ -3487,11 +3511,11 @@ impl<'scanner> Parser<'scanner> {
     // LabeledStmt = Label ":" Statement .
     // Label = identifier .
     // Or SimpleStmt if not a labeled statement
-    fn LabeledStmt_or_SimpleStmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
-        log::debug!("Parser::LabeledStmt_or_SimpleStmt()");
+    fn parse_labeled_stmt_or_simple_stmt(&mut self) -> Result<Option<ast::Stmt<'scanner>>> {
+        log::debug!("Parser::parse_labeled_stmt_or_simple_stmt()");
 
         // Try to parse as SimpleStmt first
-        let stmt = self.SimpleStmt()?;
+        let stmt = self.parse_simple_stmt()?;
 
         // Check if it's a labeled statement (identifier followed by colon)
         if let Some(ast::Stmt::ExprStmt(ref expr_stmt)) = stmt {
@@ -3502,7 +3526,7 @@ impl<'scanner> Parser<'scanner> {
                         name: ident.name,
                         obj: None,
                     };
-                    let inner_stmt = self.Statement()?;
+                    let inner_stmt = self.parse_statement()?;
                     // If no statement follows the label, create an implicit EmptyStmt
                     // with semicolon position at the current token (e.g., the closing brace)
                     let stmt = match inner_stmt {
@@ -3525,17 +3549,17 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // Receiver = Parameters .
-    fn Receiver(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
-        log::debug!("Parser::Receiver()");
+    fn parse_receiver(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
+        log::debug!("Parser::parse_receiver()");
 
-        self.Parameters()
+        self.parse_parameters()
     }
 
     // identifier | QualifiedIdent
     // QualifiedIdent = PackageName "." identifier .
     // PackageName    = identifier .
-    fn identifier_or_QualifiedIdent(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::identifier_or_QualifiedIdent()");
+    fn parse_identifier_or_qualified_ident(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_identifier_or_qualified_ident()");
 
         let ident = match self.identifier()? {
             Some(v) => v,
@@ -3554,8 +3578,8 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // "." | PackageName
-    fn period_or_PackageName(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
-        log::debug!("Parser::period_or_PackageName()");
+    fn parse_period_or_package_name(&mut self) -> Result<Option<ast::Ident<'scanner>>> {
+        log::debug!("Parser::parse_period_or_package_name()");
 
         if let Some(period) = self.token(Token::PERIOD)? {
             return Ok(Some(ast::Ident {
@@ -3565,7 +3589,7 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        if let Some(package_name) = self.PackageName()? {
+        if let Some(package_name) = self.parse_package_name()? {
             return Ok(Some(package_name));
         }
 
@@ -3577,23 +3601,23 @@ impl<'scanner> Parser<'scanner> {
     // MethodDecl   = "func" Receiver MethodName Signature [ FunctionBody ] .
     // FunctionName = identifier .
     // MethodName   = identifier .
-    fn FunctionDecl_or_MethodDecl(&mut self) -> Result<Option<ast::FuncDecl<'scanner>>> {
-        log::debug!("Parser::FunctionDecl_or_MethodDecl()");
+    fn parse_function_decl_or_method_decl(&mut self) -> Result<Option<ast::FuncDecl<'scanner>>> {
+        log::debug!("Parser::parse_function_decl_or_method_decl()");
 
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
         };
-        let recv = self.Receiver()?;
+        let recv = self.parse_receiver()?;
         let name = self.identifier().required()?;
 
         // Parse optional type parameters (Go 1.18+ generics)
-        let type_params = self.TypeParameters()?;
+        let type_params = self.parse_type_parameters()?;
 
-        let mut type_ = self.Signature(Some(func.0)).required()?;
+        let mut type_ = self.parse_signature(Some(func.0)).required()?;
         type_.type_params = type_params;
 
-        let body = self.FunctionBody()?;
+        let body = self.parse_function_body()?;
 
         Ok(Some(ast::FuncDecl {
             doc: None,
@@ -3613,8 +3637,8 @@ impl<'scanner> Parser<'scanner> {
     // - [T any]      -> type parameters
     // - []int        -> slice type (not type parameters)
     // - [5]int       -> array type (not type parameters)
-    fn TypeParameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
-        log::debug!("Parser::TypeParameters()");
+    fn parse_type_parameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
+        log::debug!("Parser::parse_type_parameters()");
 
         // Must start with [
         if self.current_step.1 != Token::LBRACK {
@@ -3649,7 +3673,7 @@ impl<'scanner> Parser<'scanner> {
         if self.current_step.1 != Token::IDENT {
             // This is [expr] for array type - return a special marker
             // Parse the expression and ] to get the array length
-            let len = self.Expression().required()?;
+            let len = self.parse_expression().required()?;
             let rbrack = self.token(Token::RBRACK).required()?;
             // Return a FieldList with a special single field containing the array length expression
             // The caller will need to detect this and construct an ArrayType
@@ -3724,7 +3748,7 @@ impl<'scanner> Parser<'scanner> {
             // If followed by a number literal, it's definitely multiplication
             if matches!(self.current_step.1, Token::INT | Token::FLOAT) {
                 // Parse as multiplication expression
-                let right = self.UnaryExpr().required()?;
+                let right = self.parse_unary_expr().required()?;
                 let binary_expr = ast::Expr::BinaryExpr(ast::BinaryExpr {
                     x: Box::new(ast::Expr::Ident(first_ident)),
                     op_pos: star_pos,
@@ -3751,7 +3775,7 @@ impl<'scanner> Parser<'scanner> {
 
             // Otherwise, this is a pointer type constraint
             // Parse the type that * points to
-            let pointed_type = self.Type().required()?;
+            let pointed_type = self.parse_type().required()?;
             let pointer_constraint = ast::Expr::StarExpr(ast::StarExpr {
                 star: star_pos,
                 x: Box::new(pointed_type),
@@ -3760,7 +3784,7 @@ impl<'scanner> Parser<'scanner> {
             // Handle union types: [T *S | *R]
             let mut constraint = pointer_constraint;
             while let Some(or_tok) = self.token(Token::OR)? {
-                let next_term = self.TypeTerm().required()?;
+                let next_term = self.parse_type_term().required()?;
                 constraint = ast::Expr::BinaryExpr(ast::BinaryExpr {
                     x: Box::new(constraint),
                     op_pos: or_tok.0,
@@ -3785,7 +3809,7 @@ impl<'scanner> Parser<'scanner> {
                 if self.current_step.1 == Token::RBRACK {
                     break;
                 }
-                fields.push(self.TypeParamDecl().required()?);
+                fields.push(self.parse_type_param_decl().required()?);
             }
 
             let rbrack = self.token(Token::RBRACK).required()?;
@@ -3863,7 +3887,7 @@ impl<'scanner> Parser<'scanner> {
         }
 
         // Try to parse the constraint
-        let constraint = match self.TypeConstraint()? {
+        let constraint = match self.parse_type_constraint()? {
             Some(c) => c,
             None => {
                 // No constraint found - this might be an array type [T] where T is a type
@@ -3892,7 +3916,7 @@ impl<'scanner> Parser<'scanner> {
             if self.current_step.1 == Token::RBRACK {
                 break;
             }
-            fields.push(self.TypeParamDecl().required()?);
+            fields.push(self.parse_type_param_decl().required()?);
 
             // Parse additional type parameter declarations
             while self.token(Token::COMMA)?.is_some() {
@@ -3900,7 +3924,7 @@ impl<'scanner> Parser<'scanner> {
                 if self.current_step.1 == Token::RBRACK {
                     break;
                 }
-                fields.push(self.TypeParamDecl().required()?);
+                fields.push(self.parse_type_param_decl().required()?);
             }
         }
 
@@ -3915,16 +3939,16 @@ impl<'scanner> Parser<'scanner> {
 
     // TypeParamDecl = IdentifierList TypeConstraint .
     // TypeConstraint = TypeElem .
-    fn TypeParamDecl(&mut self) -> Result<Option<ast::Field<'scanner>>> {
-        log::debug!("Parser::TypeParamDecl()");
+    fn parse_type_param_decl(&mut self) -> Result<Option<ast::Field<'scanner>>> {
+        log::debug!("Parser::parse_type_param_decl()");
 
-        let (names, _, _) = match self.IdentifierList()? {
+        let (names, _, _) = match self.parse_identifier_list()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         // Parse the constraint (which can be a union type)
-        let constraint = self.TypeConstraint().required()?;
+        let constraint = self.parse_type_constraint().required()?;
 
         Ok(Some(ast::Field {
             doc: None,
@@ -3937,11 +3961,11 @@ impl<'scanner> Parser<'scanner> {
 
     // TypeConstraint = TypeElem .
     // TypeElem = TypeTerm { "|" TypeTerm } .
-    fn TypeConstraint(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::TypeConstraint()");
+    fn parse_type_constraint(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type_constraint()");
 
         // Parse the first type term
-        let first = match self.TypeTerm()? {
+        let first = match self.parse_type_term()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -3949,7 +3973,7 @@ impl<'scanner> Parser<'scanner> {
         // Check for union types (Type1 | Type2 | ...)
         let mut type_elem = first;
         while let Some(or_tok) = self.token(Token::OR)? {
-            let next_term = self.TypeTerm().required()?;
+            let next_term = self.parse_type_term().required()?;
             type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
                 x: Box::new(type_elem),
                 op_pos: or_tok.0,
@@ -3963,12 +3987,12 @@ impl<'scanner> Parser<'scanner> {
 
     // TypeTerm = Type | UnderlyingType .
     // UnderlyingType = "~" Type .
-    fn TypeTerm(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::TypeTerm()");
+    fn parse_type_term(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type_term()");
 
         // Check for underlying type constraint (~Type)
         if let Some(tilde) = self.token(Token::TILDE)? {
-            let type_ = self.TypeWithInstantiation().required()?;
+            let type_ = self.parse_type_with_instantiation().required()?;
             return Ok(Some(ast::Expr::UnaryExpr(ast::UnaryExpr {
                 op_pos: tilde.0,
                 op: Token::TILDE,
@@ -3976,16 +4000,16 @@ impl<'scanner> Parser<'scanner> {
             })));
         }
 
-        self.TypeWithInstantiation()
+        self.parse_type_with_instantiation()
     }
 
     // TypeWithInstantiation = Type [ TypeArgs ] .
     // TypeArgs = "[" TypeList [ "," ] "]" .
     // This handles generic type instantiation like Comparable[T] or _SliceOf[E]
-    fn TypeWithInstantiation(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
-        log::debug!("Parser::TypeWithInstantiation()");
+    fn parse_type_with_instantiation(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
+        log::debug!("Parser::parse_type_with_instantiation()");
 
-        let type_ = match self.Type()? {
+        let type_ = match self.parse_type()? {
             Some(v) => v,
             None => return Ok(None),
         };
@@ -3993,12 +4017,12 @@ impl<'scanner> Parser<'scanner> {
         // Check for type instantiation [T] or [T1, T2]
         if self.current_step.1 == Token::LBRACK {
             let lbrack = self.token(Token::LBRACK).required()?;
-            let mut indices = vec![self.Type().required()?];
+            let mut indices = vec![self.parse_type().required()?];
             while self.token(Token::COMMA)?.is_some() {
                 if self.current_step.1 == Token::RBRACK {
                     break;
                 }
-                indices.push(self.Type().required()?);
+                indices.push(self.parse_type().required()?);
             }
             let rbrack = self.token(Token::RBRACK).required()?;
 

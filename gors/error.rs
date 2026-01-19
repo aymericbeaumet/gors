@@ -6,15 +6,20 @@ use crate::scanner::ScannerError;
 use serde::Serialize;
 use std::fmt;
 
-/// Represents a diagnostic error with source location and context
+/// Represents a diagnostic error with source location and context.
+///
+/// This struct provides structured error information that can be used
+/// for both terminal output and IDE integration.
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     /// The file path where the error occurred
     pub file: String,
     /// Line number (1-indexed)
     pub line: usize,
-    /// Column number (1-indexed)
+    /// Column number (1-indexed, start of error)
     pub column: usize,
+    /// End column number (1-indexed, for highlighting range)
+    pub end_column: usize,
     /// The error message
     pub message: String,
     /// Optional source line for context
@@ -77,6 +82,7 @@ impl fmt::Display for DiagnosticKind {
 }
 
 impl Diagnostic {
+    /// Create a new Diagnostic with the given location and message.
     pub fn new(
         file: impl Into<String>,
         line: usize,
@@ -88,24 +94,79 @@ impl Diagnostic {
             file: file.into(),
             line,
             column,
+            end_column: column + 1, // Default to single character
             message: message.into(),
             source_line: None,
             kind,
         }
     }
 
+    /// Add source context and calculate end_column for error highlighting.
     pub fn with_source(mut self, source: &str) -> Self {
         if self.line > 0 {
             if let Some(line) = source.lines().nth(self.line - 1) {
                 self.source_line = Some(line.to_string());
+                self.end_column = self.calculate_end_column(line);
             }
         }
         self
     }
 
+    /// Manually set the source line for context.
     pub fn with_source_line(mut self, source_line: impl Into<String>) -> Self {
-        self.source_line = Some(source_line.into());
+        let line = source_line.into();
+        self.end_column = self.calculate_end_column(&line);
+        self.source_line = Some(line);
         self
+    }
+
+    /// Calculate the end column for error highlighting based on the token at the error position.
+    fn calculate_end_column(&self, source_line: &str) -> usize {
+        let col = self.column.saturating_sub(1); // 0-indexed
+        let chars: Vec<char> = source_line.chars().collect();
+
+        if col >= chars.len() {
+            return self.column + 1;
+        }
+
+        let mut end = col;
+        let start_char = chars[col];
+
+        if start_char.is_alphanumeric() || start_char == '_' {
+            // Identifier or keyword - find end of word
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+        } else if start_char == '"' || start_char == '\'' || start_char == '`' {
+            // String/char literal - find closing quote or end of line
+            end += 1;
+            while end < chars.len() && chars[end] != start_char {
+                if chars[end] == '\\' && end + 1 < chars.len() {
+                    end += 1; // Skip escaped char
+                }
+                end += 1;
+            }
+            if end < chars.len() {
+                end += 1; // Include closing quote
+            }
+        } else {
+            // Single character token or operator
+            end += 1;
+            // Check for multi-character operators
+            if end < chars.len() {
+                let two_char: String = [start_char, chars[end]].iter().collect();
+                if matches!(
+                    two_char.as_str(),
+                    ":=" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
+                        | "++" | "--" | "+=" | "-=" | "*=" | "/="
+                        | "<<" | ">>"
+                ) {
+                    end += 1;
+                }
+            }
+        }
+
+        end + 1 // Convert back to 1-indexed
     }
 
     /// Format for terminal output with colors (when supported)

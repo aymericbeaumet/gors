@@ -1,4 +1,4 @@
-#![warn(clippy::all, clippy::nursery)]
+// Clippy lints are configured at workspace level in the root Cargo.toml
 
 use clap::Parser;
 use gors::error::{Diagnostic, DiagnosticKind};

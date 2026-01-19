@@ -111,7 +111,6 @@ function onDOMContentLoaded() {
   const inputEditor = monaco.editor.create(input, {
     ...opts,
     language: 'go',
-    glyphMargin: true, // Enable gutter for error symbols
   });
   const inputModel = inputEditor.getModel();
 
@@ -140,7 +139,7 @@ function onDOMContentLoaded() {
       outputModel.setValue(result.output);
       error.innerHTML = '';
     } else {
-      outputModel.setValue('');
+      // Keep the last successful Rust output (don't clear it)
       error.innerHTML = formatError(result, code);
 
       // Add error markers to Monaco editor
