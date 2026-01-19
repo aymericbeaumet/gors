@@ -1791,21 +1791,163 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some((names, _, last_is_qualified)) = self.IdentifierList()? {
             // Check if this is a qualified identifier for an embedded field (e.g., sync.RWMutex)
+            // or a qualified generic type (e.g., listers.ResourceIndexer[*Deployment])
             if names.len() == 1 && (self.current_step.1 == Token::PERIOD || last_is_qualified) {
                 let name = names.into_iter().next().unwrap();
                 self.token(Token::PERIOD)?;
                 let sel = self.identifier().required()?;
+                
+                // Check for generic type arguments [T] or [T1, T2]
+                let type_expr = if self.current_step.1 == Token::LBRACK {
+                    let lbrack = self.token(Token::LBRACK).required()?;
+                    let mut indices = vec![self.Type().required()?];
+                    while self.token(Token::COMMA)?.is_some() {
+                        if self.current_step.1 == Token::RBRACK {
+                            break;
+                        }
+                        indices.push(self.Type().required()?);
+                    }
+                    let rbrack = self.token(Token::RBRACK).required()?;
+                    
+                    let selector = ast::Expr::SelectorExpr(ast::SelectorExpr {
+                        x: Box::new(ast::Expr::Ident(name)),
+                        sel,
+                    });
+                    
+                    if indices.len() == 1 {
+                        ast::Expr::IndexExpr(ast::IndexExpr {
+                            x: Box::new(selector),
+                            lbrack: lbrack.0,
+                            index: Box::new(indices.pop().unwrap()),
+                            rbrack: rbrack.0,
+                        })
+                    } else {
+                        ast::Expr::IndexListExpr(ast::IndexListExpr {
+                            x: Box::new(selector),
+                            lbrack: lbrack.0,
+                            indices,
+                            rbrack: rbrack.0,
+                        })
+                    }
+                } else {
+                    ast::Expr::SelectorExpr(ast::SelectorExpr {
+                        x: Box::new(ast::Expr::Ident(name)),
+                        sel,
+                    })
+                };
+                
                 let tag = self.Tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
-                    type_: Some(ast::Expr::SelectorExpr(ast::SelectorExpr {
-                        x: Box::new(ast::Expr::Ident(name)),
-                        sel,
-                    })),
+                    type_: Some(type_expr),
                     names: None,
                     tag,
                     comment: None,
                 }));
+            }
+
+            // Handle the complex case of single identifier followed by [
+            // This could be:
+            // - `a [20]int`     -> field 'a' with array type [20]int  
+            // - `a [size]int`  -> field 'a' with array type [size]int (size is constant)
+            // - `B[int]`        -> embedded generic type B[int]
+            // - `a []int`       -> field 'a' with slice type []int
+            //
+            // The disambiguation rule is: if a type follows ] (outside the brackets),
+            // then [...] is the array size, not a generic type argument.
+            if names.len() == 1 && self.current_step.1 == Token::LBRACK {
+                let name = names.into_iter().next().unwrap();
+                let lbrack = self.token(Token::LBRACK).required()?;
+                
+                // Handle slice type []T first
+                if self.current_step.1 == Token::RBRACK {
+                    let _rbrack = self.token(Token::RBRACK).required()?;
+                    let elt = Box::new(self.Type().required()?);
+                    let array_type = ast::Expr::ArrayType(ast::ArrayType {
+                        lbrack: lbrack.0,
+                        len: None,
+                        elt,
+                    });
+                    let tag = self.Tag()?;
+                    return Ok(Some(ast::Field {
+                        doc: None,
+                        names: Some(vec![name]),
+                        type_: Some(array_type),
+                        tag,
+                        comment: None,
+                    }));
+                }
+                
+                // Parse what's inside [...] - could be:
+                // - Single expression (array size or single type arg)
+                // - Multiple types separated by commas (multiple type args)
+                let first_inner = self.Expression().required()?;
+                
+                // Check for comma (multiple type arguments)
+                if self.current_step.1 == Token::COMMA {
+                    // This is a generic type with multiple type args: name[T, V, ...]
+                    let mut indices = vec![first_inner];
+                    while self.token(Token::COMMA)?.is_some() {
+                        if self.current_step.1 == Token::RBRACK {
+                            break;
+                        }
+                        indices.push(self.Type().required()?);
+                    }
+                    let rbrack = self.token(Token::RBRACK).required()?;
+                    
+                    let type_expr = ast::Expr::IndexListExpr(ast::IndexListExpr {
+                        x: Box::new(ast::Expr::Ident(name)),
+                        lbrack: lbrack.0,
+                        indices,
+                        rbrack: rbrack.0,
+                    });
+                    let tag = self.Tag()?;
+                    return Ok(Some(ast::Field {
+                        doc: None,
+                        type_: Some(type_expr),
+                        names: None,
+                        tag,
+                        comment: None,
+                    }));
+                }
+                
+                let rbrack = self.token(Token::RBRACK).required()?;
+                
+                // Check what follows ]
+                // If a type follows, this is field 'name' with array type [inner]element
+                // Otherwise, it's an embedded generic field name[inner]
+                if let Some(elt) = self.Type()? {
+                    // Array type: 'name' is field name, [inner] is array size
+                    let array_type = ast::Expr::ArrayType(ast::ArrayType {
+                        lbrack: lbrack.0,
+                        len: Some(Box::new(first_inner)),
+                        elt: Box::new(elt),
+                    });
+                    let tag = self.Tag()?;
+                    return Ok(Some(ast::Field {
+                        doc: None,
+                        names: Some(vec![name]),
+                        type_: Some(array_type),
+                        tag,
+                        comment: None,
+                    }));
+                } else {
+                    // Generic type: 'name' is type name, [inner] is type argument
+                    let type_expr = ast::Expr::IndexExpr(ast::IndexExpr {
+                        x: Box::new(ast::Expr::Ident(name)),
+                        lbrack: lbrack.0,
+                        index: Box::new(first_inner),
+                        rbrack: rbrack.0,
+                    });
+                    let tag = self.Tag()?;
+                    return Ok(Some(ast::Field {
+                        doc: None,
+                        type_: Some(type_expr),
+                        names: None,
+                        tag,
+                        comment: None,
+                    }));
+                }
             }
 
             if let Some(type_) = self.Type()? {
@@ -2098,6 +2240,294 @@ impl<'scanner> Parser<'scanner> {
         
         // Check for ellipsis (variadic parameter like "args ...int")
         let ellipsis = self.token(Token::ELLIPSIS)?;
+        
+        // Special case: qualified type followed by generic args: `sets.Set[string]`
+        // IdentifierList returns ["sets"] with last_is_qualified=true when it sees `sets.`
+        if idents.len() == 1 && ellipsis.is_none() && last_is_qualified && self.current_step.1 == Token::PERIOD {
+            let pkg_ident = idents.into_iter().next().unwrap();
+            self.token(Token::PERIOD)?;
+            let sel = self.identifier().required()?;
+            
+            // Check if this qualified type has generic args [T]
+            let type_expr = if self.current_step.1 == Token::LBRACK {
+                let lbrack = self.token(Token::LBRACK).required()?;
+                let mut indices = vec![self.Type().required()?];
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RBRACK {
+                        break;
+                    }
+                    indices.push(self.Type().required()?);
+                }
+                let rbrack = self.token(Token::RBRACK).required()?;
+                
+                let selector = ast::Expr::SelectorExpr(ast::SelectorExpr {
+                    x: Box::new(ast::Expr::Ident(pkg_ident)),
+                    sel,
+                });
+                
+                if indices.len() == 1 {
+                    ast::Expr::IndexExpr(ast::IndexExpr {
+                        x: Box::new(selector),
+                        lbrack: lbrack.0,
+                        index: Box::new(indices.pop().unwrap()),
+                        rbrack: rbrack.0,
+                    })
+                } else {
+                    ast::Expr::IndexListExpr(ast::IndexListExpr {
+                        x: Box::new(selector),
+                        lbrack: lbrack.0,
+                        indices,
+                        rbrack: rbrack.0,
+                    })
+                }
+            } else {
+                // Just a qualified type without generic args
+                ast::Expr::SelectorExpr(ast::SelectorExpr {
+                    x: Box::new(ast::Expr::Ident(pkg_ident)),
+                    sel,
+                })
+            };
+            
+            // This is an unnamed parameter type
+            let mut fields = vec![ast::Field {
+                doc: None,
+                names: None,
+                type_: Some(type_expr),
+                tag: None,
+                comment: None,
+            }];
+            
+            // Parse remaining parameters after comma
+            while self.token(Token::COMMA)?.is_some() {
+                if self.current_step.1 == Token::RPAREN {
+                    break;
+                }
+                let ellipsis = self.token(Token::ELLIPSIS)?;
+                let type_ = self.Type().required()?;
+                let field_type = if let Some(ellipsis) = ellipsis {
+                    ast::Expr::Ellipsis(ast::Ellipsis {
+                        ellipsis: ellipsis.0,
+                        elt: Some(Box::new(type_)),
+                    })
+                } else {
+                    type_
+                };
+                fields.push(ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(field_type),
+                    tag: None,
+                    comment: None,
+                });
+            }
+            return Ok(Some(fields));
+        }
+        
+        // Special case: single identifier followed by [ could be:
+        // 1. Named parameter with array/slice type: `ret []*Foo` or `n [10]int`  
+        // 2. Unnamed parameter with generic type: `BarType[T]`
+        //
+        // Disambiguation: parse the bracket contents, then check what follows ].
+        // - If a type follows ] → case 1: ident is param name, [...] is array/slice size
+        // - If ) or , follows ] → case 2: ident[...] is a generic type instantiation
+        if idents.len() == 1 && ellipsis.is_none() && self.current_step.1 == Token::LBRACK {
+            let ident = idents.into_iter().next().unwrap();
+            let lbrack = self.token(Token::LBRACK).required()?;
+            
+            // Check for empty [] which is a slice type
+            if self.current_step.1 == Token::RBRACK {
+                // This is `ident []Type` - ident is param name, []Type is slice type
+                let _rbrack = self.token(Token::RBRACK).required()?;
+                let elt = self.Type().required()?;
+                let type_ = ast::Expr::ArrayType(ast::ArrayType {
+                    lbrack: lbrack.0,
+                    len: None,
+                    elt: Box::new(elt),
+                });
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: Some(vec![ident]),
+                    type_: Some(type_),
+                    tag: None,
+                    comment: None,
+                }];
+                
+                // Continue parsing more named parameters after comma
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let (param_names, _, _) = self.IdentifierList().required()?;
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let param_type = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(param_type)),
+                        })
+                    } else {
+                        param_type
+                    };
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: Some(param_names),
+                        type_: Some(field_type),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            }
+            
+            // Parse what's inside the brackets as an expression/type
+            // This could be: a type arg (T), array length (10), or array length expr (n*2)
+            // Or multiple type args (K, V)
+            let first_inner = self.Expression().required()?;
+            
+            // Check for comma (multiple type arguments like [K, V])
+            if self.current_step.1 == Token::COMMA {
+                // This is a generic type with multiple type args: ident[T, V, ...]
+                let mut indices = vec![first_inner];
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RBRACK {
+                        break;
+                    }
+                    indices.push(self.Type().required()?);
+                }
+                let rbrack = self.token(Token::RBRACK).required()?;
+                
+                let type_expr = ast::Expr::IndexListExpr(ast::IndexListExpr {
+                    x: Box::new(ast::Expr::Ident(ident)),
+                    lbrack: lbrack.0,
+                    indices,
+                    rbrack: rbrack.0,
+                });
+                
+                // This generic type is an unnamed parameter type
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(type_expr),
+                    tag: None,
+                    comment: None,
+                }];
+                
+                // Parse remaining unnamed type parameters after comma
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let type_ = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(type_)),
+                        })
+                    } else {
+                        type_
+                    };
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(field_type),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            }
+            
+            let rbrack_pos = self.token(Token::RBRACK).required()?.0;
+            
+            // Check what follows ]
+            // If a type follows, this is `ident [expr]Type` (array type with ident as param name)
+            // If ) or , follows, this is `ident[expr]` (generic type instantiation)
+            if let Some(elt) = self.Type()? {
+                // Case 1: Array type - ident is parameter name
+                let type_ = ast::Expr::ArrayType(ast::ArrayType {
+                    lbrack: lbrack.0,
+                    len: Some(Box::new(first_inner)),
+                    elt: Box::new(elt),
+                });
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: Some(vec![ident]),
+                    type_: Some(type_),
+                    tag: None,
+                    comment: None,
+                }];
+                
+                // Continue parsing more named parameters after comma
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let (param_names, _, _) = self.IdentifierList().required()?;
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let param_type = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(param_type)),
+                        })
+                    } else {
+                        param_type
+                    };
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: Some(param_names),
+                        type_: Some(field_type),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            } else {
+                // Case 2: Generic type instantiation - ident[inner] is the type
+                let type_expr = ast::Expr::IndexExpr(ast::IndexExpr {
+                    x: Box::new(ast::Expr::Ident(ident)),
+                    lbrack: lbrack.0,
+                    index: Box::new(first_inner),
+                    rbrack: rbrack_pos,
+                });
+                
+                // This generic type is an unnamed parameter type
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(type_expr),
+                    tag: None,
+                    comment: None,
+                }];
+                
+                // Parse remaining unnamed type parameters after comma
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let type_ = self.Type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(type_)),
+                        })
+                    } else {
+                        type_
+                    };
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(field_type),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            }
+        }
+        
         let type_ = self.Type()?;
 
         // If no type can be found and no ellipsis, then the idents might be types
