@@ -7,6 +7,9 @@
 //! - Edge cases in number literals (hex, octal, binary, floats)
 //! - Unicode identifiers and escape sequences
 
+// Fuzz targets use panics to signal bugs found during fuzzing
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use afl::fuzz;
 
 fn main() {

@@ -18,6 +18,7 @@ pub fn pass(file: &mut syn::File) {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! This module contains the passes tests (the Rust -> Rust step, after the initial Go -> Rust
     //! step).
@@ -30,9 +31,7 @@ mod tests {
         pass(&mut input); // mutates in place, becomes the output
         let output = (quote! {#input}).to_string();
         let expected = (quote! {#expected}).to_string();
-        if output != expected {
-            panic!("\n    output: {}\n  expected: {}\n", output, expected);
-        }
+        assert_eq!(output, expected);
     }
 
     #[test]

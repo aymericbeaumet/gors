@@ -34,6 +34,8 @@ pub enum CompilerError {
     InvalidAssignment(String),
     /// A type conversion error
     TypeMismatch(String),
+    /// An invalid function signature
+    InvalidFunctionSignature(String),
 }
 
 impl fmt::Display for CompilerError {
@@ -42,6 +44,7 @@ impl fmt::Display for CompilerError {
             Self::UnsupportedConstruct(msg) => write!(f, "unsupported construct: {}", msg),
             Self::InvalidAssignment(msg) => write!(f, "invalid assignment: {}", msg),
             Self::TypeMismatch(msg) => write!(f, "type mismatch: {}", msg),
+            Self::InvalidFunctionSignature(msg) => write!(f, "invalid function signature: {}", msg),
         }
     }
 }
@@ -259,11 +262,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
         let mut items = vec![];
         for decl in file.decls {
-            match decl {
-                ast::Decl::FuncDecl(func_decl) => {
-                    items.push(syn::Item::Fn(func_decl.try_into()?));
-                }
-                _ => {}
+            if let ast::Decl::FuncDecl(func_decl) = decl {
+                items.push(syn::Item::Fn(func_decl.try_into()?));
             }
         }
 
@@ -275,10 +275,20 @@ impl TryFrom<ast::File<'_>> for syn::File {
     }
 }
 
-impl From<ast::Field<'_>> for syn::FnArg {
-    fn from(field: ast::Field) -> Self {
-        let name = field.names.unwrap().into_iter().next().unwrap();
-        Self::Typed(syn::PatType {
+impl TryFrom<ast::Field<'_>> for syn::FnArg {
+    type Error = CompilerError;
+
+    fn try_from(field: ast::Field) -> Result<Self, Self::Error> {
+        let name = field
+            .names
+            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field has no names".to_string()))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field names is empty".to_string()))?;
+        let type_ = field
+            .type_
+            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field has no type".to_string()))?;
+        Ok(Self::Typed(syn::PatType {
             attrs: vec![],
             pat: Box::new(syn::Pat::Ident(syn::PatIdent {
                 attrs: vec![],
@@ -288,8 +298,8 @@ impl From<ast::Field<'_>> for syn::FnArg {
                 ident: name.into(),
             })),
             colon_token: <Token![:]>::default(),
-            ty: Box::new(field.type_.unwrap().into()),
-        })
+            ty: Box::new(type_.into()),
+        }))
     }
 }
 
@@ -299,7 +309,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     fn try_from(func_decl: ast::FuncDecl) -> Result<Self, Self::Error> {
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
-            inputs.push(param.into());
+            inputs.push(param.try_into()?);
         }
 
         let vis = (&func_decl.name).into();
@@ -314,19 +324,15 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
 
         let output = if let Some(results) = func_decl.type_.results {
-            syn::ReturnType::Type(
-                <Token![->]>::default(),
-                Box::new(
-                    results
-                        .list
-                        .into_iter()
-                        .next()
-                        .unwrap()
-                        .type_
-                        .unwrap()
-                        .into(),
-                ),
-            )
+            let first_result = results
+                .list
+                .into_iter()
+                .next()
+                .ok_or_else(|| CompilerError::InvalidFunctionSignature("empty result list".to_string()))?;
+            let result_type = first_result
+                .type_
+                .ok_or_else(|| CompilerError::InvalidFunctionSignature("result has no type".to_string()))?;
+            syn::ReturnType::Type(<Token![->]>::default(), Box::new(result_type.into()))
         } else {
             syn::ReturnType::Default
         };
@@ -688,7 +694,12 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         if assign_stmt.tok == token::Token::DEFINE {
             let pat = match assign_stmt.lhs.len() {
                 1 => {
-                    if let ast::Expr::Ident(ident) = assign_stmt.lhs.into_iter().next().unwrap() {
+                    let first_lhs = assign_stmt
+                        .lhs
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?;
+                    if let ast::Expr::Ident(ident) = first_lhs {
                         syn::Pat::Ident(syn::PatIdent {
                             attrs: vec![],
                             ident: ident.into(),
@@ -730,7 +741,14 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             };
 
             let init = match assign_stmt.rhs.len() {
-                1 => assign_stmt.rhs.into_iter().next().unwrap().into(),
+                1 => {
+                    let first_rhs = assign_stmt
+                        .rhs
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?;
+                    first_rhs.into()
+                }
                 _ => {
                     let mut elems = syn::punctuated::Punctuated::new();
                     for expr in assign_stmt.rhs {
@@ -763,8 +781,18 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // b, c = 2, 3
         if assign_stmt.tok == token::Token::ASSIGN {
             if assign_stmt.lhs.len() == 1 {
-                let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
-                let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
+                let left: syn::Expr = assign_stmt
+                    .lhs
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?
+                    .into();
+                let right: syn::Expr = assign_stmt
+                    .rhs
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?
+                    .into();
                 return Ok(vec![syn::parse_quote! { #left = #right; }]);
             }
 
@@ -806,8 +834,18 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     "compound assignment only supports a single lhs element".to_string(),
                 ));
             }
-            let left: syn::Expr = assign_stmt.lhs.into_iter().next().unwrap().into();
-            let right: syn::Expr = assign_stmt.rhs.into_iter().next().unwrap().into();
+            let left: syn::Expr = assign_stmt
+                .lhs
+                .into_iter()
+                .next()
+                .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?
+                .into();
+            let right: syn::Expr = assign_stmt
+                .rhs
+                .into_iter()
+                .next()
+                .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?
+                .into();
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
         }
@@ -821,10 +859,11 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 
 impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
     fn from(return_stmt: ast::ReturnStmt) -> Self {
-        let expr: syn::Expr = return_stmt.results.into_iter().next().unwrap().into();
+        // Handle return statements: if there are results, convert the first one
+        let expr = return_stmt.results.into_iter().next().map(Into::into);
         Self {
             attrs: vec![],
-            expr: Some(Box::new(expr)),
+            expr: expr.map(Box::new),
             return_token: <Token![return]>::default(),
         }
     }
@@ -870,6 +909,7 @@ impl From<token::Token> for syn::BinOp {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! This module contains the compiler tests (the initial Go -> Rust step, followed by the
     //! compiler passes).
@@ -884,9 +924,7 @@ mod tests {
         let compiled = compile(parsed).unwrap();
         let output = (quote! {#compiled}).to_string();
         let expected = (quote! {#expected}).to_string();
-        if output != expected {
-            panic!("\n    output: {}\n  expected: {}\n", output, expected);
-        }
+        assert_eq!(output, expected);
     }
 
     #[test]

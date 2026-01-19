@@ -6,6 +6,9 @@
 //! - Printing produces invalid output
 //! - Re-parsing printed output gives different AST
 
+// Fuzz targets use panics to signal bugs found during fuzzing
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use afl::fuzz;
 
 fn main() {

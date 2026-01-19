@@ -6,7 +6,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "gors": "file:../gors-wasm/pkg",
+    "gors": "file:./wasm/pkg",
     "monaco-editor": "0.55.0"
   },
   "devDependencies": {

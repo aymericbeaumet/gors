@@ -1,3 +1,6 @@
+// Tests may use unwrap and panic for assertions
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use colored::*;
 use console::{Style, style};
 use crossbeam::thread;

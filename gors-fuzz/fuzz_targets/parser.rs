@@ -9,6 +9,9 @@
 //! - Generic syntax (type parameters)
 //! - Complex statement combinations
 
+// Fuzz targets use panics to signal bugs found during fuzzing
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use afl::fuzz;
 
 fn main() {

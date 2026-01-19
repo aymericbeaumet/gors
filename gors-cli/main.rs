@@ -134,9 +134,12 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
+    let src_path = source_file
+        .to_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
     let rustc = Command::new("rustc")
         .args(RustcArgs {
-            src: source_file.to_str().unwrap(),
+            src: src_path,
             out: None,
             emit: cmd.emit.as_deref(),
             release: cmd.release,
@@ -180,10 +183,16 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
+    let src_path = out_rust
+        .to_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
+    let out_path = out_bin
+        .to_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
     let rustc = Command::new("rustc")
         .args(RustcArgs {
-            src: out_rust.to_str().unwrap(),
-            out: Some(out_bin.to_str().unwrap()),
+            src: src_path,
+            out: Some(out_path),
             emit: None,
             release: cmd.release,
         })

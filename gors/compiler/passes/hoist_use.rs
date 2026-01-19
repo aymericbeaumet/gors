@@ -24,9 +24,12 @@ impl VisitMut for HoistUse {
             );
 
             // Trim the pass segment to only keep the latest element
-            let ident = path.segments.last().unwrap();
-            path.leading_colon = None;
-            path.segments = syn::parse_quote! { #ident };
+            // SAFETY: We verified path.segments.len() > 1 above, so last() is guaranteed Some
+            if let Some(ident) = path.segments.last() {
+                let ident = ident.clone();
+                path.leading_colon = None;
+                path.segments = syn::parse_quote! { #ident };
+            }
         }
     }
 }

@@ -502,13 +502,15 @@ impl<'scanner> Parser<'scanner> {
                     // We need to construct the slice type here since [ ] was consumed
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
                     let element_type = self.parse_type().required()?;
+                    // opening should always be set when we have a field_list, use default position as fallback
+                    let lbrack = field_list.opening.unwrap_or_default();
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
                         name: Some(name),
                         type_params: None,
                         assign,
                         type_: ast::Expr::ArrayType(ast::ArrayType {
-                            lbrack: field_list.opening.unwrap(),
+                            lbrack,
                             len: None, // slice type has no length
                             elt: Box::new(element_type),
                         }),
@@ -523,13 +525,15 @@ impl<'scanner> Parser<'scanner> {
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
                     let element_type = self.parse_type().required()?;
                     let len_expr = field_list.list.pop().and_then(|f| f.type_);
+                    // opening should always be set when we have a field_list, use default position as fallback
+                    let lbrack = field_list.opening.unwrap_or_default();
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
                         name: Some(name),
                         type_params: None,
                         assign,
                         type_: ast::Expr::ArrayType(ast::ArrayType {
-                            lbrack: field_list.opening.unwrap(),
+                            lbrack,
                             len: len_expr.map(Box::new),
                             elt: Box::new(element_type),
                         }),
@@ -1405,11 +1409,11 @@ impl<'scanner> Parser<'scanner> {
             }
             let rbrack = self.token(Token::RBRACK).required()?;
 
-            if indices.len() == 1 {
+            if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
                     x: Box::new(type_name),
                     lbrack: lbrack.0,
-                    index: Box::new(indices.pop().unwrap()),
+                    index: Box::new(index),
                     rbrack: rbrack.0,
                 })));
             } else {
@@ -1711,11 +1715,11 @@ impl<'scanner> Parser<'scanner> {
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
 
-                    let type_expr = if indices.len() == 1 {
+                    let type_expr = if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(ast::Expr::Ident(method_spec)),
                             lbrack: lbrack.0,
-                            index: Box::new(indices.pop().unwrap()),
+                            index: Box::new(index),
                             rbrack: rbrack.0,
                         })
                     } else {
@@ -1889,11 +1893,13 @@ impl<'scanner> Parser<'scanner> {
             }));
         };
 
-        if let Some((names, _, last_is_qualified)) = self.parse_identifier_list()? {
+        if let Some((mut names, _, last_is_qualified)) = self.parse_identifier_list()? {
             // Check if this is a qualified identifier for an embedded field (e.g., sync.RWMutex)
             // or a qualified generic type (e.g., listers.ResourceIndexer[*Deployment])
-            if names.len() == 1 && (self.current_step.1 == Token::PERIOD || last_is_qualified) {
-                let name = names.into_iter().next().unwrap();
+            if let Some(name) = (names.len() == 1 && (self.current_step.1 == Token::PERIOD || last_is_qualified))
+                .then(|| names.pop())
+                .flatten()
+            {
                 self.token(Token::PERIOD)?;
                 let sel = self.identifier().required()?;
 
@@ -1914,11 +1920,11 @@ impl<'scanner> Parser<'scanner> {
                         sel,
                     });
 
-                    if indices.len() == 1 {
+                    if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(selector),
                             lbrack: lbrack.0,
-                            index: Box::new(indices.pop().unwrap()),
+                            index: Box::new(index),
                             rbrack: rbrack.0,
                         })
                     } else {
@@ -1955,8 +1961,10 @@ impl<'scanner> Parser<'scanner> {
             //
             // The disambiguation rule is: if a type follows ] (outside the brackets),
             // then [...] is the array size, not a generic type argument.
-            if names.len() == 1 && self.current_step.1 == Token::LBRACK {
-                let name = names.into_iter().next().unwrap();
+            if let Some(name) = (names.len() == 1 && self.current_step.1 == Token::LBRACK)
+                .then(|| names.pop())
+                .flatten()
+            {
                 let lbrack = self.token(Token::LBRACK).required()?;
 
                 // Handle slice type []T first
@@ -2061,8 +2069,7 @@ impl<'scanner> Parser<'scanner> {
                 }));
             }
 
-            if names.len() == 1 {
-                let name = names.into_iter().next().unwrap();
+            if let Some(name) = (names.len() == 1).then(|| names.pop()).flatten() {
                 let tag = self.parse_tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
@@ -2221,7 +2228,9 @@ impl<'scanner> Parser<'scanner> {
             return Ok(None);
         }
 
-        let (idents, has_trailing_comma, last_is_qualified) = idents_result.unwrap();
+        let Some((idents, has_trailing_comma, last_is_qualified)) = idents_result else {
+            return Ok(None);
+        };
 
         // If IdentifierList consumed a trailing comma (e.g., "int," in "(int, map[...])"),
         // then all idents are types and we should parse remaining types
@@ -2347,7 +2356,10 @@ impl<'scanner> Parser<'scanner> {
             && last_is_qualified
             && self.current_step.1 == Token::PERIOD
         {
-            let pkg_ident = idents.into_iter().next().unwrap();
+            // Safe to use into_iter().next() because we verified len == 1 above
+            let Some(pkg_ident) = idents.into_iter().next() else {
+                return Ok(None);
+            };
             self.token(Token::PERIOD)?;
             let sel = self.identifier().required()?;
 
@@ -2368,11 +2380,11 @@ impl<'scanner> Parser<'scanner> {
                     sel,
                 });
 
-                if indices.len() == 1 {
+                if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
                     ast::Expr::IndexExpr(ast::IndexExpr {
                         x: Box::new(selector),
                         lbrack: lbrack.0,
-                        index: Box::new(indices.pop().unwrap()),
+                        index: Box::new(index),
                         rbrack: rbrack.0,
                     })
                 } else {
@@ -2434,7 +2446,10 @@ impl<'scanner> Parser<'scanner> {
         // - If a type follows ] → case 1: ident is param name, [...] is array/slice size
         // - If ) or , follows ] → case 2: ident[...] is a generic type instantiation
         if idents.len() == 1 && ellipsis.is_none() && self.current_step.1 == Token::LBRACK {
-            let ident = idents.into_iter().next().unwrap();
+            // Safe to use into_iter().next() because we verified len == 1 above
+            let Some(ident) = idents.into_iter().next() else {
+                return Ok(None);
+            };
             let lbrack = self.token(Token::LBRACK).required()?;
 
             // Check for empty [] which is a slice type
@@ -2639,7 +2654,10 @@ impl<'scanner> Parser<'scanner> {
         if type_.is_none() && ellipsis.is_none() {
             // Check if the first (and only) ident is followed by a period - qualified type
             if idents.len() == 1 && self.current_step.1 == Token::PERIOD {
-                let ident = idents.into_iter().next().unwrap();
+                // Safe to use into_iter().next() because we verified len == 1 above
+                let Some(ident) = idents.into_iter().next() else {
+                    return Ok(None);
+                };
                 self.token(Token::PERIOD)?;
                 let sel = self.identifier().required()?;
                 let type_ = ast::Expr::SelectorExpr(ast::SelectorExpr {
@@ -2899,19 +2917,21 @@ impl<'scanner> Parser<'scanner> {
             })));
         }
 
-        let init = if let Some(exprs) = self.parse_expression_list()? {
+        let init = if let Some(mut exprs) = self.parse_expression_list()? {
             // for a < b {}
             if exprs.len() == 1 {
                 self.expr_level = prev_expr_level;
                 if let Some(body) = self.parse_block()? {
-                    let cond = exprs.into_iter().next().unwrap();
-                    return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
-                        for_: for_.0,
-                        init: None,
-                        cond: Some(cond),
-                        post: None,
-                        body,
-                    })));
+                    // Safe: we verified len == 1, so pop() returns Some
+                    if let Some(cond) = exprs.pop() {
+                        return Ok(Some(ast::Stmt::ForStmt(ast::ForStmt {
+                            for_: for_.0,
+                            init: None,
+                            cond: Some(cond),
+                            post: None,
+                            body,
+                        })));
+                    }
                 }
                 self.expr_level = -1;
             }
@@ -2922,9 +2942,9 @@ impl<'scanner> Parser<'scanner> {
             if let Some(define) = self.token(Token::DEFINE)? {
                 tok = Some(define);
                 if let Some(range_tok) = self.token(Token::RANGE)? {
-                    let mut exprs = exprs.into_iter();
-                    let key = exprs.next();
-                    let value = exprs.next();
+                    let mut exprs_iter = exprs.into_iter();
+                    let key = exprs_iter.next();
+                    let value = exprs_iter.next();
                     let x = self.parse_expression().required()?;
                     self.expr_level = prev_expr_level;
                     let body = self.parse_block().required()?;
@@ -2980,9 +3000,8 @@ impl<'scanner> Parser<'scanner> {
                             tok: assign_op.1,
                             rhs,
                         }))
-                    } else if exprs.len() == 1 {
+                    } else if let Some(expr) = (exprs.len() == 1).then(|| exprs.into_iter().next()).flatten() {
                         // Handle IncDecStmt (e.g., for p.seq++; ; p.seq++ {})
-                        let expr = exprs.into_iter().next().unwrap();
                         if let Some(inc) = self.token(Token::INC)? {
                             Some(ast::Stmt::IncDecStmt(ast::IncDecStmt {
                                 tok: inc.1,
@@ -3129,9 +3148,7 @@ impl<'scanner> Parser<'scanner> {
                 })));
             }
 
-            if exprs.len() == 1 {
-                let expr = exprs.pop().unwrap();
-
+            if let Some(expr) = (exprs.len() == 1).then(|| exprs.pop()).flatten() {
                 // IncDecStmt
                 if let Some(inc) = self.token(Token::INC)? {
                     return Ok(Some(ast::Stmt::IncDecStmt(ast::IncDecStmt {
@@ -4026,11 +4043,11 @@ impl<'scanner> Parser<'scanner> {
             }
             let rbrack = self.token(Token::RBRACK).required()?;
 
-            if indices.len() == 1 {
+            if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
                     x: Box::new(type_),
                     lbrack: lbrack.0,
-                    index: Box::new(indices.pop().unwrap()),
+                    index: Box::new(index),
                     rbrack: rbrack.0,
                 })));
             } else {

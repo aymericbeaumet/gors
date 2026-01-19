@@ -3,6 +3,9 @@
 //! These tests use proptest to generate random inputs and verify properties.
 //! They can run on stable Rust without AFL, making them suitable for CI.
 
+// Tests may use unwrap for assertions
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use proptest::prelude::*;
 
 /// Strategy for generating valid-ish Go source code

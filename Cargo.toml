@@ -3,19 +3,24 @@ resolver = "3"
 members = [
   "gors",
   "gors-cli",
-  "gors-wasm",
+  "www/wasm",
   "gors-fuzz",
 ]
 
 # Workspace-level lints configuration
 [workspace.lints.rust]
-# No workspace-level Rust lints currently set
+# Forbid dead code in the entire workspace
+dead_code = "deny"
 
 [workspace.lints.clippy]
 # Enable all pedantic lints as warnings, with specific exceptions
 # Use priority -1 so individual lints can override the group
 all = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+# Forbid panic-inducing code in production
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
 # Allow lints that are too pedantic for this codebase
 collapsible_if = "allow"           # Let chains are suggested but not always clearer
 option_if_let_else = "allow"       # map_or_else is not always clearer

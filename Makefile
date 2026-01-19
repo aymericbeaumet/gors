@@ -117,10 +117,10 @@ build-release:
 	cargo build --workspace --all-features --release
 
 build-wasm:
-	cd gors-wasm && wasm-pack build --release
+	cd www/wasm && wasm-pack build --release
 
 build-wasm-dev:
-	cd gors-wasm && wasm-pack build --dev
+	cd www/wasm && wasm-pack build --dev
 
 #------------------------------------------------------------------------------
 # Testing
@@ -170,16 +170,16 @@ fuzz-export:
 www: build-wasm www-install www-build
 
 www-install:
-	cd gors-www && npm ci
+	cd www && npm ci
 
 www-lint:
-	cd gors-www && npm run lint
+	cd www && npm run lint
 
 www-build:
-	cd gors-www && npm run build
+	cd www && npm run build
 
 www-dev: build-wasm-dev www-install
-	cd gors-www && npm run dev
+	cd www && npm run dev
 
 #------------------------------------------------------------------------------
 # Packaging
@@ -223,11 +223,11 @@ endif
 
 clean:
 	cargo clean
-	rm -rf gors-www/dist
-	rm -rf gors-wasm/pkg
+	rm -rf www/dist
+	rm -rf www/wasm/pkg
 	rm -f gors-*.tar.gz
 
 clean-all: clean
-	rm -rf gors-www/node_modules
+	rm -rf www/node_modules
 	rm -rf target
 	rm -rf gors-fuzz/out gors-fuzz/sync

@@ -308,6 +308,7 @@ pub fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
