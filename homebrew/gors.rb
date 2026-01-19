@@ -1,6 +1,9 @@
 # Homebrew Formula for gors
 # To be placed in https://github.com/aymericbeaumet/homebrew-tap/Formula/gors.rb
 #
+# This formula is automatically updated by the release workflow when a new
+# version tag (e.g., v1.0.0) is pushed to the main branch.
+#
 # Initial setup instructions:
 # 1. Create the homebrew-tap repository if it doesn't exist
 # 2. Copy this file to Formula/gors.rb in that repository
@@ -11,12 +14,13 @@ class Gors < Formula
   desc "Experimental Go toolchain written in Rust (parser, compiler)"
   homepage "https://github.com/aymericbeaumet/gors"
   license "MIT"
-  head "https://github.com/aymericbeaumet/gors.git", branch: "master"
+  head "https://github.com/aymericbeaumet/gors.git", branch: "main"
 
-  # This will be automatically updated by the release workflow
-  url "https://github.com/aymericbeaumet/gors/archive/refs/tags/v0.1.0.tar.gz"
+  # These values are automatically updated by mislav/bump-homebrew-formula-action
+  # when a new version tag is pushed. Do not edit manually.
+  url "https://github.com/aymericbeaumet/gors/archive/refs/tags/PLACEHOLDER_TAG.tar.gz"
   sha256 "PLACEHOLDER_SHA256"
-  version "0.1.0"
+  version "PLACEHOLDER_VERSION"
 
   depends_on "rust" => :build
 

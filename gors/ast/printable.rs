@@ -44,12 +44,12 @@ fn print_go_string<W: Write>(w: &mut W, s: &str) -> std::io::Result<()> {
 /// - ASCII space (U+0020)
 fn is_go_printable(c: char) -> bool {
     use unicode_general_category::GeneralCategory::*;
-    
+
     // ASCII space is explicitly printable
     if c == ' ' {
         return true;
     }
-    
+
     // Use whitelist approach: only specific categories are printable
     match unicode_general_category::get_general_category(c) {
         // Letters (L)
@@ -59,8 +59,8 @@ fn is_go_printable(c: char) -> bool {
         // Numbers (N)
         DecimalNumber | LetterNumber | OtherNumber => true,
         // Punctuation (P)
-        ConnectorPunctuation | DashPunctuation | OpenPunctuation | ClosePunctuation |
-        InitialPunctuation | FinalPunctuation | OtherPunctuation => true,
+        ConnectorPunctuation | DashPunctuation | OpenPunctuation | ClosePunctuation
+        | InitialPunctuation | FinalPunctuation | OtherPunctuation => true,
         // Symbols (S)
         MathSymbol | CurrencySymbol | ModifierSymbol | OtherSymbol => true,
         // Everything else is not printable (including Unassigned, Control, Private Use, etc.)
@@ -1773,11 +1773,7 @@ impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         // Go doesn't display column when it's 0
         if self.column == 0 {
-            write!(
-                p.w,
-                "{}/{}:{}",
-                self.directory, self.file, self.line,
-            )?;
+            write!(p.w, "{}/{}:{}", self.directory, self.file, self.line,)?;
         } else {
             write!(
                 p.w,

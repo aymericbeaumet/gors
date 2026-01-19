@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92
         with:
           components: rustfmt, clippy
 
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92
 
       - name: Run make build-release
         run: make build-release
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92
 
       - name: Run make test
         run: make test test-lexer test-parser
@@ -51,7 +51,7 @@ jobs:
           submodules: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92
 
       - name: Install Go toolchain
         uses: actions/setup-go@v5
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v4

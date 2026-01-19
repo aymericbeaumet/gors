@@ -1,8 +1,8 @@
 use colored::*;
-use console::{style, Style};
+use console::{Style, style};
 use crossbeam::thread;
 use glob::glob;
-use phf::{phf_set, Set};
+use phf::{Set, phf_set};
 use similar::{ChangeTag, TextDiff};
 use std::fmt;
 use std::process::{Command, Output};
@@ -87,17 +87,17 @@ impl<'a> TestRunner<'a> {
         // Collect all files, separating must-error files from normal files
         let mut go_files: Vec<String> = Vec::new();
         let mut must_error_files: Vec<String> = Vec::new();
-        
+
         for prefix in prefixes {
             for entry in glob(&format!("tests/{}/{}", prefix, self.pattern)).unwrap() {
                 let path = entry.unwrap();
                 let path_str = path.to_str().unwrap();
-                
+
                 // Skip files that don't exist (broken symlinks)
                 if !std::path::Path::new(path_str).exists() {
                     continue;
                 }
-                
+
                 if MUST_ERROR_FILES.contains(path_str) {
                     must_error_files.push(path_str.to_owned());
                 } else {
@@ -105,10 +105,10 @@ impl<'a> TestRunner<'a> {
                 }
             }
         }
-        
+
         // Test normal files (should succeed and match)
         self.test_files(command, go_files);
-        
+
         // Test must-error files only for the parser command (these have valid tokens but invalid syntax)
         // The lexer can scan them successfully, but the parser must reject them.
         if command == "ast" {
@@ -171,16 +171,16 @@ impl<'a> TestRunner<'a> {
             ((rust_elapsed.as_secs_f64() / go_elapsed.as_secs_f64()) - 1.0) * 100.0
         );
     }
-    
+
     /// Test files that must error for both Go and gors parsers.
     /// These are intentionally invalid Go files used to test error handling.
     fn test_must_error_files(&self, command: &str, files: Vec<String>) {
         if files.is_empty() {
             return;
         }
-        
+
         println!("\n| testing {} must-error files", files.len());
-        
+
         thread::scope(|scope| {
             let handles: Vec<_> = files
                 .chunks((files.len() / self.thread_count) + 1)
@@ -188,35 +188,43 @@ impl<'a> TestRunner<'a> {
                     scope.spawn(move |_| {
                         for file in chunk {
                             let args = &[command, file.as_str()];
-                            
+
                             // Run Go parser - should fail
                             let go_result = exec_allow_failure(self.gors_go_bin, args);
-                            let go_failed = go_result.is_err() || !go_result.as_ref().unwrap().0.status.success();
-                            
+                            let go_failed = go_result.is_err()
+                                || !go_result.as_ref().unwrap().0.status.success();
+
                             // Run gors parser - should also fail
                             let rust_result = exec_allow_failure(self.gors_bin, args);
-                            let rust_failed = rust_result.is_err() || !rust_result.as_ref().unwrap().0.status.success();
-                            
+                            let rust_failed = rust_result.is_err()
+                                || !rust_result.as_ref().unwrap().0.status.success();
+
                             if !go_failed {
-                                eprintln!("| ERROR: Go parser should have failed on must-error file: {}", file);
+                                eprintln!(
+                                    "| ERROR: Go parser should have failed on must-error file: {}",
+                                    file
+                                );
                                 std::process::exit(1);
                             }
-                            
+
                             if !rust_failed {
-                                eprintln!("| ERROR: gors parser should have failed on must-error file: {}", file);
+                                eprintln!(
+                                    "| ERROR: gors parser should have failed on must-error file: {}",
+                                    file
+                                );
                                 std::process::exit(1);
                             }
                         }
                     })
                 })
                 .collect();
-            
+
             for handle in handles {
                 handle.join().unwrap();
             }
         })
         .unwrap();
-        
+
         println!("| all must-error files correctly rejected by both parsers");
     }
 }
@@ -246,7 +254,10 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
 }
 
 /// Execute a command and return the result without failing on non-zero exit codes.
-fn exec_allow_failure(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::error::Error>> {
+fn exec_allow_failure(
+    bin: &str,
+    args: &[&str],
+) -> Result<(Output, Duration), Box<dyn std::error::Error>> {
     let before = std::time::Instant::now();
     let output = Command::new(bin).args(args).output()?;
     let after = std::time::Instant::now();

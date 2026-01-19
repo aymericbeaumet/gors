@@ -39,14 +39,14 @@ trait ResultExt<T> {
 
 impl<T> ResultExt<T> for Result<Option<T>> {
     fn required(self) -> Result<T> {
-        self.and_then(|node| node.map_or(Err(ParserError::UnexpectedToken), |node| Ok(node)))
+        self.and_then(|node| node.ok_or(ParserError::UnexpectedToken))
     }
 }
 
 pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a>> {
     // Extract go version from //go:build directive before parsing
     let go_version = extract_go_version(buffer);
-    
+
     let scanner = scanner::Scanner::new(filename, buffer);
     let mut parser = Parser::new(scanner, go_version);
     parser.next()?;
@@ -66,12 +66,12 @@ fn extract_go_version(buffer: &str) -> &str {
     // Look for //go:build directive before package declaration
     for line in buffer.lines() {
         let trimmed = line.trim();
-        
+
         // Stop at package declaration
         if trimmed.starts_with("package ") {
             break;
         }
-        
+
         // Look for //go:build directive
         if let Some(constraint) = trimmed.strip_prefix("//go:build ") {
             // Find go version constraint (e.g., go1.9, go1.18)
@@ -93,7 +93,7 @@ fn extract_go_version(buffer: &str) -> &str {
 ///   constraint can be satisfied without the go version in that case
 fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
     let bytes = constraint.as_bytes();
-    
+
     // First, check if there's an OR at the top level (not inside parentheses)
     // If so, we can't reliably extract a go version since the constraint
     // might be satisfied without it
@@ -111,13 +111,13 @@ fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
         }
         i += 1;
     }
-    
+
     // No top-level OR, proceed to find go version
     i = 0;
     while i < bytes.len() {
         // Track if we saw a '!' before this token (negation)
         let mut is_negated = false;
-        
+
         // Skip non-alphanumeric, but track '!' for negation
         while i < bytes.len() && !bytes[i].is_ascii_alphanumeric() {
             if bytes[i] == b'!' {
@@ -128,14 +128,14 @@ fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
             }
             i += 1;
         }
-        
+
         let start = i;
-        
+
         // Read alphanumeric + dots token
         while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.') {
             i += 1;
         }
-        
+
         if i > start {
             let token = &constraint[start..i];
             // Check if it matches goX.Y or goX.YZ pattern and is not negated
@@ -147,7 +147,7 @@ fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
             }
         }
     }
-    
+
     None
 }
 
@@ -432,7 +432,9 @@ impl<'scanner> Parser<'scanner> {
                         comment: None,
                     }));
                 }
-                Some(mut field_list) if field_list.list.len() == 1 && field_list.list[0].names.is_none() => {
+                Some(mut field_list)
+                    if field_list.list.len() == 1 && field_list.list[0].names.is_none() =>
+                {
                     // This was [expr] - it's an array type, not type params
                     // TypeParameters stored the length expression in the type_ field
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
@@ -622,14 +624,14 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
-        
+
         // If the first identifier is followed by a period, it's a qualified type name
         // (like pkg.Type), not a simple identifier. Return it as a single item
         // and let the caller handle it as a type.
         if self.current_step.1 == Token::PERIOD {
             return Ok(Some((vec![first_ident], false, true)));
         }
-        
+
         let mut out = vec![first_ident];
 
         while self.token(Token::COMMA)?.is_some() {
@@ -727,12 +729,12 @@ impl<'scanner> Parser<'scanner> {
             // Since we can't easily peek 2 tokens, we use the scanner iterator state
             // For now, manually check: consume <- and check if chan follows
             // If chan follows, parse as channel type; otherwise put it back (return as unary)
-            
+
             // Actually, we need a different approach. Let's check if we're in a type context.
             // Better approach: just consume <- and check immediately
-            let arrow_step = self.current_step.clone();
+            let arrow_step = self.current_step;
             self.next()?; // consume <-
-            
+
             if self.current_step.1 == Token::CHAN {
                 // It's <-chan, parse the rest as channel type
                 self.next()?; // consume chan
@@ -744,7 +746,7 @@ impl<'scanner> Parser<'scanner> {
                     value,
                 })));
             }
-            
+
             // Not followed by chan - it's a receive expression
             // The <- was already consumed, so parse the operand
             let x = Box::new(self.UnaryExpr().required()?);
@@ -928,7 +930,7 @@ impl<'scanner> Parser<'scanner> {
                     rbrack: rbrack.0,
                 })));
             }
-            
+
             if let Some(rbrack) = self.token(Token::RBRACK)? {
                 self.expr_level -= 1;
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
@@ -1039,7 +1041,7 @@ impl<'scanner> Parser<'scanner> {
                 let lparen = self.token(Token::LPAREN).required()?;
                 // Inside parentheses, composite literals are always allowed
                 self.expr_level += 1;
-                
+
                 // First, try to parse as expression
                 if let Some(expr) = self.Expression()? {
                     let rparen = self.token(Token::RPAREN).required()?;
@@ -1050,7 +1052,7 @@ impl<'scanner> Parser<'scanner> {
                         rparen: rparen.0,
                     })));
                 }
-                
+
                 // If expression parsing failed, try to parse as type
                 // This handles cases like (func(string))(nil)
                 if let Some(type_) = self.Type()? {
@@ -1063,7 +1065,7 @@ impl<'scanner> Parser<'scanner> {
                         rparen: rparen.0,
                     })));
                 }
-                
+
                 // Neither expression nor type could be parsed
                 self.expr_level -= 1;
                 return Err(ParserError::UnexpectedToken);
@@ -1082,12 +1084,15 @@ impl<'scanner> Parser<'scanner> {
                 self.expr_level = saved_expr_level;
                 if let Some(body) = body {
                     // It's a function literal
-                    Some(ast::Expr::FuncLit(ast::FuncLit { type_: signature, body }))
+                    Some(ast::Expr::FuncLit(ast::FuncLit {
+                        type_: signature,
+                        body,
+                    }))
                 } else {
                     // It's a function type (no body)
                     Some(ast::Expr::FuncType(signature))
                 }
-            },
+            }
             // Interface type for type conversions like interface{}(x)
             INTERFACE => Some(ast::Expr::InterfaceType(self.InterfaceType().required()?)),
             // Handle nested composite literals without explicit type
@@ -1154,7 +1159,7 @@ impl<'scanner> Parser<'scanner> {
                 } else {
                     None
                 }
-            },
+            }
         })
     }
 
@@ -1266,7 +1271,10 @@ impl<'scanner> Parser<'scanner> {
 
         while self.token(Token::COMMA)?.is_some() {
             // Allow trailing comma
-            if matches!(self.current_step.1, Token::COLON | Token::RBRACK | Token::RPAREN) {
+            if matches!(
+                self.current_step.1,
+                Token::COLON | Token::RBRACK | Token::RPAREN
+            ) {
                 break;
             }
             types.push(self.Type().required()?);
@@ -1284,11 +1292,11 @@ impl<'scanner> Parser<'scanner> {
             Some(v) => v,
             None => return Ok(None),
         };
-        
+
         // Check for generic type instantiation [T] or [T1, T2]
         if self.current_step.1 == Token::LBRACK {
             let lbrack = self.token(Token::LBRACK).required()?;
-            
+
             // Check if this is an empty [], which would be invalid for type args
             if self.current_step.1 == Token::RBRACK {
                 // This shouldn't happen in a valid program, but handle gracefully
@@ -1304,7 +1312,7 @@ impl<'scanner> Parser<'scanner> {
                     rbrack: rbrack.0,
                 })));
             }
-            
+
             let mut indices = vec![self.Type().required()?];
             while self.token(Token::COMMA)?.is_some() {
                 if self.current_step.1 == Token::RBRACK {
@@ -1313,7 +1321,7 @@ impl<'scanner> Parser<'scanner> {
                 indices.push(self.Type().required()?);
             }
             let rbrack = self.token(Token::RBRACK).required()?;
-            
+
             if indices.len() == 1 {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
                     x: Box::new(type_name),
@@ -1330,7 +1338,7 @@ impl<'scanner> Parser<'scanner> {
                 })));
             }
         }
-        
+
         Ok(Some(type_name))
     }
 
@@ -1523,7 +1531,7 @@ impl<'scanner> Parser<'scanner> {
                     op: Token::TILDE,
                     x: Box::new(type_),
                 });
-                
+
                 // Check for union types
                 while let Some(or_tok) = self.token(Token::OR)? {
                     let next_term = self.TypeTerm().required()?;
@@ -1534,7 +1542,7 @@ impl<'scanner> Parser<'scanner> {
                         y: Box::new(next_term),
                     });
                 }
-                
+
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
@@ -1550,9 +1558,18 @@ impl<'scanner> Parser<'scanner> {
 
             // Handle embedded type literals in interface (struct, slice, array, map, func, chan, pointer)
             // These are type constraints in Go 1.18+ generics
-            if matches!(self.current_step.1, Token::STRUCT | Token::LBRACK | Token::MAP | Token::FUNC | Token::CHAN | Token::ARROW | Token::MUL) {
+            if matches!(
+                self.current_step.1,
+                Token::STRUCT
+                    | Token::LBRACK
+                    | Token::MAP
+                    | Token::FUNC
+                    | Token::CHAN
+                    | Token::ARROW
+                    | Token::MUL
+            ) {
                 let type_ = self.Type().required()?;
-                
+
                 // Check for union types
                 let mut type_elem = type_;
                 while let Some(or_tok) = self.token(Token::OR)? {
@@ -1564,7 +1581,7 @@ impl<'scanner> Parser<'scanner> {
                         y: Box::new(next_term),
                     });
                 }
-                
+
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
@@ -1577,7 +1594,7 @@ impl<'scanner> Parser<'scanner> {
                 }
                 continue;
             }
-            
+
             if let Some(method_spec) = self.MethodName()? {
                 // Check if this is a qualified interface name (e.g., io.Writer)
                 if self.current_step.1 == Token::PERIOD {
@@ -1610,7 +1627,7 @@ impl<'scanner> Parser<'scanner> {
                         indices.push(self.Type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
-                    
+
                     let type_expr = if indices.len() == 1 {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(ast::Expr::Ident(method_spec)),
@@ -1626,7 +1643,7 @@ impl<'scanner> Parser<'scanner> {
                             rbrack: rbrack.0,
                         })
                     };
-                    
+
                     // Check for union with other types
                     let mut type_elem = type_expr;
                     while let Some(or_tok) = self.token(Token::OR)? {
@@ -1638,7 +1655,7 @@ impl<'scanner> Parser<'scanner> {
                             y: Box::new(next_term),
                         });
                     }
-                    
+
                     fields.push(ast::Field {
                         doc: None,
                         names: None,
@@ -1668,7 +1685,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // Could be a simple type name or part of a union type
                 let mut type_elem = ast::Expr::Ident(method_spec);
-                
+
                 // Check for union types (Type1 | Type2)
                 while let Some(or_tok) = self.token(Token::OR)? {
                     let next_term = self.TypeTerm().required()?;
@@ -1679,7 +1696,7 @@ impl<'scanner> Parser<'scanner> {
                         y: Box::new(next_term),
                     });
                 }
-                
+
                 fields.push(ast::Field {
                     doc: None,
                     names: None,
@@ -1796,7 +1813,7 @@ impl<'scanner> Parser<'scanner> {
                 let name = names.into_iter().next().unwrap();
                 self.token(Token::PERIOD)?;
                 let sel = self.identifier().required()?;
-                
+
                 // Check for generic type arguments [T] or [T1, T2]
                 let type_expr = if self.current_step.1 == Token::LBRACK {
                     let lbrack = self.token(Token::LBRACK).required()?;
@@ -1808,12 +1825,12 @@ impl<'scanner> Parser<'scanner> {
                         indices.push(self.Type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
-                    
+
                     let selector = ast::Expr::SelectorExpr(ast::SelectorExpr {
                         x: Box::new(ast::Expr::Ident(name)),
                         sel,
                     });
-                    
+
                     if indices.len() == 1 {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(selector),
@@ -1835,7 +1852,7 @@ impl<'scanner> Parser<'scanner> {
                         sel,
                     })
                 };
-                
+
                 let tag = self.Tag()?;
                 return Ok(Some(ast::Field {
                     doc: None,
@@ -1848,7 +1865,7 @@ impl<'scanner> Parser<'scanner> {
 
             // Handle the complex case of single identifier followed by [
             // This could be:
-            // - `a [20]int`     -> field 'a' with array type [20]int  
+            // - `a [20]int`     -> field 'a' with array type [20]int
             // - `a [size]int`  -> field 'a' with array type [size]int (size is constant)
             // - `B[int]`        -> embedded generic type B[int]
             // - `a []int`       -> field 'a' with slice type []int
@@ -1858,7 +1875,7 @@ impl<'scanner> Parser<'scanner> {
             if names.len() == 1 && self.current_step.1 == Token::LBRACK {
                 let name = names.into_iter().next().unwrap();
                 let lbrack = self.token(Token::LBRACK).required()?;
-                
+
                 // Handle slice type []T first
                 if self.current_step.1 == Token::RBRACK {
                     let _rbrack = self.token(Token::RBRACK).required()?;
@@ -1877,12 +1894,12 @@ impl<'scanner> Parser<'scanner> {
                         comment: None,
                     }));
                 }
-                
+
                 // Parse what's inside [...] - could be:
                 // - Single expression (array size or single type arg)
                 // - Multiple types separated by commas (multiple type args)
                 let first_inner = self.Expression().required()?;
-                
+
                 // Check for comma (multiple type arguments)
                 if self.current_step.1 == Token::COMMA {
                     // This is a generic type with multiple type args: name[T, V, ...]
@@ -1894,7 +1911,7 @@ impl<'scanner> Parser<'scanner> {
                         indices.push(self.Type().required()?);
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
-                    
+
                     let type_expr = ast::Expr::IndexListExpr(ast::IndexListExpr {
                         x: Box::new(ast::Expr::Ident(name)),
                         lbrack: lbrack.0,
@@ -1910,9 +1927,9 @@ impl<'scanner> Parser<'scanner> {
                         comment: None,
                     }));
                 }
-                
+
                 let rbrack = self.token(Token::RBRACK).required()?;
-                
+
                 // Check what follows ]
                 // If a type follows, this is field 'name' with array type [inner]element
                 // Otherwise, it's an embedded generic field name[inner]
@@ -2051,9 +2068,8 @@ impl<'scanner> Parser<'scanner> {
         };
         let list = self
             .ParameterList()?
-            .map(|list| {
+            .inspect(|_| {
                 let _ = self.token(Token::COMMA);
-                list
             })
             .unwrap_or_default();
         let rparen = self.token(Token::RPAREN).required()?;
@@ -2072,7 +2088,7 @@ impl<'scanner> Parser<'scanner> {
 
         // First, try to parse identifiers
         let idents_result = self.IdentifierList()?;
-        
+
         // If no identifiers, try to parse just a type (unnamed parameter like "*T" or "interface{}")
         if idents_result.is_none() {
             let ellipsis = self.token(Token::ELLIPSIS)?;
@@ -2121,9 +2137,9 @@ impl<'scanner> Parser<'scanner> {
             }
             return Ok(None);
         }
-        
+
         let (idents, has_trailing_comma, last_is_qualified) = idents_result.unwrap();
-        
+
         // If IdentifierList consumed a trailing comma (e.g., "int," in "(int, map[...])"),
         // then all idents are types and we should parse remaining types
         if has_trailing_comma {
@@ -2132,7 +2148,7 @@ impl<'scanner> Parser<'scanner> {
             if last_is_qualified {
                 let mut fields: Vec<ast::Field<'scanner>> = Vec::new();
                 let mut idents_iter = idents.into_iter().peekable();
-                
+
                 // Convert all but the last ident to simple types
                 while let Some(ident) = idents_iter.next() {
                     if idents_iter.peek().is_none() {
@@ -2159,7 +2175,7 @@ impl<'scanner> Parser<'scanner> {
                         });
                     }
                 }
-                
+
                 // Parse remaining types after comma
                 while self.token(Token::COMMA)?.is_some() {
                     // Handle trailing comma
@@ -2177,7 +2193,7 @@ impl<'scanner> Parser<'scanner> {
                 }
                 return Ok(Some(fields));
             }
-            
+
             let mut fields: Vec<ast::Field<'scanner>> = idents
                 .into_iter()
                 .map(|ident| ast::Field {
@@ -2237,17 +2253,21 @@ impl<'scanner> Parser<'scanner> {
             }
             return Ok(Some(fields));
         }
-        
+
         // Check for ellipsis (variadic parameter like "args ...int")
         let ellipsis = self.token(Token::ELLIPSIS)?;
-        
+
         // Special case: qualified type followed by generic args: `sets.Set[string]`
         // IdentifierList returns ["sets"] with last_is_qualified=true when it sees `sets.`
-        if idents.len() == 1 && ellipsis.is_none() && last_is_qualified && self.current_step.1 == Token::PERIOD {
+        if idents.len() == 1
+            && ellipsis.is_none()
+            && last_is_qualified
+            && self.current_step.1 == Token::PERIOD
+        {
             let pkg_ident = idents.into_iter().next().unwrap();
             self.token(Token::PERIOD)?;
             let sel = self.identifier().required()?;
-            
+
             // Check if this qualified type has generic args [T]
             let type_expr = if self.current_step.1 == Token::LBRACK {
                 let lbrack = self.token(Token::LBRACK).required()?;
@@ -2259,12 +2279,12 @@ impl<'scanner> Parser<'scanner> {
                     indices.push(self.Type().required()?);
                 }
                 let rbrack = self.token(Token::RBRACK).required()?;
-                
+
                 let selector = ast::Expr::SelectorExpr(ast::SelectorExpr {
                     x: Box::new(ast::Expr::Ident(pkg_ident)),
                     sel,
                 });
-                
+
                 if indices.len() == 1 {
                     ast::Expr::IndexExpr(ast::IndexExpr {
                         x: Box::new(selector),
@@ -2287,7 +2307,7 @@ impl<'scanner> Parser<'scanner> {
                     sel,
                 })
             };
-            
+
             // This is an unnamed parameter type
             let mut fields = vec![ast::Field {
                 doc: None,
@@ -2296,7 +2316,7 @@ impl<'scanner> Parser<'scanner> {
                 tag: None,
                 comment: None,
             }];
-            
+
             // Parse remaining parameters after comma
             while self.token(Token::COMMA)?.is_some() {
                 if self.current_step.1 == Token::RPAREN {
@@ -2322,9 +2342,9 @@ impl<'scanner> Parser<'scanner> {
             }
             return Ok(Some(fields));
         }
-        
+
         // Special case: single identifier followed by [ could be:
-        // 1. Named parameter with array/slice type: `ret []*Foo` or `n [10]int`  
+        // 1. Named parameter with array/slice type: `ret []*Foo` or `n [10]int`
         // 2. Unnamed parameter with generic type: `BarType[T]`
         //
         // Disambiguation: parse the bracket contents, then check what follows ].
@@ -2333,7 +2353,7 @@ impl<'scanner> Parser<'scanner> {
         if idents.len() == 1 && ellipsis.is_none() && self.current_step.1 == Token::LBRACK {
             let ident = idents.into_iter().next().unwrap();
             let lbrack = self.token(Token::LBRACK).required()?;
-            
+
             // Check for empty [] which is a slice type
             if self.current_step.1 == Token::RBRACK {
                 // This is `ident []Type` - ident is param name, []Type is slice type
@@ -2351,7 +2371,7 @@ impl<'scanner> Parser<'scanner> {
                     tag: None,
                     comment: None,
                 }];
-                
+
                 // Continue parsing more named parameters after comma
                 while self.token(Token::COMMA)?.is_some() {
                     if self.current_step.1 == Token::RPAREN {
@@ -2378,12 +2398,12 @@ impl<'scanner> Parser<'scanner> {
                 }
                 return Ok(Some(fields));
             }
-            
+
             // Parse what's inside the brackets as an expression/type
             // This could be: a type arg (T), array length (10), or array length expr (n*2)
             // Or multiple type args (K, V)
             let first_inner = self.Expression().required()?;
-            
+
             // Check for comma (multiple type arguments like [K, V])
             if self.current_step.1 == Token::COMMA {
                 // This is a generic type with multiple type args: ident[T, V, ...]
@@ -2395,14 +2415,14 @@ impl<'scanner> Parser<'scanner> {
                     indices.push(self.Type().required()?);
                 }
                 let rbrack = self.token(Token::RBRACK).required()?;
-                
+
                 let type_expr = ast::Expr::IndexListExpr(ast::IndexListExpr {
                     x: Box::new(ast::Expr::Ident(ident)),
                     lbrack: lbrack.0,
                     indices,
                     rbrack: rbrack.0,
                 });
-                
+
                 // This generic type is an unnamed parameter type
                 let mut fields = vec![ast::Field {
                     doc: None,
@@ -2411,7 +2431,7 @@ impl<'scanner> Parser<'scanner> {
                     tag: None,
                     comment: None,
                 }];
-                
+
                 // Parse remaining unnamed type parameters after comma
                 while self.token(Token::COMMA)?.is_some() {
                     if self.current_step.1 == Token::RPAREN {
@@ -2437,9 +2457,9 @@ impl<'scanner> Parser<'scanner> {
                 }
                 return Ok(Some(fields));
             }
-            
+
             let rbrack_pos = self.token(Token::RBRACK).required()?.0;
-            
+
             // Check what follows ]
             // If a type follows, this is `ident [expr]Type` (array type with ident as param name)
             // If ) or , follows, this is `ident[expr]` (generic type instantiation)
@@ -2457,7 +2477,7 @@ impl<'scanner> Parser<'scanner> {
                     tag: None,
                     comment: None,
                 }];
-                
+
                 // Continue parsing more named parameters after comma
                 while self.token(Token::COMMA)?.is_some() {
                     if self.current_step.1 == Token::RPAREN {
@@ -2491,7 +2511,7 @@ impl<'scanner> Parser<'scanner> {
                     index: Box::new(first_inner),
                     rbrack: rbrack_pos,
                 });
-                
+
                 // This generic type is an unnamed parameter type
                 let mut fields = vec![ast::Field {
                     doc: None,
@@ -2500,7 +2520,7 @@ impl<'scanner> Parser<'scanner> {
                     tag: None,
                     comment: None,
                 }];
-                
+
                 // Parse remaining unnamed type parameters after comma
                 while self.token(Token::COMMA)?.is_some() {
                     if self.current_step.1 == Token::RPAREN {
@@ -2527,7 +2547,7 @@ impl<'scanner> Parser<'scanner> {
                 return Ok(Some(fields));
             }
         }
-        
+
         let type_ = self.Type()?;
 
         // If no type can be found and no ellipsis, then the idents might be types
@@ -2616,7 +2636,7 @@ impl<'scanner> Parser<'scanner> {
         }
 
         // If a type can be found, then we expect idents + types: (a, b bool, c bool, d bool)
-        
+
         // Handle variadic parameter in first position
         let first_field = if let Some(ellipsis) = ellipsis {
             ast::Field {
@@ -3196,24 +3216,28 @@ impl<'scanner> Parser<'scanner> {
                                 if is_type_switch_guard(&expr_stmt.x) {
                                     self.expr_level = prev_expr_level;
                                     let body = self.parse_switch_body(true)?;
-                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
-                                        switch: switch.0,
-                                        init: init.map(Box::new),
-                                        assign: Box::new(expr_or_stmt),
-                                        body,
-                                    })));
+                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(
+                                        ast::TypeSwitchStmt {
+                                            switch: switch.0,
+                                            init: init.map(Box::new),
+                                            assign: Box::new(expr_or_stmt),
+                                            body,
+                                        },
+                                    )));
                                 }
                             }
                             if let ast::Stmt::AssignStmt(ref assign) = expr_or_stmt {
                                 if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
                                     self.expr_level = prev_expr_level;
                                     let body = self.parse_switch_body(true)?;
-                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
-                                        switch: switch.0,
-                                        init: init.map(Box::new),
-                                        assign: Box::new(expr_or_stmt),
-                                        body,
-                                    })));
+                                    return Ok(Some(ast::Stmt::TypeSwitchStmt(
+                                        ast::TypeSwitchStmt {
+                                            switch: switch.0,
+                                            init: init.map(Box::new),
+                                            assign: Box::new(expr_or_stmt),
+                                            body,
+                                        },
+                                    )));
                                 }
                             }
                             // It's an expression switch
@@ -3503,13 +3527,13 @@ impl<'scanner> Parser<'scanner> {
         };
         let recv = self.Receiver()?;
         let name = self.identifier().required()?;
-        
+
         // Parse optional type parameters (Go 1.18+ generics)
         let type_params = self.TypeParameters()?;
-        
+
         let mut type_ = self.Signature(Some(func.0)).required()?;
         type_.type_params = type_params;
-        
+
         let body = self.FunctionBody()?;
 
         Ok(Some(ast::FuncDecl {
@@ -3520,11 +3544,11 @@ impl<'scanner> Parser<'scanner> {
             body,
         }))
     }
-    
+
     // TypeParameters = "[" TypeParamList [ "," ] "]" .
     // TypeParamList  = TypeParamDecl { "," TypeParamDecl } .
     // TypeParamDecl  = IdentifierList TypeConstraint .
-    // 
+    //
     // NOTE: This function will NOT consume tokens if it determines this is not type parameters.
     // It distinguishes between:
     // - [T any]      -> type parameters
@@ -3532,21 +3556,21 @@ impl<'scanner> Parser<'scanner> {
     // - [5]int       -> array type (not type parameters)
     fn TypeParameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
         log::debug!("Parser::TypeParameters()");
-        
+
         // Must start with [
         if self.current_step.1 != Token::LBRACK {
             return Ok(None);
         }
-        
+
         // TypeParameters require at least one TypeParamDecl which starts with an identifier
         // If [ is immediately followed by ] (slice) or a non-identifier (array expression),
         // this is not type parameters.
         // We need to NOT consume [ if this isn't type parameters.
         // Since we can't peek 2 tokens ahead easily, we'll consume [ and then
         // check if the first thing we see is an identifier.
-        
+
         let lbrack = self.token(Token::LBRACK).required()?;
-        
+
         // If immediately followed by ], this is a slice type, not type params
         if self.current_step.1 == Token::RBRACK {
             // This is [], put tokens back conceptually by returning special result
@@ -3560,7 +3584,7 @@ impl<'scanner> Parser<'scanner> {
                 closing: Some(rbrack.0),
             }));
         }
-        
+
         // If not followed by identifier, this is not type parameters (could be array type [5]int)
         // Return None with a special marker that we've consumed [
         if self.current_step.1 != Token::IDENT {
@@ -3584,13 +3608,13 @@ impl<'scanner> Parser<'scanner> {
                 closing: Some(rbrack.0),
             }));
         }
-        
+
         // We have [ident... - need to distinguish between:
         // - [ident] or [pkg.ident] for array type (ident is length expression)
         // - [ident constraint] for type parameters
         // Parse the identifier first
         let first_ident = self.identifier().required()?;
-        
+
         // If followed by period, it's a qualified identifier like pkg.Const
         // This is an array type [pkg.Const]Type
         if self.current_step.1 == Token::PERIOD {
@@ -3613,7 +3637,7 @@ impl<'scanner> Parser<'scanner> {
                 closing: Some(rbrack.0),
             }));
         }
-        
+
         // If followed by ], this is [ident] for array type
         if self.current_step.1 == Token::RBRACK {
             let rbrack = self.token(Token::RBRACK).required()?;
@@ -3629,20 +3653,38 @@ impl<'scanner> Parser<'scanner> {
                 closing: Some(rbrack.0),
             }));
         }
-        
+
         // If followed by a binary operator (like / + - *), this is an array type [ident op expr]
         // where the length is a binary expression
-        if matches!(self.current_step.1, 
-            Token::ADD | Token::SUB | Token::MUL | Token::QUO | Token::REM |
-            Token::AND | Token::OR | Token::XOR | Token::SHL | Token::SHR | Token::AND_NOT |
-            Token::LOR | Token::LAND | Token::EQL | Token::NEQ | Token::LSS | Token::GTR |
-            Token::LEQ | Token::GEQ
+        if matches!(
+            self.current_step.1,
+            Token::ADD
+                | Token::SUB
+                | Token::MUL
+                | Token::QUO
+                | Token::REM
+                | Token::AND
+                | Token::OR
+                | Token::XOR
+                | Token::SHL
+                | Token::SHR
+                | Token::AND_NOT
+                | Token::LOR
+                | Token::LAND
+                | Token::EQL
+                | Token::NEQ
+                | Token::LSS
+                | Token::GTR
+                | Token::LEQ
+                | Token::GEQ
         ) {
             // We need to continue parsing this as a binary expression
             // The first_ident becomes the left operand
             let left = ast::Expr::Ident(first_ident);
             // Parse the rest of the expression using binary expression parsing
-            let len_expr = self.expression(left, Token::lowest_precedence()).required()?;
+            let len_expr = self
+                .expression(left, Token::lowest_precedence())
+                .required()?;
             let rbrack = self.token(Token::RBRACK).required()?;
             return Ok(Some(ast::FieldList {
                 opening: Some(lbrack.0),
@@ -3656,12 +3698,12 @@ impl<'scanner> Parser<'scanner> {
                 closing: Some(rbrack.0),
             }));
         }
-        
+
         // If followed by comma, could be multiple idents like [T, U any]
         // If followed by type constraint, it's type parameters [T any]
         // For now, assume type parameters and parse accordingly
         let mut names = vec![first_ident];
-        
+
         // Check for more identifiers (like T, U in [T, U any])
         while self.current_step.1 == Token::COMMA {
             self.token(Token::COMMA)?;
@@ -3676,7 +3718,7 @@ impl<'scanner> Parser<'scanner> {
                 break;
             }
         }
-        
+
         // Try to parse the constraint
         let constraint = match self.TypeConstraint()? {
             Some(c) => c,
@@ -3686,13 +3728,13 @@ impl<'scanner> Parser<'scanner> {
                 // partial type parameter. For now, treat single ident without constraint
                 // as type parameter with inferred 'any' constraint (Go 1.18 behavior)
                 ast::Expr::Ident(ast::Ident {
-                    name_pos: names[0].name_pos.clone(),
+                    name_pos: names[0].name_pos,
                     name: "any",
                     obj: None,
                 })
             }
         };
-        
+
         let mut fields = vec![ast::Field {
             doc: None,
             names: Some(names),
@@ -3700,7 +3742,7 @@ impl<'scanner> Parser<'scanner> {
             tag: None,
             comment: None,
         }];
-        
+
         // Parse additional type parameter declarations
         while self.token(Token::COMMA)?.is_some() {
             // Allow trailing comma
@@ -3708,7 +3750,7 @@ impl<'scanner> Parser<'scanner> {
                 break;
             }
             fields.push(self.TypeParamDecl().required()?);
-            
+
             // Parse additional type parameter declarations
             while self.token(Token::COMMA)?.is_some() {
                 // Allow trailing comma
@@ -3718,29 +3760,29 @@ impl<'scanner> Parser<'scanner> {
                 fields.push(self.TypeParamDecl().required()?);
             }
         }
-        
+
         let rbrack = self.token(Token::RBRACK).required()?;
-        
+
         Ok(Some(ast::FieldList {
             opening: Some(lbrack.0),
             list: fields,
             closing: Some(rbrack.0),
         }))
     }
-    
+
     // TypeParamDecl = IdentifierList TypeConstraint .
     // TypeConstraint = TypeElem .
     fn TypeParamDecl(&mut self) -> Result<Option<ast::Field<'scanner>>> {
         log::debug!("Parser::TypeParamDecl()");
-        
+
         let (names, _, _) = match self.IdentifierList()? {
             Some(v) => v,
             None => return Ok(None),
         };
-        
+
         // Parse the constraint (which can be a union type)
         let constraint = self.TypeConstraint().required()?;
-        
+
         Ok(Some(ast::Field {
             doc: None,
             names: Some(names),
@@ -3749,18 +3791,18 @@ impl<'scanner> Parser<'scanner> {
             comment: None,
         }))
     }
-    
+
     // TypeConstraint = TypeElem .
     // TypeElem = TypeTerm { "|" TypeTerm } .
     fn TypeConstraint(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeConstraint()");
-        
+
         // Parse the first type term
         let first = match self.TypeTerm()? {
             Some(v) => v,
             None => return Ok(None),
         };
-        
+
         // Check for union types (Type1 | Type2 | ...)
         let mut type_elem = first;
         while let Some(or_tok) = self.token(Token::OR)? {
@@ -3772,15 +3814,15 @@ impl<'scanner> Parser<'scanner> {
                 y: Box::new(next_term),
             });
         }
-        
+
         Ok(Some(type_elem))
     }
-    
+
     // TypeTerm = Type | UnderlyingType .
     // UnderlyingType = "~" Type .
     fn TypeTerm(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeTerm()");
-        
+
         // Check for underlying type constraint (~Type)
         if let Some(tilde) = self.token(Token::TILDE)? {
             let type_ = self.TypeWithInstantiation().required()?;
@@ -3790,21 +3832,21 @@ impl<'scanner> Parser<'scanner> {
                 x: Box::new(type_),
             })));
         }
-        
+
         self.TypeWithInstantiation()
     }
-    
+
     // TypeWithInstantiation = Type [ TypeArgs ] .
     // TypeArgs = "[" TypeList [ "," ] "]" .
     // This handles generic type instantiation like Comparable[T] or _SliceOf[E]
     fn TypeWithInstantiation(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::TypeWithInstantiation()");
-        
+
         let type_ = match self.Type()? {
             Some(v) => v,
             None => return Ok(None),
         };
-        
+
         // Check for type instantiation [T] or [T1, T2]
         if self.current_step.1 == Token::LBRACK {
             let lbrack = self.token(Token::LBRACK).required()?;
@@ -3816,7 +3858,7 @@ impl<'scanner> Parser<'scanner> {
                 indices.push(self.Type().required()?);
             }
             let rbrack = self.token(Token::RBRACK).required()?;
-            
+
             if indices.len() == 1 {
                 return Ok(Some(ast::Expr::IndexExpr(ast::IndexExpr {
                     x: Box::new(type_),
@@ -3833,7 +3875,7 @@ impl<'scanner> Parser<'scanner> {
                 })));
             }
         }
-        
+
         Ok(Some(type_))
     }
 

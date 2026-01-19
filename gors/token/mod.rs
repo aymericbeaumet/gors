@@ -2,7 +2,7 @@
 
 #![allow(non_camel_case_types)] // For consistency with the Go tokens
 
-use serde::{ser::SerializeMap, Serialize, Serializer};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Default)]

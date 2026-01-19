@@ -417,10 +417,10 @@ pub struct IndexExpr<'a> {
 // Represents an expression followed by multiple indices/type arguments: X[I1, I2, ...]
 #[derive(Debug)]
 pub struct IndexListExpr<'a> {
-    pub x: Box<Expr<'a>>,      // expression
-    pub lbrack: Position<'a>,  // position of "["
+    pub x: Box<Expr<'a>>,       // expression
+    pub lbrack: Position<'a>,   // position of "["
     pub indices: Vec<Expr<'a>>, // index expressions (type arguments)
-    pub rbrack: Position<'a>,  // position of "]"
+    pub rbrack: Position<'a>,   // position of "]"
 }
 
 // https://pkg.go.dev/go/ast#MapType

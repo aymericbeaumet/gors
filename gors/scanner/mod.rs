@@ -1,9 +1,9 @@
 // https://golang.org/ref/spec#Lexical_elements
 
 use crate::token::{Position, Token};
-use phf::{phf_map, Map};
+use phf::{Map, phf_map};
 use std::fmt;
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 pub type Step<'a> = (Position<'a>, Token, &'a str);
 
@@ -956,7 +956,7 @@ const fn is_octal_digit(c: char) -> bool {
 }
 
 const fn is_hex_digit(c: char) -> bool {
-    matches!(c, '0'..='9' | 'A'..='F' | 'a'..='f')
+    c.is_ascii_hexdigit()
 }
 
 // https://golang.org/ref/spec#Characters

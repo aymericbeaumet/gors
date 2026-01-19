@@ -1,7 +1,7 @@
 [package]
 name = "gors"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "Experimental go toolchain written in rust (parser, compiler) "
 homepage = "https://aymericbeaumet.github.io/gors/"
