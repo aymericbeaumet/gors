@@ -6,6 +6,7 @@
 .PHONY: fmt fmt-check lint clippy doc
 .PHONY: build build-release build-wasm
 .PHONY: test test-unit test-integration test-lexer test-parser
+.PHONY: fuzz fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-build fuzz-export
 .PHONY: www www-install www-lint www-build www-dev
 .PHONY: clean clean-all
 .PHONY: package
@@ -46,6 +47,14 @@ help:
 	@echo "  test-integration Run integration tests on all submodules (requires: make setup)"
 	@echo "  test-lexer       Run lexer integration tests"
 	@echo "  test-parser      Run parser integration tests"
+	@echo ""
+	@echo "Fuzzing:"
+	@echo "  fuzz-test        Run property-based fuzz tests (stable Rust, CI-friendly)"
+	@echo "  fuzz-scanner     Fuzz the Go scanner with AFL (requires: cargo install afl)"
+	@echo "  fuzz-parser      Fuzz the Go parser with AFL"
+	@echo "  fuzz-roundtrip   Fuzz parse->print->reparse with AFL"
+	@echo "  fuzz-build       Build all AFL fuzz targets"
+	@echo "  fuzz-export      Export crash inputs as test files"
 	@echo ""
 	@echo "Website:"
 	@echo "  www              Build website (install deps + build wasm + build www)"
@@ -123,22 +132,50 @@ test-parser:
 	cargo test --release --workspace --all-features --package=gors-cli parser -- --nocapture --test-threads=1
 
 #------------------------------------------------------------------------------
+# Fuzzing
+#------------------------------------------------------------------------------
+
+# Run property-based tests (stable Rust, suitable for CI)
+fuzz-test:
+	cargo test --package gors-fuzz
+
+# Build fuzz targets with AFL instrumentation
+fuzz-build:
+	cd gors-fuzz && cargo afl build --release --features afl-fuzz
+
+# Fuzz the scanner/lexer
+fuzz-scanner:
+	./gors-fuzz/scripts/fuzz.sh scanner
+
+# Fuzz the parser
+fuzz-parser:
+	./gors-fuzz/scripts/fuzz.sh parser
+
+# Fuzz the roundtrip (parse->print->reparse)
+fuzz-roundtrip:
+	./gors-fuzz/scripts/fuzz.sh roundtrip
+
+# Export crash inputs as test files to gors-cli/tests/files/
+fuzz-export:
+	./gors-fuzz/scripts/export-crashes.sh
+
+#------------------------------------------------------------------------------
 # Website
 #------------------------------------------------------------------------------
 
 www: build-wasm www-install www-build
 
 www-install:
-	cd www && npm ci
+	cd gors-www && npm ci
 
 www-lint:
-	cd www && npm run lint
+	cd gors-www && npm run lint
 
 www-build:
-	cd www && npm run build
+	cd gors-www && npm run build
 
 www-dev: build-wasm www-install
-	cd www && npm run start
+	cd gors-www && npm run start
 
 #------------------------------------------------------------------------------
 # Packaging
@@ -182,10 +219,11 @@ endif
 
 clean:
 	cargo clean
-	rm -rf www/dist
+	rm -rf gors-www/dist
 	rm -rf gors-wasm/pkg
 	rm -f gors-*.tar.gz
 
 clean-all: clean
-	rm -rf www/node_modules
+	rm -rf gors-www/node_modules
 	rm -rf target
+	rm -rf gors-fuzz/out gors-fuzz/sync

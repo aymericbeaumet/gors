@@ -4,6 +4,7 @@ members = [
   "gors",
   "gors-cli",
   "gors-wasm",
+  "gors-fuzz",
 ]
 
 [profile.dev]

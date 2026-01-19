@@ -1,0 +1,9 @@
+# AFL output directories
+/out/
+/sync/
+
+# Crash artifacts
+/crashes/
+
+# Build artifacts
+/target/

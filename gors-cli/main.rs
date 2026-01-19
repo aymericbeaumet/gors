@@ -1,6 +1,7 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use clap::Parser;
+use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
 use std::process::Command;
 
@@ -14,6 +15,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SubCommand::Run(cmd) => run(cmd),
         SubCommand::Tokens(cmd) => tokens(cmd),
     }
+}
+
+/// Print a formatted error with source context
+fn print_error(diagnostic: &Diagnostic) {
+    // Check if stdout supports colors
+    let use_colors = atty::is(atty::Stream::Stderr);
+    eprint!("{}", diagnostic.format_terminal(use_colors));
 }
 
 #[derive(Parser)]
@@ -78,7 +86,14 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
     let buffer = std::fs::read_to_string(&cmd.file)?;
-    let ast = gors::parser::parse_file(&cmd.file, &buffer)?;
+    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
+        Ok(ast) => ast,
+        Err(err) => {
+            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
     gors::ast::fprint(&mut w, ast)?;
     w.flush()?;
 
@@ -87,8 +102,24 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let buffer = std::fs::read_to_string(&cmd.file)?;
-    let ast = gors::parser::parse_file(&cmd.file, &buffer)?;
-    let compiled = gors::compiler::compile(ast)?;
+
+    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
+        Ok(ast) => ast,
+        Err(err) => {
+            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
+
+    let compiled = match gors::compiler::compile(ast) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            let diagnostic = Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
 
     // shortcut when rust code is to be emitted
     if matches!(cmd.emit.as_deref(), Some("rust")) {
@@ -127,8 +158,25 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let mut w = std::fs::File::create(&out_rust)?;
 
     let buffer = std::fs::read_to_string(&cmd.file)?;
-    let ast = gors::parser::parse_file(&cmd.file, &buffer)?;
-    let compiled = gors::compiler::compile(ast)?;
+
+    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
+        Ok(ast) => ast,
+        Err(err) => {
+            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
+
+    let compiled = match gors::compiler::compile(ast) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            let diagnostic = Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
+
     gors::codegen::fprint(&mut w, compiled)?;
     w.sync_all()?;
 
@@ -158,8 +206,17 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
 
     let buffer = std::fs::read_to_string(&cmd.file)?;
     for step in gors::scanner::Scanner::new(&cmd.file, &buffer) {
-        serde_json::to_writer(&mut w, &step?)?;
-        w.write_all(b"\n")?;
+        match step {
+            Ok(s) => {
+                serde_json::to_writer(&mut w, &s)?;
+                w.write_all(b"\n")?;
+            }
+            Err(err) => {
+                let diagnostic = Diagnostic::from_scanner_error(&err, &cmd.file, &buffer);
+                print_error(&diagnostic);
+                std::process::exit(1);
+            }
+        }
     }
     w.flush()?;
 

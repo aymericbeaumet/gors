@@ -7,8 +7,16 @@ use unicode_general_category::{GeneralCategory, get_general_category};
 
 pub type Step<'a> = (Position<'a>, Token, &'a str);
 
-#[derive(Debug)]
-pub enum ScannerError {
+#[derive(Debug, Clone)]
+pub struct ScannerError {
+    pub kind: ScannerErrorKind,
+    pub line: usize,
+    pub column: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScannerErrorKind {
     HexadecimalNotFound,
     OctalNotFound,
     UnterminatedComment,
@@ -18,11 +26,25 @@ pub enum ScannerError {
     InvalidDirective,
 }
 
+impl ScannerError {
+    pub fn message(&self) -> &'static str {
+        match self.kind {
+            ScannerErrorKind::HexadecimalNotFound => "hexadecimal digit not found",
+            ScannerErrorKind::OctalNotFound => "octal digit not found",
+            ScannerErrorKind::UnterminatedComment => "comment not terminated",
+            ScannerErrorKind::UnterminatedEscapedChar => "invalid escape sequence",
+            ScannerErrorKind::UnterminatedRune => "rune literal not terminated",
+            ScannerErrorKind::UnterminatedString => "string literal not terminated",
+            ScannerErrorKind::InvalidDirective => "invalid compiler directive",
+        }
+    }
+}
+
 impl std::error::Error for ScannerError {}
 
 impl fmt::Display for ScannerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "scanner error: {:?}", self)
+        write!(f, "{}:{}: {}", self.line, self.column, self.message())
     }
 }
 
@@ -560,7 +582,7 @@ impl<'a> Scanner<'a> {
         match self.current_char {
             Some('\\') => self.require_escaped_char::<'\''>()?,
             Some(_) => self.next(),
-            _ => return Err(ScannerError::UnterminatedRune),
+            _ => return Err(self.error(ScannerErrorKind::UnterminatedRune)),
         }
 
         if matches!(self.current_char, Some('\'')) {
@@ -568,7 +590,7 @@ impl<'a> Scanner<'a> {
             return Ok((self.position(), Token::CHAR, self.literal()));
         }
 
-        Err(ScannerError::UnterminatedRune)
+        Err(self.error(ScannerErrorKind::UnterminatedRune))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -587,7 +609,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        Err(ScannerError::UnterminatedString)
+        Err(self.error(ScannerErrorKind::UnterminatedString))
     }
 
     // https://golang.org/ref/spec#String_literals
@@ -605,7 +627,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        Err(ScannerError::UnterminatedString)
+        Err(self.error(ScannerErrorKind::UnterminatedString))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -650,7 +672,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        Err(ScannerError::UnterminatedComment)
+        Err(self.error(ScannerErrorKind::UnterminatedComment))
     }
 
     // https://golang.org/ref/spec#Comments
@@ -689,7 +711,9 @@ impl<'a> Scanner<'a> {
 
     fn parse_line_directive(&mut self, line_directive: &'a str) -> Result<Option<LineInfo<'a>>> {
         if let Some((file, line)) = line_directive.rsplit_once(':') {
-            let line = line.parse().map_err(|_| ScannerError::InvalidDirective)?;
+            let line = line
+                .parse()
+                .map_err(|_| self.error(ScannerErrorKind::InvalidDirective))?;
 
             if let Some((file, l)) = file.rsplit_once(':') {
                 if let Ok(l) = l.parse() {
@@ -828,12 +852,21 @@ impl<'a> Scanner<'a> {
         &self.buffer[self.start_offset..self.offset]
     }
 
+    fn error(&self, kind: ScannerErrorKind) -> ScannerError {
+        ScannerError {
+            kind,
+            line: self.line,
+            column: self.column,
+            offset: self.offset,
+        }
+    }
+
     fn require_escaped_char<const DELIM: char>(&mut self) -> Result<()> {
         self.next();
 
         let c = self
             .current_char
-            .ok_or(ScannerError::UnterminatedEscapedChar)?;
+            .ok_or_else(|| self.error(ScannerErrorKind::UnterminatedEscapedChar))?;
 
         // TODO: move this to the match when const generics can be referenced in patterns
         if c == DELIM {
@@ -856,7 +889,7 @@ impl<'a> Scanner<'a> {
                 self.require_hex_digits::<8>()?;
             }
             '0'..='7' => self.require_octal_digits::<3>()?,
-            _ => return Err(ScannerError::UnterminatedEscapedChar),
+            _ => return Err(self.error(ScannerErrorKind::UnterminatedEscapedChar)),
         }
 
         Ok(())
@@ -864,10 +897,12 @@ impl<'a> Scanner<'a> {
 
     fn require_octal_digits<const COUNT: usize>(&mut self) -> Result<()> {
         for _ in 0..COUNT {
-            let c = self.current_char.ok_or(ScannerError::OctalNotFound)?;
+            let c = self
+                .current_char
+                .ok_or_else(|| self.error(ScannerErrorKind::OctalNotFound))?;
 
             if !is_octal_digit(c) {
-                return Err(ScannerError::OctalNotFound);
+                return Err(self.error(ScannerErrorKind::OctalNotFound));
             }
 
             self.next();
@@ -878,10 +913,12 @@ impl<'a> Scanner<'a> {
 
     fn require_hex_digits<const COUNT: usize>(&mut self) -> Result<()> {
         for _ in 0..COUNT {
-            let c = self.current_char.ok_or(ScannerError::HexadecimalNotFound)?;
+            let c = self
+                .current_char
+                .ok_or_else(|| self.error(ScannerErrorKind::HexadecimalNotFound))?;
 
             if !is_hex_digit(c) {
-                return Err(ScannerError::HexadecimalNotFound);
+                return Err(self.error(ScannerErrorKind::HexadecimalNotFound));
             }
 
             self.next();

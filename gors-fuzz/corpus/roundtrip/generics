@@ -1,0 +1,16 @@
+package main
+
+func Min[T ~int | ~float64](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type Stack[T any] struct {
+	items []T
+}
+
+func (s *Stack[T]) Push(item T) {
+	s.items = append(s.items, item)
+}

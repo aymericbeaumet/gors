@@ -38,6 +38,47 @@
       .monaco-editor .lines-content {
         padding-left: 5px;
       }
+
+      #error {
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
+        font-size: 13px;
+        margin-top: 12px;
+        padding: 12px;
+        background: #1e1e1e;
+        color: #d4d4d4;
+        border-radius: 4px;
+        overflow-x: auto;
+        white-space: pre;
+      }
+
+      #error:empty {
+        display: none;
+      }
+
+      #error .error-location {
+        color: #9cdcfe;
+        font-weight: bold;
+      }
+
+      #error .error-kind {
+        color: #f14c4c;
+      }
+
+      #error .error-message {
+        color: #d4d4d4;
+      }
+
+      #error .error-line-number {
+        color: #6a9955;
+      }
+
+      #error .error-source {
+        color: #d4d4d4;
+      }
+
+      #error .error-caret {
+        color: #4ec9b0;
+      }
     </style>
   </head>
   <body>

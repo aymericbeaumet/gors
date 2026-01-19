@@ -9,6 +9,7 @@ name = "gors"
 path = "main.rs"
 
 [dependencies]
+atty = "0.2"
 clap = { version = "4.0", features = ["derive"] }
 gors = { path = "../gors" }
 pretty_env_logger = "0.5"

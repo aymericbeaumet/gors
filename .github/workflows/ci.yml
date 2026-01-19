@@ -95,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: www-dist
-          path: ./www/dist
+          path: ./gors-www/dist
 
   # Deploy website on every push to master (nightly)
   deploy-www:
@@ -109,11 +109,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: www-dist
-          path: ./www/dist
+          path: ./gors-www/dist
 
       - name: Deploy www to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           branch: gh-pages
-          folder: ./www/dist
+          folder: ./gors-www/dist
           clean: true

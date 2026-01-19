@@ -1,0 +1,56 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	_ "net/http"
+	. "os"
+)
+
+type Interface interface {
+	Method(ctx context.Context) error
+	comparable
+}
+
+type Struct struct {
+	Field1 int    `json:"field1"`
+	Field2 string `json:"field2,omitempty"`
+	*Embedded
+}
+
+func (s *Struct) Method(ctx context.Context) error {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println(r)
+		}
+	}()
+	
+	ch := make(chan int, 10)
+	go func() {
+		for i := 0; i < 10; i++ {
+			ch <- i
+		}
+		close(ch)
+	}()
+	
+	select {
+	case v := <-ch:
+		fmt.Println(v)
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	
+	switch x := interface{}(s).(type) {
+	case *Struct:
+		_ = x
+	case nil:
+	default:
+	}
+	
+	return nil
+}
+
+func main() {
+	Exit(0)
+}

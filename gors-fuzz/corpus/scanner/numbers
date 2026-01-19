@@ -1,0 +1,14 @@
+package main
+
+const (
+	a = 42
+	b = 0x1F
+	c = 0o77
+	d = 0b1010
+	e = 3.14
+	f = 1e10
+	g = 1.5e-3
+	h = 0x1.fp+10
+	i = 1_000_000
+	j = 0x_bad_face
+)
