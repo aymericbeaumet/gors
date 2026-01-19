@@ -3654,13 +3654,97 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        // If followed by a binary operator (like / + - *), this is an array type [ident op expr]
+        // Special handling for * which could be a pointer type constraint or multiplication
+        // [T *S] is a type parameter T with pointer constraint *S
+        // [n * 5] is an array length expression (multiplication)
+        if self.current_step.1 == Token::MUL {
+            // Peek ahead to determine interpretation
+            let star_pos = self.current_step.0;
+            self.next()?; // consume *
+
+            // If followed by a number literal, it's definitely multiplication
+            if matches!(self.current_step.1, Token::INT | Token::FLOAT) {
+                // Parse as multiplication expression
+                let right = self.UnaryExpr().required()?;
+                let binary_expr = ast::Expr::BinaryExpr(ast::BinaryExpr {
+                    x: Box::new(ast::Expr::Ident(first_ident)),
+                    op_pos: star_pos,
+                    op: Token::MUL,
+                    y: Box::new(right),
+                });
+                // Continue parsing any remaining binary operators
+                let len_expr = self
+                    .expression(binary_expr, Token::lowest_precedence())
+                    .required()?;
+                let rbrack = self.token(Token::RBRACK).required()?;
+                return Ok(Some(ast::FieldList {
+                    opening: Some(lbrack.0),
+                    list: vec![ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(len_expr),
+                        tag: None,
+                        comment: None,
+                    }],
+                    closing: Some(rbrack.0),
+                }));
+            }
+
+            // Otherwise, this is a pointer type constraint
+            // Parse the type that * points to
+            let pointed_type = self.Type().required()?;
+            let pointer_constraint = ast::Expr::StarExpr(ast::StarExpr {
+                star: star_pos,
+                x: Box::new(pointed_type),
+            });
+
+            // Handle union types: [T *S | *R]
+            let mut constraint = pointer_constraint;
+            while let Some(or_tok) = self.token(Token::OR)? {
+                let next_term = self.TypeTerm().required()?;
+                constraint = ast::Expr::BinaryExpr(ast::BinaryExpr {
+                    x: Box::new(constraint),
+                    op_pos: or_tok.0,
+                    op: Token::OR,
+                    y: Box::new(next_term),
+                });
+            }
+
+            // Create the type parameter field
+            let field = ast::Field {
+                doc: None,
+                names: Some(vec![first_ident]),
+                type_: Some(constraint),
+                tag: None,
+                comment: None,
+            };
+
+            let mut fields = vec![field];
+
+            // Parse additional type parameter declarations
+            while self.token(Token::COMMA)?.is_some() {
+                if self.current_step.1 == Token::RBRACK {
+                    break;
+                }
+                fields.push(self.TypeParamDecl().required()?);
+            }
+
+            let rbrack = self.token(Token::RBRACK).required()?;
+
+            return Ok(Some(ast::FieldList {
+                opening: Some(lbrack.0),
+                list: fields,
+                closing: Some(rbrack.0),
+            }));
+        }
+
+        // If followed by a binary operator (like / + -), this is an array type [ident op expr]
         // where the length is a binary expression
+        // Note: MUL (*) is handled specially above to distinguish pointer types from multiplication
         if matches!(
             self.current_step.1,
             Token::ADD
                 | Token::SUB
-                | Token::MUL
                 | Token::QUO
                 | Token::REM
                 | Token::AND
