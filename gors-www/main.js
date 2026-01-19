@@ -111,6 +111,7 @@ function onDOMContentLoaded() {
   const inputEditor = monaco.editor.create(input, {
     ...opts,
     language: 'go',
+    glyphMargin: true, // Enable gutter for error symbols
   });
   const inputModel = inputEditor.getModel();
 

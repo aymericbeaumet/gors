@@ -4,7 +4,7 @@
 .PHONY: all help
 .PHONY: setup install-tools
 .PHONY: fmt fmt-check lint clippy doc
-.PHONY: build build-release build-wasm
+.PHONY: build build-release build-wasm build-wasm-dev
 .PHONY: test test-unit test-integration test-lexer test-parser
 .PHONY: fuzz fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-build fuzz-export
 .PHONY: www www-install www-lint www-build www-dev
@@ -40,7 +40,8 @@ help:
 	@echo "Building:"
 	@echo "  build            Build all packages (debug)"
 	@echo "  build-release    Build all packages (release)"
-	@echo "  build-wasm       Build gors-wasm package"
+	@echo "  build-wasm       Build gors-wasm package (release)"
+	@echo "  build-wasm-dev   Build gors-wasm package (dev)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test             Run unit tests"
@@ -118,6 +119,9 @@ build-release:
 build-wasm:
 	cd gors-wasm && wasm-pack build --release
 
+build-wasm-dev:
+	cd gors-wasm && wasm-pack build --dev
+
 #------------------------------------------------------------------------------
 # Testing
 #------------------------------------------------------------------------------
@@ -174,8 +178,8 @@ www-lint:
 www-build:
 	cd gors-www && npm run build
 
-www-dev: build-wasm www-install
-	cd gors-www && npm run start
+www-dev: build-wasm-dev www-install
+	cd gors-www && npm run dev
 
 #------------------------------------------------------------------------------
 # Packaging

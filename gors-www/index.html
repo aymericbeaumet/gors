@@ -5,16 +5,22 @@
     <title>gors: experimental go compiler</title>
 
     <style>
+      .workspace {
+        width: 1012px;
+      }
+
       #input {
-        border-width: 3px 1px 1px 1px;
+        border-width: 3px 1px 3px 1px;
         border-style: solid;
         border-color: #00ADD8;
+        overflow: hidden;
       }
 
       #output {
-        border-width: 3px 1px 1px 1px;
+        border-width: 3px 1px 3px 1px;
         border-style: solid;
         border-color: #FFC832;
+        overflow: hidden;
       }
 
       #input:empty, #output:empty {
@@ -39,14 +45,46 @@
         padding-left: 5px;
       }
 
+      #error-container {
+        margin-top: 12px;
+        border-radius: 4px;
+        overflow: hidden;
+        border: 1px solid #333;
+      }
+
+      #error-container:has(#error:empty) {
+        display: none;
+      }
+
+      #error-header {
+        background: #2d2d2d;
+        color: #f14c4c;
+        padding: 6px 12px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border-bottom: 1px solid #333;
+      }
+
+      #error-header::before {
+        content: '';
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background: #f14c4c;
+        border-radius: 50%;
+      }
+
       #error {
         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
         font-size: 13px;
-        margin-top: 12px;
+        margin: 0;
         padding: 12px;
         background: #1e1e1e;
         color: #d4d4d4;
-        border-radius: 4px;
         overflow-x: auto;
         white-space: pre;
       }
@@ -85,12 +123,17 @@
     <main>
       <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p>
 
-      <div class="editors">
-        <div id="input"></div>
-        <div id="output"></div>
-      </div>
+      <div class="workspace">
+        <div class="editors">
+          <div id="input"></div>
+          <div id="output"></div>
+        </div>
 
-      <pre id="error"></pre>
+        <div id="error-container">
+          <div id="error-header">Gors Error</div>
+          <pre id="error"></pre>
+        </div>
+      </div>
     </main>
   </body>
 </html>
