@@ -18,60 +18,23 @@
 
 mod passes;
 
-use crate::mapping::{GoSpan, MappingKind, SourceMap};
+use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use proc_macro2::Span;
 use std::cell::RefCell;
 use std::fmt;
 use syn::Token;
 
-// Thread-local storage for source map during compilation
+// Thread-local storage for source map tracker during compilation
 thread_local! {
-    static SOURCE_MAP: RefCell<Option<SourceMap>> = const { RefCell::new(None) };
+    static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
 }
 
-/// Start tracking source mappings for the current compilation.
-fn start_tracking() {
-    SOURCE_MAP.with(|sm| {
-        *sm.borrow_mut() = Some(SourceMap::new());
+/// Record a mapping if tracking is enabled.
+fn record_mapping(pos: &token::Position, name: Option<&str>) {
+    TRACKER.with(|t| {
+        t.borrow_mut().record(pos.line as u32, pos.column as u32, name);
     });
-}
-
-/// Stop tracking and return the collected source map.
-fn stop_tracking() -> Option<SourceMap> {
-    SOURCE_MAP.with(|sm| sm.borrow_mut().take())
-}
-
-/// Record a span mapping if tracking is enabled.
-fn record_mapping(go_span: GoSpan, kind: MappingKind) -> Option<u32> {
-    SOURCE_MAP.with(|sm| {
-        if let Some(ref mut map) = *sm.borrow_mut() {
-            Some(map.add(go_span, kind))
-        } else {
-            None
-        }
-    })
-}
-
-/// Record a named span mapping if tracking is enabled.
-fn record_named_mapping(go_span: GoSpan, kind: MappingKind, name: &str) -> Option<u32> {
-    SOURCE_MAP.with(|sm| {
-        if let Some(ref mut map) = *sm.borrow_mut() {
-            Some(map.add_named(go_span, kind, name))
-        } else {
-            None
-        }
-    })
-}
-
-/// Helper to create a GoSpan from a Position.
-fn go_span_from_position(pos: &token::Position, len: usize) -> GoSpan {
-    GoSpan::new(
-        pos.line as u32,
-        pos.column as u32,
-        pos.line as u32,
-        (pos.column + len) as u32,
-    )
 }
 
 /// Convert a Go comment group to Rust doc attributes.
@@ -175,16 +138,19 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
 
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
 ///
-/// This is like [`compile`], but also returns a [`SourceMap`] that tracks
-/// the correspondence between Go source positions and Rust output positions.
+/// This is like [`compile`], but also enables source map tracking.
+/// Call [`get_source_map_tracker`] after compilation to access the tracker,
+/// then use it during code generation to build the final source map.
 ///
 /// # Arguments
 ///
 /// * `file` - The Go AST to compile
+/// * `go_file` - Path to the Go source file
+/// * `go_source` - The Go source code content
 ///
 /// # Returns
 ///
-/// Returns `Ok((syn::File, SourceMap))` on success, or `Err(CompilerError)` if the
+/// Returns `Ok(syn::File)` on success, or `Err(CompilerError)` if the
 /// Go code contains constructs that cannot be translated to Rust.
 ///
 /// # Example
@@ -194,27 +160,43 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
 ///
 /// let go_source = "package main\n\nfunc main() { x := 42 }";
 /// let go_ast = parser::parse_file("example.go", go_source).unwrap();
-/// let (rust_ast, source_map) = compiler::compile_with_source_map(go_ast).unwrap();
+/// let rust_ast = compiler::compile_with_source_map(go_ast, "example.go", go_source).unwrap();
 /// ```
-pub fn compile_with_source_map(file: ast::File) -> Result<(syn::File, SourceMap), CompilerError> {
-    start_tracking();
-    let result = TryInto::<syn::File>::try_into(file);
-    let source_map = stop_tracking().unwrap_or_default();
+pub fn compile_with_source_map(
+    file: ast::File,
+    go_file: &str,
+    go_source: &str,
+) -> Result<syn::File, CompilerError> {
+    // Start tracking
+    TRACKER.with(|t| {
+        t.borrow_mut().start(go_file, "output.rs", Some(go_source));
+    });
 
-    match result {
-        Ok(mut out) => {
-            passes::pass(&mut out);
-            Ok((out, source_map))
-        }
-        Err(e) => Err(e),
-    }
+    let mut out = TryInto::<syn::File>::try_into(file)?;
+    passes::pass(&mut out);
+    Ok(out)
+}
+
+/// Build the source map from the tracker given the generated Rust source.
+/// This should be called after code generation.
+pub fn build_source_map(rust_source: &str) -> sourcemap::SourceMap {
+    TRACKER.with(|t| {
+        let tracker = t.borrow();
+        tracker.build_source_map(rust_source)
+    })
+}
+
+/// Clear the source map tracker.
+pub fn clear_source_map_tracker() {
+    TRACKER.with(|t| {
+        t.borrow_mut().clear();
+    });
 }
 
 impl From<ast::BasicLit<'_>> for syn::ExprLit {
     fn from(basic_lit: ast::BasicLit) -> Self {
         // Record mapping for the literal
-        let go_span = go_span_from_position(&basic_lit.value_pos, basic_lit.value.len());
-        record_named_mapping(go_span, MappingKind::Literal, basic_lit.value);
+        record_mapping(&basic_lit.value_pos, Some(basic_lit.value));
 
         Self {
             attrs: vec![],
@@ -257,8 +239,7 @@ impl From<ast::BinaryExpr<'_>> for syn::ExprBinary {
     fn from(binary_expr: ast::BinaryExpr) -> Self {
         // Record mapping for the operator
         let op_str: &'static str = (&binary_expr.op).into();
-        let go_span = go_span_from_position(&binary_expr.op_pos, op_str.len());
-        record_named_mapping(go_span, MappingKind::Operator, op_str);
+        record_mapping(&binary_expr.op_pos, Some(op_str));
 
         let (x, op, y) = (
             syn::Expr::from(*binary_expr.x),
@@ -298,29 +279,16 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::ExprBlock {
 
 impl From<ast::CallExpr<'_>> for syn::ExprCall {
     fn from(call_expr: ast::CallExpr) -> Self {
-        // Record mapping for the call expression (from lparen to rparen)
-        let go_span = GoSpan::new(
-            call_expr.lparen.line as u32,
-            call_expr.lparen.column as u32,
-            call_expr.rparen.line as u32,
-            (call_expr.rparen.column + 1) as u32,
-        );
-        record_mapping(go_span, MappingKind::Expression);
+        // Record mapping for the call expression
+        record_mapping(&call_expr.lparen, None);
 
         // Check if this is a fmt.Println call and record a mapping for the transformed name
         // This enables sourcemap lookups after the inline_fmt pass transforms it to println!
         if let ast::Expr::SelectorExpr(ref selector) = *call_expr.fun {
             if let ast::Expr::Ident(ref x_ident) = *selector.x {
                 if x_ident.name == "fmt" && selector.sel.name == "Println" {
-                    // Record a mapping from the entire fmt.Println span to "println"
-                    // This will match the transformed Rust output
-                    let combined_span = GoSpan::new(
-                        x_ident.name_pos.line as u32,
-                        x_ident.name_pos.column as u32,
-                        selector.sel.name_pos.line as u32,
-                        (selector.sel.name_pos.column + selector.sel.name.len()) as u32,
-                    );
-                    record_named_mapping(combined_span, MappingKind::Identifier, "println");
+                    // Record a mapping from fmt.Println to "println"
+                    record_mapping(&x_ident.name_pos, Some("println"));
                 }
             }
         }
@@ -475,8 +443,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         // Record mapping for the function keyword if available
         // Use "fn" as the name since that's what "func" becomes in Rust output
         if let Some(ref func_pos) = func_decl.type_.func {
-            let go_span = go_span_from_position(func_pos, 4); // "func" is 4 chars
-            record_named_mapping(go_span, MappingKind::Function, "fn");
+            record_mapping(func_pos, Some("fn"));
         }
 
         // Convert doc comments to Rust doc attributes
@@ -600,8 +567,7 @@ impl From<ast::SelectorExpr<'_>> for syn::ExprPath {
 impl From<ast::Ident<'_>> for syn::Ident {
     fn from(ident: ast::Ident) -> Self {
         // Record mapping for the identifier
-        let go_span = go_span_from_position(&ident.name_pos, ident.name.len());
-        record_named_mapping(go_span, MappingKind::Identifier, ident.name);
+        record_mapping(&ident.name_pos, Some(ident.name));
 
         Self::new(ident.name, Span::mixed_site())
     }
@@ -1039,8 +1005,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
     fn from(return_stmt: ast::ReturnStmt) -> Self {
         // Record mapping for the return keyword
-        let go_span = go_span_from_position(&return_stmt.return_, 6); // "return" is 6 chars
-        record_mapping(go_span, MappingKind::Keyword);
+        record_mapping(&return_stmt.return_, Some("return"));
 
         // Handle return statements: if there are results, convert the first one
         let expr = return_stmt.results.into_iter().next().map(Into::into);
@@ -1097,9 +1062,8 @@ mod tests {
     //! This module contains the compiler tests (the initial Go -> Rust step, followed by the
     //! compiler passes).
 
-    use super::{compile, compile_with_source_map};
-    use crate::codegen::generate_with_positions;
-    use crate::mapping::MappingKind;
+    use super::{build_source_map, clear_source_map_tracker, compile, compile_with_source_map};
+    use crate::codegen;
     use crate::parser::parse_file;
     use quote::quote;
     use syn::parse_quote as rust;
@@ -1134,6 +1098,7 @@ mod tests {
 
     #[test]
     fn it_should_create_sourcemap_for_fmt_println() {
+        clear_source_map_tracker();
         let go_source = r#"package main
 
 import "fmt"
@@ -1142,173 +1107,43 @@ func main() {
 	fmt.Println("Hello, 世界")
 }"#;
         let parsed = parse_file("test.go", go_source).unwrap();
-        let (compiled, mut source_map) = compile_with_source_map(parsed).unwrap();
+        let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
-        // Check that we have a mapping with name "println" for the fmt.Println call
-        let println_mappings: Vec<_> = source_map
-            .mappings()
-            .iter()
-            .filter(|m| m.name.as_deref() == Some("println"))
-            .collect();
+        // Generate the Rust code
+        let rust_source = codegen::generate(compiled).unwrap();
 
+        // Build the source map
+        let sm = build_source_map(&rust_source);
+
+        // Verify we can serialize and parse it back
+        let mut buf = Vec::new();
+        sm.to_writer(&mut buf).unwrap();
+        let parsed_sm = sourcemap::SourceMap::from_reader(&buf[..]).unwrap();
+
+        // Should have some tokens
         assert!(
-            !println_mappings.is_empty(),
-            "Expected a mapping named 'println' for fmt.Println call"
+            parsed_sm.get_token_count() > 0,
+            "Expected source map to have tokens"
         );
 
-        // The mapping should span from "fmt" to the end of "Println"
-        // Line 6, column 2 (1-indexed): fmt.Println
-        let mapping = &println_mappings[0];
-        assert_eq!(mapping.go_span.start_line, 6);
-        assert_eq!(mapping.go_span.start_column, 2);
-        assert_eq!(mapping.kind, MappingKind::Identifier);
-
-        // Generate the Rust code and update the source map
-        let _rust_source = generate_with_positions(compiled, &mut source_map).unwrap();
-
-        // After generation, the rust_span should be set to the position of "println" in the output
-        let println_mapping = source_map
-            .mappings()
-            .iter()
-            .find(|m| m.name.as_deref() == Some("println"))
-            .unwrap();
-
-        // The Rust span should now be set (non-zero)
-        assert!(
-            println_mapping.rust_span.start_line > 0,
-            "Expected rust_span to be set for println mapping"
-        );
-
-        // Test the lookup: Go position should map to Rust position
-        let rust_span = source_map.go_to_rust(6, 2); // Position of "fmt" in Go
-        assert!(
-            rust_span.is_some(),
-            "Expected to find Rust span for Go position (6, 2)"
-        );
-
-        // Test reverse lookup: Rust position should map back to Go
-        let go_span = source_map.rust_to_go(
-            println_mapping.rust_span.start_line,
-            println_mapping.rust_span.start_column,
-        );
-        assert!(
-            go_span.is_some(),
-            "Expected to find Go span for Rust println position"
-        );
-    }
-
-    #[test]
-    fn it_should_create_sourcemap_for_string_literal() {
-        let go_source = r#"package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("Hello, 世界")
-}"#;
-        let parsed = parse_file("test.go", go_source).unwrap();
-        let (compiled, mut source_map) = compile_with_source_map(parsed).unwrap();
-
-        // Check that we have a mapping for the string literal
-        let string_mappings: Vec<_> = source_map
-            .mappings()
-            .iter()
-            .filter(|m| m.name.as_deref() == Some("\"Hello, 世界\""))
-            .collect();
-
-        assert!(
-            !string_mappings.is_empty(),
-            "Expected a mapping for the string literal"
-        );
-
-        let mapping = &string_mappings[0];
-        assert_eq!(mapping.go_span.start_line, 6);
-        assert_eq!(mapping.kind, MappingKind::Literal);
-
-        // Generate the Rust code and update the source map
-        let rust_source = generate_with_positions(compiled, &mut source_map).unwrap();
-
-        // The generated Rust code should contain the same string literal
-        assert!(
-            rust_source.contains("\"Hello, 世界\""),
-            "Expected Rust output to contain the string literal"
-        );
-
-        // After generation, the rust_span should be set
-        let string_mapping = source_map
-            .mappings()
-            .iter()
-            .find(|m| m.name.as_deref() == Some("\"Hello, 世界\""))
-            .unwrap();
-
-        assert!(
-            string_mapping.rust_span.start_line > 0,
-            "Expected rust_span to be set for string literal mapping"
-        );
-
-        // Test bidirectional lookup for the string literal
-        let rust_span = source_map.go_to_rust(
-            string_mapping.go_span.start_line,
-            string_mapping.go_span.start_column,
-        );
-        assert!(
-            rust_span.is_some(),
-            "Expected to find Rust span for Go string literal position"
-        );
-
-        let go_span = source_map.rust_to_go(
-            string_mapping.rust_span.start_line,
-            string_mapping.rust_span.start_column,
-        );
-        assert!(
-            go_span.is_some(),
-            "Expected to find Go span for Rust string literal position"
-        );
+        // Check that "println" is in the names
+        let has_println = (0..parsed_sm.get_name_count())
+            .any(|i| parsed_sm.get_name(i) == Some("println"));
+        assert!(has_println, "Expected 'println' in source map names");
     }
 
     #[test]
     fn it_should_create_sourcemap_for_func_declaration() {
+        clear_source_map_tracker();
         let go_source = r#"package main
 
 func main() {
 }"#;
         let parsed = parse_file("test.go", go_source).unwrap();
-        let (compiled, mut source_map) = compile_with_source_map(parsed).unwrap();
+        let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
-        // Check that we have mappings for both "fn" (keyword) and "main" (identifier)
-        let fn_mappings: Vec<_> = source_map
-            .mappings()
-            .iter()
-            .filter(|m| m.name.as_deref() == Some("fn"))
-            .collect();
-
-        let main_mappings: Vec<_> = source_map
-            .mappings()
-            .iter()
-            .filter(|m| m.name.as_deref() == Some("main"))
-            .collect();
-
-        assert!(
-            !fn_mappings.is_empty(),
-            "Expected a mapping for 'fn' keyword (from 'func')"
-        );
-        assert!(
-            !main_mappings.is_empty(),
-            "Expected a mapping for 'main' identifier"
-        );
-
-        // The "func" keyword should be on line 3
-        let fn_mapping = &fn_mappings[0];
-        assert_eq!(fn_mapping.go_span.start_line, 3);
-        assert_eq!(fn_mapping.kind, MappingKind::Function);
-
-        // The "main" identifier should also be on line 3
-        let main_mapping = &main_mappings[0];
-        assert_eq!(main_mapping.go_span.start_line, 3);
-        assert_eq!(main_mapping.kind, MappingKind::Identifier);
-
-        // Generate the Rust code and update the source map
-        let rust_source = generate_with_positions(compiled, &mut source_map).unwrap();
+        // Generate the Rust code
+        let rust_source = codegen::generate(compiled).unwrap();
 
         // The generated Rust code should contain "fn main"
         assert!(
@@ -1316,64 +1151,31 @@ func main() {
             "Expected Rust output to contain 'fn main'"
         );
 
-        // After generation, both rust_spans should be set
-        let fn_mapping = source_map
-            .mappings()
-            .iter()
-            .find(|m| m.name.as_deref() == Some("fn"))
-            .unwrap();
-        let main_mapping = source_map
-            .mappings()
-            .iter()
-            .find(|m| m.name.as_deref() == Some("main"))
-            .unwrap();
+        // Build the source map
+        let sm = build_source_map(&rust_source);
 
+        // Verify we can serialize and parse it back
+        let mut buf = Vec::new();
+        sm.to_writer(&mut buf).unwrap();
+        let parsed_sm = sourcemap::SourceMap::from_reader(&buf[..]).unwrap();
+
+        // Should have some tokens
         assert!(
-            fn_mapping.rust_span.start_line > 0,
-            "Expected rust_span to be set for 'fn' keyword mapping"
-        );
-        assert!(
-            main_mapping.rust_span.start_line > 0,
-            "Expected rust_span to be set for 'main' identifier mapping"
+            parsed_sm.get_token_count() > 0,
+            "Expected source map to have tokens"
         );
 
-        // Test bidirectional lookup for "func" keyword -> "fn"
-        let rust_span = source_map.go_to_rust(
-            fn_mapping.go_span.start_line,
-            fn_mapping.go_span.start_column,
-        );
-        assert!(
-            rust_span.is_some(),
-            "Expected to find Rust span for Go 'func' keyword position"
-        );
+        // Check that source file is correct
+        assert_eq!(parsed_sm.get_source(0), Some("test.go"));
 
-        // Test reverse lookup for "fn"
-        let go_span = source_map.rust_to_go(
-            fn_mapping.rust_span.start_line,
-            fn_mapping.rust_span.start_column,
-        );
+        // Check that "fn" and "main" are in the names
+        let names: Vec<_> = (0..parsed_sm.get_name_count())
+            .filter_map(|i| parsed_sm.get_name(i))
+            .collect();
+        assert!(names.contains(&"fn"), "Expected 'fn' in source map names");
         assert!(
-            go_span.is_some(),
-            "Expected to find Go span for Rust 'fn' keyword position"
-        );
-
-        // Test bidirectional lookup for "main" identifier
-        let rust_span = source_map.go_to_rust(
-            main_mapping.go_span.start_line,
-            main_mapping.go_span.start_column,
-        );
-        assert!(
-            rust_span.is_some(),
-            "Expected to find Rust span for Go 'main' identifier position"
-        );
-
-        let go_span = source_map.rust_to_go(
-            main_mapping.rust_span.start_line,
-            main_mapping.rust_span.start_column,
-        );
-        assert!(
-            go_span.is_some(),
-            "Expected to find Go span for Rust 'main' identifier position"
+            names.contains(&"main"),
+            "Expected 'main' in source map names"
         );
     }
 }

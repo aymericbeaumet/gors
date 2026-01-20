@@ -64,6 +64,9 @@ struct Build {
     /// Type of output for the compiler to emit: rust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir
     #[arg(long)]
     emit: Option<String>,
+    /// Output path for source map (.map file in standard v3 format)
+    #[arg(long)]
+    sourcemap: Option<String>,
 }
 
 #[derive(Parser)]
@@ -112,27 +115,61 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let compiled = match gors::compiler::compile(ast) {
-        Ok(compiled) => compiled,
-        Err(err) => {
-            let diagnostic = Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
-            print_error(&diagnostic);
-            std::process::exit(1);
+    // Use source map tracking if --sourcemap is specified
+    let compiled = if cmd.sourcemap.is_some() {
+        match gors::compiler::compile_with_source_map(ast, &cmd.file, &buffer) {
+            Ok(compiled) => compiled,
+            Err(err) => {
+                let diagnostic =
+                    Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                print_error(&diagnostic);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match gors::compiler::compile(ast) {
+            Ok(compiled) => compiled,
+            Err(err) => {
+                let diagnostic =
+                    Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                print_error(&diagnostic);
+                std::process::exit(1);
+            }
         }
     };
 
     // shortcut when rust code is to be emitted
     if matches!(cmd.emit.as_deref(), Some("rust")) {
+        let rust_source = gors::codegen::generate(compiled)?;
+
+        // Write the Rust source
         let mut w = std::fs::File::create("main.rs")?;
-        gors::codegen::fprint(&mut w, compiled)?;
+        w.write_all(rust_source.as_bytes())?;
+
+        // Write source map if requested
+        if let Some(ref map_path) = cmd.sourcemap {
+            let source_map = gors::compiler::build_source_map(&rust_source);
+            let mut map_file = std::fs::File::create(map_path)?;
+            source_map.to_writer(&mut map_file)?;
+        }
+
         return Ok(());
     }
 
     let tmp_dir = tempfile::tempdir()?;
     let source_file = tmp_dir.path().join("main.rs");
+
+    let rust_source = gors::codegen::generate(compiled)?;
     let mut w = std::fs::File::create(&source_file)?;
-    gors::codegen::fprint(&mut w, compiled)?;
+    w.write_all(rust_source.as_bytes())?;
     w.sync_all()?;
+
+    // Write source map if requested
+    if let Some(ref map_path) = cmd.sourcemap {
+        let source_map = gors::compiler::build_source_map(&rust_source);
+        let mut map_file = std::fs::File::create(map_path)?;
+        source_map.to_writer(&mut map_file)?;
+    }
 
     let src_path = source_file
         .to_str()

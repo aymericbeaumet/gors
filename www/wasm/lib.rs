@@ -15,7 +15,7 @@ pub struct BuildResult {
     error_end_column: u32,
     error_kind: String,
     error_source_line: String,
-    /// Source mappings between Go and Rust positions
+    /// Source mappings in standard v3 format
     source_map: Option<SourceMap>,
 }
 
@@ -66,58 +66,37 @@ impl BuildResult {
         self.error_source_line.clone()
     }
 
-    /// Get all source mappings as a flat array.
-    /// Format: [go_start_line, go_start_col, go_end_line, go_end_col,
-    ///          rust_start_line, rust_start_col, rust_end_line, rust_end_col, ...]
-    /// Each mapping is 8 consecutive u32 values.
+    /// Get the source map as a JSON string in standard v3 format.
     #[wasm_bindgen]
-    pub fn get_mappings(&self) -> Vec<u32> {
+    pub fn get_source_map_json(&self) -> String {
         self.source_map
             .as_ref()
-            .map(|sm| sm.to_flat_array())
-            .unwrap_or_default()
-    }
-
-    /// Look up Rust position for a Go position.
-    /// Returns [rust_start_line, rust_start_col, rust_end_line, rust_end_col] or empty array.
-    #[wasm_bindgen]
-    pub fn go_to_rust(&self, line: u32, column: u32) -> Vec<u32> {
-        self.source_map
-            .as_ref()
-            .and_then(|sm| sm.go_to_rust(line, column))
-            .map(|span| {
-                vec![
-                    span.start_line,
-                    span.start_column,
-                    span.end_line,
-                    span.end_column,
-                ]
+            .map(|sm| {
+                let mut buf = Vec::new();
+                sm.to_writer(&mut buf).ok();
+                String::from_utf8(buf).unwrap_or_default()
             })
             .unwrap_or_default()
     }
 
-    /// Look up Go position for a Rust position.
-    /// Returns [go_start_line, go_start_col, go_end_line, go_end_col] or empty array.
+    /// Look up original (Go) position for a generated (Rust) position.
+    /// Returns [orig_line, orig_col] (0-based) or empty array if not found.
     #[wasm_bindgen]
-    pub fn rust_to_go(&self, line: u32, column: u32) -> Vec<u32> {
+    pub fn lookup_token(&self, gen_line: u32, gen_col: u32) -> Vec<u32> {
         self.source_map
             .as_ref()
-            .and_then(|sm| sm.rust_to_go(line, column))
-            .map(|span| {
-                vec![
-                    span.start_line,
-                    span.start_column,
-                    span.end_line,
-                    span.end_column,
-                ]
-            })
+            .and_then(|sm| sm.lookup_token(gen_line, gen_col))
+            .map(|token| vec![token.get_src_line(), token.get_src_col()])
             .unwrap_or_default()
     }
 
-    /// Get the number of mappings.
+    /// Get the number of tokens/mappings.
     #[wasm_bindgen]
-    pub fn mapping_count(&self) -> usize {
-        self.source_map.as_ref().map(|sm| sm.len()).unwrap_or(0)
+    pub fn mapping_count(&self) -> u32 {
+        self.source_map
+            .as_ref()
+            .map(|sm| sm.get_token_count())
+            .unwrap_or(0)
     }
 }
 
@@ -203,7 +182,7 @@ pub fn build(input: String) -> BuildResult {
     }
 
     // Compile with source map tracking
-    let (compiled, mut source_map) = match gors::compiler::compile_with_source_map(ast) {
+    let compiled = match gors::compiler::compile_with_source_map(ast, "main.go", &input) {
         Ok(result) => result,
         Err(err) => {
             let diagnostic = Diagnostic::new(
@@ -217,10 +196,9 @@ pub fn build(input: String) -> BuildResult {
         }
     };
 
-    // Codegen with position tracking, comment insertion, and blank line preservation
+    // Codegen with comment insertion and blank line preservation
     let output = match gors::codegen::generate_with_comments_and_blanks(
         compiled,
-        &mut source_map,
         &comments_to_insert,
         &blank_lines,
     ) {
@@ -236,6 +214,9 @@ pub fn build(input: String) -> BuildResult {
             return BuildResult::error_result(diagnostic);
         }
     };
+
+    // Build the source map from the tracked positions
+    let source_map = gors::compiler::build_source_map(&output);
 
     BuildResult::success_result(output, source_map)
 }

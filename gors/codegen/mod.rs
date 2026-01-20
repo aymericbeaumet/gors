@@ -6,8 +6,7 @@
 mod tracked;
 
 pub use tracked::{
-    generate_with_comments, generate_with_comments_and_blanks, generate_with_positions,
-    BlankLineInfo, CommentToInsert,
+    generate_with_comments, generate_with_comments_and_blanks, BlankLineInfo, CommentToInsert,
 };
 
 /// Write formatted Rust source code to a writer.

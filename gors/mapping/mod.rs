@@ -1,289 +1,313 @@
-//! Source mapping between Go and Rust code.
+//! Source mapping using standard Source Map v3 format.
 //!
-//! This module provides data structures for tracking the correspondence
-//! between positions in Go source code and the generated Rust output.
+//! This module provides source map tracking during Go-to-Rust compilation.
+//! Go positions are collected during compilation, and the final source map
+//! is built during code generation when Rust positions become available.
 
-use std::collections::BTreeMap;
+pub use sourcemap::{SourceMap, SourceMapBuilder};
 
-/// A span in Go source code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GoSpan {
-    pub start_line: u32,
-    pub start_column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-}
+use std::collections::HashMap;
 
-impl GoSpan {
-    pub fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
-        Self {
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        }
-    }
-
-    /// Create a span from a single position (point span).
-    pub fn point(line: u32, column: u32) -> Self {
-        Self {
-            start_line: line,
-            start_column: column,
-            end_line: line,
-            end_column: column,
-        }
-    }
-
-    /// Check if a position falls within this span.
-    pub fn contains(&self, line: u32, column: u32) -> bool {
-        if line < self.start_line || line > self.end_line {
-            return false;
-        }
-        if line == self.start_line && column < self.start_column {
-            return false;
-        }
-        if line == self.end_line && column > self.end_column {
-            return false;
-        }
-        true
-    }
-}
-
-/// A span in Rust output code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RustSpan {
-    pub start_line: u32,
-    pub start_column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-}
-
-impl RustSpan {
-    pub fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
-        Self {
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        }
-    }
-
-    /// Check if a position falls within this span.
-    pub fn contains(&self, line: u32, column: u32) -> bool {
-        if line < self.start_line || line > self.end_line {
-            return false;
-        }
-        if line == self.start_line && column < self.start_column {
-            return false;
-        }
-        if line == self.end_line && column > self.end_column {
-            return false;
-        }
-        true
-    }
-}
-
-/// The kind of AST node being mapped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MappingKind {
-    /// Function declaration
-    Function,
-    /// Identifier (variable, function name, etc.)
-    Identifier,
-    /// Literal value (number, string, etc.)
-    Literal,
-    /// Binary operator
-    Operator,
-    /// Statement
-    Statement,
-    /// Expression
-    Expression,
-    /// Keyword (if, for, return, etc.)
-    Keyword,
-}
-
-/// A single mapping between Go source and Rust output.
+/// A pending mapping collected during compilation.
+/// Contains Go source position and optional name, waiting for Rust position.
 #[derive(Debug, Clone)]
-pub struct SpanMapping {
-    /// The span in Go source code
-    pub go_span: GoSpan,
-    /// The span in Rust output (filled in during codegen)
-    pub rust_span: RustSpan,
-    /// What kind of AST node this represents
-    pub kind: MappingKind,
-    /// Optional name for debugging (e.g., identifier name)
+pub struct PendingMapping {
+    /// Original line (1-based)
+    pub orig_line: u32,
+    /// Original column (1-based)
+    pub orig_col: u32,
+    /// Optional identifier name
     pub name: Option<String>,
-    /// Unique ID for this mapping (used to correlate during codegen)
-    pub id: u32,
 }
 
-impl SpanMapping {
-    pub fn new(go_span: GoSpan, kind: MappingKind, id: u32) -> Self {
-        Self {
-            go_span,
-            rust_span: RustSpan::default(),
-            kind,
-            name: None,
-            id,
-        }
-    }
-
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
+/// Tracker for collecting source mappings during compilation.
+#[derive(Default)]
+pub struct SourceMapTracker {
+    /// Pending mappings collected during compilation
+    pending: Vec<PendingMapping>,
+    /// Go source file path
+    go_file: Option<String>,
+    /// Rust output file path
+    rust_file: Option<String>,
+    /// Go source content
+    go_source: Option<String>,
 }
 
-/// Collection of source mappings with lookup capabilities.
-#[derive(Debug, Default)]
-pub struct SourceMap {
-    /// All mappings, indexed by their ID
-    mappings: Vec<SpanMapping>,
-    /// Index for Go position lookups: (line, column) -> mapping indices
-    go_index: BTreeMap<(u32, u32), Vec<usize>>,
-    /// Index for Rust position lookups: (line, column) -> mapping indices
-    rust_index: BTreeMap<(u32, u32), Vec<usize>>,
-    /// Counter for generating unique mapping IDs
-    next_id: u32,
-}
-
-impl SourceMap {
+impl SourceMapTracker {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add a new mapping and return its ID.
-    pub fn add(&mut self, go_span: GoSpan, kind: MappingKind) -> u32 {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let mapping = SpanMapping::new(go_span, kind, id);
-        let index = self.mappings.len();
-        self.mappings.push(mapping);
-
-        // Index by Go start position
-        self.go_index
-            .entry((go_span.start_line, go_span.start_column))
-            .or_default()
-            .push(index);
-
-        id
+    /// Start tracking for a compilation.
+    pub fn start(&mut self, go_file: &str, rust_file: &str, go_source: Option<&str>) {
+        self.pending.clear();
+        self.go_file = Some(go_file.to_string());
+        self.rust_file = Some(rust_file.to_string());
+        self.go_source = go_source.map(|s| s.to_string());
     }
 
-    /// Add a mapping with a name.
-    pub fn add_named(&mut self, go_span: GoSpan, kind: MappingKind, name: impl Into<String>) -> u32 {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let mapping = SpanMapping::new(go_span, kind, id).with_name(name);
-        let index = self.mappings.len();
-        self.mappings.push(mapping);
-
-        // Index by Go start position
-        self.go_index
-            .entry((go_span.start_line, go_span.start_column))
-            .or_default()
-            .push(index);
-
-        id
+    /// Check if tracking is active.
+    pub fn is_active(&self) -> bool {
+        self.go_file.is_some()
     }
 
-    /// Update the Rust span for a mapping by ID.
-    pub fn set_rust_span(&mut self, id: u32, rust_span: RustSpan) {
-        if let Some(mapping) = self.mappings.iter_mut().find(|m| m.id == id) {
-            mapping.rust_span = rust_span;
-
-            // Update the Rust index
-            let index = self.mappings.iter().position(|m| m.id == id).unwrap();
-            self.rust_index
-                .entry((rust_span.start_line, rust_span.start_column))
-                .or_default()
-                .push(index);
+    /// Record a Go position during compilation.
+    /// The Rust position will be determined during code generation.
+    pub fn record(&mut self, orig_line: u32, orig_col: u32, name: Option<&str>) {
+        if self.go_file.is_some() {
+            self.pending.push(PendingMapping {
+                orig_line,
+                orig_col,
+                name: name.map(|s| s.to_string()),
+            });
         }
     }
 
-    /// Find mappings that contain the given Go position.
-    pub fn find_by_go_position(&self, line: u32, column: u32) -> Vec<&SpanMapping> {
-        self.mappings
-            .iter()
-            .filter(|m| m.go_span.contains(line, column))
-            .collect()
+    /// Get pending mappings (for use during codegen).
+    pub fn pending_mappings(&self) -> &[PendingMapping] {
+        &self.pending
     }
 
-    /// Find mappings that contain the given Rust position.
-    pub fn find_by_rust_position(&self, line: u32, column: u32) -> Vec<&SpanMapping> {
-        self.mappings
-            .iter()
-            .filter(|m| m.rust_span.contains(line, column))
-            .collect()
-    }
+    /// Build the final source map given the generated Rust source.
+    /// This matches pending mappings to tokens in the Rust output.
+    pub fn build_source_map(&self, rust_source: &str) -> SourceMap {
+        let mut builder = SourceMapBuilder::new(self.rust_file.as_deref());
 
-    /// Get the Rust span for a Go position (returns the most specific/smallest span).
-    pub fn go_to_rust(&self, line: u32, column: u32) -> Option<RustSpan> {
-        let mappings = self.find_by_go_position(line, column);
-        // Return the smallest (most specific) span
-        mappings
-            .into_iter()
-            .filter(|m| m.rust_span != RustSpan::default())
-            .min_by_key(|m| {
-                let go = &m.go_span;
-                (go.end_line - go.start_line) * 1000
-                    + (go.end_column.saturating_sub(go.start_column))
-            })
-            .map(|m| m.rust_span)
-    }
-
-    /// Get the Go span for a Rust position (returns the most specific/smallest span).
-    pub fn rust_to_go(&self, line: u32, column: u32) -> Option<GoSpan> {
-        let mappings = self.find_by_rust_position(line, column);
-        // Return the smallest (most specific) span
-        mappings
-            .into_iter()
-            .min_by_key(|m| {
-                let rust = &m.rust_span;
-                (rust.end_line - rust.start_line) * 1000
-                    + (rust.end_column.saturating_sub(rust.start_column))
-            })
-            .map(|m| m.go_span)
-    }
-
-    /// Get all mappings.
-    pub fn mappings(&self) -> &[SpanMapping] {
-        &self.mappings
-    }
-
-    /// Get all mappings mutably.
-    pub fn mappings_mut(&mut self) -> &mut [SpanMapping] {
-        &mut self.mappings
-    }
-
-    /// Get the number of mappings.
-    pub fn len(&self) -> usize {
-        self.mappings.len()
-    }
-
-    /// Check if there are no mappings.
-    pub fn is_empty(&self) -> bool {
-        self.mappings.is_empty()
-    }
-
-    /// Serialize mappings to a flat array for JS interop.
-    /// Format: [go_start_line, go_start_col, go_end_line, go_end_col,
-    ///          rust_start_line, rust_start_col, rust_end_line, rust_end_col, ...]
-    pub fn to_flat_array(&self) -> Vec<u32> {
-        let mut result = Vec::with_capacity(self.mappings.len() * 8);
-        for mapping in &self.mappings {
-            result.push(mapping.go_span.start_line);
-            result.push(mapping.go_span.start_column);
-            result.push(mapping.go_span.end_line);
-            result.push(mapping.go_span.end_column);
-            result.push(mapping.rust_span.start_line);
-            result.push(mapping.rust_span.start_column);
-            result.push(mapping.rust_span.end_line);
-            result.push(mapping.rust_span.end_column);
+        let go_file = self.go_file.as_deref().unwrap_or("input.go");
+        let src_idx = builder.add_source(go_file);
+        if let Some(ref content) = self.go_source {
+            builder.set_source_contents(src_idx, Some(content.as_str()));
         }
-        result
+
+        // Extract tokens from the Rust source
+        let tokens = extract_tokens(rust_source);
+
+        // Build a map of name -> tokens for matching
+        let mut name_to_tokens: HashMap<&str, Vec<&TokenInfo>> = HashMap::new();
+        for token in &tokens {
+            name_to_tokens.entry(&token.text).or_default().push(token);
+        }
+
+        // Track which token index we've used for each name
+        let mut name_indices: HashMap<String, usize> = HashMap::new();
+
+        // Match pending mappings to Rust tokens
+        for pending in &self.pending {
+            if let Some(ref name) = pending.name {
+                if let Some(matching_tokens) = name_to_tokens.get(name.as_str()) {
+                    let idx = name_indices.entry(name.clone()).or_insert(0);
+                    if *idx < matching_tokens.len() {
+                        let token = matching_tokens[*idx];
+                        let name_idx = builder.add_name(name);
+                        builder.add_raw(
+                            token.start_line.saturating_sub(1), // generated line (0-based)
+                            token.start_column.saturating_sub(1), // generated column (0-based)
+                            pending.orig_line.saturating_sub(1), // original line (0-based)
+                            pending.orig_col.saturating_sub(1), // original column (0-based)
+                            Some(src_idx),
+                            Some(name_idx),
+                            false, // is_range: false for point mappings
+                        );
+                        *idx += 1;
+                    }
+                }
+            }
+        }
+
+        builder.into_sourcemap()
     }
+
+    /// Clear the tracker state.
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.go_file = None;
+        self.rust_file = None;
+        self.go_source = None;
+    }
+}
+
+/// Token information extracted from Rust source.
+#[derive(Debug, Clone)]
+struct TokenInfo {
+    text: String,
+    start_line: u32,
+    start_column: u32,
+}
+
+/// Extract token positions from Rust source code.
+fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
+    let mut tokens = Vec::new();
+    let mut line: u32 = 1;
+    let mut column: u32 = 1;
+    let chars: Vec<char> = rust_source.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        // Skip whitespace (but track position)
+        if ch.is_whitespace() {
+            if ch == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Skip comments
+        if ch == '/' && i + 1 < chars.len() {
+            if chars[i + 1] == '/' {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                    column += 1;
+                }
+                continue;
+            } else if chars[i + 1] == '*' {
+                i += 2;
+                column += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    if chars[i] == '\n' {
+                        line += 1;
+                        column = 1;
+                    } else {
+                        column += 1;
+                    }
+                    i += 1;
+                }
+                if i + 1 < chars.len() {
+                    i += 2;
+                    column += 2;
+                }
+                continue;
+            }
+        }
+
+        let start_line = line;
+        let start_column = column;
+
+        // Identifier or keyword
+        if ch.is_alphabetic() || ch == '_' {
+            let mut text = String::new();
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            tokens.push(TokenInfo {
+                text,
+                start_line,
+                start_column,
+            });
+            continue;
+        }
+
+        // Number literal
+        if ch.is_ascii_digit() {
+            let mut text = String::new();
+            while i < chars.len()
+                && (chars[i].is_ascii_digit()
+                    || chars[i] == '.'
+                    || chars[i] == 'x'
+                    || chars[i] == 'X'
+                    || chars[i] == 'b'
+                    || chars[i] == 'B'
+                    || chars[i] == 'o'
+                    || chars[i] == 'O'
+                    || chars[i] == 'e'
+                    || chars[i] == 'E'
+                    || chars[i] == '_'
+                    || chars[i].is_ascii_hexdigit())
+            {
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            // Handle type suffixes
+            while i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            tokens.push(TokenInfo {
+                text,
+                start_line,
+                start_column,
+            });
+            continue;
+        }
+
+        // String literal
+        if ch == '"' {
+            let mut text = String::new();
+            text.push(ch);
+            column += 1;
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    text.push(chars[i]);
+                    column += 1;
+                    i += 1;
+                }
+                if chars[i] == '\n' {
+                    line += 1;
+                    column = 1;
+                } else {
+                    column += 1;
+                }
+                text.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            tokens.push(TokenInfo {
+                text,
+                start_line,
+                start_column,
+            });
+            continue;
+        }
+
+        // Character literal
+        if ch == '\'' {
+            let mut text = String::new();
+            text.push(ch);
+            column += 1;
+            i += 1;
+            while i < chars.len() && chars[i] != '\'' {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    text.push(chars[i]);
+                    column += 1;
+                    i += 1;
+                }
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            if i < chars.len() {
+                text.push(chars[i]);
+                column += 1;
+                i += 1;
+            }
+            tokens.push(TokenInfo {
+                text,
+                start_line,
+                start_column,
+            });
+            continue;
+        }
+
+        // Skip other characters (operators, punctuation)
+        column += 1;
+        i += 1;
+    }
+
+    tokens
 }
 
 #[cfg(test)]
@@ -291,46 +315,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_go_span_contains() {
-        let span = GoSpan::new(1, 5, 1, 10);
-        assert!(span.contains(1, 5));
-        assert!(span.contains(1, 7));
-        assert!(span.contains(1, 10));
-        assert!(!span.contains(1, 4));
-        assert!(!span.contains(1, 11));
-        assert!(!span.contains(2, 5));
+    fn test_source_map_tracker_basic() {
+        let mut tracker = SourceMapTracker::new();
+        let go_source = "package main\n\nfunc main() {}";
+
+        tracker.start("test.go", "test.rs", Some(go_source));
+        assert!(tracker.is_active());
+
+        // Record some Go positions
+        tracker.record(3, 1, Some("fn"));
+        tracker.record(3, 6, Some("main"));
+
+        // Build source map with Rust output
+        let rust_source = "pub fn main() {}\n";
+        let sm = tracker.build_source_map(rust_source);
+
+        // Verify we can serialize and parse it back
+        let mut buf = Vec::new();
+        sm.to_writer(&mut buf).unwrap();
+        let parsed = SourceMap::from_reader(&buf[..]).unwrap();
+
+        assert!(parsed.get_token_count() > 0);
+        assert_eq!(parsed.get_source(0), Some("test.go"));
+        assert_eq!(parsed.get_file(), Some("test.rs"));
     }
 
     #[test]
-    fn test_multiline_span_contains() {
-        let span = GoSpan::new(1, 5, 3, 10);
-        assert!(span.contains(1, 5));
-        assert!(span.contains(1, 100)); // Any column on line 1 after start
-        assert!(span.contains(2, 1)); // Any column on middle line
-        assert!(span.contains(3, 1)); // Start of end line
-        assert!(span.contains(3, 10)); // End position
-        assert!(!span.contains(1, 4)); // Before start column on start line
-        assert!(!span.contains(3, 11)); // After end column on end line
+    fn test_source_map_tracker_inactive() {
+        let mut tracker = SourceMapTracker::new();
+        assert!(!tracker.is_active());
+
+        // Recording when inactive should be a no-op
+        tracker.record(1, 1, Some("test"));
+        assert!(tracker.pending_mappings().is_empty());
     }
 
     #[test]
-    fn test_source_map_add_and_lookup() {
-        let mut map = SourceMap::new();
+    fn test_extract_tokens() {
+        let source = "fn main() { let x = 42; }";
+        let tokens = extract_tokens(source);
 
-        let id1 = map.add_named(GoSpan::new(1, 1, 1, 4), MappingKind::Identifier, "main");
-        let id2 = map.add_named(GoSpan::new(2, 5, 2, 10), MappingKind::Literal, "42");
+        let names: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(names.contains(&"fn"));
+        assert!(names.contains(&"main"));
+        assert!(names.contains(&"let"));
+        assert!(names.contains(&"x"));
+        assert!(names.contains(&"42"));
+    }
 
-        map.set_rust_span(id1, RustSpan::new(1, 1, 1, 4));
-        map.set_rust_span(id2, RustSpan::new(2, 5, 2, 7));
+    #[test]
+    fn test_token_positions() {
+        let source = "fn main() {}";
+        let tokens = extract_tokens(source);
 
-        // Look up by Go position
-        let rust_span = map.go_to_rust(1, 2).unwrap();
-        assert_eq!(rust_span.start_line, 1);
-        assert_eq!(rust_span.start_column, 1);
+        let fn_token = &tokens[0];
+        assert_eq!(fn_token.text, "fn");
+        assert_eq!(fn_token.start_line, 1);
+        assert_eq!(fn_token.start_column, 1);
 
-        // Look up by Rust position
-        let go_span = map.rust_to_go(2, 6).unwrap();
-        assert_eq!(go_span.start_line, 2);
-        assert_eq!(go_span.start_column, 5);
+        let main_token = &tokens[1];
+        assert_eq!(main_token.text, "main");
+        assert_eq!(main_token.start_line, 1);
+        assert_eq!(main_token.start_column, 4);
     }
 }

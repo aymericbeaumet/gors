@@ -30,6 +30,63 @@ fn parser() {
     RUNNER.test("ast", &["files", "repositories", "programs"]);
 }
 
+/// Test source map generation for compilable programs.
+/// Validates that source maps are generated in standard v3 format
+/// and can be parsed back by the sourcemap crate.
+#[test]
+fn sourcemap() {
+    // Test with the programs that can be compiled
+    for entry in glob("tests/programs/**/*.go").unwrap() {
+        let path = match entry {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let go_file = path.to_str().unwrap();
+
+        // Read the Go source
+        let go_source = std::fs::read_to_string(go_file).unwrap();
+
+        // Parse
+        let ast = match gors::parser::parse_file(go_file, &go_source) {
+            Ok(ast) => ast,
+            Err(_) => continue, // Skip files that don't parse
+        };
+
+        // Compile with source map tracking
+        let compiled = match gors::compiler::compile_with_source_map(ast, go_file, &go_source) {
+            Ok(compiled) => compiled,
+            Err(_) => continue, // Skip files that don't compile
+        };
+
+        // Generate Rust code
+        let rust_source = gors::codegen::generate(compiled).unwrap();
+
+        // Build the source map
+        let source_map = gors::compiler::build_source_map(&rust_source);
+
+        // Validate: serialize and parse back (round-trip)
+        let mut buf = Vec::new();
+        source_map.to_writer(&mut buf).unwrap();
+        let parsed = sourcemap::SourceMap::from_reader(&buf[..])
+            .unwrap_or_else(|e| panic!("Invalid sourcemap for {}: {}", go_file, e));
+
+        // Basic validation
+        assert!(
+            parsed.get_token_count() > 0,
+            "Empty sourcemap for {}",
+            go_file
+        );
+        assert_eq!(
+            parsed.get_source(0),
+            Some(go_file),
+            "Source file mismatch for {}",
+            go_file
+        );
+
+        println!("| sourcemap OK: {} ({} tokens)", go_file, parsed.get_token_count());
+    }
+}
+
 /// Test specific files passed via GORS_TEST_FILES environment variable.
 /// Files should be separated by newlines or commas.
 /// Example: GORS_TEST_FILES="tests/repositories/go/test/foo.go,tests/repositories/go/test/bar.go" cargo test specific_files
