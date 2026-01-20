@@ -5,7 +5,7 @@
 .PHONY: setup install-tools
 .PHONY: fmt fmt-check lint clippy doc
 .PHONY: build build-release build-wasm build-wasm-dev
-.PHONY: test test-unit test-integration test-lexer test-parser
+.PHONY: test test-unit test-integrations test-lexer test-parser _test-lexer _test-parser
 .PHONY: fuzz fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-build fuzz-export
 .PHONY: www www-install www-lint www-build www-dev
 .PHONY: clean clean-all
@@ -44,10 +44,11 @@ help:
 	@echo "  build-wasm-dev   Build gors-wasm package (dev)"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test             Run unit tests"
-	@echo "  test-integration Run integration tests on all submodules (requires: make setup)"
-	@echo "  test-lexer       Run lexer integration tests"
-	@echo "  test-parser      Run parser integration tests"
+	@echo "  test-unit        Run unit tests (fast, no external dependencies)"
+	@echo "  test-integrations Run lexer+parser integration tests in parallel (requires: make setup)"
+	@echo "  test-lexer       Run lexer integration tests (with output)"
+	@echo "  test-parser      Run parser integration tests (with output)"
+	@echo "  test             Alias for test-unit (backward compatibility)"
 	@echo ""
 	@echo "Fuzzing:"
 	@echo "  fuzz-test        Run property-based fuzz tests (stable Rust, CI-friendly)"
@@ -111,10 +112,10 @@ doc:
 #------------------------------------------------------------------------------
 
 build:
-	cargo build --workspace --all-features
+	cargo build --workspace --exclude=gors-fuzz
 
 build-release:
-	cargo build --workspace --all-features --release
+	cargo build --workspace --exclude=gors-fuzz --release
 
 build-wasm:
 	cd www/wasm && wasm-pack build --release
@@ -126,14 +127,33 @@ build-wasm-dev:
 # Testing
 #------------------------------------------------------------------------------
 
-test:
-	cargo test --workspace --all-features --exclude=gors-cli
+# Unit tests: fast tests for core library (no external dependencies)
+# Tests gors library and gors-fuzz property tests (excluding AFL-specific fuzz targets)
+test-unit:
+	cargo test --package=gors --package=gors-fuzz
 
+# Integration tests: lexer and parser tests against real Go repositories
+# Runs both in parallel using make's job parallelization
+# The test runner internally uses all available CPU cores
+test-integrations: build-release
+	@$(MAKE) -j2 _test-lexer _test-parser
+
+# Internal targets for parallel execution (do not call directly)
+_test-lexer:
+	cargo test --release --package=gors-cli lexer
+
+_test-parser:
+	cargo test --release --package=gors-cli parser
+
+# Individual test targets (for debugging specific failures)
 test-lexer:
-	cargo test --release --workspace --all-features --package=gors-cli lexer -- --nocapture --test-threads=1
+	cargo test --release --package=gors-cli lexer -- --nocapture
 
 test-parser:
-	cargo test --release --workspace --all-features --package=gors-cli parser -- --nocapture --test-threads=1
+	cargo test --release --package=gors-cli parser -- --nocapture
+
+# Legacy alias for backward compatibility
+test: test-unit
 
 #------------------------------------------------------------------------------
 # Fuzzing

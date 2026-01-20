@@ -34,7 +34,7 @@ jobs:
       - name: Run make build-release
         run: make build-release
 
-  test:
+  test-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,10 +44,10 @@ jobs:
         with:
           toolchain-file: rust-toolchain.toml
 
-      - name: Run make test
-        run: make test test-lexer test-parser
+      - name: Run unit tests
+        run: make test-unit
 
-  test-integration:
+  test-integrations:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,8 +64,8 @@ jobs:
         with:
           go-version: '^1.21'
 
-      - name: Run make test-integration
-        run: make test-integration
+      - name: Run integration tests (lexer + parser in parallel)
+        run: make test-integrations
 
   www:
     runs-on: ubuntu-latest
@@ -101,7 +101,7 @@ jobs:
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: [lint, build, test, test-integration, www]
+    needs: [lint, build, test-unit, test-integrations, www]
     steps:
       - uses: actions/checkout@v4
 

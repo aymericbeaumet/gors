@@ -718,12 +718,16 @@ impl<'a> Scanner<'a> {
         let pos = self.position();
         let lit = self.literal();
 
+        // Strip trailing \r from line comments (CRLF line endings)
+        // Go's scanner does this to normalize line endings
+        let lit = lit.strip_suffix('\r').unwrap_or(lit);
+
         // look for compiler directives (at the beginning of line)
         if self.start_column == 1 {
             self.directive(lit["//".len()..].trim_end(), false)?;
         }
 
-        Ok((pos, Token::COMMENT, self.literal()))
+        Ok((pos, Token::COMMENT, lit))
     }
 
     // https://pkg.go.dev/cmd/compile#hdr-Compiler_Directives

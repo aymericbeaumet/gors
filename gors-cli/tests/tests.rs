@@ -158,7 +158,13 @@ impl<'a> TestRunner<'a> {
                 let path_str = path.to_str().unwrap();
 
                 // Skip files that don't exist (broken symlinks)
-                if !std::path::Path::new(path_str).exists() {
+                let path_meta = std::path::Path::new(path_str);
+                if !path_meta.exists() {
+                    continue;
+                }
+
+                // Skip directories (some repos have directories ending in .go)
+                if path_meta.is_dir() {
                     continue;
                 }
 
