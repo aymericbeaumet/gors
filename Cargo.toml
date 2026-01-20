@@ -62,12 +62,6 @@ sourcemap = "9"
 syn = { version = "2.0", features = ["full", "visit-mut"] }
 unicode-general-category = "0.6"
 
-# WASM codegen dependencies
-wasm-encoder = "0.223"
-wasmparser = "0.223"
-wasmprinter = "0.223"
-wat = "1.223"
-
 # Binary dependencies
 atty = "0.2"
 clap = { version = "4.0", features = ["derive"] }
@@ -77,7 +71,6 @@ tempfile = "3.0"
 
 [dev-dependencies]
 rayon = "1.10"
-wasmtime = "28"
 
 [profile.dev]
 opt-level = 0

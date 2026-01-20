@@ -61,7 +61,7 @@ struct Build {
     /// Build in release mode, with optimizations
     #[arg(long)]
     release: bool,
-    /// Type of output for the compiler to emit: rust|wasm|wat|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir
+    /// Type of output for the compiler to emit: rust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir
     #[arg(long)]
     emit: Option<String>,
     /// Output path for source map (.map file in standard v3 format)
@@ -152,26 +152,6 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
             let mut map_file = std::fs::File::create(map_path)?;
             source_map.to_writer(&mut map_file)?;
         }
-
-        return Ok(());
-    }
-
-    // Emit WAT (WebAssembly Text Format)
-    if matches!(cmd.emit.as_deref(), Some("wasm") | Some("wat")) {
-        let wat_source = match gors::codegen::wasm::generate_with_source(compiled, &cmd.file, &buffer) {
-            Ok(wat) => wat,
-            Err(err) => {
-                let (line, col) = err.location.unwrap_or((0, 0));
-                let diagnostic = Diagnostic::new(&cmd.file, line as usize, col as usize, err.message, DiagnosticKind::Compiler)
-                    .with_source(&buffer);
-                print_error(&diagnostic);
-                std::process::exit(1);
-            }
-        };
-
-        // Write the WAT source
-        let mut w = std::fs::File::create("main.wat")?;
-        w.write_all(wat_source.as_bytes())?;
 
         return Ok(());
     }

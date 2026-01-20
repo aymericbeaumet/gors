@@ -13,10 +13,8 @@
 mod common;
 
 use common::fixtures_dir;
-use gors::codegen::wasm::WasmCompiler;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
 
 /// Discovered program with its expected output.
 pub struct Program {
@@ -158,70 +156,6 @@ pub fn run_via_rust(go_source: &str) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Compile and run a Go program via the WASM backend.
-pub fn run_via_wasm(go_source: &str) -> Result<String, String> {
-    use wasmtime::*;
-
-    // Parse
-    let ast = gors::parser::parse_file("main.go", go_source)
-        .map_err(|e| format!("Parse error: {:?}", e))?;
-
-    // Compile
-    let compiled =
-        gors::compiler::compile(ast).map_err(|e| format!("Compile error: {:?}", e))?;
-
-    // Generate WASM binary
-    let mut compiler = WasmCompiler::new();
-    let wasm_bytes = compiler
-        .compile_to_bytes(compiled)
-        .map_err(|e| format!("WASM codegen error: {:?}", e))?;
-
-    // Run in wasmtime
-    let engine = Engine::default();
-    let module =
-        Module::new(&engine, &wasm_bytes).map_err(|e| format!("WASM load error: {}", e))?;
-
-    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let captured_clone = Arc::clone(&captured);
-
-    let mut store = Store::new(&engine, ());
-    let mut linker = Linker::new(&engine);
-
-    // Define the print function
-    linker
-        .func_wrap(
-            "env",
-            "print",
-            move |mut caller: Caller<'_, ()>, ptr: i32, len: i32| {
-                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
-                let data = memory.data(&caller);
-                let start = ptr as usize;
-                let end = start + len as usize;
-                if end <= data.len() {
-                    if let Ok(s) = std::str::from_utf8(&data[start..end]) {
-                        captured_clone.lock().unwrap().push(s.to_string());
-                    }
-                }
-            },
-        )
-        .map_err(|e| format!("Linker error: {}", e))?;
-
-    let instance = linker
-        .instantiate(&mut store, &module)
-        .map_err(|e| format!("Instantiation error: {}", e))?;
-
-    let main_func = instance
-        .get_typed_func::<(), ()>(&mut store, "main")
-        .map_err(|e| format!("Get main error: {}", e))?;
-
-    main_func
-        .call(&mut store, ())
-        .map_err(|e| format!("Call main error: {}", e))?;
-
-    let output = captured.lock().unwrap();
-    Ok(output.join("\n") + if output.is_empty() { "" } else { "\n" })
 }
 
 // =============================================================================

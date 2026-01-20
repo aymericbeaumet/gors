@@ -65,6 +65,7 @@
         border-radius: 8px 8px 0 0;
         font-size: 12px;
         font-weight: 600;
+        height: 36px;
       }
 
       .editor-header .label {
@@ -81,7 +82,6 @@
 
       .editor-container.go .dot { background: #00ADD8; }
       .editor-container.rust .dot { background: #FFC832; }
-      .editor-container.wasm .dot { background: #9B59B6; }
 
       .editor-wrapper {
         flex: 1;
@@ -94,7 +94,6 @@
 
       .editor-container.go .editor-wrapper { border-color: #00ADD8; }
       .editor-container.rust .editor-wrapper { border-color: #FFC832; }
-      .editor-container.wasm .editor-wrapper { border-color: #9B59B6; }
 
       .editor {
         width: 100%;
@@ -231,7 +230,7 @@
   </head>
   <body>
     <main>
-      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust and WebAssembly code.</p>
+      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go to Rust transpiler.</p>
 
       <div class="workspace">
         <div class="editors">
@@ -264,25 +263,6 @@
             </div>
             <div class="editor-wrapper">
               <div id="rust-editor" class="editor"></div>
-            </div>
-          </div>
-
-          <!-- WASM Editor -->
-          <div class="editor-container wasm">
-            <div class="editor-header">
-              <div class="label">
-                <span class="dot"></span>
-                <span>WebAssembly</span>
-              </div>
-              <button id="copy-wasm" class="copy-button" title="Copy WAT code">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                </svg>
-                <span>Copy</span>
-              </button>
-            </div>
-            <div class="editor-wrapper">
-              <div id="wasm-editor" class="editor"></div>
             </div>
           </div>
         </div>

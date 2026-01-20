@@ -1,14 +1,12 @@
-use gors::codegen::SourceMap as CodegenSourceMap;
 use gors::error::{Diagnostic, DiagnosticKind};
 use gors::mapping::SourceMap;
 use wasm_bindgen::prelude::*;
 
 /// Result of a build operation.
-/// Both build_rust() and build_wasm() return this same structure.
 #[wasm_bindgen]
 pub struct BuildResult {
     success: bool,
-    /// Output text: Rust source for build_rust(), WAT text for build_wasm()
+    /// Output text: Rust source
     output: String,
     error_message: String,
     error_file: String,
@@ -17,10 +15,8 @@ pub struct BuildResult {
     error_end_column: u32,
     error_kind: String,
     error_source_line: String,
-    /// Source mappings in standard v3 format (for Rust backend)
+    /// Source mappings in standard v3 format
     source_map: Option<SourceMap>,
-    /// Source mappings for codegen (for WASM backend)
-    codegen_source_map: Option<CodegenSourceMap>,
 }
 
 #[wasm_bindgen]
@@ -95,19 +91,9 @@ impl BuildResult {
     }
 
     /// Map output position to Go position (returns span: [start_line, start_col, end_line, end_col]).
-    /// Works for both Rust and WAT output.
     /// Lines and columns are 1-based for Monaco editor compatibility.
     #[wasm_bindgen]
     pub fn output_to_go(&self, output_line: u32, output_column: u32) -> Vec<u32> {
-        // Try the codegen source map first (for WASM)
-        if let Some(ref csm) = self.codegen_source_map {
-            if let Some((start_line, start_col, end_line, end_col)) = csm.output_to_input(output_line, output_column) {
-                return vec![start_line, start_col, end_line, end_col];
-            }
-            return vec![];
-        }
-
-        // Fall back to the standard source map (for Rust)
         let Some(ref sm) = self.source_map else {
             return vec![];
         };
@@ -164,19 +150,9 @@ impl BuildResult {
     }
 
     /// Map Go position to output position (returns span: [start_line, start_col, end_line, end_col]).
-    /// Works for both Rust and WAT output.
     /// Lines and columns are 1-based for Monaco editor compatibility.
     #[wasm_bindgen]
     pub fn go_to_output(&self, go_line: u32, go_column: u32) -> Vec<u32> {
-        // Try the codegen source map first (for WASM)
-        if let Some(ref csm) = self.codegen_source_map {
-            if let Some((start_line, start_col, end_line, end_col)) = csm.input_to_output(go_line, go_column) {
-                return vec![start_line, start_col, end_line, end_col];
-            }
-            return vec![];
-        }
-
-        // Fall back to the standard source map (for Rust)
         let Some(ref sm) = self.source_map else {
             return vec![];
         };
@@ -256,23 +232,6 @@ impl BuildResult {
             error_kind: String::new(),
             error_source_line: String::new(),
             source_map: Some(source_map),
-            codegen_source_map: None,
-        }
-    }
-
-    fn success_wasm(output: String, source_map: CodegenSourceMap) -> Self {
-        Self {
-            success: true,
-            output,
-            error_message: String::new(),
-            error_file: String::new(),
-            error_line: 0,
-            error_column: 0,
-            error_end_column: 0,
-            error_kind: String::new(),
-            error_source_line: String::new(),
-            source_map: None,
-            codegen_source_map: Some(source_map),
         }
     }
 
@@ -292,24 +251,6 @@ impl BuildResult {
             },
             error_source_line: diagnostic.source_line.unwrap_or_default(),
             source_map: None,
-            codegen_source_map: None,
-        }
-    }
-
-    fn error_codegen(err: gors::codegen::CodegenError) -> Self {
-        let (line, column) = err.location.unwrap_or((0, 0));
-        Self {
-            success: false,
-            output: String::new(),
-            error_message: err.message,
-            error_file: "main.go".to_string(),
-            error_line: line,
-            error_column: column,
-            error_end_column: column + 1,
-            error_kind: "compiler".to_string(),
-            error_source_line: String::new(),
-            source_map: None,
-            codegen_source_map: None,
         }
     }
 }
@@ -406,80 +347,6 @@ pub fn build_rust(input: String) -> BuildResult {
     BuildResult::success_rust(output, source_map)
 }
 
-/// Build Go source code and return WAT (WebAssembly Text) code with structured error information.
-#[wasm_bindgen]
-pub fn build_wasm(input: String) -> BuildResult {
-    console_error_panic_hook::set_once();
-
-    // Parse
-    let ast = match gors::parser::parse_file("main.go", &input) {
-        Ok(ast) => ast,
-        Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, "main.go", &input);
-            return BuildResult::error_result(diagnostic);
-        }
-    };
-
-    // Collect all comments from the AST
-    // Mark doc comments (those attached to function declarations) as already handled
-    let mut comments: Vec<CommentInfo> = Vec::new();
-    let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-    // Find doc comment lines (comments attached to function declarations)
-    for decl in &ast.decls {
-        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-            if let Some(ref doc) = func_decl.doc {
-                for comment in &doc.list {
-                    doc_comment_lines.insert(comment.slash.line as u32);
-                }
-            }
-        }
-    }
-
-    // Collect all comments with their positions
-    for comment_group in &ast.comments {
-        for comment in &comment_group.list {
-            let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-            comments.push(CommentInfo {
-                go_line: comment.slash.line as u32,
-                text: comment.text.to_string(),
-                is_doc,
-            });
-        }
-    }
-
-    // Compile Go AST to Rust syn::File
-    let compiled = match gors::compiler::compile(ast) {
-        Ok(result) => result,
-        Err(err) => {
-            let diagnostic = Diagnostic::new(
-                "main.go",
-                0,
-                0,
-                err.to_string(),
-                DiagnosticKind::Compiler,
-            );
-            return BuildResult::error_result(diagnostic);
-        }
-    };
-
-    // Generate WAT code with source map
-    let (wat_output, initial_source_map) = match gors::codegen::wasm::generate_with_sourcemap(compiled, "main.go") {
-        Ok(result) => result,
-        Err(err) => {
-            return BuildResult::error_codegen(err);
-        }
-    };
-
-    // Insert comments at appropriate positions using the source map
-    let (output_with_comments, comment_mappings) = insert_wasm_comments(&wat_output, &comments, &initial_source_map);
-
-    // Build final source map that includes both code and comment mappings
-    let final_source_map = build_wasm_source_map_with_comments(&initial_source_map, &comment_mappings);
-
-    BuildResult::success_wasm(output_with_comments, final_source_map)
-}
-
 /// A mapping for a comment's position in both Go and Rust
 struct CommentMapping {
     go_line: u32,      // 0-based
@@ -487,229 +354,6 @@ struct CommentMapping {
     rust_line: u32,    // 0-based
     rust_col: u32,     // 0-based
     text: String,
-}
-
-/// A mapping for a comment's position in both Go and WAT
-struct WasmCommentMapping {
-    go_line: u32,      // 1-based
-    go_col: u32,       // 1-based
-    wat_line: u32,     // 1-based
-    wat_col: u32,      // 1-based
-    text: String,
-}
-
-/// Insert comments into WAT code using source map for placement.
-/// Returns the output string and a list of comment position mappings.
-fn insert_wasm_comments(
-    wat_code: &str,
-    comments: &[CommentInfo],
-    source_map: &CodegenSourceMap,
-) -> (String, Vec<WasmCommentMapping>) {
-    let wat_lines: Vec<&str> = wat_code.lines().collect();
-    let mut comment_mappings: Vec<WasmCommentMapping> = Vec::new();
-
-    // Build a mapping from Go line -> WAT line using all source map mappings
-    let mut go_to_wat_line: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-
-    for mapping in &source_map.mappings {
-        let go_line = mapping.input_line; // 1-based
-        let wat_line = mapping.output_line; // 1-based
-        // Keep the smallest WAT line for each Go line (first occurrence)
-        go_to_wat_line
-            .entry(go_line)
-            .and_modify(|existing| {
-                if wat_line < *existing {
-                    *existing = wat_line;
-                }
-            })
-            .or_insert(wat_line);
-    }
-
-    // Find the maximum Go line that has a mapping (for detecting trailing comments)
-    let max_mapped_go_line = go_to_wat_line.keys().copied().max().unwrap_or(0);
-
-    // For each comment, find the WAT line where it should be inserted
-    let mut comments_by_wat_line: std::collections::HashMap<u32, Vec<&CommentInfo>> =
-        std::collections::HashMap::new();
-    let mut leading_comments: Vec<&CommentInfo> = Vec::new();
-    let mut trailing_comments: Vec<&CommentInfo> = Vec::new();
-
-    for comment in comments {
-        if comment.is_doc {
-            // Doc comments are already handled by the compiler
-            continue;
-        }
-
-        let comment_go_line = comment.go_line; // 1-based
-
-        // Find the WAT line that corresponds to the Go line after this comment
-        // Look for the first Go line >= comment line that has a mapping
-        let mut target_wat_line: Option<u32> = None;
-
-        for next_go_line in comment_go_line..comment_go_line + 20 {
-            if let Some(&wat_line) = go_to_wat_line.get(&next_go_line) {
-                // If the comment is on the same line as some code, put it before that line
-                // If the comment is on a line by itself, put it before the next code line
-                if next_go_line == comment_go_line {
-                    // Comment on same line as code - this is rare, skip for now
-                    continue;
-                }
-                target_wat_line = Some(wat_line);
-                break;
-            }
-        }
-
-        if let Some(wat_line) = target_wat_line {
-            comments_by_wat_line
-                .entry(wat_line)
-                .or_default()
-                .push(comment);
-        } else if comment.go_line <= 2 {
-            // Leading comment (before package declaration)
-            leading_comments.push(comment);
-        } else if comment_go_line > max_mapped_go_line {
-            // Trailing comment (after all mapped code)
-            trailing_comments.push(comment);
-        }
-        // If we still can't place the comment, it's dropped
-    }
-
-    // Insert trailing comments before the last closing paren
-    if !trailing_comments.is_empty() {
-        // Find the line with the last closing paren (end of module)
-        let closing_paren_line = wat_lines
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, line)| line.trim() == ")")
-            .map(|(i, _)| (i + 1) as u32); // Convert to 1-based
-
-        if let Some(paren_line) = closing_paren_line {
-            for comment in trailing_comments {
-                comments_by_wat_line
-                    .entry(paren_line)
-                    .or_default()
-                    .push(comment);
-            }
-        }
-    }
-
-    // Build the output with comments inserted, tracking line numbers
-    let mut output = String::new();
-    let mut current_wat_line: u32 = 1; // 1-based line number in output
-
-    // Insert leading comments
-    for comment in &leading_comments {
-        let indent = 0usize;
-        let wat_comment = format!(";; {}", comment.text.trim_start_matches("//").trim());
-        comment_mappings.push(WasmCommentMapping {
-            go_line: comment.go_line,
-            go_col: 1,
-            wat_line: current_wat_line,
-            wat_col: (indent + 1) as u32,
-            text: comment.text.clone(),
-        });
-        output.push_str(&wat_comment);
-        output.push('\n');
-        current_wat_line += 1;
-    }
-
-    for (i, line) in wat_lines.iter().enumerate() {
-        let wat_line_idx = (i + 1) as u32; // 1-based
-
-        // Insert any comments that should appear before this line
-        if let Some(line_comments) = comments_by_wat_line.get(&wat_line_idx) {
-            // Determine indentation from the current line
-            let indent = if line.trim() == ")" {
-                // Use default indentation (2 spaces) for content inside parens
-                2
-            } else {
-                line.len() - line.trim_start().len()
-            };
-            let indent_str: String = " ".repeat(indent);
-
-            for comment in line_comments {
-                // Convert Go comment to WAT comment format
-                let wat_comment = format!(";; {}", comment.text.trim_start_matches("//").trim());
-                comment_mappings.push(WasmCommentMapping {
-                    go_line: comment.go_line,
-                    go_col: 1,
-                    wat_line: current_wat_line,
-                    wat_col: (indent + 1) as u32,
-                    text: comment.text.clone(),
-                });
-                output.push_str(&indent_str);
-                output.push_str(&wat_comment);
-                output.push('\n');
-                current_wat_line += 1;
-            }
-        }
-
-        output.push_str(line);
-        output.push('\n');
-        current_wat_line += 1;
-    }
-
-    (output, comment_mappings)
-}
-
-/// Build a source map that includes both code mappings and comment mappings for WAT.
-/// Adjusts code mapping line numbers to account for inserted comment lines.
-fn build_wasm_source_map_with_comments(
-    initial_source_map: &CodegenSourceMap,
-    comment_mappings: &[WasmCommentMapping],
-) -> CodegenSourceMap {
-    let mut new_source_map = CodegenSourceMap::new(&initial_source_map.source_file);
-    new_source_map.source_content = initial_source_map.source_content.clone();
-
-    // Collect comment output lines sorted
-    let mut comment_lines: Vec<u32> = comment_mappings.iter().map(|c| c.wat_line).collect();
-    comment_lines.sort();
-
-    // Add all existing code mappings with adjusted line numbers
-    for mapping in &initial_source_map.mappings {
-        let original_output_line = mapping.output_line;
-
-        // Calculate how many comments were inserted before this line
-        let mut shift = 0u32;
-        for &comment_line in &comment_lines {
-            if comment_line <= original_output_line + shift {
-                shift += 1;
-            } else {
-                break;
-            }
-        }
-
-        let new_output_line = original_output_line + shift;
-
-        new_source_map.add_mapping(
-            mapping.input_line,
-            mapping.input_column,
-            new_output_line,
-            mapping.output_column,
-            mapping.name.clone(),
-        );
-    }
-
-    // Add comment mappings (already have correct final positions)
-    for mapping in comment_mappings {
-        // Add a name for the comment (truncated if too long)
-        let comment_name = if mapping.text.len() > 20 {
-            format!("{}...", &mapping.text[..17])
-        } else {
-            mapping.text.clone()
-        };
-
-        new_source_map.add_mapping(
-            mapping.go_line,
-            mapping.go_col,
-            mapping.wat_line,
-            mapping.wat_col,
-            Some(comment_name),
-        );
-    }
-
-    new_source_map
 }
 
 /// Build a source map that includes both code mappings and comment mappings.
