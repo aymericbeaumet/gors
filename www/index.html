@@ -5,48 +5,98 @@
     <title>gors: experimental go compiler</title>
 
     <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0d1117;
+        color: #c9d1d9;
+        min-height: 100vh;
+      }
+
+      main {
+        max-width: 1800px;
+        margin: 0 auto;
+      }
+
+      main > p {
+        margin: 0 0 16px 0;
+        font-size: 14px;
+      }
+
+      main > p a {
+        color: #58a6ff;
+        text-decoration: none;
+      }
+
+      main > p a:hover {
+        text-decoration: underline;
+      }
+
       .workspace {
-        width: 1012px;
-      }
-
-      #input {
-        border-width: 3px 1px 3px 1px;
-        border-style: solid;
-        border-color: #00ADD8;
-        overflow: hidden;
-      }
-
-      #output {
-        border-width: 3px 1px 3px 1px;
-        border-style: solid;
-        border-color: #FFC832;
-        overflow: hidden;
-      }
-
-      #input:empty, #output:empty {
-        border: 1px dotted gray;
-      }
-
-      #output .cursor {
-        display: none !important;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
       }
 
       .editors {
         display: flex;
-        gap: 12px;
-        height: 600px;
+        gap: 16px;
+        height: 500px;
       }
 
-      .editors > * {
-        width: 500px;
-        height: 100%;
+      .editor-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
       }
 
-      .editors > .output-container {
+      .editor-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: #161b22;
+        border-radius: 8px 8px 0 0;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .editor-header .label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .editor-header .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+
+      .editor-container.go .dot { background: #00ADD8; }
+      .editor-container.rust .dot { background: #FFC832; }
+      .editor-container.wasm .dot { background: #9B59B6; }
+
+      .editor-wrapper {
+        flex: 1;
         position: relative;
+        border: 2px solid;
+        border-top: none;
+        border-radius: 0 0 8px 8px;
+        overflow: hidden;
       }
 
-      .editors > .output-container > #output {
+      .editor-container.go .editor-wrapper { border-color: #00ADD8; }
+      .editor-container.rust .editor-wrapper { border-color: #FFC832; }
+      .editor-container.wasm .editor-wrapper { border-color: #9B59B6; }
+
+      .editor {
         width: 100%;
         height: 100%;
       }
@@ -55,153 +105,197 @@
         padding-left: 5px;
       }
 
-      #error-container {
-        margin-top: 12px;
-        border-radius: 4px;
-        overflow: hidden;
-        border: 1px solid #333;
-      }
-
-      #error-container:has(#error:empty) {
-        display: none;
-      }
-
-      #error-header {
-        background: #2d2d2d;
-        color: #f14c4c;
-        padding: 6px 12px;
-        font-family: system-ui, -apple-system, sans-serif;
-        font-size: 12px;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        border-bottom: 1px solid #333;
-      }
-
-      #error-header::before {
-        content: '';
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        background: #f14c4c;
-        border-radius: 50%;
-      }
-
-      #error {
-        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
-        font-size: 13px;
-        margin: 0;
-        padding: 12px;
-        background: #1e1e1e;
-        color: #d4d4d4;
-        overflow-x: auto;
-        white-space: pre;
-      }
-
-      #error:empty {
-        display: none;
-      }
-
-      #error .error-location {
-        color: #9cdcfe;
-        font-weight: bold;
-      }
-
-      #error .error-kind {
-        color: #f14c4c;
-      }
-
-      #error .error-message {
-        color: #d4d4d4;
-      }
-
-      #error .error-line-number {
-        color: #6a9955;
-      }
-
-      #error .error-source {
-        color: #d4d4d4;
-      }
-
-      #error .error-caret {
-        color: #4ec9b0;
-      }
-
-      /* Source map hover highlighting */
-      .source-map-highlight {
-        background-color: rgba(255, 255, 0, 0.3);
-        border-radius: 2px;
-      }
-
-      /* Copy button for Rust output */
+      /* Copy button */
       .copy-button {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        z-index: 10;
-        padding: 6px 10px;
-        background: #ffffff;
-        border: 1px solid #d0d0d0;
+        padding: 4px 8px;
+        background: transparent;
+        border: 1px solid #30363d;
         border-radius: 4px;
-        color: #333333;
-        font-size: 12px;
-        font-family: system-ui, -apple-system, sans-serif;
+        color: #8b949e;
+        font-size: 11px;
+        font-family: inherit;
         cursor: pointer;
-        opacity: 0;
-        transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out;
         display: flex;
         align-items: center;
         gap: 4px;
-      }
-
-      .output-container:hover .copy-button {
-        opacity: 1;
+        transition: all 0.15s ease;
       }
 
       .copy-button:hover {
-        background: #f0f0f0;
-        border-color: #b0b0b0;
-      }
-
-      .copy-button:active {
-        background: #e0e0e0;
+        background: #21262d;
+        border-color: #8b949e;
+        color: #c9d1d9;
       }
 
       .copy-button.copied {
-        background: #d4edda;
-        border-color: #28a745;
-        color: #155724;
+        background: #238636;
+        border-color: #238636;
+        color: #ffffff;
       }
 
       .copy-button svg {
-        width: 14px;
-        height: 14px;
+        width: 12px;
+        height: 12px;
         fill: currentColor;
       }
+
+      /* Console */
+      #console-container {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      #console-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      #console-header .terminal-icon {
+        width: 14px;
+        height: 14px;
+        fill: #8b949e;
+      }
+
+      #console {
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
+        font-size: 13px;
+        padding: 12px;
+        min-height: 120px;
+        max-height: 200px;
+        overflow-y: auto;
+        background: #0d1117;
+      }
+
+      .console-line {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+
+      .console-line .prompt {
+        color: #3fb950;
+        user-select: none;
+      }
+
+      .console-line .command {
+        color: #c9d1d9;
+      }
+
+      .console-output {
+        color: #8b949e;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .console-output.error {
+        color: #f85149;
+      }
+
+      .console-output.success {
+        color: #3fb950;
+      }
+
+      /* Error block in console */
+      .console-error-block {
+        margin-top: 8px;
+        padding: 12px;
+        background: rgba(248, 81, 73, 0.1);
+        border: 1px solid #f85149;
+        border-radius: 6px;
+        white-space: pre;
+        overflow-x: auto;
+      }
+
+      .console-error-block .error-location { color: #79c0ff; font-weight: bold; }
+      .console-error-block .error-kind { color: #f85149; }
+      .console-error-block .error-message { color: #c9d1d9; }
+      .console-error-block .error-line-number { color: #7ee787; }
+      .console-error-block .error-source { color: #c9d1d9; }
+      .console-error-block .error-caret { color: #a5d6ff; }
+
+      /* Source map hover highlighting */
+      .source-map-highlight {
+        background-color: rgba(88, 166, 255, 0.2);
+        border-radius: 2px;
+      }
+
     </style>
   </head>
   <body>
     <main>
-      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p>
+      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust and WebAssembly code.</p>
 
       <div class="workspace">
         <div class="editors">
-          <div id="input"></div>
-          <div class="output-container">
-            <div id="output"></div>
-            <button id="copy-button" class="copy-button" title="Copy Rust code">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-              </svg>
-              <span>Copy</span>
-            </button>
+          <!-- Go Editor -->
+          <div class="editor-container go">
+            <div class="editor-header">
+              <div class="label">
+                <span class="dot"></span>
+                <span>Go</span>
+              </div>
+            </div>
+            <div class="editor-wrapper">
+              <div id="go-editor" class="editor"></div>
+            </div>
+          </div>
+
+          <!-- Rust Editor -->
+          <div class="editor-container rust">
+            <div class="editor-header">
+              <div class="label">
+                <span class="dot"></span>
+                <span>Rust</span>
+              </div>
+              <button id="copy-rust" class="copy-button" title="Copy Rust code">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                </svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <div class="editor-wrapper">
+              <div id="rust-editor" class="editor"></div>
+            </div>
+          </div>
+
+          <!-- WASM Editor -->
+          <div class="editor-container wasm">
+            <div class="editor-header">
+              <div class="label">
+                <span class="dot"></span>
+                <span>WebAssembly</span>
+              </div>
+              <button id="copy-wasm" class="copy-button" title="Copy WAT code">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                </svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <div class="editor-wrapper">
+              <div id="wasm-editor" class="editor"></div>
+            </div>
           </div>
         </div>
 
-        <div id="error-container">
-          <div id="error-header">Gors Error</div>
-          <pre id="error"></pre>
+        <!-- Console -->
+        <div id="console-container">
+          <div id="console-header">
+            <svg class="terminal-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/>
+            </svg>
+            <span>Console</span>
+          </div>
+          <div id="console"></div>
         </div>
       </div>
     </main>

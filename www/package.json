@@ -6,8 +6,11 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@shikijs/monaco": "^3.21.0",
     "gors": "file:./wasm/pkg",
-    "monaco-editor": "0.55.0"
+    "monaco-editor": "0.55.0",
+    "shiki": "^3.21.0",
+    "wabt": "1.0.36"
   },
   "devDependencies": {
     "css-loader": "7.1.2",

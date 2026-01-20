@@ -257,14 +257,268 @@ impl<'scanner> Parser<'scanner> {
         }
     }
 
-    /// Take pending comments as a CommentGroup (for doc comments).
-    /// Returns None if there are no pending comments.
-    fn take_doc_comments(&mut self) -> Option<ast::CommentGroup<'scanner>> {
-        if self.pending_comments.is_empty() {
+    /// Get the end line of a ValueSpec (for capturing line comments).
+    fn get_value_spec_end_line(&self, spec: &ast::ValueSpec) -> usize {
+        // Try to get the line from values first (rightmost part)
+        if let Some(ref values) = spec.values {
+            if let Some(last_value) = values.last() {
+                return self.get_expr_end_line(last_value);
+            }
+        }
+        // Then try type
+        if let Some(ref type_) = spec.type_ {
+            return self.get_expr_end_line(type_);
+        }
+        // Finally, use the last name
+        if let Some(last_name) = spec.names.last() {
+            return last_name.name_pos.line;
+        }
+        0
+    }
+
+    /// Get the end line of a TypeSpec (for capturing line comments).
+    fn get_type_spec_end_line(&self, spec: &ast::TypeSpec) -> usize {
+        self.get_expr_end_line(&spec.type_)
+    }
+
+    /// Get the end line of a field (for capturing line comments).
+    fn get_field_end_line(&self, field: &ast::Field) -> usize {
+        // Try to get the line from various field components, in order of preference
+        if let Some(ref tag) = field.tag {
+            return tag.value_pos.line;
+        }
+        if let Some(ref type_) = field.type_ {
+            return self.get_expr_end_line(type_);
+        }
+        if let Some(ref names) = field.names {
+            if let Some(last_name) = names.last() {
+                return last_name.name_pos.line;
+            }
+        }
+        0
+    }
+
+    /// Get the approximate end line of an expression.
+    fn get_expr_end_line(&self, expr: &ast::Expr) -> usize {
+        match expr {
+            ast::Expr::Ident(id) => id.name_pos.line,
+            ast::Expr::BasicLit(lit) => lit.value_pos.line,
+            ast::Expr::StarExpr(star) => self.get_expr_end_line(&star.x),
+            ast::Expr::SelectorExpr(sel) => sel.sel.name_pos.line,
+            ast::Expr::IndexExpr(idx) => idx.rbrack.line,
+            ast::Expr::IndexListExpr(idx) => idx.rbrack.line,
+            ast::Expr::CallExpr(call) => call.rparen.line,
+            ast::Expr::ParenExpr(paren) => paren.rparen.line,
+            ast::Expr::UnaryExpr(unary) => self.get_expr_end_line(&unary.x),
+            ast::Expr::BinaryExpr(binary) => self.get_expr_end_line(&binary.y),
+            ast::Expr::SliceExpr(slice) => slice.rbrack.line,
+            ast::Expr::TypeAssertExpr(ta) => ta.rparen.line,
+            ast::Expr::CompositeLit(comp) => comp.rbrace.line,
+            ast::Expr::FuncLit(func) => func.body.rbrace.line,
+            ast::Expr::ArrayType(arr) => self.get_expr_end_line(&arr.elt),
+            ast::Expr::MapType(map) => self.get_expr_end_line(&map.value),
+            ast::Expr::ChanType(chan) => self.get_expr_end_line(&chan.value),
+            ast::Expr::FuncType(func) => {
+                if let Some(ref results) = func.results {
+                    if let Some(closing) = results.closing {
+                        return closing.line;
+                    }
+                    if let Some(last) = results.list.last() {
+                        if let Some(ref type_) = last.type_ {
+                            return self.get_expr_end_line(type_);
+                        }
+                    }
+                }
+                if let Some(closing) = func.params.closing {
+                    return closing.line;
+                }
+                func.func.map_or(0, |pos| pos.line)
+            }
+            ast::Expr::StructType(s) => {
+                if let Some(ref fields) = s.fields {
+                    if let Some(closing) = fields.closing {
+                        return closing.line;
+                    }
+                }
+                s.struct_.line
+            }
+            ast::Expr::InterfaceType(i) => {
+                if let Some(ref methods) = i.methods {
+                    if let Some(closing) = methods.closing {
+                        return closing.line;
+                    }
+                }
+                i.interface.line
+            }
+            ast::Expr::KeyValueExpr(kv) => self.get_expr_end_line(&kv.value),
+            ast::Expr::Ellipsis(ell) => {
+                if let Some(ref elt) = ell.elt {
+                    self.get_expr_end_line(elt)
+                } else {
+                    ell.ellipsis.line
+                }
+            }
+        }
+    }
+
+    /// Take pending comments that are on the given line (for line comments after declarations).
+    fn take_line_comments_for_line(&mut self, line: usize) -> Option<ast::CommentGroup<'scanner>> {
+        if self.pending_comments.is_empty() || line == 0 {
+            return None;
+        }
+
+        // Collect comments that are on the specified line
+        let (same_line, other): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_comments)
+            .into_iter()
+            .partition(|c| c.slash.line == line);
+
+        // Restore non-same-line comments
+        self.pending_comments = other;
+
+        if same_line.is_empty() {
             None
         } else {
-            let comments = std::mem::take(&mut self.pending_comments);
-            let group = ast::CommentGroup { list: comments };
+            let group = ast::CommentGroup { list: same_line };
+            self.all_comments.push(group.clone());
+            Some(group)
+        }
+    }
+
+    /// Flush any pending comments that are on the given line to all_comments.
+    /// This is used after parsing an opening brace to ensure line comments
+    /// on the same line as the brace are not treated as doc comments.
+    fn flush_same_line_comments(&mut self, line: usize) {
+        if self.pending_comments.is_empty() {
+            return;
+        }
+
+        // Partition comments: same line vs other
+        let (same_line, other): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_comments)
+            .into_iter()
+            .partition(|c| c.slash.line == line);
+
+        // Restore non-same-line comments
+        self.pending_comments = other;
+
+        // Add same-line comments as separate groups
+        for comment in same_line {
+            self.all_comments.push(ast::CommentGroup { list: vec![comment] });
+        }
+    }
+
+    /// Calculate the end line of a comment (handles both // and /* */ comments).
+    fn comment_end_line(comment: &ast::Comment) -> usize {
+        if comment.text.starts_with("//") {
+            // Single-line comment ends on the same line it starts
+            comment.slash.line
+        } else {
+            // Multi-line comment ends on start line + number of newlines in text
+            comment.slash.line + comment.text.matches('\n').count()
+        }
+    }
+
+    /// Flush pending comments to all_comments, splitting into separate CommentGroups.
+    /// Comments are grouped together only if they are on consecutive lines with no blank
+    /// lines between them AND they are likely part of the same doc comment block.
+    fn flush_pending_comments_as_groups(&mut self) {
+        if self.pending_comments.is_empty() {
+            return;
+        }
+
+        let comments = std::mem::take(&mut self.pending_comments);
+        let mut current_group: Vec<ast::Comment<'scanner>> = Vec::new();
+
+        for comment in comments {
+            if current_group.is_empty() {
+                current_group.push(comment);
+            } else {
+                let prev = current_group.last().expect("current_group is not empty");
+                let prev_end_line = Self::comment_end_line(prev);
+                let consecutive = comment.slash.line == prev_end_line + 1;
+
+                // For consecutive // comments, only group if they appear to be a doc comment block.
+                // Doc comments start at the same column (typically low columns 1-5 for standard indentation).
+                // Trailing comments after code have varying columns and should be separate.
+                let same_column = comment.slash.column == prev.slash.column;
+
+                // Split into new group if:
+                // 1. There's a blank line between comments
+                // 2. Comments are on the same line (inline /* */ comments with code between)
+                // 3. Consecutive comments at different columns (likely separate trailing comments)
+                let should_split = comment.slash.line > prev_end_line + 1
+                    || (comment.slash.line == prev_end_line && !prev.text.starts_with("//"))
+                    || (consecutive && !same_column);
+
+                if should_split {
+                    self.all_comments
+                        .push(ast::CommentGroup { list: std::mem::take(&mut current_group) });
+                }
+                current_group.push(comment);
+            }
+        }
+
+        if !current_group.is_empty() {
+            self.all_comments.push(ast::CommentGroup { list: current_group });
+        }
+    }
+
+    /// Take pending comments as a CommentGroup (for doc comments).
+    /// Only takes the last consecutive block of comments (no blank lines between them)
+    /// that immediately precede the current position (no blank line before declaration).
+    /// Returns None if there are no pending comments or if there's a blank line
+    /// between the comments and the declaration.
+    fn take_doc_comments(&mut self) -> Option<ast::CommentGroup<'scanner>> {
+        if self.pending_comments.is_empty() {
+            return None;
+        }
+
+        // Get the line of the current token (the declaration we're about to parse)
+        let decl_line = self.current_step.0.line;
+
+        // Find the end line of the last comment
+        let last_comment = self.pending_comments.last().expect("pending_comments is not empty");
+        let last_comment_end_line = Self::comment_end_line(last_comment);
+
+        // If there's a blank line between the last comment and the declaration,
+        // these are NOT doc comments - add all as regular comments and return None
+        if decl_line > last_comment_end_line + 1 {
+            self.flush_pending_comments_as_groups();
+            return None;
+        }
+
+        // Find the start of the last consecutive comment block.
+        // Comments are consecutive if each comment ends on line N and the next starts on line N+1.
+        let mut group_start = self.pending_comments.len();
+        for i in (1..self.pending_comments.len()).rev() {
+            let prev = &self.pending_comments[i - 1];
+            let curr = &self.pending_comments[i];
+
+            let prev_end_line = Self::comment_end_line(prev);
+
+            // Check if there's a blank line between comments
+            if curr.slash.line > prev_end_line + 1 {
+                // Found a blank line, start the group here
+                group_start = i;
+                break;
+            }
+            group_start = i - 1;
+        }
+
+        // If all comments are in one consecutive block, use index 0
+        if group_start == self.pending_comments.len() && !self.pending_comments.is_empty() {
+            group_start = 0;
+        }
+
+        // Take the last consecutive group as doc comments
+        let doc_comments: Vec<_> = self.pending_comments.drain(group_start..).collect();
+
+        // Flush remaining comments as separate groups (not doc comments)
+        self.flush_pending_comments_as_groups();
+
+        if doc_comments.is_empty() {
+            None
+        } else {
+            let group = ast::CommentGroup { list: doc_comments };
             self.all_comments.push(group.clone());
             Some(group)
         }
@@ -311,6 +565,9 @@ impl<'scanner> Parser<'scanner> {
     fn parse_source_file(&mut self) -> Result<Option<ast::File<'scanner>>> {
         log::debug!("Parser::parse_source_file()");
 
+        // Capture doc comments before the package clause (package-level documentation)
+        let doc = self.take_doc_comments();
+
         let (package, package_name) = match self.parse_package_clause()? {
             Some(v) => v,
             None => return Ok(None),
@@ -328,7 +585,7 @@ impl<'scanner> Parser<'scanner> {
         };
 
         let mut out = ast::File {
-            doc: None, // Doc comments are captured separately
+            doc, // Package-level documentation
             package: package.0,
             name: package_name,
             decls: vec![],
@@ -353,11 +610,8 @@ impl<'scanner> Parser<'scanner> {
         let eof = self.token(Token::EOF).required()?;
         out.file_end = eof.0;
 
-        // Collect any remaining pending comments
-        if !self.pending_comments.is_empty() {
-            let comments = std::mem::take(&mut self.pending_comments);
-            self.all_comments.push(ast::CommentGroup { list: comments });
-        }
+        // Collect any remaining pending comments (split into groups by blank lines)
+        self.flush_pending_comments_as_groups();
 
         // Set the collected comments on the file
         out.comments = std::mem::take(&mut self.all_comments);
@@ -397,9 +651,23 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(import_spec) = self.parse_import_spec()? {
-                specs.push(ast::Spec::ImportSpec(import_spec));
-                if self.token(Token::SEMICOLON)?.is_none() {
+            loop {
+                // Capture doc comments before each import spec
+                let spec_doc = self.take_doc_comments();
+                if let Some(mut import_spec) = self.parse_import_spec()? {
+                    import_spec.doc = spec_doc;
+                    // Capture line comments after the spec
+                    let spec_line = import_spec.path.value_pos.line;
+                    import_spec.comment = self.take_line_comments_for_line(spec_line);
+                    specs.push(ast::Spec::ImportSpec(import_spec));
+                    if self.token(Token::SEMICOLON)?.is_none() {
+                        break;
+                    }
+                } else {
+                    // No spec found - flush any captured doc comments back
+                    if let Some(group) = spec_doc {
+                        self.pending_comments.extend(group.list);
+                    }
                     break;
                 }
             }
@@ -416,7 +684,11 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ImportSpec(self.parse_import_spec().required()?)];
+        let mut import_spec = self.parse_import_spec().required()?;
+        // Capture line comments after single-line import
+        let spec_line = import_spec.path.value_pos.line;
+        import_spec.comment = self.take_line_comments_for_line(spec_line);
+        let specs = vec![ast::Spec::ImportSpec(import_spec)];
         Ok(Some(ast::GenDecl {
             doc: None,
             tok_pos: import.0,
@@ -479,17 +751,32 @@ impl<'scanner> Parser<'scanner> {
     fn parse_declaration(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
         log::debug!("Parser::parse_declaration()");
 
+        // Capture doc comments before the declaration keyword
+        let doc = self.take_doc_comments();
+
         Ok(match self.current_step.1 {
-            Token::CONST => Some(self.parse_const_decl().required()?),
-            Token::TYPE => Some(self.parse_type_decl().required()?),
-            Token::VAR => Some(self.parse_var_decl().required()?),
-            _ => None,
+            Token::CONST => Some(self.parse_const_decl_with_doc(doc).required()?),
+            Token::TYPE => Some(self.parse_type_decl_with_doc(doc).required()?),
+            Token::VAR => Some(self.parse_var_decl_with_doc(doc).required()?),
+            _ => {
+                // No declaration found, restore doc comments to pending
+                if let Some(group) = doc {
+                    // Remove from all_comments since it wasn't used
+                    self.all_comments.pop();
+                    // Put comments back in pending
+                    self.pending_comments.extend(group.list);
+                }
+                None
+            }
         })
     }
 
     // TypeDecl = "type" ( TypeSpec | "(" { TypeSpec ";" } ")" ) .
-    fn parse_type_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::parse_type_decl()");
+    fn parse_type_decl_with_doc(
+        &mut self,
+        doc: Option<ast::CommentGroup<'scanner>>,
+    ) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_type_decl_with_doc()");
 
         let type_ = match self.token(Token::TYPE)? {
             Some(v) => v,
@@ -498,9 +785,23 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(type_spec) = self.parse_type_spec()? {
-                specs.push(ast::Spec::TypeSpec(type_spec));
-                if self.token(Token::SEMICOLON)?.is_none() {
+            loop {
+                // Capture doc comments before each spec
+                let spec_doc = self.take_doc_comments();
+                if let Some(mut type_spec) = self.parse_type_spec()? {
+                    type_spec.doc = spec_doc;
+                    // Capture line comments after the spec
+                    let spec_line = self.get_type_spec_end_line(&type_spec);
+                    type_spec.comment = self.take_line_comments_for_line(spec_line);
+                    specs.push(ast::Spec::TypeSpec(type_spec));
+                    if self.token(Token::SEMICOLON)?.is_none() {
+                        break;
+                    }
+                } else {
+                    // No spec found - flush any captured doc comments back
+                    if let Some(group) = spec_doc {
+                        self.pending_comments.extend(group.list);
+                    }
                     break;
                 }
             }
@@ -508,7 +809,7 @@ impl<'scanner> Parser<'scanner> {
             let rparen = self.token(Token::RPAREN).required()?;
 
             return Ok(Some(ast::GenDecl {
-                doc: None,
+                doc,
                 tok_pos: type_.0,
                 tok: type_.1,
                 lparen: Some(lparen.0),
@@ -517,9 +818,13 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::TypeSpec(self.parse_type_spec().required()?)];
+        let mut type_spec = self.parse_type_spec().required()?;
+        // Capture line comments after single-line type declaration
+        let spec_line = self.get_type_spec_end_line(&type_spec);
+        type_spec.comment = self.take_line_comments_for_line(spec_line);
+        let specs = vec![ast::Spec::TypeSpec(type_spec)];
         Ok(Some(ast::GenDecl {
-            doc: None,
+            doc,
             tok_pos: type_.0,
             tok: type_.1,
             lparen: None,
@@ -616,8 +921,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // ConstDecl = "const" ( ConstSpec | "(" { ConstSpec ";" } ")" ) .
-    fn parse_const_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::parse_const_decl()");
+    fn parse_const_decl_with_doc(
+        &mut self,
+        doc: Option<ast::CommentGroup<'scanner>>,
+    ) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_const_decl_with_doc()");
 
         let const_ = match self.token(Token::CONST)? {
             Some(v) => v,
@@ -626,9 +934,23 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(const_spec) = self.parse_const_spec()? {
-                specs.push(ast::Spec::ValueSpec(const_spec));
-                if self.token(Token::SEMICOLON)?.is_none() {
+            loop {
+                // Capture doc comments before each spec
+                let spec_doc = self.take_doc_comments();
+                if let Some(mut const_spec) = self.parse_const_spec()? {
+                    const_spec.doc = spec_doc;
+                    // Capture line comments after the spec
+                    let spec_line = self.get_value_spec_end_line(&const_spec);
+                    const_spec.comment = self.take_line_comments_for_line(spec_line);
+                    specs.push(ast::Spec::ValueSpec(const_spec));
+                    if self.token(Token::SEMICOLON)?.is_none() {
+                        break;
+                    }
+                } else {
+                    // No spec found - flush any captured doc comments back
+                    if let Some(group) = spec_doc {
+                        self.pending_comments.extend(group.list);
+                    }
                     break;
                 }
             }
@@ -636,7 +958,7 @@ impl<'scanner> Parser<'scanner> {
             let rparen = self.token(Token::RPAREN).required()?;
 
             return Ok(Some(ast::GenDecl {
-                doc: None,
+                doc,
                 tok_pos: const_.0,
                 tok: const_.1,
                 lparen: Some(lparen.0),
@@ -645,9 +967,13 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ValueSpec(self.parse_const_spec().required()?)];
+        let mut const_spec = self.parse_const_spec().required()?;
+        // Capture line comments after single-line const declaration
+        let spec_line = self.get_value_spec_end_line(&const_spec);
+        const_spec.comment = self.take_line_comments_for_line(spec_line);
+        let specs = vec![ast::Spec::ValueSpec(const_spec)];
         Ok(Some(ast::GenDecl {
-            doc: None,
+            doc,
             tok_pos: const_.0,
             tok: const_.1,
             lparen: None,
@@ -684,8 +1010,11 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // VarDecl = "var" ( VarSpec | "(" { VarSpec ";" } ")" ) .
-    fn parse_var_decl(&mut self) -> Result<Option<ast::GenDecl<'scanner>>> {
-        log::debug!("Parser::parse_var_decl()");
+    fn parse_var_decl_with_doc(
+        &mut self,
+        doc: Option<ast::CommentGroup<'scanner>>,
+    ) -> Result<Option<ast::GenDecl<'scanner>>> {
+        log::debug!("Parser::parse_var_decl_with_doc()");
 
         let var = match self.token(Token::VAR)? {
             Some(v) => v,
@@ -694,9 +1023,23 @@ impl<'scanner> Parser<'scanner> {
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
-            while let Some(var_spec) = self.parse_var_spec()? {
-                specs.push(ast::Spec::ValueSpec(var_spec));
-                if self.token(Token::SEMICOLON)?.is_none() {
+            loop {
+                // Capture doc comments before each spec
+                let spec_doc = self.take_doc_comments();
+                if let Some(mut var_spec) = self.parse_var_spec()? {
+                    var_spec.doc = spec_doc;
+                    // Capture line comments after the spec
+                    let spec_line = self.get_value_spec_end_line(&var_spec);
+                    var_spec.comment = self.take_line_comments_for_line(spec_line);
+                    specs.push(ast::Spec::ValueSpec(var_spec));
+                    if self.token(Token::SEMICOLON)?.is_none() {
+                        break;
+                    }
+                } else {
+                    // No spec found - flush any captured doc comments back
+                    if let Some(group) = spec_doc {
+                        self.pending_comments.extend(group.list);
+                    }
                     break;
                 }
             }
@@ -704,7 +1047,7 @@ impl<'scanner> Parser<'scanner> {
             let rparen = self.token(Token::RPAREN).required()?;
 
             return Ok(Some(ast::GenDecl {
-                doc: None,
+                doc,
                 tok_pos: var.0,
                 tok: var.1,
                 lparen: Some(lparen.0),
@@ -713,9 +1056,13 @@ impl<'scanner> Parser<'scanner> {
             }));
         }
 
-        let specs = vec![ast::Spec::ValueSpec(self.parse_var_spec().required()?)];
+        let mut var_spec = self.parse_var_spec().required()?;
+        // Capture line comments after single-line var declaration
+        let spec_line = self.get_value_spec_end_line(&var_spec);
+        var_spec.comment = self.take_line_comments_for_line(spec_line);
+        let specs = vec![ast::Spec::ValueSpec(var_spec)];
         Ok(Some(ast::GenDecl {
-            doc: None,
+            doc,
             tok_pos: var.0,
             tok: var.1,
             lparen: None,
@@ -1663,8 +2010,15 @@ impl<'scanner> Parser<'scanner> {
 
         let lbrace = self.token(Token::LBRACE).required()?;
 
+        // Flush any pending comments on the same line as the opening brace
+        // (these are line comments for the brace, not doc comments for interface elements)
+        self.flush_same_line_comments(lbrace.0.line);
+
         let mut fields = vec![];
         loop {
+            // Capture doc comments before each interface element
+            let doc = self.take_doc_comments();
+
             // Check for underlying type constraint (~Type)
             if let Some(tilde) = self.token(Token::TILDE)? {
                 let type_ = self.parse_type().required()?;
@@ -1686,7 +2040,7 @@ impl<'scanner> Parser<'scanner> {
                 }
 
                 fields.push(ast::Field {
-                    doc: None,
+                    doc,
                     names: None,
                     type_: Some(type_elem),
                     tag: None,
@@ -1725,7 +2079,7 @@ impl<'scanner> Parser<'scanner> {
                 }
 
                 fields.push(ast::Field {
-                    doc: None,
+                    doc,
                     names: None,
                     type_: Some(type_elem),
                     tag: None,
@@ -1743,7 +2097,7 @@ impl<'scanner> Parser<'scanner> {
                     self.token(Token::PERIOD)?;
                     let sel = self.identifier().required()?;
                     fields.push(ast::Field {
-                        doc: None,
+                        doc,
                         names: None,
                         type_: Some(ast::Expr::SelectorExpr(ast::SelectorExpr {
                             x: Box::new(ast::Expr::Ident(method_spec)),
@@ -1799,7 +2153,7 @@ impl<'scanner> Parser<'scanner> {
                     }
 
                     fields.push(ast::Field {
-                        doc: None,
+                        doc,
                         names: None,
                         type_: Some(type_elem),
                         tag: None,
@@ -1813,7 +2167,7 @@ impl<'scanner> Parser<'scanner> {
 
                 if let Some(signature) = self.parse_signature(None)? {
                     fields.push(ast::Field {
-                        doc: None,
+                        doc,
                         names: Some(vec![method_spec]),
                         type_: Some(ast::Expr::FuncType(signature)),
                         tag: None,
@@ -1840,7 +2194,7 @@ impl<'scanner> Parser<'scanner> {
                 }
 
                 fields.push(ast::Field {
-                    doc: None,
+                    doc,
                     names: None,
                     type_: Some(type_elem),
                     tag: None,
@@ -1854,7 +2208,7 @@ impl<'scanner> Parser<'scanner> {
 
             if let Some(interface_type_name) = self.parse_interface_type_name()? {
                 fields.push(ast::Field {
-                    doc: None,
+                    doc,
                     names: None,
                     type_: Some(interface_type_name),
                     tag: None,
@@ -1866,6 +2220,11 @@ impl<'scanner> Parser<'scanner> {
                 continue;
             }
 
+            // No interface element found - remove doc comments from all_comments and put back in pending
+            if let Some(group) = doc {
+                self.all_comments.pop();
+                self.pending_comments.extend(group.list);
+            }
             break;
         }
 
@@ -1907,10 +2266,30 @@ impl<'scanner> Parser<'scanner> {
 
         let lbrace = self.token(Token::LBRACE).required()?;
 
+        // Flush any pending comments on the same line as the opening brace
+        // (these are line comments for the brace, not doc comments for struct fields)
+        self.flush_same_line_comments(lbrace.0.line);
+
         let mut fields = vec![];
-        while let Some(field_decl) = self.parse_field_decl()? {
-            fields.push(field_decl);
-            if self.token(Token::SEMICOLON)?.is_none() {
+        loop {
+            // Capture doc comments before each field
+            let doc = self.take_doc_comments();
+            if let Some(mut field_decl) = self.parse_field_decl()? {
+                field_decl.doc = doc;
+                // Capture line comments on the same line as the field (after the field)
+                // Use the position of the last token in the field to determine the line
+                let field_line = self.get_field_end_line(&field_decl);
+                field_decl.comment = self.take_line_comments_for_line(field_line);
+                fields.push(field_decl);
+                if self.token(Token::SEMICOLON)?.is_none() {
+                    break;
+                }
+            } else {
+                // No field found - remove doc comments from all_comments and put back in pending
+                if let Some(group) = doc {
+                    self.all_comments.pop();
+                    self.pending_comments.extend(group.list);
+                }
                 break;
             }
         }

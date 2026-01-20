@@ -1,5 +1,9 @@
 import * as gors from 'gors';
 import * as monaco from 'monaco-editor';
+import { shikiToMonaco } from '@shikijs/monaco';
+import { createHighlighterCore } from 'shiki/core';
+import { createOnigurumaEngine } from 'shiki/engine/oniguruma';
+import wabt from 'wabt';
 
 /**
  * Format an error with source context for display in the error panel
@@ -87,41 +91,65 @@ function createMonacoMarkers(result, sourceCode) {
  * Highlight state management
  */
 class HighlightManager {
-  constructor(inputEditor, outputEditor) {
-    this.inputEditor = inputEditor;
-    this.outputEditor = outputEditor;
-    this.inputDecorations = [];
-    this.outputDecorations = [];
-    this.currentResult = null;
+  constructor(goEditor, rustEditor, wasmEditor) {
+    this.goEditor = goEditor;
+    this.rustEditor = rustEditor;
+    this.wasmEditor = wasmEditor;
+    this.goDecorations = [];
+    this.rustDecorations = [];
+    this.wasmDecorations = [];
+    this.rustResult = null;
+    this.wasmResult = null;
   }
 
-  setResult(result) {
-    this.currentResult = result;
+  setRustResult(result) {
+    this.rustResult = result;
+  }
+
+  setWasmResult(result) {
+    this.wasmResult = result;
   }
 
   /**
-   * Highlight Rust code corresponding to a Go position
+   * Highlight Rust and WAT code corresponding to a Go position
    */
   highlightFromGo(line, column) {
-    if (!this.currentResult || !this.currentResult.success) {
-      this.clearOutputHighlight();
-      return;
+    // Highlight in Rust editor
+    if (this.rustResult && this.rustResult.success) {
+      const rustSpan = this.rustResult.go_to_output(line, column);
+      if (rustSpan.length === 4) {
+        this.rustDecorations = this.rustEditor.deltaDecorations(
+          this.rustDecorations,
+          [{
+            range: new monaco.Range(rustSpan[0], rustSpan[1], rustSpan[2], rustSpan[3]),
+            options: {
+              className: 'source-map-highlight',
+              isWholeLine: false,
+            }
+          }]
+        );
+      } else {
+        this.clearRustHighlight();
+      }
     }
 
-    const rustSpan = this.currentResult.go_to_rust(line, column);
-    if (rustSpan.length === 4) {
-      this.outputDecorations = this.outputEditor.deltaDecorations(
-        this.outputDecorations,
-        [{
-          range: new monaco.Range(rustSpan[0], rustSpan[1], rustSpan[2], rustSpan[3]),
-          options: {
-            className: 'source-map-highlight',
-            isWholeLine: false,
-          }
-        }]
-      );
-    } else {
-      this.clearOutputHighlight();
+    // Highlight in WASM editor
+    if (this.wasmResult && this.wasmResult.success) {
+      const wasmSpan = this.wasmResult.go_to_output(line, column);
+      if (wasmSpan.length === 4) {
+        this.wasmDecorations = this.wasmEditor.deltaDecorations(
+          this.wasmDecorations,
+          [{
+            range: new monaco.Range(wasmSpan[0], wasmSpan[1], wasmSpan[2], wasmSpan[3]),
+            options: {
+              className: 'source-map-highlight',
+              isWholeLine: false,
+            }
+          }]
+        );
+      } else {
+        this.clearWasmHighlight();
+      }
     }
   }
 
@@ -129,15 +157,15 @@ class HighlightManager {
    * Highlight Go code corresponding to a Rust position
    */
   highlightFromRust(line, column) {
-    if (!this.currentResult || !this.currentResult.success) {
-      this.clearInputHighlight();
+    if (!this.rustResult || !this.rustResult.success) {
+      this.clearGoHighlight();
       return;
     }
 
-    const goSpan = this.currentResult.rust_to_go(line, column);
+    const goSpan = this.rustResult.output_to_go(line, column);
     if (goSpan.length === 4) {
-      this.inputDecorations = this.inputEditor.deltaDecorations(
-        this.inputDecorations,
+      this.goDecorations = this.goEditor.deltaDecorations(
+        this.goDecorations,
         [{
           range: new monaco.Range(goSpan[0], goSpan[1], goSpan[2], goSpan[3]),
           options: {
@@ -147,38 +175,208 @@ class HighlightManager {
         }]
       );
     } else {
-      this.clearInputHighlight();
+      this.clearGoHighlight();
     }
   }
 
-  clearInputHighlight() {
-    this.inputDecorations = this.inputEditor.deltaDecorations(this.inputDecorations, []);
+  /**
+   * Highlight Go code corresponding to a WAT position
+   */
+  highlightFromWasm(line, column) {
+    if (!this.wasmResult || !this.wasmResult.success) {
+      this.clearGoHighlight();
+      return;
+    }
+
+    const goSpan = this.wasmResult.output_to_go(line, column);
+    if (goSpan.length === 4) {
+      this.goDecorations = this.goEditor.deltaDecorations(
+        this.goDecorations,
+        [{
+          range: new monaco.Range(goSpan[0], goSpan[1], goSpan[2], goSpan[3]),
+          options: {
+            className: 'source-map-highlight',
+            isWholeLine: false,
+          }
+        }]
+      );
+    } else {
+      this.clearGoHighlight();
+    }
   }
 
-  clearOutputHighlight() {
-    this.outputDecorations = this.outputEditor.deltaDecorations(this.outputDecorations, []);
+  clearGoHighlight() {
+    this.goDecorations = this.goEditor.deltaDecorations(this.goDecorations, []);
+  }
+
+  clearRustHighlight() {
+    this.rustDecorations = this.rustEditor.deltaDecorations(this.rustDecorations, []);
+  }
+
+  clearWasmHighlight() {
+    this.wasmDecorations = this.wasmEditor.deltaDecorations(this.wasmDecorations, []);
   }
 
   clearAll() {
-    this.clearInputHighlight();
-    this.clearOutputHighlight();
+    this.clearGoHighlight();
+    this.clearRustHighlight();
+    this.clearWasmHighlight();
   }
 }
 
-function onDOMContentLoaded() {
-  const input = document.getElementById('input');
-  const output = document.getElementById('output');
-  const error = document.getElementById('error');
-  const copyButton = document.getElementById('copy-button');
+/**
+ * Console manager for shell-style output
+ */
+class ConsoleManager {
+  constructor(element) {
+    this.element = element;
+  }
 
-  const opts = {
+  clear() {
+    this.element.innerHTML = '';
+  }
+
+  addCommand(command) {
+    const line = document.createElement('div');
+    line.className = 'console-line';
+    line.innerHTML = `<span class="prompt">$</span><span class="command">${escapeHtml(command)}</span>`;
+    this.element.appendChild(line);
+    this.scrollToBottom();
+  }
+
+  addOutput(text, className = '') {
+    const output = document.createElement('div');
+    output.className = `console-output ${className}`;
+    output.textContent = text;
+    this.element.appendChild(output);
+    this.scrollToBottom();
+  }
+
+  addError(text) {
+    this.addOutput(text, 'error');
+  }
+
+  addSuccess(text) {
+    this.addOutput(text, 'success');
+  }
+
+  addErrorBlock(html) {
+    const block = document.createElement('div');
+    block.className = 'console-error-block';
+    block.innerHTML = html;
+    this.element.appendChild(block);
+    this.scrollToBottom();
+  }
+
+  scrollToBottom() {
+    this.element.scrollTop = this.element.scrollHeight;
+  }
+}
+
+/**
+ * Copy button handler
+ */
+function setupCopyButton(buttonId, getContent) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+
+  button.addEventListener('click', async () => {
+    const content = getContent();
+    if (!content) return;
+
+    try {
+      await navigator.clipboard.writeText(content);
+      button.classList.add('copied');
+      button.querySelector('span').textContent = 'Copied!';
+
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.querySelector('span').textContent = 'Copy';
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  });
+}
+
+// Wabt module instance (loaded once)
+let wabtInstance = null;
+
+/**
+ * Execute WAT code using wabt.js
+ */
+async function executeWasm(watCode, consoleManager) {
+  try {
+    // Load wabt if not already loaded
+    if (!wabtInstance) {
+      wabtInstance = await wabt();
+    }
+
+    const module = wabtInstance.parseWat('main.wat', watCode);
+    const { buffer } = module.toBinary({});
+
+    // Memory reference captured after instantiation
+    let memory;
+    const output = [];
+
+    const imports = {
+      env: {
+        print: (ptr, len) => {
+          const bytes = new Uint8Array(memory.buffer, ptr, len);
+          const text = new TextDecoder('utf-8').decode(bytes);
+          output.push(text);
+        }
+      }
+    };
+
+    const { instance } = await WebAssembly.instantiate(buffer, imports);
+    memory = instance.exports.memory;
+
+    // Call main function
+    if (instance.exports.main) {
+      instance.exports.main();
+    }
+
+    // Output the result
+    if (output.length > 0) {
+      for (const line of output) {
+        consoleManager.addSuccess(line);
+      }
+    }
+
+    module.destroy();
+  } catch (err) {
+    consoleManager.addError(`WASM execution error: ${err.message}`);
+  }
+}
+
+async function onDOMContentLoaded() {
+  const goEditorEl = document.getElementById('go-editor');
+  const rustEditorEl = document.getElementById('rust-editor');
+  const wasmEditorEl = document.getElementById('wasm-editor');
+  const consoleEl = document.getElementById('console');
+
+  const consoleManager = new ConsoleManager(consoleEl);
+
+  // Initialize Shiki highlighter for WAT syntax highlighting
+  const highlighter = await createHighlighterCore({
+    themes: [import('shiki/themes/dark-plus.mjs')],
+    langs: [import('shiki/langs/wasm.mjs')],
+    engine: createOnigurumaEngine(import('shiki/wasm')),
+  });
+
+  // Register WAT language with Monaco and wire up Shiki
+  monaco.languages.register({ id: 'wasm' });
+  shikiToMonaco(highlighter, monaco);
+
+  const editorOptions = {
     cursorSurroundingLines: 5,
     folding: false,
-    fontSize: '13px',
+    fontSize: 13,
     glyphMargin: false,
     lineDecorationsWidth: 0,
-    lineNumbers: 'off',
-    lineNumbersMinChars: 2,
+    lineNumbers: 'on',
+    lineNumbersMinChars: 3,
     minimap: { enabled: false },
     occurrencesHighlight: 'off',
     overviewRulerLanes: 0,
@@ -187,60 +385,108 @@ function onDOMContentLoaded() {
     renderLineHighlight: 'none',
     scrollBeyondLastLine: false,
     selectionHighlight: false,
+    theme: 'dark-plus',
+    automaticLayout: true,
   };
 
-  // setup input editor
-
-  const inputEditor = monaco.editor.create(input, {
-    ...opts,
+  // Create Go editor (editable)
+  const goEditor = monaco.editor.create(goEditorEl, {
+    ...editorOptions,
     language: 'go',
   });
-  const inputModel = inputEditor.getModel();
+  const goModel = goEditor.getModel();
 
-  // setup output editor
-
-  const outputEditor = monaco.editor.create(output, {
-    ...opts,
+  // Create Rust editor (read-only)
+  const rustEditor = monaco.editor.create(rustEditorEl, {
+    ...editorOptions,
     language: 'rust',
+    readOnly: true,
     contextmenu: false,
     matchBrackets: 'never',
-    readOnly: true,
   });
-  const outputModel = outputEditor.getModel();
+  const rustModel = rustEditor.getModel();
+
+  // Create WASM editor (read-only) with Shiki syntax highlighting
+  const wasmEditor = monaco.editor.create(wasmEditorEl, {
+    ...editorOptions,
+    language: 'wasm',
+    theme: 'dark-plus',
+    readOnly: true,
+    contextmenu: false,
+    matchBrackets: 'never',
+  });
+  const wasmModel = wasmEditor.getModel();
 
   // Setup highlight manager
-  const highlightManager = new HighlightManager(inputEditor, outputEditor);
+  const highlightManager = new HighlightManager(goEditor, rustEditor, wasmEditor);
 
-  // Store the current build result
-  let currentResult = null;
+  // Setup copy buttons
+  setupCopyButton('copy-rust', () => rustModel.getValue());
+  setupCopyButton('copy-wasm', () => wasmModel.getValue());
 
-  // register handlers
+  // Store current results
+  let currentRustResult = null;
+  let currentWasmResult = null;
 
-  inputModel.onDidChangeContent(() => {
-    const code = inputModel.getValue();
+  // Build and update function
+  function buildAndUpdate() {
+    const code = goModel.getValue();
 
     // Clear previous markers
-    monaco.editor.setModelMarkers(inputModel, 'gors', []);
+    monaco.editor.setModelMarkers(goModel, 'gors', []);
+    consoleManager.clear();
 
-    const result = gors.build(code);
-    currentResult = result;
-    highlightManager.setResult(result);
+    // Show build command
+    consoleManager.addCommand('gors build --emit=rust,wasm main.go');
 
-    if (result.success) {
-      outputModel.setValue(result.output);
-      error.innerHTML = '';
+    // Build Rust
+    const rustResult = gors.build_rust(code);
+    currentRustResult = rustResult;
+    highlightManager.setRustResult(rustResult);
+
+    if (rustResult.success) {
+      rustModel.setValue(rustResult.output);
     } else {
-      // Keep the last successful Rust output (don't clear it)
-      error.innerHTML = formatError(result, code);
+      // Show error in console
+      consoleManager.addError(`Rust compilation failed: ${rustResult.error_message}`);
+      consoleManager.addErrorBlock(formatError(rustResult, code));
 
-      // Add error markers to Monaco editor
-      const markers = createMonacoMarkers(result, code);
-      monaco.editor.setModelMarkers(inputModel, 'gors', markers);
+      // Add error markers
+      const markers = createMonacoMarkers(rustResult, code);
+      monaco.editor.setModelMarkers(goModel, 'gors', markers);
+      return;
     }
+
+    // Build WASM
+    const wasmResult = gors.build_wasm(code);
+    currentWasmResult = wasmResult;
+    highlightManager.setWasmResult(wasmResult);
+
+    if (wasmResult.success) {
+      wasmModel.setValue(wasmResult.output);
+      consoleManager.addSuccess('Build successful');
+
+      // Execute WASM
+      consoleManager.addCommand('wasmtime main.wasm');
+      executeWasm(wasmResult.output, consoleManager);
+    } else {
+      // Show error in console
+      consoleManager.addError(`WASM compilation failed: ${wasmResult.error_message}`);
+      consoleManager.addErrorBlock(formatError(wasmResult, code));
+
+      // Add error markers
+      const markers = createMonacoMarkers(wasmResult, code);
+      monaco.editor.setModelMarkers(goModel, 'gors', markers);
+    }
+  }
+
+  // Register handlers
+  goModel.onDidChangeContent(() => {
+    buildAndUpdate();
   });
 
   // Hover handlers for source mapping
-  inputEditor.onMouseMove((e) => {
+  goEditor.onMouseMove((e) => {
     if (e.target.position) {
       highlightManager.highlightFromGo(
         e.target.position.lineNumber,
@@ -249,7 +495,7 @@ function onDOMContentLoaded() {
     }
   });
 
-  outputEditor.onMouseMove((e) => {
+  rustEditor.onMouseMove((e) => {
     if (e.target.position) {
       highlightManager.highlightFromRust(
         e.target.position.lineNumber,
@@ -258,45 +504,47 @@ function onDOMContentLoaded() {
     }
   });
 
+  wasmEditor.onMouseMove((e) => {
+    if (e.target.position) {
+      highlightManager.highlightFromWasm(
+        e.target.position.lineNumber,
+        e.target.position.column
+      );
+    }
+  });
+
   // Clear highlights when mouse leaves
-  inputEditor.onMouseLeave(() => {
-    highlightManager.clearOutputHighlight();
+  goEditor.onMouseLeave(() => {
+    highlightManager.clearRustHighlight();
+    highlightManager.clearWasmHighlight();
   });
 
-  outputEditor.onMouseLeave(() => {
-    highlightManager.clearInputHighlight();
+  rustEditor.onMouseLeave(() => {
+    highlightManager.clearGoHighlight();
   });
 
-  outputEditor.onKeyDown((event) => {
+  wasmEditor.onMouseLeave(() => {
+    highlightManager.clearGoHighlight();
+  });
+
+  // Prevent typing in read-only editors
+  rustEditor.onKeyDown((event) => {
     if (!(event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       event.stopPropagation();
     }
   });
 
-  // Copy button handler
-  copyButton.addEventListener('click', async () => {
-    const rustCode = outputModel.getValue();
-    if (!rustCode) return;
-
-    try {
-      await navigator.clipboard.writeText(rustCode);
-      copyButton.classList.add('copied');
-      copyButton.querySelector('span').textContent = 'Copied!';
-
-      setTimeout(() => {
-        copyButton.classList.remove('copied');
-        copyButton.querySelector('span').textContent = 'Copy';
-      }, 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
+  wasmEditor.onKeyDown((event) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
     }
   });
 
-  // initialization
-
-  inputEditor.focus();
-  inputModel.setValue([
+  // Initialization
+  goEditor.focus();
+  goModel.setValue([
     'package main',
     '',
     'import "fmt"',
@@ -308,7 +556,7 @@ function onDOMContentLoaded() {
     '\t',
     '}',
   ].join('\n'));
-  inputEditor.setPosition({ lineNumber: 9, column: 2 });
+  goEditor.setPosition({ lineNumber: 9, column: 2 });
 }
 
 if (document.readyState === 'loading') {

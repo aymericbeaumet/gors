@@ -128,9 +128,8 @@ build-wasm-dev:
 #------------------------------------------------------------------------------
 
 # Unit tests: fast tests for core library (no external dependencies)
-# Tests gors library and gors-fuzz property tests (excluding AFL-specific fuzz targets)
 test-unit:
-	cargo test --package=gors --package=gors-fuzz
+	cargo test --package=gors
 
 # Integration tests: lexer and parser tests against real Go repositories
 # Runs both in parallel using make's job parallelization
@@ -140,17 +139,17 @@ test-integrations: build-release
 
 # Internal targets for parallel execution (do not call directly)
 _test-lexer:
-	cargo test --release --package=gors-cli lexer
+	cargo test --release --package=gors lexer
 
 _test-parser:
-	cargo test --release --package=gors-cli parser
+	cargo test --release --package=gors parser
 
 # Individual test targets (for debugging specific failures)
 test-lexer:
-	cargo test --release --package=gors-cli lexer -- --nocapture
+	cargo test --release --package=gors lexer -- --nocapture
 
 test-parser:
-	cargo test --release --package=gors-cli parser -- --nocapture
+	cargo test --release --package=gors parser -- --nocapture
 
 # Legacy alias for backward compatibility
 test: test-unit
@@ -163,25 +162,28 @@ test: test-unit
 fuzz-test:
 	cargo test --package gors-fuzz
 
+# Alias for fuzz-test
+fuzz: fuzz-test
+
 # Build fuzz targets with AFL instrumentation
 fuzz-build:
-	cd gors-fuzz && cargo afl build --release --features afl-fuzz
+	cd fuzz && cargo afl build --release --features afl-fuzz
 
 # Fuzz the scanner/lexer
 fuzz-scanner:
-	./gors-fuzz/scripts/fuzz.sh scanner
+	./fuzz/scripts/fuzz.sh scanner
 
 # Fuzz the parser
 fuzz-parser:
-	./gors-fuzz/scripts/fuzz.sh parser
+	./fuzz/scripts/fuzz.sh parser
 
 # Fuzz the roundtrip (parse->print->reparse)
 fuzz-roundtrip:
-	./gors-fuzz/scripts/fuzz.sh roundtrip
+	./fuzz/scripts/fuzz.sh roundtrip
 
-# Export crash inputs as test files to gors-cli/tests/files/
+# Export crash inputs as test files to gors/tests/files/
 fuzz-export:
-	./gors-fuzz/scripts/export-crashes.sh
+	./fuzz/scripts/export-crashes.sh
 
 #------------------------------------------------------------------------------
 # Website
@@ -190,7 +192,7 @@ fuzz-export:
 www: build-wasm www-install www-build
 
 www-install:
-	cd www && npm ci
+	cd www && npm install
 
 www-lint:
 	cd www && npm run lint
@@ -250,4 +252,4 @@ clean:
 clean-all: clean
 	rm -rf www/node_modules
 	rm -rf target
-	rm -rf gors-fuzz/out gors-fuzz/sync
+	rm -rf fuzz/out fuzz/sync

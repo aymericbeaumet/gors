@@ -1,13 +1,8 @@
-//! Rust code generation.
+//! Rust code generation backend.
 //!
-//! This module provides functions for formatting Rust `syn` AST into
-//! pretty-printed source code using the `prettyplease` library.
+//! This module generates Rust source code from a `syn::File` AST.
 
-mod tracked;
-
-pub use tracked::{
-    generate_with_comments, generate_with_comments_and_blanks, BlankLineInfo, CommentToInsert,
-};
+use super::{CodegenError, SourceMap};
 
 /// Write formatted Rust source code to a writer.
 ///
@@ -61,4 +56,27 @@ pub fn generate(file: syn::File) -> Result<String, Box<dyn std::error::Error>> {
     let mut output = Vec::new();
     fprint(&mut output, file)?;
     Ok(String::from_utf8(output)?)
+}
+
+/// Generate Rust source code with source map tracking.
+///
+/// # Arguments
+///
+/// * `file` - The Rust AST to format
+/// * `source_file` - Name of the source file for the source map
+///
+/// # Returns
+///
+/// Returns `Ok((String, SourceMap))` containing the formatted source code and source map.
+pub fn generate_with_sourcemap(
+    file: syn::File,
+    source_file: &str,
+) -> Result<(String, SourceMap), CodegenError> {
+    let output = generate(file).map_err(|e| CodegenError::generation(e.to_string()))?;
+
+    // For now, create an empty source map
+    // TODO: Integrate with the compiler's source map tracking
+    let source_map = SourceMap::new(source_file);
+
+    Ok((output, source_map))
 }
