@@ -1,4 +1,3 @@
-use gors::codegen::{BlankLineInfo, CommentToInsert};
 use gors::error::{Diagnostic, DiagnosticKind};
 use gors::mapping::SourceMap;
 use wasm_bindgen::prelude::*;
@@ -90,6 +89,110 @@ impl BuildResult {
             .unwrap_or_default()
     }
 
+    /// Map Rust position to Go position (returns span: [start_line, start_col, end_line, end_col]).
+    /// Lines and columns are 1-based for Monaco editor compatibility.
+    #[wasm_bindgen]
+    pub fn rust_to_go(&self, rust_line: u32, rust_column: u32) -> Vec<u32> {
+        let Some(ref sm) = self.source_map else {
+            return vec![];
+        };
+
+        // Convert to 0-based indices
+        let target_line = rust_line.saturating_sub(1);
+        let target_col = rust_column.saturating_sub(1);
+
+        // Find the best matching token on the same Rust line
+        // This is similar to go_to_rust but searching by generated position
+        let mut best_token = None;
+        let mut best_distance = u32::MAX;
+
+        for i in 0..sm.get_token_count() {
+            if let Some(token) = sm.get_token(i as usize) {
+                let dst_line = token.get_dst_line();
+                let dst_col = token.get_dst_col();
+
+                // Match tokens on the same generated (Rust) line
+                if dst_line == target_line {
+                    let distance = target_col.abs_diff(dst_col);
+
+                    // Accept if closer AND (at/before target OR no match yet)
+                    if distance < best_distance && (dst_col <= target_col || best_token.is_none())
+                    {
+                        best_distance = distance;
+                        best_token = Some(token);
+                    }
+                }
+            }
+        }
+
+        let Some(token) = best_token else {
+            return vec![];
+        };
+
+        // Convert to 1-based for Monaco
+        let start_line = token.get_src_line() + 1;
+        let start_col = token.get_src_col() + 1;
+
+        // For end position, use the token name length if available, otherwise default span
+        let name_len = token.get_name().map(|n| n.len() as u32).unwrap_or(1);
+        let end_line = start_line;
+        let end_col = start_col + name_len;
+
+        vec![start_line, start_col, end_line, end_col]
+    }
+
+    /// Map Go position to Rust position (returns span: [start_line, start_col, end_line, end_col]).
+    /// Lines and columns are 1-based for Monaco editor compatibility.
+    #[wasm_bindgen]
+    pub fn go_to_rust(&self, go_line: u32, go_column: u32) -> Vec<u32> {
+        let Some(ref sm) = self.source_map else {
+            return vec![];
+        };
+
+        // Convert to 0-based for comparison
+        let target_line = go_line.saturating_sub(1);
+        let target_col = go_column.saturating_sub(1);
+
+        // Find the token that best matches the Go position
+        // We need to iterate all tokens since there's no reverse lookup in sourcemap
+        let mut best_token = None;
+        let mut best_distance = u32::MAX;
+
+        for i in 0..sm.get_token_count() {
+            if let Some(token) = sm.get_token(i as usize) {
+                let src_line = token.get_src_line();
+                let src_col = token.get_src_col();
+
+                // Exact line match
+                if src_line == target_line {
+                    let distance = target_col.abs_diff(src_col);
+
+                    // Accept if closer AND (at/before target OR no match yet)
+                    if distance < best_distance && (src_col <= target_col || best_token.is_none())
+                    {
+                        best_distance = distance;
+                        best_token = Some(token);
+                    }
+                }
+            }
+        }
+
+        let Some(token) = best_token else {
+            return vec![];
+        };
+
+        // Convert generated position to 1-based for Monaco
+        let start_line = token.get_dst_line() + 1;
+        let start_col = token.get_dst_col() + 1;
+
+        // For end position, use the token name length if available
+        let name_len = token.get_name().map(|n| n.len() as u32).unwrap_or(1);
+        let end_line = start_line;
+        let end_col = start_col + name_len;
+
+        vec![start_line, start_col, end_line, end_col]
+    }
+
     /// Get the number of tokens/mappings.
     #[wasm_bindgen]
     pub fn mapping_count(&self) -> u32 {
@@ -141,9 +244,6 @@ impl BuildResult {
 pub fn build(input: String) -> BuildResult {
     console_error_panic_hook::set_once();
 
-    // Collect blank line information from the Go source
-    let blank_lines = collect_blank_lines(&input);
-
     // Parse
     let ast = match gors::parser::parse_file("main.go", &input) {
         Ok(ast) => ast,
@@ -153,9 +253,9 @@ pub fn build(input: String) -> BuildResult {
         }
     };
 
-    // Collect all comments from the AST for later insertion
-    // Mark doc comments (those that appear right before functions) as already handled
-    let mut comments_to_insert: Vec<CommentToInsert> = Vec::new();
+    // Collect all comments from the AST
+    // Mark doc comments (those attached to function declarations) as already handled
+    let mut comments: Vec<CommentInfo> = Vec::new();
     let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     // Find doc comment lines (comments attached to function declarations)
@@ -169,11 +269,11 @@ pub fn build(input: String) -> BuildResult {
         }
     }
 
-    // Collect all comments, marking doc comments appropriately
+    // Collect all comments with their positions
     for comment_group in &ast.comments {
         for comment in &comment_group.list {
             let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-            comments_to_insert.push(CommentToInsert {
+            comments.push(CommentInfo {
                 go_line: comment.slash.line as u32,
                 text: comment.text.to_string(),
                 is_doc,
@@ -196,12 +296,8 @@ pub fn build(input: String) -> BuildResult {
         }
     };
 
-    // Codegen with comment insertion and blank line preservation
-    let output = match gors::codegen::generate_with_comments_and_blanks(
-        compiled,
-        &comments_to_insert,
-        &blank_lines,
-    ) {
+    // Generate Rust code WITHOUT comments first
+    let rust_code = match gors::codegen::generate(compiled) {
         Ok(output) => output,
         Err(err) => {
             let diagnostic = Diagnostic::new(
@@ -215,27 +311,764 @@ pub fn build(input: String) -> BuildResult {
         }
     };
 
-    // Build the source map from the tracked positions
-    let source_map = gors::compiler::build_source_map(&output);
+    // Build the initial source map from the generated code
+    let initial_source_map = gors::compiler::build_source_map(&rust_code);
+
+    // Insert comments at exact positions using the source map
+    // This also returns the final positions of comments for source map tracking
+    let (output, comment_mappings) = insert_comments_with_sourcemap(&rust_code, &comments, &initial_source_map);
+
+    // Build final source map that includes both code and comment mappings
+    let source_map = build_source_map_with_comments(&output, &initial_source_map, &comment_mappings);
 
     BuildResult::success_result(output, source_map)
 }
 
-/// Collect information about blank lines in the Go source.
-fn collect_blank_lines(source: &str) -> BlankLineInfo {
-    let mut info = BlankLineInfo::default();
-    let lines: Vec<&str> = source.lines().collect();
+/// A mapping for a comment's position in both Go and Rust
+struct CommentMapping {
+    go_line: u32,      // 0-based
+    go_col: u32,       // 0-based
+    rust_line: u32,    // 0-based
+    rust_col: u32,     // 0-based
+    text: String,
+}
 
-    for (i, line) in lines.iter().enumerate() {
-        let line_num = (i + 1) as u32;
-        // Check if this non-empty line is followed by a blank line
-        if !line.trim().is_empty() {
-            // Check if next line exists and is blank
-            if i + 1 < lines.len() && lines[i + 1].trim().is_empty() {
-                info.lines_with_trailing_blank.insert(line_num);
+/// Build a source map that includes both code mappings and comment mappings.
+/// Adjusts code mapping line numbers to account for inserted comment lines.
+fn build_source_map_with_comments(
+    _rust_code: &str,
+    initial_source_map: &SourceMap,
+    comment_mappings: &[CommentMapping],
+) -> SourceMap {
+    use gors::mapping::SourceMapBuilder;
+
+    let mut builder = SourceMapBuilder::new(Some("output.rs"));
+    let src_idx = builder.add_source("main.go");
+
+    // Copy source content if available
+    if let Some(content) = initial_source_map.get_source_contents(0) {
+        builder.set_source_contents(src_idx, Some(content));
+    }
+
+    // Calculate cumulative shifts: for each comment at rust_line, all subsequent lines shift by 1
+    // First, collect all the original lines where comments were inserted
+    // The comment_mappings contain the FINAL rust_line positions, so we need to work backwards
+    // to figure out the original lines.
+
+    // Actually, let's approach this differently:
+    // 1. Sort comment mappings by their final rust_line
+    // 2. Calculate how many comments were inserted before each original code line
+
+    // Group comments by their insertion point (before which original line they were inserted)
+    // Comments are inserted BEFORE certain lines in the original code.
+    // The rust_line in comment_mappings is the final position.
+
+    // Let's track: for original line X, how many lines were added before it?
+    // We need to map from final position back to understand the shifts.
+
+    // Simpler approach: collect all comment final lines, sort them, then calculate shifts
+    let mut comment_lines: Vec<u32> = comment_mappings.iter().map(|c| c.rust_line).collect();
+    comment_lines.sort();
+
+    // Add all existing code mappings with adjusted line numbers
+    for i in 0..initial_source_map.get_token_count() {
+        if let Some(token) = initial_source_map.get_token(i as usize) {
+            let original_dst_line = token.get_dst_line();
+
+            // Count how many comments were inserted before or at this line
+            // A comment at rust_line N means it was inserted BEFORE the code that was originally at line N-shift
+            // This is tricky because the relationship is circular.
+
+            // Different approach: for each original line, count comments that end up before it
+            // If original code was at line X, and we insert K comments before it, it ends up at line X+K
+            // So: final_line = original_line + K
+            // We have final comment lines. We need to figure out K for each original code line.
+
+            // Let's iterate: for original_line = 0, 1, 2, ...
+            // Comments inserted before original_line 0: none (they'd have rust_line = 0)
+            // Comments inserted before original_line 1: count comments where rust_line <= 0 + previous_shifts
+            // This is getting complex. Let me use a different approach.
+
+            // Since we know the final positions of comments, and we know original code positions,
+            // we can calculate: new_code_line = original_code_line + number_of_comments_with_final_line <= new_code_line
+            // This is a fixpoint calculation, but for simplicity, let's just count comments with rust_line <= original_line
+
+            // Actually, the simplest correct approach:
+            // For each original code line L, its new position is L + (number of comments that appear before it in the final output)
+            // A comment appears before line L's new position if comment.rust_line < L + shift
+            // Let's iterate with a shift counter
+
+            let mut shift = 0u32;
+            for &comment_line in &comment_lines {
+                // If comment is at a line that would be before or at the shifted position of our code
+                if comment_line <= original_dst_line + shift {
+                    shift += 1;
+                } else {
+                    break; // Comments are sorted, so we can stop
+                }
+            }
+
+            let new_dst_line = original_dst_line + shift;
+
+            let name_idx = token.get_name().map(|n| builder.add_name(n));
+            builder.add_raw(
+                new_dst_line,
+                token.get_dst_col(),
+                token.get_src_line(),
+                token.get_src_col(),
+                Some(src_idx),
+                name_idx,
+                false,
+            );
+        }
+    }
+
+    // Add comment mappings (already have correct final positions)
+    for mapping in comment_mappings {
+        // Add a name for the comment
+        let comment_name = if mapping.text.len() > 20 {
+            format!("{}...", &mapping.text[..17])
+        } else {
+            mapping.text.clone()
+        };
+        let name_idx = builder.add_name(&comment_name);
+
+        builder.add_raw(
+            mapping.rust_line,
+            mapping.rust_col,
+            mapping.go_line,
+            mapping.go_col,
+            Some(src_idx),
+            Some(name_idx),
+            false,
+        );
+    }
+
+    builder.into_sourcemap()
+}
+
+/// Information about a comment to insert.
+struct CommentInfo {
+    go_line: u32,
+    text: String,
+    is_doc: bool,
+}
+
+/// Insert comments into Rust code using source map for exact placement.
+/// Returns the output string and a list of comment position mappings.
+fn insert_comments_with_sourcemap(
+    rust_code: &str,
+    comments: &[CommentInfo],
+    source_map: &SourceMap,
+) -> (String, Vec<CommentMapping>) {
+    let rust_lines: Vec<&str> = rust_code.lines().collect();
+    let mut comment_mappings: Vec<CommentMapping> = Vec::new();
+
+    // Build a mapping from Go line -> Rust line using all source map tokens
+    let mut go_to_rust_line: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+
+    for i in 0..source_map.get_token_count() {
+        if let Some(token) = source_map.get_token(i as usize) {
+            let go_line = token.get_src_line(); // 0-based
+            let rust_line = token.get_dst_line(); // 0-based
+            // Keep the smallest Rust line for each Go line (first occurrence)
+            go_to_rust_line
+                .entry(go_line)
+                .and_modify(|existing| {
+                    if rust_line < *existing {
+                        *existing = rust_line;
+                    }
+                })
+                .or_insert(rust_line);
+        }
+    }
+
+    // Find the maximum Go line that has a mapping (for detecting trailing comments)
+    let max_mapped_go_line = go_to_rust_line.keys().copied().max().unwrap_or(0);
+
+    // For each comment, find the Rust line where it should be inserted
+    // A comment on Go line N should appear before the code on Go line N+1 (or later)
+    // Note: go_line is 1-based, but source map uses 0-based line numbers
+    let mut comments_by_rust_line: std::collections::HashMap<u32, Vec<&CommentInfo>> =
+        std::collections::HashMap::new();
+    let mut leading_comments: Vec<&CommentInfo> = Vec::new();
+    let mut trailing_comments: Vec<&CommentInfo> = Vec::new();
+
+    for comment in comments {
+        if comment.is_doc {
+            // Doc comments are already handled by the compiler
+            continue;
+        }
+
+        // Convert to 0-based for source map lookup
+        let comment_go_line_0based = comment.go_line.saturating_sub(1);
+
+        // Find the Rust line that corresponds to the Go line after this comment
+        // Look for the first Go line > comment line that has a mapping
+        let mut target_rust_line: Option<u32> = None;
+
+        for next_go_line_0based in comment_go_line_0based..comment_go_line_0based + 20 {
+            if let Some(&rust_line) = go_to_rust_line.get(&next_go_line_0based) {
+                // If the comment is on the same line as some code, put it before that line
+                // If the comment is on a line by itself, put it before the next code line
+                if next_go_line_0based == comment_go_line_0based {
+                    // Comment on same line as code - this is rare, skip for now
+                    continue;
+                }
+                target_rust_line = Some(rust_line);
+                break;
+            }
+        }
+
+        if let Some(rust_line) = target_rust_line {
+            comments_by_rust_line
+                .entry(rust_line)
+                .or_default()
+                .push(comment);
+        } else if comment.go_line <= 2 {
+            // Leading comment (before package declaration)
+            leading_comments.push(comment);
+        } else if comment_go_line_0based > max_mapped_go_line {
+            // Trailing comment (after all mapped code)
+            trailing_comments.push(comment);
+        }
+        // If we still can't place the comment, it's dropped
+    }
+
+    // Insert trailing comments before the last closing brace
+    if !trailing_comments.is_empty() {
+        // Find the line with the last closing brace
+        let closing_brace_line = rust_lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, line)| line.trim() == "}")
+            .map(|(i, _)| i as u32);
+
+        if let Some(brace_line) = closing_brace_line {
+            for comment in trailing_comments {
+                comments_by_rust_line
+                    .entry(brace_line)
+                    .or_default()
+                    .push(comment);
             }
         }
     }
 
-    info
+    // Build the output with comments inserted, tracking line numbers
+    let mut output = String::new();
+    let mut current_rust_line: u32 = 0; // 0-based line number in output
+
+    // Insert leading comments
+    for comment in &leading_comments {
+        let indent = 0usize;
+        comment_mappings.push(CommentMapping {
+            go_line: comment.go_line.saturating_sub(1), // Convert to 0-based
+            go_col: 0,
+            rust_line: current_rust_line,
+            rust_col: indent as u32,
+            text: comment.text.clone(),
+        });
+        output.push_str(&comment.text);
+        output.push('\n');
+        current_rust_line += 1;
+    }
+    if !leading_comments.is_empty() && !rust_lines.is_empty() {
+        output.push('\n');
+        current_rust_line += 1;
+    }
+
+    for (i, line) in rust_lines.iter().enumerate() {
+        let rust_line_idx = i as u32;
+
+        // Insert any comments that should appear before this line
+        if let Some(line_comments) = comments_by_rust_line.get(&rust_line_idx) {
+            // Determine indentation from the current line
+            // If the current line is just a closing brace, look at the previous line's indentation
+            let indent = if line.trim() == "}" {
+                // Use default indentation (4 spaces) for content inside braces
+                4
+            } else {
+                line.len() - line.trim_start().len()
+            };
+            let indent_str: String = " ".repeat(indent);
+
+            for comment in line_comments {
+                comment_mappings.push(CommentMapping {
+                    go_line: comment.go_line.saturating_sub(1), // Convert to 0-based
+                    go_col: 0, // Comments typically start at column 0 in Go (after indentation)
+                    rust_line: current_rust_line,
+                    rust_col: indent as u32,
+                    text: comment.text.clone(),
+                });
+                output.push_str(&indent_str);
+                output.push_str(&comment.text);
+                output.push('\n');
+                current_rust_line += 1;
+            }
+        }
+
+        output.push_str(line);
+        output.push('\n');
+        current_rust_line += 1;
+    }
+
+    (output, comment_mappings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper function to build Go code and return output (for testing without wasm_bindgen)
+    fn build_go(input: &str) -> Result<String, String> {
+        let ast = gors::parser::parse_file("main.go", input)
+            .map_err(|e| format!("Parse error: {:?}", e))?;
+
+        // Collect comments
+        let mut comments: Vec<CommentInfo> = Vec::new();
+        let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+        for decl in &ast.decls {
+            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
+                if let Some(ref doc) = func_decl.doc {
+                    for comment in &doc.list {
+                        doc_comment_lines.insert(comment.slash.line as u32);
+                    }
+                }
+            }
+        }
+
+        for comment_group in &ast.comments {
+            for comment in &comment_group.list {
+                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
+                comments.push(CommentInfo {
+                    go_line: comment.slash.line as u32,
+                    text: comment.text.to_string(),
+                    is_doc,
+                });
+            }
+        }
+
+        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
+            .map_err(|e| format!("Compile error: {:?}", e))?;
+
+        let rust_code = gors::codegen::generate(compiled)
+            .map_err(|e| format!("Codegen error: {:?}", e))?;
+
+        let source_map = gors::compiler::build_source_map(&rust_code);
+        let (output, _comment_mappings) = insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
+
+        Ok(output)
+    }
+
+    #[test]
+    fn test_comment_between_statements() {
+        let go_code = r#"package main
+
+func main() {
+	a
+	// comment between a and b
+	b
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify comment appears between a and b
+        let lines: Vec<&str> = output.lines().collect();
+        let a_line = lines.iter().position(|l| l.contains("a;")).unwrap();
+        let comment_line = lines.iter().position(|l| l.contains("// comment between a and b")).unwrap();
+        let b_line = lines.iter().position(|l| l.contains("b;")).unwrap();
+
+        assert!(a_line < comment_line, "Comment should be after 'a'");
+        assert!(comment_line < b_line, "Comment should be before 'b'");
+    }
+
+    #[test]
+    fn test_multiple_comments_in_order() {
+        let go_code = r#"package main
+
+func main() {
+	// comment 1
+	a
+	// comment 2
+	b
+	// comment 3
+	c
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify comments appear in order
+        let pos1 = output.find("// comment 1").expect("comment 1 should exist");
+        let pos2 = output.find("// comment 2").expect("comment 2 should exist");
+        let pos3 = output.find("// comment 3").expect("comment 3 should exist");
+
+        assert!(pos1 < pos2, "comment 1 should come before comment 2");
+        assert!(pos2 < pos3, "comment 2 should come before comment 3");
+
+        // Verify comments are before their respective statements
+        let pos_a = output.find("a;").expect("a should exist");
+        let pos_b = output.find("b;").expect("b should exist");
+        let pos_c = output.find("c;").expect("c should exist");
+
+        assert!(pos1 < pos_a, "comment 1 should be before a");
+        assert!(pos2 < pos_b, "comment 2 should be before b");
+        assert!(pos3 < pos_c, "comment 3 should be before c");
+    }
+
+    #[test]
+    fn test_trailing_comment_before_closing_brace() {
+        let go_code = r#"package main
+
+func main() {
+	a
+	// trailing comment
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify trailing comment appears before the closing brace
+        let comment_pos = output.find("// trailing comment").expect("trailing comment should exist");
+        let brace_pos = output.rfind('}').expect("closing brace should exist");
+
+        assert!(comment_pos < brace_pos, "Trailing comment should be before closing brace");
+
+        // Verify indentation (should be 4 spaces)
+        let lines: Vec<&str> = output.lines().collect();
+        let comment_line = lines.iter().find(|l| l.contains("// trailing comment")).unwrap();
+        assert!(comment_line.starts_with("    "), "Trailing comment should be indented");
+    }
+
+    #[test]
+    fn test_comment_with_code_on_multiple_lines() {
+        let go_code = r#"package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello")
+
+	first
+	// middle comment
+	second
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify the comment is between first and second
+        let first_pos = output.find("first;").expect("first should exist");
+        let comment_pos = output.find("// middle comment").expect("middle comment should exist");
+        let second_pos = output.find("second;").expect("second should exist");
+
+        assert!(first_pos < comment_pos, "Comment should be after 'first'");
+        assert!(comment_pos < second_pos, "Comment should be before 'second'");
+    }
+
+    #[test]
+    fn test_comment_preserves_indentation() {
+        let go_code = r#"package main
+
+func main() {
+	a
+	// indented comment
+	b
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify comment has proper indentation (matching the code)
+        let lines: Vec<&str> = output.lines().collect();
+        let comment_line = lines.iter().find(|l| l.contains("// indented comment")).unwrap();
+        let b_line = lines.iter().find(|l| l.contains("b;")).unwrap();
+
+        let comment_indent = comment_line.len() - comment_line.trim_start().len();
+        let b_indent = b_line.len() - b_line.trim_start().len();
+
+        assert_eq!(comment_indent, b_indent, "Comment should have same indentation as code");
+    }
+
+    #[test]
+    fn test_exact_placement_user_example() {
+        // This is the exact example from the user's bug report
+        let go_code = r#"package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, 世界")
+
+	arosietnaotn
+	// Start typing and see the changes!
+	arstarstararsto
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Verify exact placement: comment should be between arosietnaotn and arstarstararsto
+        let first_pos = output.find("arosietnaotn;").expect("arosietnaotn should exist");
+        let comment_pos = output.find("// Start typing and see the changes!").expect("comment should exist");
+        let second_pos = output.find("arstarstararsto;").expect("arstarstararsto should exist");
+
+        assert!(first_pos < comment_pos, "Comment should be after arosietnaotn");
+        assert!(comment_pos < second_pos, "Comment should be before arstarstararsto");
+    }
+
+    #[test]
+    fn test_doc_comments_not_duplicated() {
+        // Doc comments are handled by the compiler as #[doc] attributes
+        // They should not be duplicated by the comment insertion logic
+        let go_code = r#"package main
+
+// hello is a function
+func hello() {
+	a
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Count occurrences of the doc comment text
+        let count = output.matches("hello is a function").count();
+
+        // Should appear exactly once (as a doc comment, not duplicated)
+        assert!(count <= 1, "Doc comment should not be duplicated, found {} times", count);
+    }
+
+    #[test]
+    fn test_comment_only_before_closing_brace() {
+        // When there's code before a trailing comment, the comment should be preserved
+        let go_code = r#"package main
+
+func main() {
+	a
+	// comment before closing brace
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // The comment should appear before the closing brace
+        assert!(output.contains("// comment before closing brace"), "Comment should be preserved");
+
+        // Verify it's inside the function (before the closing brace)
+        let comment_pos = output.find("// comment before closing brace").unwrap();
+        let brace_pos = output.rfind('}').unwrap();
+        assert!(comment_pos < brace_pos, "Comment should be before closing brace");
+    }
+
+    #[test]
+    fn test_empty_function_body_limitation() {
+        // Note: Comments in otherwise empty function bodies may be lost
+        // because prettyplease formats them as `fn foo() {}` on one line.
+        // This is a known limitation.
+        let go_code = r#"package main
+
+func main() {
+	// only a comment in empty body
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // The function should compile, even if the comment is lost
+        assert!(output.contains("fn main()"), "Function should exist");
+        // We don't assert the comment exists because it may be lost in empty bodies
+    }
+
+    #[test]
+    fn test_multiple_functions_with_comments() {
+        let go_code = r#"package main
+
+func foo() {
+	// comment in foo
+	a
+}
+
+func bar() {
+	// comment in bar
+	b
+}
+"#;
+        let output = build_go(go_code).unwrap();
+
+        // Both comments should exist
+        assert!(output.contains("// comment in foo"), "Comment in foo should exist");
+        assert!(output.contains("// comment in bar"), "Comment in bar should exist");
+
+        // Verify order: foo's comment before bar's comment
+        let foo_comment_pos = output.find("// comment in foo").unwrap();
+        let bar_comment_pos = output.find("// comment in bar").unwrap();
+        assert!(foo_comment_pos < bar_comment_pos, "foo's comment should come before bar's");
+    }
+
+    /// Helper to build and return the source map along with output
+    fn build_with_sourcemap(input: &str) -> Result<(String, SourceMap), String> {
+        let ast = gors::parser::parse_file("main.go", input)
+            .map_err(|e| format!("Parse error: {:?}", e))?;
+
+        let mut comments: Vec<CommentInfo> = Vec::new();
+        let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+        for decl in &ast.decls {
+            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
+                if let Some(ref doc) = func_decl.doc {
+                    for comment in &doc.list {
+                        doc_comment_lines.insert(comment.slash.line as u32);
+                    }
+                }
+            }
+        }
+
+        for comment_group in &ast.comments {
+            for comment in &comment_group.list {
+                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
+                comments.push(CommentInfo {
+                    go_line: comment.slash.line as u32,
+                    text: comment.text.to_string(),
+                    is_doc,
+                });
+            }
+        }
+
+        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
+            .map_err(|e| format!("Compile error: {:?}", e))?;
+
+        let rust_code = gors::codegen::generate(compiled)
+            .map_err(|e| format!("Codegen error: {:?}", e))?;
+
+        let initial_source_map = gors::compiler::build_source_map(&rust_code);
+        let (output, comment_mappings) =
+            insert_comments_with_sourcemap(&rust_code, &comments, &initial_source_map);
+        let source_map =
+            build_source_map_with_comments(&output, &initial_source_map, &comment_mappings);
+
+        Ok((output, source_map))
+    }
+
+    #[test]
+    fn test_comment_hover_go_to_rust() {
+        // Test that hovering on a comment in Go highlights the correct position in Rust
+        let go_code = r#"package main
+
+func main() {
+	a
+	// my test comment
+	b
+}
+"#;
+        let (output, source_map) = build_with_sourcemap(go_code).unwrap();
+
+        // Find which Rust line has the comment
+        let rust_lines: Vec<&str> = output.lines().collect();
+        let comment_rust_line = rust_lines
+            .iter()
+            .position(|l| l.contains("// my test comment"))
+            .expect("Comment should be in output");
+
+        // Go line 5 has the comment (1-based)
+        let go_comment_line = 5u32;
+
+        // Find the token for Go line 5 (0-based: 4)
+        let mut found_comment_mapping = false;
+        for i in 0..source_map.get_token_count() {
+            if let Some(token) = source_map.get_token(i as usize) {
+                if token.get_src_line() == go_comment_line - 1 {
+                    // The Rust line should match where we found the comment
+                    assert_eq!(
+                        token.get_dst_line() as usize,
+                        comment_rust_line,
+                        "Comment should map to correct Rust line"
+                    );
+                    found_comment_mapping = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_comment_mapping, "Should find mapping for comment");
+    }
+
+    #[test]
+    fn test_comment_hover_rust_to_go() {
+        // Test that hovering on a comment in Rust highlights the correct position in Go
+        let go_code = r#"package main
+
+func main() {
+	a
+	// my test comment
+	b
+}
+"#;
+        let (output, source_map) = build_with_sourcemap(go_code).unwrap();
+
+        // Find which Rust line has the comment
+        let rust_lines: Vec<&str> = output.lines().collect();
+        let comment_rust_line = rust_lines
+            .iter()
+            .position(|l| l.contains("// my test comment"))
+            .expect("Comment should be in output") as u32;
+
+        // Go line 5 has the comment (1-based), so 0-based is 4
+        let expected_go_line = 4u32;
+
+        // Find a token on the comment's Rust line
+        let mut found = false;
+        for i in 0..source_map.get_token_count() {
+            if let Some(token) = source_map.get_token(i as usize) {
+                if token.get_dst_line() == comment_rust_line {
+                    assert_eq!(
+                        token.get_src_line(),
+                        expected_go_line,
+                        "Rust comment line should map back to Go comment line"
+                    );
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should find token on comment Rust line");
+    }
+
+    #[test]
+    fn test_code_mappings_adjusted_after_comment_insertion() {
+        // Test that code mappings are correctly adjusted when comments are inserted
+        let go_code = r#"package main
+
+func main() {
+	a
+	// comment shifts b down
+	b
+}
+"#;
+        let (output, source_map) = build_with_sourcemap(go_code).unwrap();
+
+        // In the output, 'b' should be after the comment
+        let rust_lines: Vec<&str> = output.lines().collect();
+        let b_rust_line = rust_lines
+            .iter()
+            .position(|l| l.trim() == "b;")
+            .expect("b should be in output") as u32;
+
+        // Go line 6 has 'b' (1-based), so 0-based is 5
+        let go_b_line = 5u32;
+
+        // Find the mapping for 'b'
+        let mut found_b_mapping = false;
+        for i in 0..source_map.get_token_count() {
+            if let Some(token) = source_map.get_token(i as usize) {
+                if token.get_name() == Some("b") {
+                    assert_eq!(
+                        token.get_src_line(),
+                        go_b_line,
+                        "'b' should map to Go line 6 (0-based: 5)"
+                    );
+                    assert_eq!(
+                        token.get_dst_line(),
+                        b_rust_line,
+                        "'b' should map to correct Rust line after comment insertion"
+                    );
+                    found_b_mapping = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_b_mapping, "Should find mapping for 'b'");
+    }
 }
