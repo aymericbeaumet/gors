@@ -239,6 +239,10 @@ struct Parser<'scanner> {
     current_step: scanner::Step<'scanner>,
     expr_level: isize,
     go_version: &'scanner str,
+    /// Comments that have been collected but not yet associated with an AST node
+    pending_comments: Vec<ast::Comment<'scanner>>,
+    /// All comments in the file (for the File.comments field)
+    all_comments: Vec<ast::CommentGroup<'scanner>>,
 }
 
 impl<'scanner> Parser<'scanner> {
@@ -248,7 +252,49 @@ impl<'scanner> Parser<'scanner> {
             current_step: (Position::default(), Token::EOF, ""),
             expr_level: 0,
             go_version,
+            pending_comments: Vec::new(),
+            all_comments: Vec::new(),
         }
+    }
+
+    /// Take pending comments as a CommentGroup (for doc comments).
+    /// Returns None if there are no pending comments.
+    fn take_doc_comments(&mut self) -> Option<ast::CommentGroup<'scanner>> {
+        if self.pending_comments.is_empty() {
+            None
+        } else {
+            let comments = std::mem::take(&mut self.pending_comments);
+            let group = ast::CommentGroup { list: comments };
+            self.all_comments.push(group.clone());
+            Some(group)
+        }
+    }
+
+    /// Take pending comments that are on the same line as the given position (for line comments).
+    fn take_line_comments(&mut self, pos: &Position<'scanner>) -> Option<ast::CommentGroup<'scanner>> {
+        if self.pending_comments.is_empty() {
+            return None;
+        }
+
+        // Only take comments that are on the same line
+        let same_line_comments: Vec<_> = self
+            .pending_comments
+            .iter()
+            .filter(|c| c.slash.line == pos.line)
+            .cloned()
+            .collect();
+
+        if same_line_comments.is_empty() {
+            return None;
+        }
+
+        // Remove the taken comments from pending
+        self.pending_comments
+            .retain(|c| c.slash.line != pos.line);
+
+        let group = ast::CommentGroup { list: same_line_comments };
+        self.all_comments.push(group.clone());
+        Some(group)
     }
 
     /// Check if a statement already consumed its terminating semicolon.
@@ -282,7 +328,7 @@ impl<'scanner> Parser<'scanner> {
         };
 
         let mut out = ast::File {
-            doc: None,
+            doc: None, // Doc comments are captured separately
             package: package.0,
             name: package_name,
             decls: vec![],
@@ -290,7 +336,7 @@ impl<'scanner> Parser<'scanner> {
             file_end: file_start, // Will be updated at EOF
             scope: None,
             unresolved: vec![],
-            comments: vec![],
+            comments: vec![], // Will be filled in at the end
             go_version: self.go_version,
         };
 
@@ -306,6 +352,15 @@ impl<'scanner> Parser<'scanner> {
 
         let eof = self.token(Token::EOF).required()?;
         out.file_end = eof.0;
+
+        // Collect any remaining pending comments
+        if !self.pending_comments.is_empty() {
+            let comments = std::mem::take(&mut self.pending_comments);
+            self.all_comments.push(ast::CommentGroup { list: comments });
+        }
+
+        // Set the collected comments on the file
+        out.comments = std::mem::take(&mut self.all_comments);
 
         Ok(Some(out))
     }
@@ -3621,6 +3676,9 @@ impl<'scanner> Parser<'scanner> {
     fn parse_function_decl_or_method_decl(&mut self) -> Result<Option<ast::FuncDecl<'scanner>>> {
         log::debug!("Parser::parse_function_decl_or_method_decl()");
 
+        // Capture doc comments before the func keyword
+        let doc = self.take_doc_comments();
+
         let func = match self.token(Token::FUNC)? {
             Some(v) => v,
             None => return Ok(None),
@@ -3637,7 +3695,7 @@ impl<'scanner> Parser<'scanner> {
         let body = self.parse_function_body()?;
 
         Ok(Some(ast::FuncDecl {
-            doc: None,
+            doc,
             recv,
             name,
             type_,
@@ -4218,16 +4276,23 @@ impl<'scanner> Parser<'scanner> {
     }
 
     /// Advances to the next token. Skips all the comment tokens.
+    /// Advances to the next token. Captures comments instead of skipping them.
     fn next(&mut self) -> Result<()> {
-        if let Some(step) = self
-            .steps
-            .find(|step| !matches!(step, Ok((_, Token::COMMENT, _))))
-        {
-            self.current_step = step?;
-            log::debug!("self.current_step = {:?}", self.current_step);
-            return Ok(());
+        loop {
+            match self.steps.next() {
+                Some(Ok((pos, Token::COMMENT, text))) => {
+                    // Capture the comment
+                    self.pending_comments.push(ast::Comment { slash: pos, text });
+                }
+                Some(Ok(step)) => {
+                    self.current_step = step;
+                    log::debug!("self.current_step = {:?}", self.current_step);
+                    return Ok(());
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => return Err(ParserError::UnexpectedEndOfFile),
+            }
         }
-        Err(ParserError::UnexpectedEndOfFile)
     }
 }
 

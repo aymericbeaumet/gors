@@ -39,6 +39,16 @@
 
       .editors > * {
         width: 500px;
+        height: 100%;
+      }
+
+      .editors > .output-container {
+        position: relative;
+      }
+
+      .editors > .output-container > #output {
+        width: 100%;
+        height: 100%;
       }
 
       .monaco-editor .lines-content {
@@ -117,6 +127,58 @@
       #error .error-caret {
         color: #4ec9b0;
       }
+
+      /* Source map hover highlighting */
+      .source-map-highlight {
+        background-color: rgba(255, 255, 0, 0.3);
+        border-radius: 2px;
+      }
+
+      /* Copy button for Rust output */
+      .copy-button {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        z-index: 10;
+        padding: 6px 10px;
+        background: #ffffff;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        color: #333333;
+        font-size: 12px;
+        font-family: system-ui, -apple-system, sans-serif;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .output-container:hover .copy-button {
+        opacity: 1;
+      }
+
+      .copy-button:hover {
+        background: #f0f0f0;
+        border-color: #b0b0b0;
+      }
+
+      .copy-button:active {
+        background: #e0e0e0;
+      }
+
+      .copy-button.copied {
+        background: #d4edda;
+        border-color: #28a745;
+        color: #155724;
+      }
+
+      .copy-button svg {
+        width: 14px;
+        height: 14px;
+        fill: currentColor;
+      }
     </style>
   </head>
   <body>
@@ -126,7 +188,15 @@
       <div class="workspace">
         <div class="editors">
           <div id="input"></div>
-          <div id="output"></div>
+          <div class="output-container">
+            <div id="output"></div>
+            <button id="copy-button" class="copy-button" title="Copy Rust code">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+              <span>Copy</span>
+            </button>
+          </div>
         </div>
 
         <div id="error-container">

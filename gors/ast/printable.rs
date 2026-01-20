@@ -107,7 +107,7 @@ impl<W: Write> Printable<W> for BTreeMap<&str, ast::Object<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
+impl<W: Write> Printable<W> for Vec<ast::CommentGroup<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -115,6 +115,9 @@ impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
         } else {
             write!(p.w, "[]ast.CommentGroup (len = {}) ", self.len())?;
             p.open_bracket()?;
+            for comment_group in self {
+                comment_group.print(p)?;
+            }
             p.close_bracket()?;
         }
         Ok(())
@@ -339,8 +342,32 @@ impl<W: Write> Printable<W> for ast::Ellipsis<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::CommentGroup {
-    fn print(&self, _: &mut Printer<W>) -> PrintResult {
+impl<W: Write> Printable<W> for ast::CommentGroup<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.list.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "*ast.CommentGroup ")?;
+            p.open_bracket()?;
+            p.prefix()?;
+            write!(p.w, "List: []ast.Comment (len = {}) ", self.list.len())?;
+            p.open_bracket()?;
+            for (i, comment) in self.list.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: *ast.Comment ", i)?;
+                p.open_bracket()?;
+                p.prefix()?;
+                write!(p.w, "Slash: {}", comment.slash)?;
+                p.newline()?;
+                p.prefix()?;
+                write!(p.w, "Text: {:?}", comment.text)?;
+                p.newline()?;
+                p.close_bracket()?;
+            }
+            p.close_bracket()?;
+            p.close_bracket()?;
+        }
         Ok(())
     }
 }

@@ -83,10 +83,93 @@ function createMonacoMarkers(result, sourceCode) {
   }];
 }
 
+/**
+ * Highlight state management
+ */
+class HighlightManager {
+  constructor(inputEditor, outputEditor) {
+    this.inputEditor = inputEditor;
+    this.outputEditor = outputEditor;
+    this.inputDecorations = [];
+    this.outputDecorations = [];
+    this.currentResult = null;
+  }
+
+  setResult(result) {
+    this.currentResult = result;
+  }
+
+  /**
+   * Highlight Rust code corresponding to a Go position
+   */
+  highlightFromGo(line, column) {
+    if (!this.currentResult || !this.currentResult.success) {
+      this.clearOutputHighlight();
+      return;
+    }
+
+    const rustSpan = this.currentResult.go_to_rust(line, column);
+    if (rustSpan.length === 4) {
+      this.outputDecorations = this.outputEditor.deltaDecorations(
+        this.outputDecorations,
+        [{
+          range: new monaco.Range(rustSpan[0], rustSpan[1], rustSpan[2], rustSpan[3]),
+          options: {
+            className: 'source-map-highlight',
+            isWholeLine: false,
+          }
+        }]
+      );
+    } else {
+      this.clearOutputHighlight();
+    }
+  }
+
+  /**
+   * Highlight Go code corresponding to a Rust position
+   */
+  highlightFromRust(line, column) {
+    if (!this.currentResult || !this.currentResult.success) {
+      this.clearInputHighlight();
+      return;
+    }
+
+    const goSpan = this.currentResult.rust_to_go(line, column);
+    if (goSpan.length === 4) {
+      this.inputDecorations = this.inputEditor.deltaDecorations(
+        this.inputDecorations,
+        [{
+          range: new monaco.Range(goSpan[0], goSpan[1], goSpan[2], goSpan[3]),
+          options: {
+            className: 'source-map-highlight',
+            isWholeLine: false,
+          }
+        }]
+      );
+    } else {
+      this.clearInputHighlight();
+    }
+  }
+
+  clearInputHighlight() {
+    this.inputDecorations = this.inputEditor.deltaDecorations(this.inputDecorations, []);
+  }
+
+  clearOutputHighlight() {
+    this.outputDecorations = this.outputEditor.deltaDecorations(this.outputDecorations, []);
+  }
+
+  clearAll() {
+    this.clearInputHighlight();
+    this.clearOutputHighlight();
+  }
+}
+
 function onDOMContentLoaded() {
   const input = document.getElementById('input');
   const output = document.getElementById('output');
   const error = document.getElementById('error');
+  const copyButton = document.getElementById('copy-button');
 
   const opts = {
     cursorSurroundingLines: 5,
@@ -97,9 +180,9 @@ function onDOMContentLoaded() {
     lineNumbers: 'off',
     lineNumbersMinChars: 2,
     minimap: { enabled: false },
-    occurrencesHighlight: false,
+    occurrencesHighlight: 'off',
     overviewRulerLanes: 0,
-    renderFinalNewline: false,
+    renderFinalNewline: 'off',
     renderIndentGuides: false,
     renderLineHighlight: 'none',
     scrollBeyondLastLine: false,
@@ -125,6 +208,12 @@ function onDOMContentLoaded() {
   });
   const outputModel = outputEditor.getModel();
 
+  // Setup highlight manager
+  const highlightManager = new HighlightManager(inputEditor, outputEditor);
+
+  // Store the current build result
+  let currentResult = null;
+
   // register handlers
 
   inputModel.onDidChangeContent(() => {
@@ -134,6 +223,8 @@ function onDOMContentLoaded() {
     monaco.editor.setModelMarkers(inputModel, 'gors', []);
 
     const result = gors.build(code);
+    currentResult = result;
+    highlightManager.setResult(result);
 
     if (result.success) {
       outputModel.setValue(result.output);
@@ -148,10 +239,57 @@ function onDOMContentLoaded() {
     }
   });
 
+  // Hover handlers for source mapping
+  inputEditor.onMouseMove((e) => {
+    if (e.target.position) {
+      highlightManager.highlightFromGo(
+        e.target.position.lineNumber,
+        e.target.position.column
+      );
+    }
+  });
+
+  outputEditor.onMouseMove((e) => {
+    if (e.target.position) {
+      highlightManager.highlightFromRust(
+        e.target.position.lineNumber,
+        e.target.position.column
+      );
+    }
+  });
+
+  // Clear highlights when mouse leaves
+  inputEditor.onMouseLeave(() => {
+    highlightManager.clearOutputHighlight();
+  });
+
+  outputEditor.onMouseLeave(() => {
+    highlightManager.clearInputHighlight();
+  });
+
   outputEditor.onKeyDown((event) => {
     if (!(event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       event.stopPropagation();
+    }
+  });
+
+  // Copy button handler
+  copyButton.addEventListener('click', async () => {
+    const rustCode = outputModel.getValue();
+    if (!rustCode) return;
+
+    try {
+      await navigator.clipboard.writeText(rustCode);
+      copyButton.classList.add('copied');
+      copyButton.querySelector('span').textContent = 'Copied!';
+
+      setTimeout(() => {
+        copyButton.classList.remove('copied');
+        copyButton.querySelector('span').textContent = 'Copy';
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
     }
   });
 

@@ -75,6 +75,12 @@ pub mod parser;
 /// with position information.
 pub mod scanner;
 
+/// Source mapping between Go and Rust code.
+///
+/// Provides data structures for tracking correspondence between
+/// positions in Go source code and generated Rust output.
+pub mod mapping;
+
 /// Go token definitions and source positions.
 ///
 /// Contains token types matching the Go specification and

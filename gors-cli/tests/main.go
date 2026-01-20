@@ -28,7 +28,7 @@ func main() {
 			}
 
 			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors|parser.SkipObjectResolution)
+			file, err := parser.ParseFile(fset, filename, src, parser.AllErrors|parser.SkipObjectResolution|parser.ParseComments)
 			if err != nil {
 				panic(err)
 			}

@@ -93,11 +93,20 @@ impl<'a> TestRunner<'a> {
 
         for prefix in prefixes {
             for entry in glob(&format!("tests/{}/{}", prefix, self.pattern)).unwrap() {
-                let path = entry.unwrap();
+                // Skip glob errors (e.g., symlinks that create paths that are too long)
+                let path = match entry {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
                 let path_str = path.to_str().unwrap();
 
                 // Skip files that don't exist (broken symlinks)
                 if !std::path::Path::new(path_str).exists() {
+                    continue;
+                }
+
+                // Skip paths with repeated directory components (recursive symlinks)
+                if has_repeated_components(path_str) {
                     continue;
                 }
 
@@ -254,6 +263,28 @@ fn exec(bin: &str, args: &[&str]) -> Result<(Output, Duration), Box<dyn std::err
     }
 
     Ok((output, after.checked_duration_since(before).unwrap()))
+}
+
+/// Check if a path has repeated directory components (sign of recursive symlinks).
+/// For example: "foo/bar/v3/v3/v3/file.go" has repeated "v3" components.
+fn has_repeated_components(path: &str) -> bool {
+    use std::collections::HashMap;
+    let components: Vec<&str> = path.split('/').collect();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+
+    for component in &components {
+        // Skip empty components and common directory names
+        if component.is_empty() || *component == "." || *component == ".." {
+            continue;
+        }
+        let count = seen.entry(component).or_insert(0);
+        *count += 1;
+        // If we see the same directory 3+ times, it's likely a recursive symlink
+        if *count >= 3 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Execute a command and return the result without failing on non-zero exit codes.

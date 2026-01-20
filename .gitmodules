@@ -1,3 +1,8 @@
+[submodule "gors-cli/tests/repositories/go"]
+	path = gors-cli/tests/repositories/go
+	url = https://github.com/golang/go.git
+	shallow = true
+
 [submodule "gors-cli/tests/repositories/kubernetes"]
 	path = gors-cli/tests/repositories/kubernetes
 	url = https://github.com/kubernetes/kubernetes.git
@@ -13,14 +18,19 @@
 	url = https://github.com/prometheus/prometheus.git
 	shallow = true
 
+[submodule "gors-cli/tests/repositories/go-ethereum"]
+	path = gors-cli/tests/repositories/go-ethereum
+	url = https://github.com/ethereum/go-ethereum.git
+	shallow = true
+
 [submodule "gors-cli/tests/repositories/minio"]
 	path = gors-cli/tests/repositories/minio
 	url = https://github.com/minio/minio.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/go-ethereum"]
-	path = gors-cli/tests/repositories/go-ethereum
-	url = https://github.com/ethereum/go-ethereum.git
+[submodule "gors-cli/tests/repositories/etcd"]
+	path = gors-cli/tests/repositories/etcd
+	url = https://github.com/etcd-io/etcd.git
 	shallow = true
 
 [submodule "gors-cli/tests/repositories/traefik"]
@@ -28,19 +38,9 @@
 	url = https://github.com/traefik/traefik.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/syncthing"]
-	path = gors-cli/tests/repositories/syncthing
-	url = https://github.com/syncthing/syncthing.git
-	shallow = true
-
 [submodule "gors-cli/tests/repositories/gitea"]
 	path = gors-cli/tests/repositories/gitea
 	url = https://github.com/go-gitea/gitea.git
-	shallow = true
-
-[submodule "gors-cli/tests/repositories/gogs"]
-	path = gors-cli/tests/repositories/gogs
-	url = https://github.com/gogs/gogs.git
 	shallow = true
 
 [submodule "gors-cli/tests/repositories/caddy"]
@@ -48,7 +48,352 @@
 	url = https://github.com/caddyserver/caddy.git
 	shallow = true
 
-[submodule "gors-cli/tests/repositories/go"]
-	path = gors-cli/tests/repositories/go
-	url = https://github.com/golang/go.git
+[submodule "gors-cli/tests/repositories/syncthing"]
+	path = gors-cli/tests/repositories/syncthing
+	url = https://github.com/syncthing/syncthing.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/gogs"]
+	path = gors-cli/tests/repositories/gogs
+	url = https://github.com/gogs/gogs.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cockroach"]
+	path = gors-cli/tests/repositories/cockroach
+	url = https://github.com/cockroachdb/cockroach.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cli"]
+	path = gors-cli/tests/repositories/cli
+	url = https://github.com/docker/cli.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/compose"]
+	path = gors-cli/tests/repositories/compose
+	url = https://github.com/docker/compose.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/containerd"]
+	path = gors-cli/tests/repositories/containerd
+	url = https://github.com/containerd/containerd.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/moby"]
+	path = gors-cli/tests/repositories/moby
+	url = https://github.com/moby/moby.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/rancher"]
+	path = gors-cli/tests/repositories/rancher
+	url = https://github.com/rancher/rancher.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/helm"]
+	path = gors-cli/tests/repositories/helm
+	url = https://github.com/helm/helm.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/consul"]
+	path = gors-cli/tests/repositories/consul
+	url = https://github.com/hashicorp/consul.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/vault"]
+	path = gors-cli/tests/repositories/vault
+	url = https://github.com/hashicorp/vault.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/nomad"]
+	path = gors-cli/tests/repositories/nomad
+	url = https://github.com/hashicorp/nomad.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/ignition"]
+	path = gors-cli/tests/repositories/ignition
+	url = https://github.com/coreos/ignition.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/istio"]
+	path = gors-cli/tests/repositories/istio
+	url = https://github.com/istio/istio.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/linkerd2"]
+	path = gors-cli/tests/repositories/linkerd2
+	url = https://github.com/linkerd/linkerd2.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/influxdb"]
+	path = gors-cli/tests/repositories/influxdb
+	url = https://github.com/influxdata/influxdb.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/grafana"]
+	path = gors-cli/tests/repositories/grafana
+	url = https://github.com/grafana/grafana.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cobra"]
+	path = gors-cli/tests/repositories/cobra
+	url = https://github.com/spf13/cobra.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/viper"]
+	path = gors-cli/tests/repositories/viper
+	url = https://github.com/spf13/viper.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/gin"]
+	path = gors-cli/tests/repositories/gin
+	url = https://github.com/gin-gonic/gin.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/beego"]
+	path = gors-cli/tests/repositories/beego
+	url = https://github.com/beego/beego.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/echo"]
+	path = gors-cli/tests/repositories/echo
+	url = https://github.com/labstack/echo.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/revel"]
+	path = gors-cli/tests/repositories/revel
+	url = https://github.com/revel/revel.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/kit"]
+	path = gors-cli/tests/repositories/kit
+	url = https://github.com/go-kit/kit.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/beats"]
+	path = gors-cli/tests/repositories/beats
+	url = https://github.com/elastic/beats.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/logstash"]
+	path = gors-cli/tests/repositories/logstash
+	url = https://github.com/elastic/logstash.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/origin"]
+	path = gors-cli/tests/repositories/origin
+	url = https://github.com/openshift/origin.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/k3s"]
+	path = gors-cli/tests/repositories/k3s
+	url = https://github.com/k3s-io/k3s.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/calico"]
+	path = gors-cli/tests/repositories/calico
+	url = https://github.com/projectcalico/calico.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/argo-cd"]
+	path = gors-cli/tests/repositories/argo-cd
+	url = https://github.com/argoproj/argo-cd.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/argo-workflows"]
+	path = gors-cli/tests/repositories/argo-workflows
+	url = https://github.com/argoproj/argo-workflows.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/serving"]
+	path = gors-cli/tests/repositories/serving
+	url = https://github.com/knative/serving.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/eventing"]
+	path = gors-cli/tests/repositories/eventing
+	url = https://github.com/knative/eventing.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/flux"]
+	path = gors-cli/tests/repositories/flux
+	url = https://github.com/fluxcd/flux.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/tidb"]
+	path = gors-cli/tests/repositories/tidb
+	url = https://github.com/pingcap/tidb.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/tikv"]
+	path = gors-cli/tests/repositories/tikv
+	url = https://github.com/pingcap/tikv.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/nats-server"]
+	path = gors-cli/tests/repositories/nats-server
+	url = https://github.com/nats-io/nats-server.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/dubbo-go"]
+	path = gors-cli/tests/repositories/dubbo-go
+	url = https://github.com/apache/dubbo-go.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/skywalking"]
+	path = gors-cli/tests/repositories/skywalking
+	url = https://github.com/apache/skywalking.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/incubator-answer"]
+	path = gors-cli/tests/repositories/incubator-answer
+	url = https://github.com/apache/incubator-answer.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/pulsar"]
+	path = gors-cli/tests/repositories/pulsar
+	url = https://github.com/apache/pulsar.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/grpc-go"]
+	path = gors-cli/tests/repositories/grpc-go
+	url = https://github.com/grpc/grpc-go.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/go-control-plane"]
+	path = gors-cli/tests/repositories/go-control-plane
+	url = https://github.com/envoyproxy/go-control-plane.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/opentelemetry-go"]
+	path = gors-cli/tests/repositories/opentelemetry-go
+	url = https://github.com/open-telemetry/opentelemetry-go.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/jaeger"]
+	path = gors-cli/tests/repositories/jaeger
+	url = https://github.com/jaegertracing/jaeger.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/rook"]
+	path = gors-cli/tests/repositories/rook
+	url = https://github.com/rook/rook.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/longhorn"]
+	path = gors-cli/tests/repositories/longhorn
+	url = https://github.com/longhorn/longhorn.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/ceph-csi"]
+	path = gors-cli/tests/repositories/ceph-csi
+	url = https://github.com/ceph/ceph-csi.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/kata-containers"]
+	path = gors-cli/tests/repositories/kata-containers
+	url = https://github.com/kata-containers/kata-containers.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/firecracker"]
+	path = gors-cli/tests/repositories/firecracker
+	url = https://github.com/firecracker-microvm/firecracker.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cfssl"]
+	path = gors-cli/tests/repositories/cfssl
+	url = https://github.com/cloudflare/cfssl.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/coredns"]
+	path = gors-cli/tests/repositories/coredns
+	url = https://github.com/coredns/coredns.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/openshift-api"]
+	path = gors-cli/tests/repositories/openshift-api
+	url = https://github.com/openshift/api.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cluster-kube-apiserver-operator"]
+	path = gors-cli/tests/repositories/cluster-kube-apiserver-operator
+	url = https://github.com/openshift/cluster-kube-apiserver-operator.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cluster-version-operator"]
+	path = gors-cli/tests/repositories/cluster-version-operator
+	url = https://github.com/openshift/cluster-version-operator.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/skaffold"]
+	path = gors-cli/tests/repositories/skaffold
+	url = https://github.com/GoogleContainerTools/skaffold.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/cadvisor"]
+	path = gors-cli/tests/repositories/cadvisor
+	url = https://github.com/google/cadvisor.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/pprof"]
+	path = gors-cli/tests/repositories/pprof
+	url = https://github.com/google/pprof.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/ko"]
+	path = gors-cli/tests/repositories/ko
+	url = https://github.com/google/ko.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/gvisor"]
+	path = gors-cli/tests/repositories/gvisor
+	url = https://github.com/google/gvisor.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/go-cloud"]
+	path = gors-cli/tests/repositories/go-cloud
+	url = https://github.com/google/go-cloud.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/go-github"]
+	path = gors-cli/tests/repositories/go-github
+	url = https://github.com/google/go-github.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/juju"]
+	path = gors-cli/tests/repositories/juju
+	url = https://github.com/juju/juju.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/hydra"]
+	path = gors-cli/tests/repositories/hydra
+	url = https://github.com/ory/hydra.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/kratos"]
+	path = gors-cli/tests/repositories/kratos
+	url = https://github.com/ory/kratos.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/oathkeeper"]
+	path = gors-cli/tests/repositories/oathkeeper
+	url = https://github.com/ory/oathkeeper.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/postgres-operator"]
+	path = gors-cli/tests/repositories/postgres-operator
+	url = https://github.com/zalando/postgres-operator.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/weave"]
+	path = gors-cli/tests/repositories/weave
+	url = https://github.com/weaveworks/weave.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/weaveworks-ignite"]
+	path = gors-cli/tests/repositories/weaveworks-ignite
+	url = https://github.com/weaveworks/ignite.git
+	shallow = true
+
+[submodule "gors-cli/tests/repositories/containous-traefik"]
+	path = gors-cli/tests/repositories/containous-traefik
+	url = https://github.com/containous/traefik.git
 	shallow = true

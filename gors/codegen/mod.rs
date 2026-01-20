@@ -3,6 +3,13 @@
 //! This module provides functions for formatting Rust `syn` AST into
 //! pretty-printed source code using the `prettyplease` library.
 
+mod tracked;
+
+pub use tracked::{
+    generate_with_comments, generate_with_comments_and_blanks, generate_with_positions,
+    BlankLineInfo, CommentToInsert,
+};
+
 /// Write formatted Rust source code to a writer.
 ///
 /// # Arguments
