@@ -88,17 +88,22 @@ impl SourceMapTracker {
             name_to_tokens.entry(&token.text).or_default().push(token);
         }
 
-        // Track which token index we've used for each name
+        // Track which token index we've used for each Rust token name
         let mut name_indices: HashMap<String, usize> = HashMap::new();
 
         // Match pending mappings to Rust tokens
+        // Go names are stored in pending.name, but we need to find the corresponding Rust token
         for pending in &self.pending {
-            if let Some(ref name) = pending.name {
-                if let Some(matching_tokens) = name_to_tokens.get(name.as_str()) {
-                    let idx = name_indices.entry(name.clone()).or_insert(0);
+            if let Some(ref go_name) = pending.name {
+                // Get the Rust token name to search for
+                let rust_name = go_name_to_rust_name(go_name);
+                
+                if let Some(matching_tokens) = name_to_tokens.get(rust_name) {
+                    let idx = name_indices.entry(rust_name.to_string()).or_insert(0);
                     if *idx < matching_tokens.len() {
                         let token = matching_tokens[*idx];
-                        let name_idx = builder.add_name(name);
+                        // Store the Go name in the source map (not the Rust name)
+                        let name_idx = builder.add_name(go_name);
                         builder.add_raw(
                             token.start_line.saturating_sub(1), // generated line (0-based)
                             token.start_column.saturating_sub(1), // generated column (0-based)
@@ -123,6 +128,21 @@ impl SourceMapTracker {
         self.go_file = None;
         self.rust_file = None;
         self.go_source = None;
+    }
+}
+
+/// Map Go token name to the corresponding Rust token name for matching.
+/// This is used during source map building to find Rust tokens that correspond to Go tokens.
+/// The actual Go name is still stored in the source map for highlighting.
+fn go_name_to_rust_name(go_name: &str) -> &str {
+    match go_name {
+        // Keywords that change name
+        "func" => "fn",
+        "Println" => "println",
+        "Printf" => "print", // fmt.Printf -> print! macro
+        "Print" => "print",
+        // Most identifiers keep the same name
+        _ => go_name,
     }
 }
 

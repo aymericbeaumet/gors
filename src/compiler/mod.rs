@@ -282,13 +282,14 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
         // Record mapping for the call expression
         record_mapping(&call_expr.lparen, None);
 
-        // Check if this is a fmt.Println call and record a mapping for the transformed name
-        // This enables sourcemap lookups after the inline_fmt pass transforms it to println!
+        // For fmt.Println calls, record mapping for Println with Go name
+        // Note: "fmt" has no mapping because after inline_fmt pass, it becomes ::std::println!
+        // and there's no corresponding Rust token for "fmt"
         if let ast::Expr::SelectorExpr(ref selector) = *call_expr.fun {
             if let ast::Expr::Ident(ref x_ident) = *selector.x {
                 if x_ident.name == "fmt" && selector.sel.name == "Println" {
-                    // Record a mapping from fmt.Println to "println"
-                    record_mapping(&x_ident.name_pos, Some("println"));
+                    // Only record Println - fmt disappears in the transformation
+                    record_mapping(&selector.sel.name_pos, Some("Println"));
                 }
             }
         }
@@ -440,10 +441,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
     fn try_from(func_decl: ast::FuncDecl) -> Result<Self, Self::Error> {
-        // Record mapping for the function keyword if available
-        // Use "fn" as the name since that's what "func" becomes in Rust output
+        // Record mapping for the function keyword with Go name
+        // The Rust token ("fn") will be extracted dynamically from the output
         if let Some(ref func_pos) = func_decl.type_.func {
-            record_mapping(func_pos, Some("fn"));
+            record_mapping(func_pos, Some("func"));
         }
 
         // Convert doc comments to Rust doc attributes
@@ -1126,10 +1127,33 @@ func main() {
             "Expected source map to have tokens"
         );
 
-        // Check that "println" is in the names
+        // Check that Go names are stored in the source map (not Rust names)
         let has_println = (0..parsed_sm.get_name_count())
-            .any(|i| parsed_sm.get_name(i) == Some("println"));
-        assert!(has_println, "Expected 'println' in source map names");
+            .any(|i| parsed_sm.get_name(i) == Some("Println"));
+        assert!(has_println, "Expected 'Println' (Go name) in source map names");
+
+        // Verify that "Println" has a mapping with Go name "Println"
+        // Note: "fmt" has no mapping because after inline_fmt pass, fmt.Println becomes ::std::println!
+        // and there's no "fmt" token in the Rust output to map to
+        let mut has_println_mapping = false;
+
+        for i in 0..parsed_sm.get_token_count() {
+            if let Some(token) = parsed_sm.get_token(i as usize) {
+                // Line 6 (0-based: 5)
+                if token.get_src_line() == 5 {
+                    let col = token.get_src_col();
+                    // Println around col 5, should have name "Println"
+                    if col >= 4 && col <= 6 && token.get_name() == Some("Println") {
+                        has_println_mapping = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            has_println_mapping,
+            "Expected 'Println' position to have Go name 'Println'"
+        );
     }
 
     #[test]
@@ -1168,11 +1192,11 @@ func main() {
         // Check that source file is correct
         assert_eq!(parsed_sm.get_source(0), Some("test.go"));
 
-        // Check that "fn" and "main" are in the names
+        // Check that Go names ("func", "main") are in the source map (not Rust names like "fn")
         let names: Vec<_> = (0..parsed_sm.get_name_count())
             .filter_map(|i| parsed_sm.get_name(i))
             .collect();
-        assert!(names.contains(&"fn"), "Expected 'fn' in source map names");
+        assert!(names.contains(&"func"), "Expected 'func' (Go name) in source map names");
         assert!(
             names.contains(&"main"),
             "Expected 'main' in source map names"

@@ -103,8 +103,10 @@ impl BuildResult {
         let target_col = output_column.saturating_sub(1);
 
         // Find the best matching token on the same output line
+        // Strategy: prefer token at/before cursor, but accept closest token on line
         let mut best_token = None;
         let mut best_distance = u32::MAX;
+        let mut best_is_before_cursor = false;
 
         for i in 0..sm.get_token_count() {
             if let Some(token) = sm.get_token(i as usize) {
@@ -114,12 +116,20 @@ impl BuildResult {
                 // Match tokens on the same generated line
                 if dst_line == target_line {
                     let distance = target_col.abs_diff(dst_col);
+                    let is_before_cursor = dst_col <= target_col;
 
-                    // Accept if closer AND (at/before target OR no match yet)
-                    if distance < best_distance && (dst_col <= target_col || best_token.is_none())
-                    {
+                    // Prefer tokens at/before cursor over tokens after cursor
+                    // Among same preference, pick the closest one
+                    let dominated = match (best_is_before_cursor, is_before_cursor) {
+                        (false, true) => true, // New token is before cursor, old wasn't
+                        (true, false) => false, // Old token is before cursor, new isn't
+                        _ => distance < best_distance, // Same preference, pick closer
+                    };
+
+                    if dominated {
                         best_distance = distance;
                         best_token = Some(token);
+                        best_is_before_cursor = is_before_cursor;
                     }
                 }
             }
@@ -133,7 +143,7 @@ impl BuildResult {
         let start_line = token.get_src_line() + 1;
         let start_col = token.get_src_col() + 1;
 
-        // For end position, use the token name length if available, otherwise default span
+        // The stored name is the Go token name - use its length directly
         let name_len = token.get_name().map(|n| n.len() as u32).unwrap_or(1);
         let end_line = start_line;
         let end_col = start_col + name_len;
@@ -162,9 +172,10 @@ impl BuildResult {
         let target_col = go_column.saturating_sub(1);
 
         // Find the token that best matches the Go position
-        // We need to iterate all tokens since there's no reverse lookup in sourcemap
+        // Strategy: prefer token at/before cursor, but accept closest token on line
         let mut best_token = None;
         let mut best_distance = u32::MAX;
+        let mut best_is_before_cursor = false;
 
         for i in 0..sm.get_token_count() {
             if let Some(token) = sm.get_token(i as usize) {
@@ -174,12 +185,20 @@ impl BuildResult {
                 // Exact line match
                 if src_line == target_line {
                     let distance = target_col.abs_diff(src_col);
+                    let is_before_cursor = src_col <= target_col;
 
-                    // Accept if closer AND (at/before target OR no match yet)
-                    if distance < best_distance && (src_col <= target_col || best_token.is_none())
-                    {
+                    // Prefer tokens at/before cursor over tokens after cursor
+                    // Among same preference, pick the closest one
+                    let dominated = match (best_is_before_cursor, is_before_cursor) {
+                        (false, true) => true, // New token is before cursor, old wasn't
+                        (true, false) => false, // Old token is before cursor, new isn't
+                        _ => distance < best_distance, // Same preference, pick closer
+                    };
+
+                    if dominated {
                         best_distance = distance;
                         best_token = Some(token);
+                        best_is_before_cursor = is_before_cursor;
                     }
                 }
             }
@@ -190,11 +209,16 @@ impl BuildResult {
         };
 
         // Convert generated position to 1-based for Monaco
-        let start_line = token.get_dst_line() + 1;
-        let start_col = token.get_dst_col() + 1;
+        let dst_line = token.get_dst_line();
+        let dst_col = token.get_dst_col();
+        let start_line = dst_line + 1;
+        let start_col = dst_col + 1;
 
-        // For end position, use the token name length if available
-        let name_len = token.get_name().map(|n| n.len() as u32).unwrap_or(1);
+        // Extract the actual Rust token at the destination position to get its length
+        // This avoids hardcoding length mappings between Go and Rust tokens
+        let name_len = extract_rust_token_at(&self.output, dst_line, dst_col)
+            .map(|t| t.len() as u32)
+            .unwrap_or(1);
         let end_line = start_line;
         let end_col = start_col + name_len;
 
@@ -255,6 +279,53 @@ impl BuildResult {
     }
 }
 
+/// Extract the token at a given position from Rust source code.
+/// Returns the token text if found.
+fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<String> {
+    let lines: Vec<&str> = rust_source.lines().collect();
+    let line_idx = line as usize;
+    if line_idx >= lines.len() {
+        return None;
+    }
+    
+    let line_text = lines[line_idx];
+    let col_idx = col as usize;
+    if col_idx >= line_text.len() {
+        return None;
+    }
+    
+    let chars: Vec<char> = line_text.chars().collect();
+    if col_idx >= chars.len() {
+        return None;
+    }
+    
+    let start_char = chars[col_idx];
+    
+    // Check for comment
+    if col_idx + 1 < chars.len() && start_char == '/' && (chars[col_idx + 1] == '/' || chars[col_idx + 1] == '*') {
+        // Return the rest of the line for line comments, or find end for block comments
+        if chars[col_idx + 1] == '/' {
+            return Some(line_text[col_idx..].to_string());
+        }
+    }
+    
+    // Check for identifier/keyword
+    if start_char.is_alphabetic() || start_char == '_' {
+        let mut end = col_idx;
+        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        // Handle macro invocation (e.g., println!)
+        if end < chars.len() && chars[end] == '!' {
+            end += 1;
+        }
+        return Some(chars[col_idx..end].iter().collect());
+    }
+    
+    // For other tokens (operators, etc.), return single char
+    Some(start_char.to_string())
+}
+
 /// Build Go source code and return Rust code with structured error information.
 /// This is an alias for build_rust() for backward compatibility.
 #[wasm_bindgen]
@@ -298,6 +369,7 @@ pub fn build_rust(input: String) -> BuildResult {
             let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
             comments.push(CommentInfo {
                 go_line: comment.slash.line as u32,
+                go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
                 text: comment.text.to_string(),
                 is_doc,
             });
@@ -350,9 +422,13 @@ pub fn build_rust(input: String) -> BuildResult {
 /// A mapping for a comment's position in both Go and Rust
 struct CommentMapping {
     go_line: u32,      // 0-based
-    go_col: u32,       // 0-based
-    rust_line: u32,    // 0-based
+    go_col: u32,       // 0-based, position of // or /* in Go source
+    rust_line: u32,    // 0-based (final position in output)
     rust_col: u32,     // 0-based
+    /// The original Rust line this comment was inserted before (0-based)
+    /// Used to calculate line shifts for code mappings
+    inserted_before_original_line: u32,
+    /// The comment text
     text: String,
 }
 
@@ -373,63 +449,43 @@ fn build_source_map_with_comments(
         builder.set_source_contents(src_idx, Some(content));
     }
 
-    // Calculate cumulative shifts: for each comment at rust_line, all subsequent lines shift by 1
-    // First, collect all the original lines where comments were inserted
-    // The comment_mappings contain the FINAL rust_line positions, so we need to work backwards
-    // to figure out the original lines.
+    // Build a list of which original lines have comments inserted before them
+    // Each comment was inserted before `inserted_before_original_line`
+    let mut comments_before_line: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::new();
+    for mapping in comment_mappings {
+        *comments_before_line
+            .entry(mapping.inserted_before_original_line)
+            .or_insert(0) += 1;
+    }
 
-    // Actually, let's approach this differently:
-    // 1. Sort comment mappings by their final rust_line
-    // 2. Calculate how many comments were inserted before each original code line
+    // Calculate cumulative shift for each original line
+    // shift[L] = total number of comments inserted before lines 0..=L
+    let max_original_line = initial_source_map
+        .tokens()
+        .map(|t| t.get_dst_line())
+        .max()
+        .unwrap_or(0);
 
-    // Group comments by their insertion point (before which original line they were inserted)
-    // Comments are inserted BEFORE certain lines in the original code.
-    // The rust_line in comment_mappings is the final position.
-
-    // Let's track: for original line X, how many lines were added before it?
-    // We need to map from final position back to understand the shifts.
-
-    // Simpler approach: collect all comment final lines, sort them, then calculate shifts
-    let mut comment_lines: Vec<u32> = comment_mappings.iter().map(|c| c.rust_line).collect();
-    comment_lines.sort();
+    let mut cumulative_shift = vec![0u32; (max_original_line + 2) as usize];
+    let mut running_shift = 0u32;
+    for line in 0..=max_original_line + 1 {
+        // Add comments inserted before this line
+        running_shift += comments_before_line.get(&line).copied().unwrap_or(0);
+        cumulative_shift[line as usize] = running_shift;
+    }
 
     // Add all existing code mappings with adjusted line numbers
     for i in 0..initial_source_map.get_token_count() {
         if let Some(token) = initial_source_map.get_token(i as usize) {
             let original_dst_line = token.get_dst_line();
 
-            // Count how many comments were inserted before or at this line
-            // A comment at rust_line N means it was inserted BEFORE the code that was originally at line N-shift
-            // This is tricky because the relationship is circular.
-
-            // Different approach: for each original line, count comments that end up before it
-            // If original code was at line X, and we insert K comments before it, it ends up at line X+K
-            // So: final_line = original_line + K
-            // We have final comment lines. We need to figure out K for each original code line.
-
-            // Let's iterate: for original_line = 0, 1, 2, ...
-            // Comments inserted before original_line 0: none (they'd have rust_line = 0)
-            // Comments inserted before original_line 1: count comments where rust_line <= 0 + previous_shifts
-            // This is getting complex. Let me use a different approach.
-
-            // Since we know the final positions of comments, and we know original code positions,
-            // we can calculate: new_code_line = original_code_line + number_of_comments_with_final_line <= new_code_line
-            // This is a fixpoint calculation, but for simplicity, let's just count comments with rust_line <= original_line
-
-            // Actually, the simplest correct approach:
-            // For each original code line L, its new position is L + (number of comments that appear before it in the final output)
-            // A comment appears before line L's new position if comment.rust_line < L + shift
-            // Let's iterate with a shift counter
-
-            let mut shift = 0u32;
-            for &comment_line in &comment_lines {
-                // If comment is at a line that would be before or at the shifted position of our code
-                if comment_line <= original_dst_line + shift {
-                    shift += 1;
-                } else {
-                    break; // Comments are sorted, so we can stop
-                }
-            }
+            // Get the shift for this line (comments inserted before it)
+            let shift = if (original_dst_line as usize) < cumulative_shift.len() {
+                cumulative_shift[original_dst_line as usize]
+            } else {
+                *cumulative_shift.last().unwrap_or(&0)
+            };
 
             let new_dst_line = original_dst_line + shift;
 
@@ -448,13 +504,8 @@ fn build_source_map_with_comments(
 
     // Add comment mappings (already have correct final positions)
     for mapping in comment_mappings {
-        // Add a name for the comment
-        let comment_name = if mapping.text.len() > 20 {
-            format!("{}...", &mapping.text[..17])
-        } else {
-            mapping.text.clone()
-        };
-        let name_idx = builder.add_name(&comment_name);
+        // Store the full comment text as the name (used for span length calculation)
+        let name_idx = builder.add_name(&mapping.text);
 
         builder.add_raw(
             mapping.rust_line,
@@ -473,6 +524,7 @@ fn build_source_map_with_comments(
 /// Information about a comment to insert.
 struct CommentInfo {
     go_line: u32,
+    go_col: u32,
     text: String,
     is_doc: bool,
 }
@@ -526,20 +578,22 @@ fn insert_comments_with_sourcemap(
         // Convert to 0-based for source map lookup
         let comment_go_line_0based = comment.go_line.saturating_sub(1);
 
-        // Find the Rust line that corresponds to the Go line after this comment
-        // Look for the first Go line > comment line that has a mapping
+        // Find the Rust line that corresponds to the Go line of or after this comment
+        // For inline comments (same line as code), we insert before that line
+        // For standalone comments, we insert before the next code line
         let mut target_rust_line: Option<u32> = None;
 
-        for next_go_line_0based in comment_go_line_0based..comment_go_line_0based + 20 {
-            if let Some(&rust_line) = go_to_rust_line.get(&next_go_line_0based) {
-                // If the comment is on the same line as some code, put it before that line
-                // If the comment is on a line by itself, put it before the next code line
-                if next_go_line_0based == comment_go_line_0based {
-                    // Comment on same line as code - this is rare, skip for now
-                    continue;
+        // First check if there's code on the same line as the comment (inline comment)
+        if let Some(&rust_line) = go_to_rust_line.get(&comment_go_line_0based) {
+            // Inline comment - insert before the code line it's associated with
+            target_rust_line = Some(rust_line);
+        } else {
+            // Standalone comment - find the next line with code
+            for next_go_line_0based in (comment_go_line_0based + 1)..comment_go_line_0based + 20 {
+                if let Some(&rust_line) = go_to_rust_line.get(&next_go_line_0based) {
+                    target_rust_line = Some(rust_line);
+                    break;
                 }
-                target_rust_line = Some(rust_line);
-                break;
             }
         }
 
@@ -582,14 +636,17 @@ fn insert_comments_with_sourcemap(
     let mut output = String::new();
     let mut current_rust_line: u32 = 0; // 0-based line number in output
 
-    // Insert leading comments
+    // Insert leading comments (inserted before line 0)
     for comment in &leading_comments {
         let indent = 0usize;
+        // Calculate Go column from the comment text (find where // or /* starts)
+        let go_col = comment.go_col;
         comment_mappings.push(CommentMapping {
             go_line: comment.go_line.saturating_sub(1), // Convert to 0-based
-            go_col: 0,
+            go_col,
             rust_line: current_rust_line,
             rust_col: indent as u32,
+            inserted_before_original_line: 0, // Inserted before the first line
             text: comment.text.clone(),
         });
         output.push_str(&comment.text);
@@ -617,11 +674,14 @@ fn insert_comments_with_sourcemap(
             let indent_str: String = " ".repeat(indent);
 
             for comment in line_comments {
+                // Preserve the Go column position from the original source
+                let go_col = comment.go_col;
                 comment_mappings.push(CommentMapping {
                     go_line: comment.go_line.saturating_sub(1), // Convert to 0-based
-                    go_col: 0, // Comments typically start at column 0 in Go (after indentation)
+                    go_col,
                     rust_line: current_rust_line,
                     rust_col: indent as u32,
+                    inserted_before_original_line: rust_line_idx, // Track which original line
                     text: comment.text.clone(),
                 });
                 output.push_str(&indent_str);
@@ -667,6 +727,7 @@ mod tests {
                 let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
                 comments.push(CommentInfo {
                     go_line: comment.slash.line as u32,
+                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
                     text: comment.text.to_string(),
                     is_doc,
                 });
@@ -945,6 +1006,7 @@ func bar() {
                 let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
                 comments.push(CommentInfo {
                     go_line: comment.slash.line as u32,
+                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
                     text: comment.text.to_string(),
                     is_doc,
                 });
