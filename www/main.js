@@ -1,6 +1,85 @@
 import * as gors from 'gors';
 import * as monaco from 'monaco-editor';
 
+// Register WAT (WebAssembly Text) language for syntax highlighting
+monaco.languages.register({ id: 'wat' });
+
+monaco.languages.setMonarchTokensProvider('wat', {
+  keywords: [
+    'module', 'type', 'func', 'param', 'result', 'local', 'global',
+    'table', 'memory', 'elem', 'data', 'start', 'import', 'export',
+    'mut', 'offset', 'align', 'if', 'then', 'else', 'end', 'loop',
+    'block', 'br', 'br_if', 'br_table', 'return', 'call', 'call_indirect',
+    'drop', 'select', 'unreachable', 'nop'
+  ],
+  typeKeywords: [
+    'i32', 'i64', 'f32', 'f64', 'v128', 'funcref', 'externref', 'anyfunc'
+  ],
+  operators: [],
+  symbols: /[=><!~?:&|+\-*\/\^%]+/,
+
+  tokenizer: {
+    root: [
+      // Comments
+      [/;;.*$/, 'comment'],
+      [/\(;/, 'comment', '@comment'],
+
+      // Strings
+      [/"([^"\\]|\\.)*$/, 'string.invalid'],
+      [/"/, 'string', '@string'],
+
+      // Numbers
+      [/-?0x[0-9a-fA-F_]+/, 'number.hex'],
+      [/-?\d+(\.\d+)?([eE][+-]?\d+)?/, 'number'],
+
+      // Identifiers and keywords
+      [/\$[a-zA-Z_][a-zA-Z0-9_]*/, 'variable'],
+      [/[a-z_][a-z0-9_.]*/, {
+        cases: {
+          '@keywords': 'keyword',
+          '@typeKeywords': 'type',
+          '@default': 'identifier'
+        }
+      }],
+
+      // Instructions (i32.add, f64.mul, etc.)
+      [/(i32|i64|f32|f64|v128)\.[a-z_][a-z0-9_]*/, 'keyword.instruction'],
+      [/(memory|table|global|local)\.(get|set|tee|size|grow|copy|fill)/, 'keyword.instruction'],
+
+      // Parentheses
+      [/[()]/, 'delimiter.parenthesis'],
+
+      // Whitespace
+      [/\s+/, 'white'],
+    ],
+
+    comment: [
+      [/[^;)]+/, 'comment'],
+      [/;\)/, 'comment', '@pop'],
+      [/[;)]/, 'comment'],
+    ],
+
+    string: [
+      [/[^\\"]+/, 'string'],
+      [/\\./, 'string.escape'],
+      [/"/, 'string', '@pop'],
+    ],
+  },
+});
+
+// Configure WAT language settings
+monaco.languages.setLanguageConfiguration('wat', {
+  comments: {
+    lineComment: ';;',
+    blockComment: ['(;', ';)'],
+  },
+  brackets: [['(', ')']],
+  autoClosingPairs: [
+    { open: '(', close: ')' },
+    { open: '"', close: '"' },
+  ],
+});
+
 /**
  * Format an error with source context for display in the error panel
  */
@@ -84,29 +163,40 @@ function createMonacoMarkers(result, sourceCode) {
  * Highlight state management
  */
 class HighlightManager {
-  constructor(goEditor, rustEditor) {
+  constructor(goEditor, outputEditor) {
     this.goEditor = goEditor;
-    this.rustEditor = rustEditor;
+    this.outputEditor = outputEditor;
     this.goDecorations = [];
-    this.rustDecorations = [];
+    this.outputDecorations = [];
     this.rustResult = null;
+    this.outputMode = 'rust'; // 'rust' or 'wasm'
   }
 
   setRustResult(result) {
     this.rustResult = result;
   }
 
+  setOutputMode(mode) {
+    this.outputMode = mode;
+  }
+
   /**
-   * Highlight Rust code corresponding to a Go position
+   * Highlight output code corresponding to a Go position
    */
   highlightFromGo(line, column) {
+    // Only highlight when in Rust mode (WASM doesn't have source mapping)
+    if (this.outputMode !== 'rust') {
+      this.clearOutputHighlight();
+      return;
+    }
+
     if (this.rustResult && this.rustResult.success) {
-      const rustSpan = this.rustResult.go_to_output(line, column);
-      if (rustSpan.length === 4) {
-        this.rustDecorations = this.rustEditor.deltaDecorations(
-          this.rustDecorations,
+      const outputSpan = this.rustResult.go_to_output(line, column);
+      if (outputSpan.length === 4) {
+        this.outputDecorations = this.outputEditor.deltaDecorations(
+          this.outputDecorations,
           [{
-            range: new monaco.Range(rustSpan[0], rustSpan[1], rustSpan[2], rustSpan[3]),
+            range: new monaco.Range(outputSpan[0], outputSpan[1], outputSpan[2], outputSpan[3]),
             options: {
               className: 'source-map-highlight',
               isWholeLine: false,
@@ -114,15 +204,21 @@ class HighlightManager {
           }]
         );
       } else {
-        this.clearRustHighlight();
+        this.clearOutputHighlight();
       }
     }
   }
 
   /**
-   * Highlight Go code corresponding to a Rust position
+   * Highlight Go code corresponding to an output position
    */
-  highlightFromRust(line, column) {
+  highlightFromOutput(line, column) {
+    // Only highlight when in Rust mode (WASM doesn't have source mapping)
+    if (this.outputMode !== 'rust') {
+      this.clearGoHighlight();
+      return;
+    }
+
     if (!this.rustResult || !this.rustResult.success) {
       this.clearGoHighlight();
       return;
@@ -149,13 +245,13 @@ class HighlightManager {
     this.goDecorations = this.goEditor.deltaDecorations(this.goDecorations, []);
   }
 
-  clearRustHighlight() {
-    this.rustDecorations = this.rustEditor.deltaDecorations(this.rustDecorations, []);
+  clearOutputHighlight() {
+    this.outputDecorations = this.outputEditor.deltaDecorations(this.outputDecorations, []);
   }
 
   clearAll() {
     this.clearGoHighlight();
-    this.clearRustHighlight();
+    this.clearOutputHighlight();
   }
 }
 
@@ -244,10 +340,17 @@ function setupCopyButton(buttonId, getContent) {
 
 async function onDOMContentLoaded() {
   const goEditorEl = document.getElementById('go-editor');
-  const rustEditorEl = document.getElementById('rust-editor');
+  const outputEditorEl = document.getElementById('output-editor');
   const consoleEl = document.getElementById('console');
+  const outputContainer = document.getElementById('output-container');
+  const outputToggle = document.getElementById('output-toggle');
 
   const consoleManager = new ConsoleManager(consoleEl);
+
+  // Output mode state
+  let outputMode = 'rust'; // 'rust' or 'wasm'
+  let lastRustResult = null;
+  let lastWasmResult = null;
 
   const editorOptions = {
     cursorSurroundingLines: 5,
@@ -276,21 +379,65 @@ async function onDOMContentLoaded() {
   });
   const goModel = goEditor.getModel();
 
-  // Create Rust editor (read-only)
-  const rustEditor = monaco.editor.create(rustEditorEl, {
+  // Create output editor (read-only) - starts as Rust
+  const outputEditor = monaco.editor.create(outputEditorEl, {
     ...editorOptions,
     language: 'rust',
     readOnly: true,
     contextmenu: false,
     matchBrackets: 'never',
   });
-  const rustModel = rustEditor.getModel();
+  const outputModel = outputEditor.getModel();
 
   // Setup highlight manager
-  const highlightManager = new HighlightManager(goEditor, rustEditor);
+  const highlightManager = new HighlightManager(goEditor, outputEditor);
 
   // Setup copy button
-  setupCopyButton('copy-rust', () => rustModel.getValue());
+  setupCopyButton('copy-output', () => outputModel.getValue());
+
+  // Update the output editor content based on current mode
+  function updateOutputDisplay() {
+    if (outputMode === 'rust') {
+      monaco.editor.setModelLanguage(outputModel, 'rust');
+      outputContainer.classList.remove('wasm');
+      outputContainer.classList.add('rust');
+      outputToggle.classList.remove('wasm');
+      outputToggle.classList.add('rust');
+      
+      if (lastRustResult && lastRustResult.success) {
+        outputModel.setValue(lastRustResult.output);
+      } else if (lastRustResult) {
+        outputModel.setValue('// Build failed - see console for errors');
+      } else {
+        outputModel.setValue('');
+      }
+    } else {
+      // Use 'wat' language for WAT syntax highlighting
+      monaco.editor.setModelLanguage(outputModel, 'wat');
+      outputContainer.classList.remove('rust');
+      outputContainer.classList.add('wasm');
+      outputToggle.classList.remove('rust');
+      outputToggle.classList.add('wasm');
+      
+      if (lastWasmResult && lastWasmResult.success) {
+        outputModel.setValue(lastWasmResult.wat);
+      } else if (lastWasmResult) {
+        outputModel.setValue(';; Build failed: ' + lastWasmResult.error_message);
+      } else if (lastRustResult && !lastRustResult.success) {
+        outputModel.setValue(';; Build failed - see console for errors');
+      } else {
+        outputModel.setValue('');
+      }
+    }
+    
+    highlightManager.setOutputMode(outputMode);
+  }
+
+  // Toggle click handler - switches between modes
+  outputToggle.addEventListener('click', () => {
+    outputMode = outputMode === 'rust' ? 'wasm' : 'rust';
+    updateOutputDisplay();
+  });
 
   // Build and update function
   function buildAndUpdate() {
@@ -305,26 +452,39 @@ async function onDOMContentLoaded() {
 
     // Build Rust
     const rustResult = gors.build_rust(code);
+    lastRustResult = rustResult;
     highlightManager.setRustResult(rustResult);
 
     if (rustResult.success) {
-      rustModel.setValue(rustResult.output);
-      consoleManager.addSuccess('Build successful');
+      consoleManager.addSuccess(`Rust compiled (${rustResult.output.length} bytes)`);
 
-      // Run the code
-      consoleManager.addCommand('gors run main.go');
-      const runResult = gors.run_go(code);
+      // Build WASM
+      consoleManager.addCommand('gors build --emit=wasm main.go');
+      const wasmResult = gors.compile_to_wasm(code);
+      lastWasmResult = wasmResult;
 
-      if (runResult.success) {
-        if (runResult.output) {
-          consoleManager.addOutput(runResult.output);
+      if (wasmResult.success) {
+        consoleManager.addSuccess(`WASM compiled (${wasmResult.wasm_bytes.length} bytes)`);
+
+        // Run the code (only if WASM build succeeded)
+        consoleManager.addCommand('gors run main.go');
+        const runResult = gors.run_go(code);
+
+        if (runResult.success) {
+          if (runResult.output) {
+            consoleManager.addOutput(runResult.output);
+          } else {
+            consoleManager.addOutput('(no output)');
+          }
         } else {
-          consoleManager.addOutput('(no output)');
+          consoleManager.addError(runResult.error_message);
         }
       } else {
-        consoleManager.addError(runResult.error_message);
+        consoleManager.addError(wasmResult.error_message);
       }
     } else {
+      lastWasmResult = null;
+      
       // Show error in console
       consoleManager.addFormattedError(formatError(rustResult, code));
 
@@ -332,6 +492,9 @@ async function onDOMContentLoaded() {
       const markers = createMonacoMarkers(rustResult, code);
       monaco.editor.setModelMarkers(goModel, 'gors', markers);
     }
+
+    // Update the output display
+    updateOutputDisplay();
   }
 
   // Register handlers
@@ -349,9 +512,9 @@ async function onDOMContentLoaded() {
     }
   });
 
-  rustEditor.onMouseMove((e) => {
+  outputEditor.onMouseMove((e) => {
     if (e.target.position) {
-      highlightManager.highlightFromRust(
+      highlightManager.highlightFromOutput(
         e.target.position.lineNumber,
         e.target.position.column
       );
@@ -360,15 +523,15 @@ async function onDOMContentLoaded() {
 
   // Clear highlights when mouse leaves
   goEditor.onMouseLeave(() => {
-    highlightManager.clearRustHighlight();
+    highlightManager.clearOutputHighlight();
   });
 
-  rustEditor.onMouseLeave(() => {
+  outputEditor.onMouseLeave(() => {
     highlightManager.clearGoHighlight();
   });
 
   // Prevent typing in read-only editor
-  rustEditor.onKeyDown((event) => {
+  outputEditor.onKeyDown((event) => {
     if (!(event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       event.stopPropagation();

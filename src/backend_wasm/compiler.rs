@@ -306,7 +306,13 @@ impl WasmCompiler {
     }
 
     /// Emit the compiled WASM module as bytes.
+    ///
+    /// This runs optimization passes (garbage collection to remove unused items)
+    /// before emitting the final binary.
     pub fn emit(mut self) -> Vec<u8> {
+        // Run garbage collection pass to remove unused functions, globals, etc.
+        walrus::passes::gc::run(&mut self.module);
+
         self.module.emit_wasm()
     }
 }

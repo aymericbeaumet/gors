@@ -82,6 +82,61 @@
 
       .editor-container.go .dot { background: #00ADD8; }
       .editor-container.rust .dot { background: #FFC832; }
+      .editor-container.wasm .dot { background: #654FF0; }
+
+      /* Output mode toggle - sliding switch */
+      .output-toggle {
+        display: flex;
+        align-items: center;
+        background: #21262d;
+        border-radius: 6px;
+        padding: 2px;
+        position: relative;
+        cursor: pointer;
+        user-select: none;
+        width: 100px; /* Fixed width for consistent centering */
+      }
+
+      .output-toggle .toggle-slider {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: calc(50% - 2px);
+        height: calc(100% - 4px);
+        border-radius: 4px;
+        transition: transform 0.2s ease, background 0.2s ease;
+        z-index: 0;
+      }
+
+      .output-toggle.rust .toggle-slider {
+        transform: translateX(0);
+        background: rgba(255, 200, 50, 0.25);
+      }
+
+      .output-toggle.wasm .toggle-slider {
+        transform: translateX(100%);
+        background: rgba(101, 79, 240, 0.25);
+      }
+
+      .output-toggle .toggle-option {
+        flex: 1;
+        padding: 4px 0;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 500;
+        color: #8b949e;
+        transition: color 0.2s ease;
+        z-index: 1;
+        position: relative;
+      }
+
+      .output-toggle.rust .toggle-option.rust {
+        color: #FFC832;
+      }
+
+      .output-toggle.wasm .toggle-option.wasm {
+        color: #654FF0;
+      }
 
       .editor-wrapper {
         flex: 1;
@@ -94,6 +149,7 @@
 
       .editor-container.go .editor-wrapper { border-color: #00ADD8; }
       .editor-container.rust .editor-wrapper { border-color: #FFC832; }
+      .editor-container.wasm .editor-wrapper { border-color: #654FF0; }
 
       .editor {
         width: 100%;
@@ -261,14 +317,18 @@
             </div>
           </div>
 
-          <!-- Rust Editor -->
-          <div class="editor-container rust">
+          <!-- Output Editor (Rust/WASM) -->
+          <div id="output-container" class="editor-container rust">
             <div class="editor-header">
               <div class="label">
                 <span class="dot"></span>
-                <span>Rust</span>
+                <div id="output-toggle" class="output-toggle rust" title="Click to switch output format">
+                  <div class="toggle-slider"></div>
+                  <span class="toggle-option rust">Rust</span>
+                  <span class="toggle-option wasm">WASM</span>
+                </div>
               </div>
-              <button id="copy-rust" class="copy-button" title="Copy Rust code">
+              <button id="copy-output" class="copy-button" title="Copy output code">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                 </svg>
@@ -276,7 +336,7 @@
               </button>
             </div>
             <div class="editor-wrapper">
-              <div id="rust-editor" class="editor"></div>
+              <div id="output-editor" class="editor"></div>
             </div>
           </div>
         </div>

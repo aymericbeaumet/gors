@@ -772,6 +772,15 @@ impl WasmBuildResult {
     pub fn error_message(&self) -> String {
         self.error_message.clone()
     }
+
+    /// Get the WASM as WAT (WebAssembly Text format) for display.
+    #[wasm_bindgen(getter)]
+    pub fn wat(&self) -> String {
+        if self.wasm_bytes.is_empty() {
+            return String::new();
+        }
+        wasmprinter::print_bytes(&self.wasm_bytes).unwrap_or_else(|e| format!("Error converting to WAT: {e}"))
+    }
 }
 
 /// Compile Go source code directly to WebAssembly bytecode.

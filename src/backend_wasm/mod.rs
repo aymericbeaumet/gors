@@ -13,6 +13,12 @@
 //! - Control flow: if/else, loops, return
 //! - Function calls
 //!
+//! # Optimization
+//!
+//! The generated WASM is automatically optimized using walrus's garbage collection
+//! pass, which removes unused functions, globals, memories, tables, and other items.
+//! This optimization runs in pure Rust and works both natively and in the browser.
+//!
 //! # Limitations
 //!
 //! - No heap allocation (stack only)
@@ -29,13 +35,16 @@ pub use error::WasmError;
 
 /// Compile a `syn::File` to WebAssembly bytecode.
 ///
+/// The generated WASM is automatically optimized using walrus's garbage collection
+/// pass to remove unused items.
+///
 /// # Arguments
 ///
 /// * `file` - The Rust AST to compile
 ///
 /// # Returns
 ///
-/// Returns the compiled WASM binary as a byte vector.
+/// Returns the compiled and optimized WASM binary as a byte vector.
 ///
 /// # Errors
 ///

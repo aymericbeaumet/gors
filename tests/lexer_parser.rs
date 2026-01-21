@@ -33,25 +33,25 @@ use common::{collect_go_files, fixtures_dir, test_files_parallel, TestConfig};
 // Lexer Tests
 // =============================================================================
 
-/// Test lexer on files in fixtures/files.
+/// Test lexer on files in fixtures/go_sources/files.
 #[test]
 fn lexer_files() {
     let config = TestConfig::from_env();
-    let files_dir = fixtures_dir().join("files");
+    let files_dir = fixtures_dir().join("go_sources/files");
     let files = collect_go_files(&files_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/files");
+    assert!(!files.is_empty(), "No .go files found in fixtures/go_sources/files");
 
     let summary = test_files_parallel("tokens", &files, &config);
     summary.assert_all_passed();
 }
 
-/// Test lexer on programs in fixtures/programs.
+/// Test lexer on programs in fixtures/go_programs.
 #[test]
 fn lexer_programs() {
     let config = TestConfig::from_env();
-    let programs_dir = fixtures_dir().join("programs");
+    let programs_dir = fixtures_dir().join("go_programs");
     let files = collect_go_files(&programs_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/programs");
+    assert!(!files.is_empty(), "No .go files found in fixtures/go_programs");
 
     let summary = test_files_parallel("tokens", &files, &config);
     summary.assert_all_passed();
@@ -61,10 +61,10 @@ fn lexer_programs() {
 #[test]
 fn lexer_repositories() {
     let config = TestConfig::from_env();
-    let repos_dir = fixtures_dir().join("repositories");
+    let repos_dir = fixtures_dir().join("go_sources/repositories");
 
     if !repos_dir.exists() {
-        eprintln!("Skipping lexer_repositories: fixtures/repositories not found");
+        eprintln!("Skipping lexer_repositories: fixtures/go_sources/repositories not found");
         eprintln!("Run `make setup` to initialize test repositories");
         return;
     }
@@ -85,25 +85,25 @@ fn lexer_repositories() {
 // Parser Tests
 // =============================================================================
 
-/// Test parser on files in fixtures/files.
+/// Test parser on files in fixtures/go_sources/files.
 #[test]
 fn parser_files() {
     let config = TestConfig::from_env();
-    let files_dir = fixtures_dir().join("files");
+    let files_dir = fixtures_dir().join("go_sources/files");
     let files = collect_go_files(&files_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/files");
+    assert!(!files.is_empty(), "No .go files found in fixtures/go_sources/files");
 
     let summary = test_files_parallel("ast", &files, &config);
     summary.assert_all_passed();
 }
 
-/// Test parser on programs in fixtures/programs.
+/// Test parser on programs in fixtures/go_programs.
 #[test]
 fn parser_programs() {
     let config = TestConfig::from_env();
-    let programs_dir = fixtures_dir().join("programs");
+    let programs_dir = fixtures_dir().join("go_programs");
     let files = collect_go_files(&programs_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/programs");
+    assert!(!files.is_empty(), "No .go files found in fixtures/go_programs");
 
     let summary = test_files_parallel("ast", &files, &config);
     summary.assert_all_passed();
@@ -113,10 +113,10 @@ fn parser_programs() {
 #[test]
 fn parser_repositories() {
     let config = TestConfig::from_env();
-    let repos_dir = fixtures_dir().join("repositories");
+    let repos_dir = fixtures_dir().join("go_sources/repositories");
 
     if !repos_dir.exists() {
-        eprintln!("Skipping parser_repositories: fixtures/repositories not found");
+        eprintln!("Skipping parser_repositories: fixtures/go_sources/repositories not found");
         eprintln!("Run `make setup` to initialize test repositories");
         return;
     }

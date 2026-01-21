@@ -11,7 +11,7 @@
 //!
 //! # Adding a new program
 //!
-//! 1. Create a directory in `fixtures/programs/` (e.g., `my_program/`)
+//! 1. Create a directory in `fixtures/go_programs/` (e.g., `my_program/`)
 //! 2. Add `main.go` with your Go program
 //! 3. Run `go run main.go > expected_output.txt` to generate expected output
 //! 4. The program will automatically be tested
@@ -37,9 +37,9 @@ pub struct Program {
     pub expected_output: String,
 }
 
-/// Discover all programs in fixtures/programs.
+/// Discover all programs in fixtures/go_programs.
 pub fn discover_programs() -> Vec<Program> {
-    let programs_dir = fixtures_dir().join("programs");
+    let programs_dir = fixtures_dir().join("go_programs");
     let mut programs = Vec::new();
 
     let entries = match std::fs::read_dir(&programs_dir) {
@@ -54,17 +54,12 @@ pub fn discover_programs() -> Vec<Program> {
         }
 
         let main_go = path.join("main.go");
-        let expected_output_path = path.join("expected_output.txt");
 
         if !main_go.exists() {
             continue;
         }
 
-        let expected_output = if expected_output_path.exists() {
-            std::fs::read_to_string(&expected_output_path).unwrap_or_default()
-        } else {
-            // Generate expected output by running Go
-            let output = Command::new("go")
+        let expected_output = Command::new("go")
                 .args(["run", main_go.to_str().unwrap()])
                 .output()
                 .ok()
@@ -76,8 +71,6 @@ pub fn discover_programs() -> Vec<Program> {
                     }
                 })
                 .unwrap_or_default();
-            output
-        };
 
         let name = path
             .file_name()
@@ -253,7 +246,7 @@ fn run_wasm_bytes(wasm_bytes: &[u8]) -> Result<String, String> {
 #[test]
 fn programs_rust_backend() {
     let programs = discover_programs();
-    assert!(!programs.is_empty(), "No programs found in fixtures/programs");
+    assert!(!programs.is_empty(), "No programs found in fixtures/go_programs");
 
     for program in &programs {
         // First verify Go itself produces the expected output (using the directory)
@@ -291,7 +284,7 @@ fn programs_rust_backend() {
 #[test]
 fn programs_wasm_backend() {
     let programs = discover_programs();
-    assert!(!programs.is_empty(), "No programs found in fixtures/programs");
+    assert!(!programs.is_empty(), "No programs found in fixtures/go_programs");
 
     for program in &programs {
         // Run via WASM backend using directory path
@@ -321,7 +314,7 @@ fn programs_go_runner() {
     use common::go_runner_bin;
 
     let programs = discover_programs();
-    assert!(!programs.is_empty(), "No programs found in fixtures/programs");
+    assert!(!programs.is_empty(), "No programs found in fixtures/go_programs");
 
     let go_bin = go_runner_bin();
 

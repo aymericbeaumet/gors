@@ -18,3 +18,5 @@ gors = { path = "../.." }
 wasm-bindgen = "0.2.88"
 # wasmi is used for running compiled WASM - works when gors itself is compiled to WASM
 wasmi = "0.40"
+# wasmprinter converts WASM binary to WAT text format for display
+wasmprinter = "0.225"
