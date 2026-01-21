@@ -39,9 +39,9 @@ struct Opts {
 enum SubCommand {
     /// Parse the named Go file and print the AST
     Ast(Ast),
-    /// Compile the named Go file
+    /// Compile the named Go source file or directory
     Build(Build),
-    /// Compile and run the named Go file (uses WASM runtime)
+    /// Compile and run the named Go source file or directory (uses WASM runtime)
     Run(Run),
     /// Scan the named Go file and print the tokens
     Tokens(Tokens),
@@ -55,8 +55,8 @@ struct Ast {
 
 #[derive(Parser)]
 struct Build {
-    /// The file to build
-    file: String,
+    /// The Go source file or directory to build
+    path: String,
     /// Build in release mode, with optimizations
     #[arg(long)]
     release: bool,
@@ -76,8 +76,8 @@ struct Build {
 
 #[derive(Parser)]
 struct Run {
-    /// The file to run
-    file: String,
+    /// The Go source file or directory to run
+    path: String,
 }
 
 #[derive(Parser)]
@@ -106,24 +106,37 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
-    let buffer = std::fs::read_to_string(&cmd.file)?;
-
-    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
-        Ok(ast) => ast,
-        Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+    let (ast, files) = match gors::parser::parse_path(&cmd.path) {
+        Ok(result) => result,
+        Err(gors::parser::PathParseError::ParserError(err)) => {
+            // For parser errors, try to get the file and buffer for diagnostics
+            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
+                (f, b)
+            } else {
+                (cmd.path.clone(), String::new())
+            };
+            let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
             print_error(&diagnostic);
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("error: {}", err);
             std::process::exit(1);
         }
     };
 
+    // Get the first file's info for error reporting and source maps
+    let (primary_file, primary_buffer) = files.first()
+        .map(|(f, b)| (f.as_str(), b.as_str()))
+        .unwrap_or((&cmd.path, ""));
+
     // Use source map tracking if --sourcemap is specified
     let compiled = if cmd.sourcemap.is_some() {
-        match gors::compiler::compile_with_source_map(ast, &cmd.file, &buffer) {
+        match gors::compiler::compile_with_source_map(ast, primary_file, primary_buffer) {
             Ok(compiled) => compiled,
             Err(err) => {
                 let diagnostic =
-                    Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                    Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
                 print_error(&diagnostic);
                 std::process::exit(1);
             }
@@ -133,7 +146,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
             Ok(compiled) => compiled,
             Err(err) => {
                 let diagnostic =
-                    Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                    Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
                 print_error(&diagnostic);
                 std::process::exit(1);
             }
@@ -171,21 +184,34 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
-    let buffer = std::fs::read_to_string(&cmd.file)?;
-
-    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
-        Ok(ast) => ast,
-        Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+    let (ast, files) = match gors::parser::parse_path(&cmd.path) {
+        Ok(result) => result,
+        Err(gors::parser::PathParseError::ParserError(err)) => {
+            // For parser errors, try to get the file and buffer for diagnostics
+            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
+                (f, b)
+            } else {
+                (cmd.path.clone(), String::new())
+            };
+            let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
             print_error(&diagnostic);
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("error: {}", err);
             std::process::exit(1);
         }
     };
 
+    // Get the first file's info for error reporting
+    let primary_file = files.first()
+        .map(|(f, _)| f.as_str())
+        .unwrap_or(&cmd.path);
+
     let compiled = match gors::compiler::compile(ast) {
         Ok(compiled) => compiled,
         Err(err) => {
-            let diagnostic = Diagnostic::new(&cmd.file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+            let diagnostic = Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
             print_error(&diagnostic);
             std::process::exit(1);
         }
@@ -197,42 +223,65 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             as Box<dyn std::error::Error>
     })?;
 
-    // Run with Wasmer
+    // Run with wasmi
     run_wasm(&wasm_bytes)
 }
 
-/// Run WASM bytes using the Wasmer runtime
-fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    use wasmer::{imports, Instance, Module, Store, Function, FunctionEnv, FunctionEnvMut};
+/// Helper to get file path and contents for error reporting.
+/// If path is a directory, returns the first .go file in it.
+fn get_file_for_error(path: &str) -> Option<(String, String)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.is_file() {
+        let buffer = std::fs::read_to_string(path).ok()?;
+        Some((path.to_string(), buffer))
+    } else if metadata.is_dir() {
+        // Find first .go file
+        let entries = std::fs::read_dir(path).ok()?;
+        for entry in entries.flatten() {
+            let file_path = entry.path();
+            if let Some(name) = file_path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".go") && !name.ends_with("_test.go") && !name.starts_with('.') {
+                    let buffer = std::fs::read_to_string(&file_path).ok()?;
+                    return Some((file_path.to_string_lossy().into_owned(), buffer));
+                }
+            }
+        }
+        None
+    } else {
+        None
+    }
+}
 
-    // Create a store
-    let mut store = Store::default();
+/// Run WASM bytes using the wasmi runtime.
+/// This works both natively and when gors is compiled to WASM.
+fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+
+    // Create engine and store
+    let engine = Engine::default();
+    let mut store = Store::new(&engine, ());
 
     // Compile the WASM module
-    let module = Module::new(&store, wasm_bytes)?;
+    let module = Module::new(&engine, wasm_bytes)?;
 
-    // Create environment for imports
-    struct Env;
-    let env = FunctionEnv::new(&mut store, Env);
+    // Create linker and add print_i32 import
+    let mut linker = Linker::new(&engine);
 
-    // Create print_i32 import function
-    fn print_i32(_env: FunctionEnvMut<'_, Env>, value: i32) {
+    // print_i32 function that prints an i32 value
+    linker.func_wrap("env", "print_i32", |_caller: Caller<'_, ()>, value: i32| {
         println!("{value}");
-    }
-
-    // Create imports
-    let import_object = imports! {
-        "env" => {
-            "print_i32" => Function::new_typed_with_env(&mut store, &env, print_i32),
-        }
-    };
+    })?;
 
     // Instantiate the module
-    let instance = Instance::new(&mut store, &module, &import_object)?;
+    let instance = linker.instantiate(&mut store, &module)?.start(&mut store)?;
 
     // Get and call the main function
-    let main_func = instance.exports.get_function("main")?;
-    main_func.call(&mut store, &[])?;
+    let main_func: Func = instance
+        .get_export(&store, "main")
+        .and_then(|e| e.into_func())
+        .ok_or("main function not found")?;
+
+    main_func.call(&mut store, &[], &mut [])?;
 
     Ok(())
 }

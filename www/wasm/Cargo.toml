@@ -15,5 +15,6 @@ workspace = true
 [dependencies]
 console_error_panic_hook = "0.1"
 gors = { path = "../.." }
-js-sys = "0.3"
 wasm-bindgen = "0.2.88"
+# wasmi is used for running compiled WASM - works when gors itself is compiled to WASM
+wasmi = "0.40"

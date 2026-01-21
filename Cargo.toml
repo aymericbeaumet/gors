@@ -64,6 +64,8 @@ unicode-general-category = "0.6"
 
 # WASM backend dependencies
 walrus = "0.24"
+# WASM runtime - wasmi works both natively and when compiled to WASM
+wasmi = "0.40"
 
 # Binary dependencies
 atty = "0.2"
@@ -82,7 +84,3 @@ opt-level = 0
 codegen-units = 1
 lto = "fat"
 opt-level = 3
-
-# WASM runtime for executing compiled WASM (CLI only, not for wasm32 target)
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wasmer = "5"

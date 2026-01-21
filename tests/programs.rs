@@ -23,14 +23,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-#[cfg(not(target_arch = "wasm32"))]
-use wasmer::{imports, Function, FunctionEnv, FunctionEnvMut, Instance, Module, Store};
+use wasmi::{Caller, Engine, Func, Linker, Module, Store};
 
 /// Discovered program with its expected output.
 pub struct Program {
     /// Name of the program (directory name)
     pub name: String,
-    /// Path to main.go
+    /// Path to the program directory
+    pub dir: PathBuf,
+    /// Path to main.go (for backwards compatibility with go run)
     pub main_go: PathBuf,
     /// Expected stdout output
     pub expected_output: String,
@@ -87,6 +88,7 @@ pub fn discover_programs() -> Vec<Program> {
 
         programs.push(Program {
             name,
+            dir: path.clone(),
             main_go,
             expected_output,
         });
@@ -97,9 +99,10 @@ pub fn discover_programs() -> Vec<Program> {
 }
 
 /// Run a Go program natively and return its output.
-pub fn run_go_native(go_file: &std::path::Path) -> Result<String, String> {
+/// Accepts a path to either a .go file or a directory containing Go files.
+pub fn run_go_native(path: &std::path::Path) -> Result<String, String> {
     let output = Command::new("go")
-        .args(["run", go_file.to_str().unwrap()])
+        .args(["run", path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("Failed to run go: {}", e))?;
 
@@ -114,9 +117,10 @@ pub fn run_go_native(go_file: &std::path::Path) -> Result<String, String> {
 }
 
 /// Compile and run a Go program via the Rust backend.
-pub fn run_via_rust(go_source: &str) -> Result<String, String> {
-    // Parse
-    let ast = gors::parser::parse_file("main.go", go_source)
+/// Accepts a path to either a .go file or a directory containing Go files.
+pub fn run_via_rust(path: &std::path::Path) -> Result<String, String> {
+    // Parse (supports both files and directories)
+    let (ast, _files) = gors::parser::parse_path(path.to_str().unwrap())
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
     // Compile
@@ -169,10 +173,10 @@ pub fn run_via_rust(go_source: &str) -> Result<String, String> {
 }
 
 /// Compile and run a Go program via the WASM backend.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn run_via_wasm(go_source: &str) -> Result<String, String> {
-    // Parse
-    let ast = gors::parser::parse_file("main.go", go_source)
+/// Accepts a path to either a .go file or a directory containing Go files.
+pub fn run_via_wasm(path: &std::path::Path) -> Result<String, String> {
+    // Parse (supports both files and directories)
+    let (ast, _files) = gors::parser::parse_path(path.to_str().unwrap())
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
     // Compile to Rust AST
@@ -183,58 +187,60 @@ pub fn run_via_wasm(go_source: &str) -> Result<String, String> {
     let wasm_bytes = gors::backend_wasm::compile_to_wasm(&compiled)
         .map_err(|e| format!("WASM compile error: {:?}", e))?;
 
-    // Run with Wasmer
+    // Run with wasmi
     run_wasm_bytes(&wasm_bytes)
 }
 
-/// Run WASM bytes using Wasmer and capture output.
-#[cfg(not(target_arch = "wasm32"))]
+/// Run WASM bytes using wasmi and capture output.
 fn run_wasm_bytes(wasm_bytes: &[u8]) -> Result<String, String> {
     // Create output buffer
-    struct Env {
-        output: Arc<Mutex<Vec<String>>>,
-    }
-
     let output_buffer = Arc::new(Mutex::new(Vec::new()));
-    
-    // Create a store
-    let mut store = Store::default();
-    
+
+    // Create engine and store with output buffer as state
+    let engine = Engine::default();
+    let output_clone = Arc::clone(&output_buffer);
+    let mut store = Store::new(&engine, output_clone);
+
     // Compile the WASM module
-    let module = Module::new(&store, wasm_bytes)
+    let module = Module::new(&engine, wasm_bytes)
         .map_err(|e| format!("WASM module error: {}", e))?;
-    
-    // Create environment for imports
-    let env = FunctionEnv::new(&mut store, Env {
-        output: Arc::clone(&output_buffer),
-    });
-    
-    // Create print_i32 import function
-    fn print_i32(env: FunctionEnvMut<'_, Env>, value: i32) {
-        if let Ok(mut out) = env.data().output.lock() {
-            out.push(value.to_string());
-        }
-    }
-    
-    // Create imports
-    let import_object = imports! {
-        "env" => {
-            "print_i32" => Function::new_typed_with_env(&mut store, &env, print_i32),
-        }
-    };
-    
+
+    // Create linker and add print_i32 import
+    let mut linker = Linker::new(&engine);
+
+    // print_i32 function that captures output to the store's state
+    linker
+        .func_wrap(
+            "env",
+            "print_i32",
+            |caller: Caller<'_, Arc<Mutex<Vec<String>>>>, value: i32| {
+                if let Ok(mut out) = caller.data().lock() {
+                    out.push(value.to_string());
+                }
+            },
+        )
+        .map_err(|e| format!("Failed to add print_i32: {}", e))?;
+
     // Instantiate the module
-    let instance = Instance::new(&mut store, &module, &import_object)
-        .map_err(|e| format!("WASM instantiation error: {}", e))?;
-    
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("WASM instantiation error: {}", e))?
+        .start(&mut store)
+        .map_err(|e| format!("WASM start error: {}", e))?;
+
     // Get and call the main function
-    let main_func = instance.exports.get_function("main")
-        .map_err(|e| format!("Failed to get main: {}", e))?;
-    main_func.call(&mut store, &[])
+    let main_func: Func = instance
+        .get_export(&store, "main")
+        .and_then(|e| e.into_func())
+        .ok_or("main function not found")?;
+
+    main_func
+        .call(&mut store, &[], &mut [])
         .map_err(|e| format!("WASM execution error: {}", e))?;
-    
+
     // Get output
-    let output = output_buffer.lock()
+    let output = output_buffer
+        .lock()
         .map_err(|e| format!("Lock error: {}", e))?;
     Ok(output.join("\n") + if output.is_empty() { "" } else { "\n" })
 }
@@ -250,11 +256,8 @@ fn programs_rust_backend() {
     assert!(!programs.is_empty(), "No programs found in fixtures/programs");
 
     for program in &programs {
-        let go_source = std::fs::read_to_string(&program.main_go)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", program.main_go.display(), e));
-
-        // First verify Go itself produces the expected output
-        let go_output = run_go_native(&program.main_go);
+        // First verify Go itself produces the expected output (using the directory)
+        let go_output = run_go_native(&program.dir);
         if let Ok(ref output) = go_output {
             assert_eq!(
                 output, &program.expected_output,
@@ -263,8 +266,8 @@ fn programs_rust_backend() {
             );
         }
 
-        // Some programs may use features not yet supported
-        let result = run_via_rust(&go_source);
+        // Run via Rust backend using directory path
+        let result = run_via_rust(&program.dir);
 
         match result {
             Ok(output) => {
@@ -286,17 +289,13 @@ fn programs_rust_backend() {
 
 /// Test that all programs compile and run via WASM backend.
 #[test]
-#[cfg(not(target_arch = "wasm32"))]
 fn programs_wasm_backend() {
     let programs = discover_programs();
     assert!(!programs.is_empty(), "No programs found in fixtures/programs");
 
     for program in &programs {
-        let go_source = std::fs::read_to_string(&program.main_go)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", program.main_go.display(), e));
-
-        // Some programs may use features not yet supported by WASM backend
-        let result = run_via_wasm(&go_source);
+        // Run via WASM backend using directory path
+        let result = run_via_wasm(&program.dir);
 
         match result {
             Ok(output) => {
@@ -327,7 +326,8 @@ fn programs_go_runner() {
     let go_bin = go_runner_bin();
 
     for program in &programs {
-        let args = ["run", program.main_go.to_str().unwrap()];
+        // Use directory path for go run (same as gors run ./programs/fizzbuzz)
+        let args = ["run", program.dir.to_str().unwrap()];
         let output = Command::new(go_bin)
             .args(&args)
             .output()
@@ -351,22 +351,21 @@ fn programs_sourcemap() {
     let programs = discover_programs();
 
     for program in &programs {
-        let go_source = match std::fs::read_to_string(&program.main_go) {
-            Ok(s) => s,
+        // Parse the directory (supports both files and directories)
+        let (ast, files) = match gors::parser::parse_path(program.dir.to_str().unwrap()) {
+            Ok(result) => result,
             Err(_) => continue,
         };
 
-        let go_file = program.main_go.to_str().unwrap();
-
-        // Parse
-        let ast = match gors::parser::parse_file(go_file, &go_source) {
-            Ok(ast) => ast,
-            Err(_) => continue,
+        // Get the first file's info for source map
+        let (go_file, go_source) = match files.first() {
+            Some((f, s)) => (f.as_str(), s.as_str()),
+            None => continue,
         };
 
         // Compile with source map tracking
         let compiled =
-            match gors::compiler::compile_with_source_map(ast, go_file, &go_source) {
+            match gors::compiler::compile_with_source_map(ast, go_file, go_source) {
                 Ok(compiled) => compiled,
                 Err(_) => continue,
             };

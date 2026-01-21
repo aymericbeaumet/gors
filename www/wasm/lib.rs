@@ -849,32 +849,128 @@ impl RunResult {
     }
 }
 
+impl RunResult {
+    fn success_with_output(output: String) -> Self {
+        Self {
+            success: true,
+            output,
+            error_message: String::new(),
+        }
+    }
+
+    fn error(message: String) -> Self {
+        Self {
+            success: false,
+            output: String::new(),
+            error_message: message,
+        }
+    }
+}
+
 /// Compile and run Go source code.
 ///
-/// This function compiles Go code to WASM and returns the compiled bytes
-/// along with instructions for execution. The actual execution must be done
-/// in JavaScript using the WebAssembly API since we need to:
-/// 1. Instantiate the WASM module with imports (print_i32)
-/// 2. Call the main function
-/// 3. Collect output
+/// This function compiles Go code to WASM and executes it using the wasmi
+/// interpreter. It captures output from print_i32 calls and returns the result.
+/// This works both natively and when gors itself is compiled to WASM.
 ///
-/// Example JavaScript usage:
+/// # Arguments
+///
+/// * `input` - Go source code to compile and run
+///
+/// # Returns
+///
+/// Returns a `RunResult` with:
+/// - `success`: true if compilation and execution succeeded
+/// - `output`: captured output from the program (print_i32 calls, newline-separated)
+/// - `error_message`: error description if compilation or execution failed
+///
+/// # Example
+///
 /// ```javascript
-/// const result = compile_to_wasm(goCode);
+/// const result = run_go(`
+///     package main
+///     
+///     func main() {
+///         print_i32(42)
+///     }
+/// `);
 /// if (result.success) {
-///     let output = [];
-///     const imports = {
-///         env: {
-///             print_i32: (val) => output.push(val.toString())
-///         }
-///     };
-///     const module = await WebAssembly.instantiate(result.wasm_bytes, imports);
-///     module.instance.exports.main();
-///     console.log(output.join('\n'));
+///     console.log(result.output); // "42"
+/// } else {
+///     console.error(result.error_message);
 /// }
 /// ```
-///
-/// For convenience, use the `run_go_js` JavaScript wrapper which handles this.
+#[wasm_bindgen]
+pub fn run_go(input: String) -> RunResult {
+    console_error_panic_hook::set_once();
+
+    // First compile to WASM
+    let wasm_result = compile_to_wasm(input);
+    if !wasm_result.success {
+        return RunResult::error(wasm_result.error_message);
+    }
+
+    // Execute the WASM using wasmi
+    match execute_wasm_with_wasmi(&wasm_result.wasm_bytes) {
+        Ok(output) => RunResult::success_with_output(output),
+        Err(e) => RunResult::error(format!("Execution error: {e}")),
+    }
+}
+
+/// Execute WASM bytes using the wasmi interpreter.
+/// This works both natively and when gors itself is compiled to WASM.
+fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+
+    // Create output collector
+    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Create engine and store with the output collector as state
+    let engine = Engine::default();
+    let output_clone = Rc::clone(&output);
+    let mut store = Store::new(&engine, output_clone);
+
+    // Compile the WASM module
+    let module =
+        Module::new(&engine, wasm_bytes).map_err(|e| format!("Failed to compile WASM: {e}"))?;
+
+    // Create linker and add print_i32 import
+    let mut linker = Linker::new(&engine);
+
+    // print_i32 function that captures output to the store's state
+    linker
+        .func_wrap(
+            "env",
+            "print_i32",
+            |caller: Caller<'_, Rc<RefCell<Vec<String>>>>, value: i32| {
+                caller.data().borrow_mut().push(value.to_string());
+            },
+        )
+        .map_err(|e| format!("Failed to add print_i32: {e}"))?;
+
+    // Instantiate the module
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("Failed to instantiate: {e}"))?
+        .start(&mut store)
+        .map_err(|e| format!("Failed to start: {e}"))?;
+
+    // Get and call the main function
+    let main_func: Func = instance
+        .get_export(&store, "main")
+        .and_then(|e| e.into_func())
+        .ok_or("main function not found")?;
+
+    main_func
+        .call(&mut store, &[], &mut [])
+        .map_err(|e| format!("main() execution failed: {e}"))?;
+
+    // Collect output
+    let output_vec = output.borrow();
+    Ok(output_vec.join("\n"))
+}
 
 #[cfg(test)]
 mod tests {

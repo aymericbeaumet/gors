@@ -143,6 +143,199 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     })
 }
 
+/// Parse a Go source path (file or directory) into an Abstract Syntax Tree.
+///
+/// This function handles both individual Go files and directories:
+/// - For a file path: parses that single file
+/// - For a directory path: parses all `.go` files in the directory (excluding `_test.go` files)
+///   and merges them into a single AST
+///
+/// This matches the behavior of `go run` and `go build`.
+///
+/// # Arguments
+///
+/// * `path` - Path to a Go source file or directory containing Go files
+///
+/// # Returns
+///
+/// Returns `Ok(ast::File)` on successful parsing, or `Err(ParserError)`
+/// if the source contains syntax errors or no Go files are found.
+///
+/// # Example
+///
+/// ```no_run
+/// use gors::parser::parse_path;
+///
+/// // Parse a single file
+/// let ast = parse_path("main.go").unwrap();
+///
+/// // Parse all Go files in a directory
+/// let ast = parse_path("./mypackage/").unwrap();
+/// ```
+pub fn parse_path(path: &str) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| PathParseError::IoError(format!("cannot access '{}': {}", path, e)))?;
+
+    if metadata.is_file() {
+        let buffer = std::fs::read_to_string(path)
+            .map_err(|e| PathParseError::IoError(format!("cannot read '{}': {}", path, e)))?;
+
+        // We need to leak the strings to get 'static lifetime
+        let path_static: &'static str = Box::leak(path.to_string().into_boxed_str());
+        let buffer_static: &'static str = Box::leak(buffer.clone().into_boxed_str());
+
+        let ast = parse_file(path_static, buffer_static)
+            .map_err(PathParseError::ParserError)?;
+
+        Ok((ast, vec![(path.to_string(), buffer)]))
+    } else if metadata.is_dir() {
+        parse_dir(path)
+    } else {
+        Err(PathParseError::IoError(format!("'{}' is not a file or directory", path)))
+    }
+}
+
+/// Error type for path parsing failures.
+#[derive(Debug)]
+pub enum PathParseError {
+    /// An I/O error occurred (file not found, permission denied, etc.)
+    IoError(String),
+    /// A parser error occurred while parsing a Go file
+    ParserError(ParserError),
+    /// No Go files found in the directory
+    NoGoFiles(String),
+    /// Package name mismatch between files
+    PackageMismatch { expected: String, found: String, file: String },
+}
+
+impl std::fmt::Display for PathParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IoError(msg) => write!(f, "{}", msg),
+            Self::ParserError(e) => write!(f, "{}", e),
+            Self::NoGoFiles(dir) => write!(f, "no Go files found in '{}'", dir),
+            Self::PackageMismatch { expected, found, file } => {
+                write!(f, "found packages {} ({}) and {} in same directory", found, file, expected)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PathParseError {}
+
+/// Parse all Go files in a directory into a single merged AST.
+///
+/// This function reads all `.go` files in the specified directory (excluding
+/// `_test.go` files and files starting with `.` or `_`), parses them, and
+/// merges their declarations into a single AST.
+///
+/// All files must declare the same package name.
+///
+/// # Arguments
+///
+/// * `dir_path` - Path to a directory containing Go source files
+///
+/// # Returns
+///
+/// Returns a tuple of the merged AST and the list of (filename, content) pairs
+/// for all parsed files.
+fn parse_dir(dir_path: &str) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
+    let entries = std::fs::read_dir(dir_path)
+        .map_err(|e| PathParseError::IoError(format!("cannot read directory '{}': {}", dir_path, e)))?;
+
+    // Collect all .go files (excluding _test.go and dotfiles)
+    let mut go_files: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+
+            // Skip hidden files, underscore-prefixed files, and test files
+            if file_name.starts_with('.') || file_name.starts_with('_') {
+                return None;
+            }
+
+            // Only include .go files, excluding _test.go
+            if file_name.ends_with(".go") && !file_name.ends_with("_test.go") {
+                Some(path.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if go_files.is_empty() {
+        return Err(PathParseError::NoGoFiles(dir_path.to_string()));
+    }
+
+    // Sort for deterministic ordering
+    go_files.sort();
+
+    // Parse all files and collect their ASTs
+    let mut files_content: Vec<(String, String)> = Vec::new();
+    let mut asts: Vec<ast::File<'static>> = Vec::new();
+
+    for file_path in &go_files {
+        let buffer = std::fs::read_to_string(file_path)
+            .map_err(|e| PathParseError::IoError(format!("cannot read '{}': {}", file_path, e)))?;
+
+        // Leak strings to get 'static lifetime
+        let path_static: &'static str = Box::leak(file_path.clone().into_boxed_str());
+        let buffer_static: &'static str = Box::leak(buffer.clone().into_boxed_str());
+
+        let ast = parse_file(path_static, buffer_static)
+            .map_err(PathParseError::ParserError)?;
+
+        files_content.push((file_path.clone(), buffer));
+        asts.push(ast);
+    }
+
+    // Verify all files have the same package name
+    let expected_package = asts[0].name.name;
+    for (i, ast) in asts.iter().enumerate().skip(1) {
+        if ast.name.name != expected_package {
+            return Err(PathParseError::PackageMismatch {
+                expected: expected_package.to_string(),
+                found: ast.name.name.to_string(),
+                file: go_files[i].clone(),
+            });
+        }
+    }
+
+    // Merge all ASTs into one
+    let merged = merge_files(asts);
+
+    Ok((merged, files_content))
+}
+
+/// Merge multiple Go AST files into a single file.
+///
+/// This combines all declarations from the input files into a single AST,
+/// using the package information from the first file.
+fn merge_files(mut files: Vec<ast::File<'static>>) -> ast::File<'static> {
+    if files.len() == 1 {
+        return files.remove(0);
+    }
+
+    let mut base = files.remove(0);
+
+    for file in files {
+        // Merge declarations
+        base.decls.extend(file.decls);
+
+        // Merge unresolved identifiers
+        base.unresolved.extend(file.unresolved);
+
+        // Merge comments
+        base.comments.extend(file.comments);
+
+        // Update file_end to the last file's end
+        base.file_end = file.file_end;
+    }
+
+    base
+}
+
 /// Extract Go version from //go:build directive in source
 /// Returns the go version like "go1.9" if found, empty string otherwise
 fn extract_go_version(buffer: &str) -> &str {
