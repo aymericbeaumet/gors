@@ -12,17 +12,14 @@ function formatError(result, sourceCode) {
   const errorMessage = result.error_message;
   const errorKind = result.error_kind;
 
-  // Build location string
-  const location = errorLine > 0
-    ? `<span class="error-location">main.go:${errorLine}:${errorColumn}</span>`
-    : '<span class="error-location">main.go</span>';
-
   // Build error kind string
   const kindStr = errorKind === 'scanner' ? 'scanner error'
     : errorKind === 'parser' ? 'syntax error'
     : 'compile error';
 
-  let output = `${location}: <span class="error-kind">${kindStr}</span>: <span class="error-message">${escapeHtml(errorMessage)}</span>\n`;
+  // Build location and message on one line
+  const location = errorLine > 0 ? `main.go:${errorLine}:${errorColumn}` : 'main.go';
+  let output = `<span class="error-location">${location}</span>: <span class="error-kind">${kindStr}</span>: <span class="error-message">${escapeHtml(errorMessage)}</span>\n`;
 
   // Add source context if we have line information
   if (errorLine > 0 && errorLine <= lines.length) {
@@ -31,12 +28,12 @@ function formatError(result, sourceCode) {
 
     output += `<span class="error-line-number">${lineNumStr} | </span><span class="error-source">${escapeHtml(sourceLine)}</span>\n`;
 
-    // Add underline/caret pointing to error position
+    // Add caret pointing to error position
     const gutterWidth = lineNumStr.length + 3; // " | "
     const prefix = errorColumn > 1 ? ' '.repeat(errorColumn - 1) : '';
     const underlineLength = Math.max(1, errorEndColumn - errorColumn);
-    const underline = underlineLength > 1 ? '~'.repeat(underlineLength) : '^';
-    output += `${' '.repeat(gutterWidth)}${prefix}<span class="error-caret">${underline}</span>\n`;
+    const caret = underlineLength > 1 ? '~'.repeat(underlineLength) : '^';
+    output += `${' '.repeat(gutterWidth)}${prefix}<span class="error-caret">${caret}</span>`;
   }
 
   return output;
@@ -206,6 +203,14 @@ class ConsoleManager {
     this.scrollToBottom();
   }
 
+  addFormattedError(html) {
+    const block = document.createElement('div');
+    block.className = 'console-formatted-error';
+    block.innerHTML = html;
+    this.element.appendChild(block);
+    this.scrollToBottom();
+  }
+
   scrollToBottom() {
     this.element.scrollTop = this.element.scrollHeight;
   }
@@ -305,10 +310,23 @@ async function onDOMContentLoaded() {
     if (rustResult.success) {
       rustModel.setValue(rustResult.output);
       consoleManager.addSuccess('Build successful');
+
+      // Run the code
+      consoleManager.addCommand('gors run main.go');
+      const runResult = gors.run_go(code);
+
+      if (runResult.success) {
+        if (runResult.output) {
+          consoleManager.addOutput(runResult.output);
+        } else {
+          consoleManager.addOutput('(no output)');
+        }
+      } else {
+        consoleManager.addError(runResult.error_message);
+      }
     } else {
       // Show error in console
-      consoleManager.addError(`Rust compilation failed: ${rustResult.error_message}`);
-      consoleManager.addErrorBlock(formatError(rustResult, code));
+      consoleManager.addFormattedError(formatError(rustResult, code));
 
       // Add error markers
       const markers = createMonacoMarkers(rustResult, code);

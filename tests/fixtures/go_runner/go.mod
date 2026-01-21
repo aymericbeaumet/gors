@@ -1,3 +1,3 @@
-module github.com/aymericbeaumet/gors/gors-cli/tests
+module github.com/aymericbeaumet/gors/tests/fixtures/go_runner
 
 go 1.17

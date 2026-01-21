@@ -1,16 +1,18 @@
 //! Main WASM compiler implementation.
 
 use super::error::WasmError;
-use super::expr::ExprContext;
+use super::expr::{ExprContext, StringLiterals};
 use super::types::{params_to_wasm, return_type_to_wasm, syn_type_to_wasm};
 use std::collections::HashMap;
-use walrus::{FunctionBuilder, FunctionId, LocalId, Module, ValType};
+use walrus::{ConstExpr, DataKind, FunctionBuilder, FunctionId, LocalId, MemoryId, Module, ValType, ir::Value};
 
 /// WebAssembly compiler that translates syn::File to WASM bytecode.
 pub struct WasmCompiler {
     module: Module,
     /// Map from function names to their IDs
     functions: HashMap<String, FunctionId>,
+    /// Memory for storing string literals
+    memory: MemoryId,
 }
 
 impl WasmCompiler {
@@ -18,17 +20,28 @@ impl WasmCompiler {
     pub fn new() -> Self {
         let mut module = Module::default();
 
-        // Add print_i32 import for basic output
+        // Add linear memory (1 page = 64KB, enough for string literals)
+        // add_local(shared, memory64, initial_pages, max_pages, page_size_log2)
+        let memory = module.memories.add_local(false, false, 1, None, None);
+        module.exports.add("memory", memory);
+
+        // Add print_i32 import for integer output
         // Import from "env" module, function "print_i32"
-        let print_type = module.types.add(&[ValType::I32], &[]);
-        let (print_i32, _) = module.add_import_func("env", "print_i32", print_type);
+        let print_i32_type = module.types.add(&[ValType::I32], &[]);
+        let (print_i32, _) = module.add_import_func("env", "print_i32", print_i32_type);
+
+        // Add print_str import for string output (takes pointer and length)
+        let print_str_type = module.types.add(&[ValType::I32, ValType::I32], &[]);
+        let (print_str, _) = module.add_import_func("env", "print_str", print_str_type);
 
         let mut functions = HashMap::new();
         functions.insert("print_i32".to_string(), print_i32);
+        functions.insert("print_str".to_string(), print_str);
 
         Self {
             module,
             functions,
+            memory,
         }
     }
 
@@ -125,6 +138,9 @@ impl WasmCompiler {
         // Collect local variables from the function body
         self.collect_locals(&func.block, &mut locals)?;
 
+        // String literals collector
+        let mut string_literals = StringLiterals::new();
+
         // Compile the function body
         {
             let mut body = builder.func_body();
@@ -132,6 +148,7 @@ impl WasmCompiler {
                 locals: &locals,
                 functions: &self.functions,
                 builder: &mut body,
+                string_literals: &mut string_literals,
             };
 
             // Compile each statement
@@ -142,6 +159,17 @@ impl WasmCompiler {
 
         // Finish the function
         let new_func_id = builder.finish(param_locals, &mut self.module.funcs);
+
+        // Add collected string literals to memory
+        for (offset, _len, content) in string_literals.into_vec() {
+            self.module.data.add(
+                DataKind::Active {
+                    memory: self.memory,
+                    offset: ConstExpr::Value(Value::I32(offset as i32)),
+                },
+                content.into_bytes(),
+            );
+        }
 
         // Update the function map
         self.functions.insert(name.clone(), new_func_id);
@@ -230,7 +258,7 @@ impl WasmCompiler {
     }
 
     /// Compile a statement.
-    fn compile_stmt(&self, ctx: &mut ExprContext, stmt: &syn::Stmt) -> Result<(), WasmError> {
+    fn compile_stmt<'a, 'b, 'c>(&self, ctx: &mut ExprContext<'a, 'b, 'c>, stmt: &syn::Stmt) -> Result<(), WasmError> {
         match stmt {
             syn::Stmt::Local(local) => {
                 // Handle local variable initialization
@@ -266,7 +294,14 @@ impl WasmCompiler {
                 Ok(())
             }
             syn::Stmt::Item(_) => Err(WasmError::Unsupported("Nested items".to_string())),
-            syn::Stmt::Macro(_) => Err(WasmError::Unsupported("Macros".to_string())),
+            syn::Stmt::Macro(stmt_macro) => {
+                // Convert macro statement to expression and compile
+                let mac_expr = syn::ExprMacro {
+                    attrs: stmt_macro.attrs.clone(),
+                    mac: stmt_macro.mac.clone(),
+                };
+                ctx.compile_expr(&syn::Expr::Macro(mac_expr))
+            }
         }
     }
 

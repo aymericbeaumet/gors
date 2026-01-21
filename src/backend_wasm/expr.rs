@@ -6,17 +6,64 @@ use std::collections::HashMap;
 use walrus::ir::{BinaryOp, UnaryOp};
 use walrus::{FunctionId, InstrSeqBuilder, LocalId, ValType};
 
+/// Collected string literals with their memory offsets.
+pub struct StringLiterals {
+    strings: Vec<(u32, u32, String)>, // (offset, len, content)
+    next_offset: u32,
+}
+
+impl StringLiterals {
+    pub fn new() -> Self {
+        Self {
+            strings: Vec::new(),
+            next_offset: 0,
+        }
+    }
+
+    /// Add a string literal and return its (offset, length).
+    pub fn add(&mut self, s: &str) -> (u32, u32) {
+        // Check if we already have this string
+        for (offset, len, content) in &self.strings {
+            if content == s {
+                return (*offset, *len);
+            }
+        }
+
+        let bytes = s.as_bytes();
+        let offset = self.next_offset;
+        let len = bytes.len() as u32;
+
+        self.strings.push((offset, len, s.to_string()));
+        self.next_offset += len;
+
+        (offset, len)
+    }
+
+    /// Get all collected strings with their offsets.
+    pub fn into_vec(self) -> Vec<(u32, u32, String)> {
+        self.strings
+    }
+}
+
+impl Default for StringLiterals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Context for compiling expressions within a function.
-pub struct ExprContext<'a, 'b> {
+pub struct ExprContext<'a, 'b, 'c> {
     /// Map from variable names to local IDs
     pub locals: &'a HashMap<String, LocalId>,
     /// Map from function names to function IDs
     pub functions: &'a HashMap<String, FunctionId>,
     /// The current instruction sequence builder
     pub builder: &'b mut InstrSeqBuilder<'a>,
+    /// String literals collector
+    pub string_literals: &'c mut StringLiterals,
 }
 
-impl<'a, 'b> ExprContext<'a, 'b> {
+impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
     /// Compile an expression and push its result onto the stack.
     pub fn compile_expr(&mut self, expr: &syn::Expr) -> Result<(), WasmError> {
         match expr {
@@ -31,9 +78,68 @@ impl<'a, 'b> ExprContext<'a, 'b> {
             syn::Expr::Cast(cast) => self.compile_cast(cast),
             syn::Expr::Assign(assign) => self.compile_assign(assign),
             syn::Expr::Return(ret) => self.compile_return(ret),
+            syn::Expr::Macro(mac) => self.compile_macro(mac),
             other => Err(WasmError::Unsupported(format!(
                 "Expression type: {}",
                 quote::quote!(#other)
+            ))),
+        }
+    }
+
+    fn compile_macro(&mut self, mac: &syn::ExprMacro) -> Result<(), WasmError> {
+        let macro_name = mac.mac.path.segments.last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+
+        match macro_name.as_str() {
+            "println" | "print" => {
+                // Parse the macro tokens to extract arguments
+                let tokens = mac.mac.tokens.clone();
+                
+                // Try to parse as an expression (could be string literal or other expr)
+                if let Ok(expr) = syn::parse2::<syn::Expr>(tokens) {
+                    match &expr {
+                        syn::Expr::Lit(lit_expr) => {
+                            if let syn::Lit::Str(lit_str) = &lit_expr.lit {
+                                // String literal - store in memory and call print_str
+                                let s = lit_str.value();
+                                let (offset, len) = self.string_literals.add(&s);
+                                
+                                // Push offset and length onto stack
+                                self.builder.i32_const(offset as i32);
+                                self.builder.i32_const(len as i32);
+                                
+                                // Call print_str
+                                if let Some(&func_id) = self.functions.get("print_str") {
+                                    self.builder.call(func_id);
+                                    return Ok(());
+                                } else {
+                                    return Err(WasmError::UnknownIdentifier("print_str".to_string()));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    
+                    // Not a string literal - try as integer expression
+                    self.compile_expr(&expr)?;
+                    
+                    // Call print_i32
+                    if let Some(&func_id) = self.functions.get("print_i32") {
+                        self.builder.call(func_id);
+                        Ok(())
+                    } else {
+                        Err(WasmError::UnknownIdentifier("print_i32".to_string()))
+                    }
+                } else {
+                    Err(WasmError::Unsupported(
+                        "Complex println! arguments are not supported".to_string()
+                    ))
+                }
+            }
+            _ => Err(WasmError::Unsupported(format!(
+                "Macro: {}!",
+                macro_name
             ))),
         }
     }
@@ -288,7 +394,14 @@ impl<'a, 'b> ExprContext<'a, 'b> {
                 // Nested items not supported
                 Err(WasmError::Unsupported("Nested items".to_string()))
             }
-            syn::Stmt::Macro(_) => Err(WasmError::Unsupported("Macros".to_string())),
+            syn::Stmt::Macro(stmt_macro) => {
+                // Convert macro statement to expression and compile
+                let mac_expr = syn::ExprMacro {
+                    attrs: stmt_macro.attrs.clone(),
+                    mac: stmt_macro.mac.clone(),
+                };
+                self.compile_expr(&syn::Expr::Macro(mac_expr))
+            }
         }
     }
 }

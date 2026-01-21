@@ -818,7 +818,7 @@ pub fn compile_to_wasm(input: String) -> WasmBuildResult {
         Err(err) => WasmBuildResult {
             success: false,
             wasm_bytes: vec![],
-            error_message: format!("WASM compilation error: {err}"),
+            error_message: err.to_string(),
         },
     }
 }
@@ -922,7 +922,7 @@ pub fn run_go(input: String) -> RunResult {
 fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+    use wasmi::{Caller, Engine, Extern, Func, Linker, Module, Store};
 
     // Create output collector
     let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -936,7 +936,7 @@ fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
     let module =
         Module::new(&engine, wasm_bytes).map_err(|e| format!("Failed to compile WASM: {e}"))?;
 
-    // Create linker and add print_i32 import
+    // Create linker and add import functions
     let mut linker = Linker::new(&engine);
 
     // print_i32 function that captures output to the store's state
@@ -949,6 +949,25 @@ fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
             },
         )
         .map_err(|e| format!("Failed to add print_i32: {e}"))?;
+
+    // print_str function that reads a string from memory and outputs it
+    linker
+        .func_wrap(
+            "env",
+            "print_str",
+            |caller: Caller<'_, Rc<RefCell<Vec<String>>>>, ptr: i32, len: i32| {
+                // Get memory from the caller's instance
+                if let Some(Extern::Memory(memory)) = caller.get_export("memory") {
+                    let mut buffer = vec![0u8; len as usize];
+                    if memory.read(&caller, ptr as usize, &mut buffer).is_ok() {
+                        if let Ok(s) = String::from_utf8(buffer) {
+                            caller.data().borrow_mut().push(s);
+                        }
+                    }
+                }
+            },
+        )
+        .map_err(|e| format!("Failed to add print_str: {e}"))?;
 
     // Instantiate the module
     let instance = linker
