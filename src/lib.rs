@@ -11,14 +11,15 @@
 //! - [`parser`] - Parsing tokens into a Go Abstract Syntax Tree (AST)
 //! - [`ast`] - Go AST data structures based on the Go language specification
 //! - [`compiler`] - Transforms Go AST into Rust `syn` AST
-//! - [`codegen`] - Formats the Rust AST into source code
+//! - [`backend_rust`] - Formats the Rust AST into source code
+//! - [`backend_wasm`] - Compiles Rust AST directly to WebAssembly
 //! - [`error`] - Error types and diagnostic formatting
 //! - [`token`] - Token types and source position tracking
 //!
 //! ## Example
 //!
 //! ```
-//! use gors::{parser, compiler, codegen};
+//! use gors::{parser, compiler, backend_rust};
 //!
 //! let go_source = r#"
 //!     package main
@@ -35,7 +36,7 @@
 //! let rust_ast = compiler::compile(ast).unwrap();
 //!
 //! // Generate Rust source code
-//! let rust_source = codegen::generate(rust_ast).unwrap();
+//! let rust_source = backend_rust::generate(rust_ast).unwrap();
 //! ```
 
 // Clippy lints are configured at workspace level in the root Cargo.toml
@@ -50,7 +51,7 @@ pub mod ast;
 /// Rust code generation from syn AST.
 ///
 /// Provides formatting of `syn::File` into pretty-printed Rust source code.
-pub mod codegen;
+pub mod backend_rust;
 
 /// Go to Rust compiler.
 ///
@@ -86,3 +87,9 @@ pub mod mapping;
 /// Contains token types matching the Go specification and
 /// position tracking for source locations.
 pub mod token;
+
+/// WebAssembly backend for direct WASM compilation.
+///
+/// Compiles Rust AST (syn::File) directly to WebAssembly bytecode
+/// using the Walrus library. Works in both native CLI and browser.
+pub mod backend_wasm;

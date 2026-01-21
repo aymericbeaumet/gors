@@ -233,7 +233,7 @@ pub fn fprint<W: std::io::Write>(
 /// let go_source = "package main\n\nfunc main() {}";
 /// let go_ast = parser::parse_file("example.go", go_source).unwrap();
 /// let rust_ast = compiler::compile(go_ast).unwrap();
-/// let rust_source = codegen::generate(rust_ast).unwrap();
+/// let rust_source = backend_rust::generate(rust_ast).unwrap();
 /// ```
 pub fn generate(file: syn::File) -> Result<String, Box<dyn std::error::Error>> {
     let mut output = Vec::new();

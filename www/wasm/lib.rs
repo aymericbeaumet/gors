@@ -392,7 +392,7 @@ pub fn build_rust(input: String) -> BuildResult {
     };
 
     // Generate Rust code WITHOUT comments first
-    let rust_code = match gors::codegen::generate(compiled) {
+    let rust_code = match gors::backend_rust::generate(compiled) {
         Ok(output) => output,
         Err(err) => {
             let diagnostic = Diagnostic::new(
@@ -737,7 +737,7 @@ mod tests {
         let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
             .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        let rust_code = gors::codegen::generate(compiled)
+        let rust_code = gors::backend_rust::generate(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let source_map = gors::compiler::build_source_map(&rust_code);
@@ -745,6 +745,140 @@ mod tests {
 
         Ok(output)
     }
+}
+
+/// Result of compiling Go to WebAssembly.
+#[wasm_bindgen]
+pub struct WasmBuildResult {
+    success: bool,
+    /// WASM binary (empty on error)
+    wasm_bytes: Vec<u8>,
+    error_message: String,
+}
+
+#[wasm_bindgen]
+impl WasmBuildResult {
+    #[wasm_bindgen(getter)]
+    pub fn success(&self) -> bool {
+        self.success
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn wasm_bytes(&self) -> Vec<u8> {
+        self.wasm_bytes.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn error_message(&self) -> String {
+        self.error_message.clone()
+    }
+}
+
+/// Compile Go source code directly to WebAssembly bytecode.
+///
+/// This function parses Go code, transpiles it to Rust AST, and then
+/// compiles it directly to WASM using the Walrus library.
+/// No external Rust toolchain is required.
+#[wasm_bindgen]
+pub fn compile_to_wasm(input: String) -> WasmBuildResult {
+    console_error_panic_hook::set_once();
+
+    // Parse Go source
+    let ast = match gors::parser::parse_file("main.go", &input) {
+        Ok(ast) => ast,
+        Err(err) => {
+            let diagnostic = Diagnostic::from_parser_error(&err, "main.go", &input);
+            return WasmBuildResult {
+                success: false,
+                wasm_bytes: vec![],
+                error_message: diagnostic.message,
+            };
+        }
+    };
+
+    // Compile to Rust AST
+    let compiled = match gors::compiler::compile(ast) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            return WasmBuildResult {
+                success: false,
+                wasm_bytes: vec![],
+                error_message: format!("Compiler error: {err}"),
+            };
+        }
+    };
+
+    // Compile Rust AST to WASM
+    match gors::backend_wasm::compile_to_wasm(&compiled) {
+        Ok(wasm_bytes) => WasmBuildResult {
+            success: true,
+            wasm_bytes,
+            error_message: String::new(),
+        },
+        Err(err) => WasmBuildResult {
+            success: false,
+            wasm_bytes: vec![],
+            error_message: format!("WASM compilation error: {err}"),
+        },
+    }
+}
+
+/// Result of running Go code via WASM.
+#[wasm_bindgen]
+pub struct RunResult {
+    success: bool,
+    output: String,
+    error_message: String,
+}
+
+#[wasm_bindgen]
+impl RunResult {
+    #[wasm_bindgen(getter)]
+    pub fn success(&self) -> bool {
+        self.success
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn output(&self) -> String {
+        self.output.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn error_message(&self) -> String {
+        self.error_message.clone()
+    }
+}
+
+/// Compile and run Go source code.
+///
+/// This function compiles Go code to WASM and returns the compiled bytes
+/// along with instructions for execution. The actual execution must be done
+/// in JavaScript using the WebAssembly API since we need to:
+/// 1. Instantiate the WASM module with imports (print_i32)
+/// 2. Call the main function
+/// 3. Collect output
+///
+/// Example JavaScript usage:
+/// ```javascript
+/// const result = compile_to_wasm(goCode);
+/// if (result.success) {
+///     let output = [];
+///     const imports = {
+///         env: {
+///             print_i32: (val) => output.push(val.toString())
+///         }
+///     };
+///     const module = await WebAssembly.instantiate(result.wasm_bytes, imports);
+///     module.instance.exports.main();
+///     console.log(output.join('\n'));
+/// }
+/// ```
+///
+/// For convenience, use the `run_go_js` JavaScript wrapper which handles this.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn test_comment_between_statements() {
@@ -1016,7 +1150,7 @@ func bar() {
         let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
             .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        let rust_code = gors::codegen::generate(compiled)
+        let rust_code = gors::backend_rust::generate(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let initial_source_map = gors::compiler::build_source_map(&rust_code);

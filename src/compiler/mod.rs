@@ -1064,7 +1064,7 @@ mod tests {
     //! compiler passes).
 
     use super::{build_source_map, clear_source_map_tracker, compile, compile_with_source_map};
-    use crate::codegen;
+    use crate::backend_rust;
     use crate::parser::parse_file;
     use quote::quote;
     use syn::parse_quote as rust;
@@ -1111,7 +1111,7 @@ func main() {
         let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
         // Generate the Rust code
-        let rust_source = codegen::generate(compiled).unwrap();
+        let rust_source = backend_rust::generate(compiled).unwrap();
 
         // Build the source map
         let sm = build_source_map(&rust_source);
@@ -1167,7 +1167,7 @@ func main() {
         let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
         // Generate the Rust code
-        let rust_source = codegen::generate(compiled).unwrap();
+        let rust_source = backend_rust::generate(compiled).unwrap();
 
         // The generated Rust code should contain "fn main"
         assert!(

@@ -3,7 +3,6 @@
 use clap::Parser;
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
-use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
@@ -42,7 +41,7 @@ enum SubCommand {
     Ast(Ast),
     /// Compile the named Go file
     Build(Build),
-    /// Compile and run the named Go file
+    /// Compile and run the named Go file (uses WASM runtime)
     Run(Run),
     /// Scan the named Go file and print the tokens
     Tokens(Tokens),
@@ -61,21 +60,24 @@ struct Build {
     /// Build in release mode, with optimizations
     #[arg(long)]
     release: bool,
-    /// Type of output for the compiler to emit: rust|asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir
+    /// Type of output: rust (source), wasm (WebAssembly binary)
     #[arg(long)]
     emit: Option<String>,
     /// Output path for source map (.map file in standard v3 format)
     #[arg(long)]
     sourcemap: Option<String>,
+    /// Target: wasm (default) or rust
+    #[arg(long, default_value = "wasm")]
+    target: String,
+    /// Output file path
+    #[arg(short, long)]
+    output: Option<String>,
 }
 
 #[derive(Parser)]
 struct Run {
     /// The file to run
     file: String,
-    /// Build in release mode, with optimizations
-    #[arg(long)]
-    release: bool,
 }
 
 #[derive(Parser)]
@@ -138,65 +140,37 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Emit Rust source code
-    if matches!(cmd.emit.as_deref(), Some("rust")) {
-        let rust_source = gors::codegen::generate(compiled)?;
-
-        // Write the Rust source
-        let mut w = std::fs::File::create("main.rs")?;
-        w.write_all(rust_source.as_bytes())?;
-
-        // Write source map if requested
-        if let Some(ref map_path) = cmd.sourcemap {
-            let source_map = gors::compiler::build_source_map(&rust_source);
-            let mut map_file = std::fs::File::create(map_path)?;
-            source_map.to_writer(&mut map_file)?;
-        }
-
-        return Ok(());
-    }
-
-    let tmp_dir = tempfile::tempdir()?;
-    let source_file = tmp_dir.path().join("main.rs");
-
-    let rust_source = gors::codegen::generate(compiled)?;
-    let mut w = std::fs::File::create(&source_file)?;
-    w.write_all(rust_source.as_bytes())?;
-    w.sync_all()?;
-
     // Write source map if requested
     if let Some(ref map_path) = cmd.sourcemap {
+        let rust_source = gors::backend_rust::generate(compiled.clone())?;
         let source_map = gors::compiler::build_source_map(&rust_source);
         let mut map_file = std::fs::File::create(map_path)?;
         source_map.to_writer(&mut map_file)?;
     }
 
-    let src_path = source_file
-        .to_str()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
-    let rustc = Command::new("rustc")
-        .args(RustcArgs {
-            src: src_path,
-            out: None,
-            emit: cmd.emit.as_deref(),
-            release: cmd.release,
-        })
-        .output()?;
-    if !rustc.status.success() {
-        print!("{}", String::from_utf8_lossy(&rustc.stdout));
-        eprint!("{}", String::from_utf8_lossy(&rustc.stderr));
+    // Emit Rust source code only
+    if matches!(cmd.emit.as_deref(), Some("rust")) || cmd.target == "rust" {
+        let rust_source = gors::backend_rust::generate(compiled)?;
+        let output_path = cmd.output.as_deref().unwrap_or("main.rs");
+        let mut w = std::fs::File::create(output_path)?;
+        w.write_all(rust_source.as_bytes())?;
+        println!("Wrote {output_path}");
         return Ok(());
     }
+
+    // Default: WASM target
+    let wasm_bytes = gors::backend_wasm::compile_to_wasm(&compiled).map_err(|e| {
+        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            as Box<dyn std::error::Error>
+    })?;
+    let output_path = cmd.output.as_deref().unwrap_or("output.wasm");
+    std::fs::write(output_path, wasm_bytes)?;
+    println!("Wrote {output_path}");
 
     Ok(())
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp_dir = tempfile::tempdir()?;
-    let out_rust = tmp_dir.path().join("main.rs");
-    let out_bin = tmp_dir.path().join("main");
-    let mut w = std::fs::File::create(&out_rust)?;
-
     let buffer = std::fs::read_to_string(&cmd.file)?;
 
     let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
@@ -217,31 +191,48 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    gors::codegen::fprint(&mut w, compiled)?;
-    w.sync_all()?;
+    // Compile to WASM
+    let wasm_bytes = gors::backend_wasm::compile_to_wasm(&compiled).map_err(|e| {
+        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            as Box<dyn std::error::Error>
+    })?;
 
-    let src_path = out_rust
-        .to_str()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
-    let out_path = out_bin
-        .to_str()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
-    let rustc = Command::new("rustc")
-        .args(RustcArgs {
-            src: src_path,
-            out: Some(out_path),
-            emit: None,
-            release: cmd.release,
-        })
-        .output()?;
-    if !rustc.status.success() {
-        print!("{}", String::from_utf8_lossy(&rustc.stdout));
-        eprint!("{}", String::from_utf8_lossy(&rustc.stderr));
-        return Ok(());
+    // Run with Wasmer
+    run_wasm(&wasm_bytes)
+}
+
+/// Run WASM bytes using the Wasmer runtime
+fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    use wasmer::{imports, Instance, Module, Store, Function, FunctionEnv, FunctionEnvMut};
+
+    // Create a store
+    let mut store = Store::default();
+
+    // Compile the WASM module
+    let module = Module::new(&store, wasm_bytes)?;
+
+    // Create environment for imports
+    struct Env;
+    let env = FunctionEnv::new(&mut store, Env);
+
+    // Create print_i32 import function
+    fn print_i32(_env: FunctionEnvMut<'_, Env>, value: i32) {
+        println!("{value}");
     }
 
-    let mut cmd = Command::new(&out_bin).spawn()?;
-    cmd.wait()?;
+    // Create imports
+    let import_object = imports! {
+        "env" => {
+            "print_i32" => Function::new_typed_with_env(&mut store, &env, print_i32),
+        }
+    };
+
+    // Instantiate the module
+    let instance = Instance::new(&mut store, &module, &import_object)?;
+
+    // Get and call the main function
+    let main_func = instance.exports.get_function("main")?;
+    main_func.call(&mut store, &[])?;
 
     Ok(())
 }
@@ -269,6 +260,7 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 struct RustcArgs<'a> {
     src: &'a str,
     out: Option<&'a str>,

@@ -3,7 +3,7 @@
 //! These tests verify that Go code can be compiled through the Rust
 //! code generation backend.
 
-use gors::codegen;
+use gors::backend_rust;
 
 /// Test scenario that runs against the Rust backend.
 pub struct CodegenScenario {
@@ -104,7 +104,7 @@ fn compile_go_to_rust(go_source: &str) -> Result<String, String> {
     let compiled =
         gors::compiler::compile(ast).map_err(|e| format!("Compile error: {:?}", e))?;
 
-    codegen::generate(compiled).map_err(|e| format!("Rust codegen error: {:?}", e))
+    backend_rust::generate(compiled).map_err(|e| format!("Rust codegen error: {:?}", e))
 }
 
 // =============================================================================
