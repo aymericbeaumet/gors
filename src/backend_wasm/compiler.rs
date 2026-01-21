@@ -47,83 +47,138 @@ impl WasmCompiler {
 
     /// Compile a syn::File to WASM.
     pub fn compile(&mut self, file: &syn::File) -> Result<(), WasmError> {
-        // First pass: collect all function signatures
-        for item in &file.items {
-            if let syn::Item::Fn(func) = item {
-                self.declare_function(func)?;
+        // Collect all function items
+        let func_items: Vec<_> = file.items.iter()
+            .filter_map(|item| {
+                if let syn::Item::Fn(func) = item {
+                    Some(func)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Pass 1: Create placeholder functions to get IDs for ALL functions
+        // This ensures that when compiling any function body, all function IDs are known
+        let mut placeholder_ids: HashMap<String, FunctionId> = HashMap::new();
+        
+        for func in &func_items {
+            let name = func.sig.ident.to_string();
+            
+            if self.functions.contains_key(&name) {
+                continue;
             }
+
+            let params = params_to_wasm(&func.sig.inputs)?;
+            let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?
+                .into_iter()
+                .collect();
+
+            // Create placeholder function
+            let mut builder = FunctionBuilder::new(&mut self.module.types, &params, &results);
+            
+            if !results.is_empty() {
+                match results[0] {
+                    ValType::I32 => { builder.func_body().i32_const(0); }
+                    ValType::I64 => { builder.func_body().i64_const(0); }
+                    ValType::F32 => { builder.func_body().f32_const(0.0); }
+                    ValType::F64 => { builder.func_body().f64_const(0.0); }
+                    _ => {}
+                }
+            }
+
+            let func_id = builder.finish(vec![], &mut self.module.funcs);
+            placeholder_ids.insert(name.clone(), func_id);
+            self.functions.insert(name, func_id);
         }
 
-        // Second pass: compile function bodies
-        for item in &file.items {
-            if let syn::Item::Fn(func) = item {
-                self.compile_function(func)?;
-            }
+        // Pass 2: Compile real function bodies
+        // The self.functions map now has ALL function IDs (placeholders)
+        let mut new_ids: HashMap<String, FunctionId> = HashMap::new();
+        
+        for func in &func_items {
+            let new_id = self.compile_function_body(func)?;
+            let name = func.sig.ident.to_string();
+            new_ids.insert(name, new_id);
+        }
+
+        // Pass 3: Update the function map and patch call instructions
+        // Build a mapping from placeholder ID to real ID
+        let id_mapping: HashMap<FunctionId, FunctionId> = placeholder_ids.iter()
+            .filter_map(|(name, &placeholder_id)| {
+                new_ids.get(name).map(|&new_id| (placeholder_id, new_id))
+            })
+            .collect();
+
+        // Patch all call instructions in all new functions
+        for &new_id in new_ids.values() {
+            self.patch_function_calls(new_id, &id_mapping);
+        }
+
+        // Update the function map with the real IDs
+        for (name, new_id) in new_ids {
+            self.functions.insert(name, new_id);
+        }
+
+        // Delete placeholder functions (they're no longer needed after patching)
+        for &placeholder_id in placeholder_ids.values() {
+            self.module.funcs.delete(placeholder_id);
         }
 
         Ok(())
     }
 
-    /// Declare a function (add its signature without body).
-    fn declare_function(&mut self, func: &syn::ItemFn) -> Result<(), WasmError> {
-        let name = func.sig.ident.to_string();
-
-        // Skip if already declared (e.g., imports)
-        if self.functions.contains_key(&name) {
-            return Ok(());
-        }
-
-        let params = params_to_wasm(&func.sig.inputs)?;
-        let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?
-            .into_iter()
-            .collect();
-
-        // Create function type
-        let _type_id = self.module.types.add(&params, &results);
-
-        // Create a placeholder function (will be replaced when compiling body)
-        let mut builder = FunctionBuilder::new(&mut self.module.types, &params, &results);
+    /// Patch all call instructions in a function to use the new function IDs.
+    fn patch_function_calls(&mut self, func_id: FunctionId, id_mapping: &HashMap<FunctionId, FunctionId>) {
+        use walrus::ir::*;
         
-        // Add empty body for now
-        if results.is_empty() {
-            // No return value needed
-        } else {
-            // Push a default return value
-            match results[0] {
-                ValType::I32 => { builder.func_body().i32_const(0); }
-                ValType::I64 => { builder.func_body().i64_const(0); }
-                ValType::F32 => { builder.func_body().f32_const(0.0); }
-                ValType::F64 => { builder.func_body().f64_const(0.0); }
-                _ => {}
+        let func = self.module.funcs.get_mut(func_id);
+        if let walrus::FunctionKind::Local(local_func) = &mut func.kind {
+            // Visit all instructions and patch Call instructions
+            let entry = local_func.entry_block();
+            let mut to_visit = vec![entry];
+            let mut visited = std::collections::HashSet::new();
+            
+            while let Some(block_id) = to_visit.pop() {
+                if !visited.insert(block_id) {
+                    continue;
+                }
+                
+                let block = local_func.block_mut(block_id);
+                for (instr, _) in block.instrs.iter_mut() {
+                    match instr {
+                        Instr::Call(call) => {
+                            if let Some(&new_id) = id_mapping.get(&call.func) {
+                                call.func = new_id;
+                            }
+                        }
+                        Instr::Block(b) => to_visit.push(b.seq),
+                        Instr::Loop(l) => to_visit.push(l.seq),
+                        Instr::IfElse(ie) => {
+                            to_visit.push(ie.consequent);
+                            to_visit.push(ie.alternative);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
-
-        let func_id = builder.finish(vec![], &mut self.module.funcs);
-        self.functions.insert(name, func_id);
-
-        // Note: Export is added in compile_function after body is compiled
-
-        Ok(())
     }
 
-    /// Compile a function body.
-    fn compile_function(&mut self, func: &syn::ItemFn) -> Result<(), WasmError> {
+    /// Compile a function body and return the new function ID.
+    fn compile_function_body(&mut self, func: &syn::ItemFn) -> Result<FunctionId, WasmError> {
         let name = func.sig.ident.to_string();
         
-        // Get function info
         let params = params_to_wasm(&func.sig.inputs)?;
         let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?
             .into_iter()
             .collect();
 
-        // Create a new function builder
         let mut builder = FunctionBuilder::new(&mut self.module.types, &params, &results);
 
-        // Create locals map
         let mut locals: HashMap<String, LocalId> = HashMap::new();
-
-        // Add parameters as locals
         let mut param_locals = Vec::new();
+        
         for (i, arg) in func.sig.inputs.iter().enumerate() {
             if let syn::FnArg::Typed(pat_type) = arg {
                 if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
@@ -135,32 +190,26 @@ impl WasmCompiler {
             }
         }
 
-        // Collect local variables from the function body
         self.collect_locals(&func.block, &mut locals)?;
 
-        // String literals collector
         let mut string_literals = StringLiterals::new();
 
-        // Compile the function body
         {
             let mut body = builder.func_body();
             let mut ctx = ExprContext {
                 locals: &locals,
-                functions: &self.functions,
+                functions: &self.functions,  // Uses placeholder IDs
                 builder: &mut body,
                 string_literals: &mut string_literals,
             };
 
-            // Compile each statement
             for stmt in &func.block.stmts {
                 self.compile_stmt(&mut ctx, stmt)?;
             }
         }
 
-        // Finish the function
-        let new_func_id = builder.finish(param_locals, &mut self.module.funcs);
+        let func_id = builder.finish(param_locals, &mut self.module.funcs);
 
-        // Add collected string literals to memory
         for (offset, _len, content) in string_literals.into_vec() {
             self.module.data.add(
                 DataKind::Active {
@@ -171,58 +220,120 @@ impl WasmCompiler {
             );
         }
 
-        // Update the function map
-        self.functions.insert(name.clone(), new_func_id);
-
-        // Re-export main if this is main
+        // Export main
         if name == "main" {
-            // Remove old export if exists and add new one
-            self.module.exports.add(&name, new_func_id);
+            self.module.exports.add(&name, func_id);
         }
 
-        Ok(())
+        Ok(func_id)
     }
 
-    /// Collect local variable declarations from a block.
+    /// Collect local variable declarations from a block, recursively.
     fn collect_locals(
         &mut self,
         block: &syn::Block,
         locals: &mut HashMap<String, LocalId>,
     ) -> Result<(), WasmError> {
         for stmt in &block.stmts {
-            if let syn::Stmt::Local(local) = stmt {
-                if let syn::Pat::Ident(pat_ident) = &local.pat {
-                    let name = pat_ident.ident.to_string();
-                    
-                    // Determine type from annotation or initializer
-                    let val_type = if let Some(ty) = &pat_ident.by_ref {
-                        // Reference type
-                        let _ = ty;
-                        ValType::I32
-                    } else if let Some(local_init) = &local.init {
-                        // Try to infer from initializer (simplified)
-                        self.infer_expr_type(&local_init.expr)?
-                    } else {
-                        // Default to i32
-                        ValType::I32
-                    };
+            match stmt {
+                syn::Stmt::Local(local) => {
+                    self.collect_pat_locals(&local.pat, local.init.as_ref().map(|i| &i.expr), locals)?;
+                }
+                syn::Stmt::Expr(expr, _) => {
+                    // Recurse into nested blocks, while loops, etc.
+                    self.collect_expr_locals(expr, locals)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 
+    /// Collect locals from expressions that contain blocks (while, if, blocks, etc.)
+    fn collect_expr_locals(
+        &mut self,
+        expr: &syn::Expr,
+        locals: &mut HashMap<String, LocalId>,
+    ) -> Result<(), WasmError> {
+        match expr {
+            syn::Expr::Block(block) => {
+                self.collect_locals(&block.block, locals)?;
+            }
+            syn::Expr::While(while_expr) => {
+                self.collect_locals(&while_expr.body, locals)?;
+            }
+            syn::Expr::Loop(loop_expr) => {
+                self.collect_locals(&loop_expr.body, locals)?;
+            }
+            syn::Expr::If(if_expr) => {
+                self.collect_locals(&if_expr.then_branch, locals)?;
+                if let Some((_, else_branch)) = &if_expr.else_branch {
+                    self.collect_expr_locals(else_branch, locals)?;
+                }
+            }
+            syn::Expr::ForLoop(for_loop) => {
+                self.collect_locals(&for_loop.body, locals)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Collect locals from a pattern, recursively handling tuples.
+    fn collect_pat_locals(
+        &mut self,
+        pat: &syn::Pat,
+        init: Option<&Box<syn::Expr>>,
+        locals: &mut HashMap<String, LocalId>,
+    ) -> Result<(), WasmError> {
+        match pat {
+            syn::Pat::Ident(pat_ident) => {
+                let name = pat_ident.ident.to_string();
+                
+                // Determine type from initializer
+                let val_type = if let Some(init_expr) = init {
+                    self.infer_expr_type(init_expr)?
+                } else {
+                    ValType::I32
+                };
+
+                if let std::collections::hash_map::Entry::Vacant(e) = locals.entry(name) {
+                    let local_id = self.module.locals.add(val_type);
+                    e.insert(local_id);
+                }
+            }
+            syn::Pat::Type(pat_type) => {
+                if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                    let name = pat_ident.ident.to_string();
+                    let val_type = syn_type_to_wasm(&pat_type.ty)?;
+                    
                     if let std::collections::hash_map::Entry::Vacant(e) = locals.entry(name) {
                         let local_id = self.module.locals.add(val_type);
                         e.insert(local_id);
                     }
-                } else if let syn::Pat::Type(pat_type) = &local.pat {
-                    if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                        let name = pat_ident.ident.to_string();
-                        let val_type = syn_type_to_wasm(&pat_type.ty)?;
-                        
-                        if let std::collections::hash_map::Entry::Vacant(e) = locals.entry(name) {
-                            let local_id = self.module.locals.add(val_type);
-                            e.insert(local_id);
-                        }
-                    }
                 }
             }
+            syn::Pat::Tuple(pat_tuple) => {
+                // Handle tuple pattern - extract corresponding init expressions if available
+                let tuple_elems = if let Some(init_expr) = init {
+                    if let syn::Expr::Tuple(init_tuple) = init_expr.as_ref() {
+                        Some(&init_tuple.elems)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                for (i, elem_pat) in pat_tuple.elems.iter().enumerate() {
+                    let elem_init = tuple_elems.and_then(|elems| elems.get(i).map(|e| {
+                        // Box the expression reference
+                        Box::new(e.clone())
+                    }));
+                    self.collect_pat_locals(elem_pat, elem_init.as_ref(), locals)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -263,24 +374,7 @@ impl WasmCompiler {
             syn::Stmt::Local(local) => {
                 // Handle local variable initialization
                 if let Some(init) = &local.init {
-                    ctx.compile_expr(&init.expr)?;
-                    
-                    // Get the local ID
-                    let name = if let syn::Pat::Ident(pat_ident) = &local.pat {
-                        pat_ident.ident.to_string()
-                    } else if let syn::Pat::Type(pat_type) = &local.pat {
-                        if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                            pat_ident.ident.to_string()
-                        } else {
-                            return Err(WasmError::Unsupported("Complex pattern".to_string()));
-                        }
-                    } else {
-                        return Err(WasmError::Unsupported("Complex pattern".to_string()));
-                    };
-
-                    if let Some(&local_id) = ctx.locals.get(&name) {
-                        ctx.builder.local_set(local_id);
-                    }
+                    self.compile_pat_assignment(ctx, &local.pat, &init.expr)?;
                 }
                 Ok(())
             }
@@ -302,6 +396,53 @@ impl WasmCompiler {
                 };
                 ctx.compile_expr(&syn::Expr::Macro(mac_expr))
             }
+        }
+    }
+
+    /// Compile a pattern assignment, handling tuples.
+    fn compile_pat_assignment<'a, 'b, 'c>(
+        &self,
+        ctx: &mut ExprContext<'a, 'b, 'c>,
+        pat: &syn::Pat,
+        expr: &syn::Expr,
+    ) -> Result<(), WasmError> {
+        match pat {
+            syn::Pat::Ident(pat_ident) => {
+                ctx.compile_expr(expr)?;
+                let name = pat_ident.ident.to_string();
+                if let Some(&local_id) = ctx.locals.get(&name) {
+                    ctx.builder.local_set(local_id);
+                }
+                Ok(())
+            }
+            syn::Pat::Type(pat_type) => {
+                if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                    ctx.compile_expr(expr)?;
+                    let name = pat_ident.ident.to_string();
+                    if let Some(&local_id) = ctx.locals.get(&name) {
+                        ctx.builder.local_set(local_id);
+                    }
+                }
+                Ok(())
+            }
+            syn::Pat::Tuple(pat_tuple) => {
+                // For tuple patterns, we need to match with tuple expressions
+                if let syn::Expr::Tuple(expr_tuple) = expr {
+                    // Compile and assign each element
+                    for (elem_pat, elem_expr) in pat_tuple.elems.iter().zip(expr_tuple.elems.iter()) {
+                        self.compile_pat_assignment(ctx, elem_pat, elem_expr)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(WasmError::Unsupported(
+                        "Tuple pattern requires tuple expression".to_string(),
+                    ))
+                }
+            }
+            _ => Err(WasmError::Unsupported(format!(
+                "Pattern type: {}",
+                quote::quote!(#pat)
+            ))),
         }
     }
 

@@ -401,26 +401,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }
         }
 
-        // Add #![no_std] attribute at the crate level
-        let no_std_attr = syn::Attribute {
-            pound_token: <Token![#]>::default(),
-            style: syn::AttrStyle::Inner(<Token![!]>::default()),
-            bracket_token: syn::token::Bracket::default(),
-            meta: syn::Meta::Path(syn::Path {
-                leading_colon: None,
-                segments: {
-                    let mut segments = syn::punctuated::Punctuated::new();
-                    segments.push(syn::PathSegment {
-                        ident: syn::Ident::new("no_std", Span::mixed_site()),
-                        arguments: syn::PathArguments::None,
-                    });
-                    segments
-                },
-            }),
-        };
+        // Note: We don't add #![no_std] here because the generated code uses
+        // std::println! for fmt.Println() calls. The WASM backend handles
+        // no_std requirements separately during WASM compilation.
 
         Ok(Self {
-            attrs: vec![no_std_attr],
+            attrs: vec![],
             items,
             shebang: None,
         })
@@ -1107,7 +1093,6 @@ mod tests {
                 }
             "#,
             rust! {
-                #![no_std]
                 pub fn main() {
                     i += 2;
                     i *= 2;

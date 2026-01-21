@@ -252,6 +252,11 @@ fn get_file_for_error(path: &str) -> Option<(String, String)> {
     }
 }
 
+/// State for WASM runtime
+struct WasmRunState {
+    memory: Option<wasmi::Memory>,
+}
+
 /// Run WASM bytes using the wasmi runtime.
 /// This works both natively and when gors is compiled to WASM.
 fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
@@ -259,21 +264,39 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 
     // Create engine and store
     let engine = Engine::default();
-    let mut store = Store::new(&engine, ());
+    let state = WasmRunState { memory: None };
+    let mut store = Store::new(&engine, state);
 
     // Compile the WASM module
     let module = Module::new(&engine, wasm_bytes)?;
 
-    // Create linker and add print_i32 import
+    // Create linker and add imports
     let mut linker = Linker::new(&engine);
 
     // print_i32 function that prints an i32 value
-    linker.func_wrap("env", "print_i32", |_caller: Caller<'_, ()>, value: i32| {
+    linker.func_wrap("env", "print_i32", |_caller: Caller<'_, WasmRunState>, value: i32| {
         println!("{value}");
+    })?;
+
+    // print_str function that reads string from memory and prints it
+    linker.func_wrap("env", "print_str", |caller: Caller<'_, WasmRunState>, offset: i32, len: i32| {
+        if let Some(memory) = &caller.data().memory {
+            let mut buffer = vec![0u8; len as usize];
+            if memory.read(&caller, offset as usize, &mut buffer).is_ok() {
+                if let Ok(s) = String::from_utf8(buffer) {
+                    println!("{s}");
+                }
+            }
+        }
     })?;
 
     // Instantiate the module
     let instance = linker.instantiate(&mut store, &module)?.start(&mut store)?;
+
+    // Get memory export and store it for print_str to use
+    if let Some(memory) = instance.get_export(&store, "memory").and_then(|e| e.into_memory()) {
+        store.data_mut().memory = Some(memory);
+    }
 
     // Get and call the main function
     let main_func: Func = instance
