@@ -774,12 +774,10 @@ fn compile_expr_inline(
             };
             builder.binop(op);
         }
-        syn::Expr::Path(path) => {
-            if path.path.segments.len() == 1 {
-                let name = path.path.segments[0].ident.to_string();
-                if let Some(&local_id) = locals.get(&name) {
-                    builder.local_get(local_id);
-                }
+        syn::Expr::Path(path) if path.path.segments.len() == 1 => {
+            let name = path.path.segments[0].ident.to_string();
+            if let Some(&local_id) = locals.get(&name) {
+                builder.local_get(local_id);
             }
         }
         syn::Expr::Paren(paren) => {

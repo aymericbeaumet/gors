@@ -956,7 +956,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 
             let mut idents: Vec<syn::Ident> = vec![];
             let mut values: Vec<syn::Expr> = vec![];
-            for (lhs, rhs) in assign_stmt.lhs.iter().zip(assign_stmt.rhs.into_iter()) {
+            for (lhs, rhs) in assign_stmt.lhs.iter().zip(assign_stmt.rhs) {
                 if let ast::Expr::Ident(ident) = lhs {
                     idents.push(quote::format_ident!("{}__", &ident.name));
                     values.push(rhs.into());
