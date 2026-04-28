@@ -11,11 +11,11 @@ workspace = true
 gors = { path = ".." }
 
 # AFL dependency is optional - only used when building fuzz targets with `cargo afl build`
-afl = { version = "0.15", optional = true }
+afl = { version = "0.18", optional = true }
 
 # Property-based testing (stable Rust alternative to fuzzing for CI)
 [dev-dependencies]
-proptest = "1.6"
+proptest = "1.11"
 
 [features]
 default = []

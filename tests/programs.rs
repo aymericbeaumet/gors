@@ -21,7 +21,7 @@ use common::{fixtures_dir, gors_bin};
 use std::path::PathBuf;
 use std::process::Command;
 
-use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+use wasmi::{Caller, Engine, Extern, Func, Linker, Module, Store};
 
 /// Discovered program with its expected output.
 #[derive(Debug)]
@@ -81,12 +81,7 @@ pub fn discover_programs() -> Vec<Program> {
             })
             .unwrap_or_default();
 
-        let name = path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
 
         programs.push(Program {
             name,
@@ -387,20 +382,21 @@ fn run_wasm_bytes(wasm_bytes: &[u8]) -> Result<String, String> {
 
     // Instantiate the module
     let instance = linker
-        .instantiate(&mut store, &module)
-        .map_err(|e| format!("WASM instantiation error: {}", e))?
-        .start(&mut store)
-        .map_err(|e| format!("WASM start error: {}", e))?;
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|e| format!("WASM instantiation error: {}", e))?;
 
     // Get memory export and store it in state for print_str to use
-    if let Some(memory) = instance.get_export(&store, "memory").and_then(|e| e.into_memory()) {
+    if let Some(memory) = instance
+        .get_export(&store, "memory")
+        .and_then(Extern::into_memory)
+    {
         store.data_mut().memory = Some(memory);
     }
 
     // Get and call the main function
     let main_func: Func = instance
         .get_export(&store, "main")
-        .and_then(|e| e.into_func())
+        .and_then(Extern::into_func)
         .ok_or("main function not found")?;
 
     main_func
@@ -472,7 +468,10 @@ fn test_programs_rust_backend() {
     for program in &programs {
         // Skip programs with empty expected output (go run failed)
         if program.expected_output.is_empty() {
-            eprintln!("Skipping {} - no reference output from go run", program.name);
+            eprintln!(
+                "Skipping {} - no reference output from go run",
+                program.name
+            );
             continue;
         }
 
@@ -493,7 +492,10 @@ fn test_programs_rust_backend() {
             }
         } else {
             all_passed = false;
-            summary.add_fail(&program.name, result.error.as_deref().unwrap_or("Unknown error"));
+            summary.add_fail(
+                &program.name,
+                result.error.as_deref().unwrap_or("Unknown error"),
+            );
         }
     }
 
@@ -521,7 +523,10 @@ fn test_programs_wasm_backend() {
     for program in &programs {
         // Skip programs with empty expected output
         if program.expected_output.is_empty() {
-            eprintln!("Skipping {} - no reference output from go run", program.name);
+            eprintln!(
+                "Skipping {} - no reference output from go run",
+                program.name
+            );
             continue;
         }
 
@@ -542,7 +547,10 @@ fn test_programs_wasm_backend() {
             }
         } else {
             all_passed = false;
-            summary.add_fail(&program.name, result.error.as_deref().unwrap_or("Unknown error"));
+            summary.add_fail(
+                &program.name,
+                result.error.as_deref().unwrap_or("Unknown error"),
+            );
         }
     }
 
@@ -569,7 +577,10 @@ fn test_programs_go_runner() {
     for program in &programs {
         // Skip programs with empty expected output
         if program.expected_output.is_empty() {
-            eprintln!("Skipping {} - no reference output from go run", program.name);
+            eprintln!(
+                "Skipping {} - no reference output from go run",
+                program.name
+            );
             continue;
         }
 
@@ -700,7 +711,9 @@ fn test_all_programs() {
             rust_results.push((
                 program.name.clone(),
                 false,
-                rust_result.error.unwrap_or_else(|| "Unknown error".to_string()),
+                rust_result
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
 
@@ -728,7 +741,9 @@ fn test_all_programs() {
             wasm_results.push((
                 program.name.clone(),
                 false,
-                wasm_result.error.unwrap_or_else(|| "Unknown error".to_string()),
+                wasm_result
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
 

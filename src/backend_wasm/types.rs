@@ -17,9 +17,7 @@ pub fn syn_type_to_wasm(ty: &syn::Type) -> Result<ValType, WasmError> {
                     "i64" | "u64" => Ok(ValType::I64),
                     "f32" => Ok(ValType::F32),
                     "f64" => Ok(ValType::F64),
-                    other => Err(WasmError::TypeError(format!(
-                        "Unsupported type: {other}"
-                    ))),
+                    other => Err(WasmError::TypeError(format!("Unsupported type: {other}"))),
                 }
             } else {
                 Err(WasmError::TypeError(format!(
@@ -30,7 +28,9 @@ pub fn syn_type_to_wasm(ty: &syn::Type) -> Result<ValType, WasmError> {
         }
         syn::Type::Tuple(tuple) if tuple.elems.is_empty() => {
             // Unit type () - no return value
-            Err(WasmError::TypeError("Unit type has no WASM representation".to_string()))
+            Err(WasmError::TypeError(
+                "Unit type has no WASM representation".to_string(),
+            ))
         }
         syn::Type::Reference(reference) => {
             // References become i32 pointers in WASM
@@ -64,7 +64,9 @@ pub fn return_type_to_wasm(ret: &syn::ReturnType) -> Result<Option<ValType>, Was
 }
 
 /// Get the WASM types for function parameters.
-pub fn params_to_wasm(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) -> Result<Vec<ValType>, WasmError> {
+pub fn params_to_wasm(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
+) -> Result<Vec<ValType>, WasmError> {
     inputs
         .iter()
         .map(|arg| match arg {

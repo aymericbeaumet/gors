@@ -179,10 +179,7 @@ pub fn generate_with_comments_and_blanks(
 
             // Comment is inside this function (after function start, before next function)
             if comment.go_line >= fn_go_start && comment.go_line < next_fn_go_start {
-                comments_inside_fn
-                    .entry(fn_idx)
-                    .or_default()
-                    .push(comment);
+                comments_inside_fn.entry(fn_idx).or_default().push(comment);
                 placed = true;
                 break;
             }

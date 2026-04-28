@@ -80,7 +80,9 @@ impl<'a> CommentGroup<'a> {
 
     /// Create a comment group from a single comment.
     pub fn from_comment(comment: Comment<'a>) -> Self {
-        Self { list: vec![comment] }
+        Self {
+            list: vec![comment],
+        }
     }
 
     /// Returns true if the group has no comments.
@@ -113,7 +115,7 @@ pub struct FieldList<'a> {
 /// See [Go ast.Field](https://pkg.go.dev/go/ast#Field).
 #[derive(Debug)]
 pub struct Field<'a> {
-    pub doc: Option<CommentGroup<'a>>,     // associated documentation; or nil
+    pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
     pub names: Option<Vec<Ident<'a>>>, // field/method/(type) parameter names, or type "type"; or nil
     pub type_: Option<Expr<'a>>,       // field/method/parameter type, type list type; or nil
     pub tag: Option<BasicLit<'a>>,     // field tag; or nil
@@ -128,12 +130,12 @@ pub struct Field<'a> {
 #[derive(Debug)]
 pub struct File<'a> {
     pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
-    pub package: Position<'a>,     // position of "package" keyword
-    pub name: Ident<'a>,           // package name
-    pub decls: Vec<Decl<'a>>,      // top-level declarations; or nil
-    pub file_start: Position<'a>,  // start of entire file
-    pub file_end: Position<'a>,    // end of entire file
-    pub scope: Option<Scope<'a>>,  // package scope (this file only)
+    pub package: Position<'a>,         // position of "package" keyword
+    pub name: Ident<'a>,               // package name
+    pub decls: Vec<Decl<'a>>,          // top-level declarations; or nil
+    pub file_start: Position<'a>,      // start of entire file
+    pub file_end: Position<'a>,        // end of entire file
+    pub scope: Option<Scope<'a>>,      // package scope (this file only)
     //pub imports: Vec<&'a ImportSpec<'a>>, // imports in this file
     pub unresolved: Vec<Ident<'a>>, // unresolved identifiers in this file
     pub comments: Vec<CommentGroup<'a>>, // list of all comments in the source file
@@ -168,9 +170,9 @@ impl<'a> File<'a> {
 /// See [Go ast.FuncDecl](https://pkg.go.dev/go/ast#FuncDecl).
 #[derive(Debug)]
 pub struct FuncDecl<'a> {
-    pub doc: Option<CommentGroup<'a>>,   // associated documentation; or nil
-    pub recv: Option<FieldList<'a>>, // receiver (methods); or nil (functions)
-    pub name: Ident<'a>,             // function/method name
+    pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
+    pub recv: Option<FieldList<'a>>,   // receiver (methods); or nil (functions)
+    pub name: Ident<'a>,               // function/method name
     pub type_: FuncType<'a>, // function signature: type and value parameters, results, and position of "func" keyword
     pub body: Option<BlockStmt<'a>>, // function body; or nil for external (non-Go) function
 }
@@ -206,16 +208,16 @@ pub struct Ident<'a> {
 #[derive(Debug)]
 pub struct ImportSpec<'a> {
     pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
-    pub name: Option<Ident<'a>>,   // local package name (including "."); or nil
-    pub path: BasicLit<'a>,        // import path
+    pub name: Option<Ident<'a>>,       // local package name (including "."); or nil
+    pub path: BasicLit<'a>,            // import path
     pub comment: Option<CommentGroup<'a>>, // line comments; or nil
-                                   //pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
+                                       //pub end_pos: Position<'a>,         // end of spec (overrides Path.Pos if nonzero)
 }
 
 // https://pkg.go.dev/go/ast#ValueSpec
 #[derive(Debug)]
 pub struct ValueSpec<'a> {
-    pub doc: Option<CommentGroup<'a>>,     // associated documentation; or nil
+    pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
     pub names: Vec<Ident<'a>>,         // value names (len(Names) > 0)
     pub type_: Option<Expr<'a>>,       // value type; or nil
     pub values: Option<Vec<Expr<'a>>>, // initial values; or nil
@@ -302,10 +304,10 @@ pub struct Scope<'a> {
 // https://pkg.go.dev/go/ast#GenDecl
 #[derive(Debug)]
 pub struct GenDecl<'a> {
-    pub doc: Option<CommentGroup<'a>>,    // associated documentation; or nil
-    pub tok_pos: Position<'a>,        // position of Tok
-    pub tok: Token,                   // IMPORT, CONST, TYPE, or VAR
-    pub lparen: Option<Position<'a>>, // position of '(', if any
+    pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
+    pub tok_pos: Position<'a>,         // position of Tok
+    pub tok: Token,                    // IMPORT, CONST, TYPE, or VAR
+    pub lparen: Option<Position<'a>>,  // position of '(', if any
     pub specs: Vec<Spec<'a>>,
     pub rparen: Option<Position<'a>>, // position of ')', if any
 }
@@ -339,9 +341,9 @@ pub struct ReturnStmt<'a> {
 #[derive(Debug)]
 pub struct TypeSpec<'a> {
     pub doc: Option<CommentGroup<'a>>, // associated documentation; or nil
-    pub name: Option<Ident<'a>>,   // type name
+    pub name: Option<Ident<'a>>,       // type name
     pub type_params: Option<FieldList<'a>>, // type parameters; or nil (Go 1.18+ generics)
-    pub assign: Option<Position<'a>>, // position of '=', if any
+    pub assign: Option<Position<'a>>,  // position of '=', if any
     pub type_: Expr<'a>, // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
     pub comment: Option<CommentGroup<'a>>, // line comments; or nil
 }

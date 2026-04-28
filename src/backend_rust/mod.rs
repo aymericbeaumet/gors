@@ -5,7 +5,7 @@
 mod tracked;
 
 pub use tracked::{
-    generate_with_comments, generate_with_comments_and_blanks, BlankLineInfo, CommentToInsert,
+    BlankLineInfo, CommentToInsert, generate_with_comments, generate_with_comments_and_blanks,
 };
 
 /// Source mapping between input and output positions.
@@ -80,7 +80,12 @@ impl SourceMap {
         }
         best.map(|m| {
             // Return a span (single token for now)
-            (m.output_line, m.output_column, m.output_line, m.output_column + 1)
+            (
+                m.output_line,
+                m.output_column,
+                m.output_line,
+                m.output_column + 1,
+            )
         })
     }
 
@@ -102,7 +107,12 @@ impl SourceMap {
         }
         best.map(|m| {
             // Return a span (single token for now)
-            (m.input_line, m.input_column, m.input_line, m.input_column + 1)
+            (
+                m.input_line,
+                m.input_column,
+                m.input_line,
+                m.input_column + 1,
+            )
         })
     }
 }

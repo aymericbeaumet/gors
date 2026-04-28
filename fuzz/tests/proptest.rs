@@ -29,9 +29,30 @@ fn get_edge_test_cases() -> u32 {
 
 /// Go keywords that cannot be used as identifiers
 const GO_KEYWORDS: &[&str] = &[
-    "break", "case", "chan", "const", "continue", "default", "defer", "else",
-    "fallthrough", "for", "func", "go", "goto", "if", "import", "interface",
-    "map", "package", "range", "return", "select", "struct", "switch", "type",
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
     "var",
 ];
 
@@ -166,8 +187,7 @@ fn go_simple_statement() -> impl Strategy<Value = String> {
         // Send statement with literal
         (go_identifier(), go_literal()).prop_map(|(ch, val)| format!("{} <- {}", ch, val)),
         // Receive statement
-        (go_identifier(), go_identifier())
-            .prop_map(|(name, ch)| format!("{} := <-{}", name, ch)),
+        (go_identifier(), go_identifier()).prop_map(|(name, ch)| format!("{} := <-{}", name, ch)),
         // Increment/decrement (these are statements, not expressions)
         go_identifier().prop_map(|v| format!("{}++", v)),
         go_identifier().prop_map(|v| format!("{}--", v)),
@@ -198,14 +218,8 @@ fn go_source_strategy() -> impl Strategy<Value = String> {
     (
         package_name,
         prop::collection::vec(go_statement(), 0..10),
-        prop::collection::vec(
-            (go_identifier(), go_type(), go_literal()),
-            0..5,
-        ),
-        prop::collection::vec(
-            (go_identifier(), go_type()),
-            0..5,
-        ),
+        prop::collection::vec((go_identifier(), go_type(), go_literal()), 0..5),
+        prop::collection::vec((go_identifier(), go_type()), 0..5),
     )
         .prop_map(|(pkg, stmts, consts, vars)| {
             let mut source = format!("package {}\n\n", pkg);
@@ -330,7 +344,7 @@ proptest! {
         // Verify valid UTF-8 output
         let printed = String::from_utf8(output);
         prop_assert!(printed.is_ok(), "Print produced invalid UTF-8");
-        
+
         // Verify output is non-empty for valid input
         prop_assert!(!printed.unwrap().is_empty(), "Print produced empty output");
     }

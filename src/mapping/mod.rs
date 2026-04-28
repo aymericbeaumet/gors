@@ -97,7 +97,7 @@ impl SourceMapTracker {
             if let Some(ref go_name) = pending.name {
                 // Get the Rust token name to search for
                 let rust_name = go_name_to_rust_name(go_name);
-                
+
                 if let Some(matching_tokens) = name_to_tokens.get(rust_name) {
                     let idx = name_indices.entry(rust_name.to_string()).or_insert(0);
                     if *idx < matching_tokens.len() {
@@ -105,10 +105,10 @@ impl SourceMapTracker {
                         // Store the Go name in the source map (not the Rust name)
                         let name_idx = builder.add_name(go_name);
                         builder.add_raw(
-                            token.start_line.saturating_sub(1), // generated line (0-based)
+                            token.start_line.saturating_sub(1),   // generated line (0-based)
                             token.start_column.saturating_sub(1), // generated column (0-based)
-                            pending.orig_line.saturating_sub(1), // original line (0-based)
-                            pending.orig_col.saturating_sub(1), // original column (0-based)
+                            pending.orig_line.saturating_sub(1),  // original line (0-based)
+                            pending.orig_col.saturating_sub(1),   // original column (0-based)
                             Some(src_idx),
                             Some(name_idx),
                             false, // is_range: false for point mappings

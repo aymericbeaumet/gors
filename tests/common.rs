@@ -15,8 +15,8 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Test configuration from environment variables.
@@ -106,11 +106,7 @@ impl TestSummary {
 
         // Show up to 10 failure details
         for (i, failure) in self.failures.iter().take(10).enumerate() {
-            msg.push_str(&format!(
-                "\n{}. {}\n",
-                i + 1,
-                failure.path.display()
-            ));
+            msg.push_str(&format!("\n{}. {}\n", i + 1, failure.path.display()));
             if let Some(ref error) = failure.error {
                 // Truncate long error messages
                 let error_preview: String = error.chars().take(500).collect();
@@ -153,7 +149,13 @@ pub fn go_runner_bin() -> &'static PathBuf {
 
         // Build the Go binary
         let status = Command::new("go")
-            .args(["build", "-buildvcs=false", "-o", bin_path.to_str().expect("valid path"), "."])
+            .args([
+                "build",
+                "-buildvcs=false",
+                "-o",
+                bin_path.to_str().expect("valid path"),
+                ".",
+            ])
             .current_dir(&runner_dir)
             .status()
             .expect("Failed to build Go runner");
@@ -395,12 +397,7 @@ pub fn is_must_error_file(path: &Path) -> bool {
 }
 
 /// Test a single file with the given command.
-fn test_single_file(
-    command: &str,
-    file: &Path,
-    go_bin: &Path,
-    gors_bin: &Path,
-) -> FileTestResult {
+fn test_single_file(command: &str, file: &Path, go_bin: &Path, gors_bin: &Path) -> FileTestResult {
     let file_str = file.to_str().expect("valid path");
     let args = [command, file_str];
 
@@ -489,19 +486,23 @@ fn find_first_diff(expected: &str, actual: &str) -> String {
 }
 
 /// Test a must-error file (both parsers should fail).
-fn test_must_error_file(
-    file: &Path,
-    go_bin: &Path,
-    gors_bin: &Path,
-) -> FileTestResult {
+fn test_must_error_file(file: &Path, go_bin: &Path, gors_bin: &Path) -> FileTestResult {
     let file_str = file.to_str().expect("valid path");
     let args = ["ast", file_str];
 
     let go_result = exec_allow_failure(go_bin, &args);
-    let go_failed = go_result.is_err() || !go_result.as_ref().map(|r| r.0.status.success()).unwrap_or(false);
+    let go_failed = go_result.is_err()
+        || !go_result
+            .as_ref()
+            .map(|r| r.0.status.success())
+            .unwrap_or(false);
 
     let gors_result = exec_allow_failure(gors_bin, &args);
-    let gors_failed = gors_result.is_err() || !gors_result.as_ref().map(|r| r.0.status.success()).unwrap_or(false);
+    let gors_failed = gors_result.is_err()
+        || !gors_result
+            .as_ref()
+            .map(|r| r.0.status.success())
+            .unwrap_or(false);
 
     let go_duration = go_result.as_ref().map(|r| r.1).unwrap_or(Duration::ZERO);
     let gors_duration = gors_result.as_ref().map(|r| r.1).unwrap_or(Duration::ZERO);
@@ -567,7 +568,10 @@ pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig
     let processed = AtomicUsize::new(0);
 
     if config.verbose {
-        eprintln!("Testing {} files with command '{}'...", total_files, command);
+        eprintln!(
+            "Testing {} files with command '{}'...",
+            total_files, command
+        );
     }
 
     // Test normal files in parallel

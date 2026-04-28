@@ -53,29 +53,29 @@ fallible_impl_from = "allow"       # Some From impls may panic for unsupported c
 [dependencies]
 # Library dependencies
 log = { version = "0.4", features = ["release_max_level_warn"] }
-phf = { version = "0.11", features = ["macros"] }
+phf = { version = "0.13", features = ["macros"] }
 prettyplease = "0.2"
 proc-macro2 = "1.0"
 quote = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 sourcemap = "9"
 syn = { version = "2.0", features = ["full", "visit-mut"] }
-unicode-general-category = "0.6"
+unicode-general-category = "1.1"
 
 # WASM backend dependencies
-walrus = "0.24"
+walrus = "0.26"
 # WASM runtime - wasmi works both natively and when compiled to WASM
-wasmi = "0.40"
+wasmi = "1.0"
 
 # Binary dependencies
 atty = "0.2"
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 pretty_env_logger = "0.5"
 serde_json = "1.0"
 tempfile = "3.0"
 
 [dev-dependencies]
-rayon = "1.10"
+rayon = "1.12"
 
 [profile.dev]
 opt-level = 0

@@ -121,8 +121,8 @@ impl BuildResult {
                     // Prefer tokens at/before cursor over tokens after cursor
                     // Among same preference, pick the closest one
                     let dominated = match (best_is_before_cursor, is_before_cursor) {
-                        (false, true) => true, // New token is before cursor, old wasn't
-                        (true, false) => false, // Old token is before cursor, new isn't
+                        (false, true) => true,         // New token is before cursor, old wasn't
+                        (true, false) => false,        // Old token is before cursor, new isn't
                         _ => distance < best_distance, // Same preference, pick closer
                     };
 
@@ -190,8 +190,8 @@ impl BuildResult {
                     // Prefer tokens at/before cursor over tokens after cursor
                     // Among same preference, pick the closest one
                     let dominated = match (best_is_before_cursor, is_before_cursor) {
-                        (false, true) => true, // New token is before cursor, old wasn't
-                        (true, false) => false, // Old token is before cursor, new isn't
+                        (false, true) => true,         // New token is before cursor, old wasn't
+                        (true, false) => false,        // Old token is before cursor, new isn't
                         _ => distance < best_distance, // Same preference, pick closer
                     };
 
@@ -287,28 +287,31 @@ fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<Strin
     if line_idx >= lines.len() {
         return None;
     }
-    
+
     let line_text = lines[line_idx];
     let col_idx = col as usize;
     if col_idx >= line_text.len() {
         return None;
     }
-    
+
     let chars: Vec<char> = line_text.chars().collect();
     if col_idx >= chars.len() {
         return None;
     }
-    
+
     let start_char = chars[col_idx];
-    
+
     // Check for comment
-    if col_idx + 1 < chars.len() && start_char == '/' && (chars[col_idx + 1] == '/' || chars[col_idx + 1] == '*') {
+    if col_idx + 1 < chars.len()
+        && start_char == '/'
+        && (chars[col_idx + 1] == '/' || chars[col_idx + 1] == '*')
+    {
         // Return the rest of the line for line comments, or find end for block comments
         if chars[col_idx + 1] == '/' {
             return Some(line_text[col_idx..].to_string());
         }
     }
-    
+
     // Check for identifier/keyword
     if start_char.is_alphabetic() || start_char == '_' {
         let mut end = col_idx;
@@ -321,7 +324,7 @@ fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<Strin
         }
         return Some(chars[col_idx..end].iter().collect());
     }
-    
+
     // For other tokens (operators, etc.), return single char
     Some(start_char.to_string())
 }
@@ -380,13 +383,8 @@ pub fn build_rust(input: String) -> BuildResult {
     let compiled = match gors::compiler::compile_with_source_map(ast, "main.go", &input) {
         Ok(result) => result,
         Err(err) => {
-            let diagnostic = Diagnostic::new(
-                "main.go",
-                0,
-                0,
-                err.to_string(),
-                DiagnosticKind::Compiler,
-            );
+            let diagnostic =
+                Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
             return BuildResult::error_result(diagnostic);
         }
     };
@@ -395,13 +393,8 @@ pub fn build_rust(input: String) -> BuildResult {
     let rust_code = match gors::backend_rust::generate(compiled) {
         Ok(output) => output,
         Err(err) => {
-            let diagnostic = Diagnostic::new(
-                "main.go",
-                0,
-                0,
-                err.to_string(),
-                DiagnosticKind::Compiler,
-            );
+            let diagnostic =
+                Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
             return BuildResult::error_result(diagnostic);
         }
     };
@@ -411,20 +404,22 @@ pub fn build_rust(input: String) -> BuildResult {
 
     // Insert comments at exact positions using the source map
     // This also returns the final positions of comments for source map tracking
-    let (output, comment_mappings) = insert_comments_with_sourcemap(&rust_code, &comments, &initial_source_map);
+    let (output, comment_mappings) =
+        insert_comments_with_sourcemap(&rust_code, &comments, &initial_source_map);
 
     // Build final source map that includes both code and comment mappings
-    let source_map = build_source_map_with_comments(&output, &initial_source_map, &comment_mappings);
+    let source_map =
+        build_source_map_with_comments(&output, &initial_source_map, &comment_mappings);
 
     BuildResult::success_rust(output, source_map)
 }
 
 /// A mapping for a comment's position in both Go and Rust
 struct CommentMapping {
-    go_line: u32,      // 0-based
-    go_col: u32,       // 0-based, position of // or /* in Go source
-    rust_line: u32,    // 0-based (final position in output)
-    rust_col: u32,     // 0-based
+    go_line: u32,   // 0-based
+    go_col: u32,    // 0-based, position of // or /* in Go source
+    rust_line: u32, // 0-based (final position in output)
+    rust_col: u32,  // 0-based
     /// The original Rust line this comment was inserted before (0-based)
     /// Used to calculate line shifts for code mappings
     inserted_before_original_line: u32,
@@ -581,21 +576,16 @@ fn insert_comments_with_sourcemap(
         // Find the Rust line that corresponds to the Go line of or after this comment
         // For inline comments (same line as code), we insert before that line
         // For standalone comments, we insert before the next code line
-        let mut target_rust_line: Option<u32> = None;
-
         // First check if there's code on the same line as the comment (inline comment)
-        if let Some(&rust_line) = go_to_rust_line.get(&comment_go_line_0based) {
-            // Inline comment - insert before the code line it's associated with
-            target_rust_line = Some(rust_line);
-        } else {
-            // Standalone comment - find the next line with code
-            for next_go_line_0based in (comment_go_line_0based + 1)..comment_go_line_0based + 20 {
-                if let Some(&rust_line) = go_to_rust_line.get(&next_go_line_0based) {
-                    target_rust_line = Some(rust_line);
-                    break;
-                }
-            }
-        }
+        let target_rust_line: Option<u32> =
+            if let Some(&rust_line) = go_to_rust_line.get(&comment_go_line_0based) {
+                // Inline comment - insert before the code line it's associated with
+                Some(rust_line)
+            } else {
+                // Standalone comment - find the next line with code
+                ((comment_go_line_0based + 1)..comment_go_line_0based + 20)
+                    .find_map(|n| go_to_rust_line.get(&n).copied())
+            };
 
         if let Some(rust_line) = target_rust_line {
             comments_by_rust_line
@@ -710,7 +700,8 @@ mod tests {
 
         // Collect comments
         let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut doc_comment_lines: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
 
         for decl in &ast.decls {
             if let gors::ast::Decl::FuncDecl(func_decl) = decl {
@@ -741,7 +732,8 @@ mod tests {
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let source_map = gors::compiler::build_source_map(&rust_code);
-        let (output, _comment_mappings) = insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
+        let (output, _comment_mappings) =
+            insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
 
         Ok(output)
     }
@@ -779,7 +771,8 @@ impl WasmBuildResult {
         if self.wasm_bytes.is_empty() {
             return String::new();
         }
-        wasmprinter::print_bytes(&self.wasm_bytes).unwrap_or_else(|e| format!("Error converting to WAT: {e}"))
+        wasmprinter::print_bytes(&self.wasm_bytes)
+            .unwrap_or_else(|e| format!("Error converting to WAT: {e}"))
     }
 }
 
@@ -980,15 +973,13 @@ fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
 
     // Instantiate the module
     let instance = linker
-        .instantiate(&mut store, &module)
-        .map_err(|e| format!("Failed to instantiate: {e}"))?
-        .start(&mut store)
-        .map_err(|e| format!("Failed to start: {e}"))?;
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|e| format!("Failed to instantiate: {e}"))?;
 
     // Get and call the main function
     let main_func: Func = instance
         .get_export(&store, "main")
-        .and_then(|e| e.into_func())
+        .and_then(Extern::into_func)
         .ok_or("main function not found")?;
 
     main_func
@@ -1019,7 +1010,10 @@ func main() {
         // Verify comment appears between a and b
         let lines: Vec<&str> = output.lines().collect();
         let a_line = lines.iter().position(|l| l.contains("a;")).unwrap();
-        let comment_line = lines.iter().position(|l| l.contains("// comment between a and b")).unwrap();
+        let comment_line = lines
+            .iter()
+            .position(|l| l.contains("// comment between a and b"))
+            .unwrap();
         let b_line = lines.iter().position(|l| l.contains("b;")).unwrap();
 
         assert!(a_line < comment_line, "Comment should be after 'a'");
@@ -1071,15 +1065,26 @@ func main() {
         let output = build_go(go_code).unwrap();
 
         // Verify trailing comment appears before the closing brace
-        let comment_pos = output.find("// trailing comment").expect("trailing comment should exist");
+        let comment_pos = output
+            .find("// trailing comment")
+            .expect("trailing comment should exist");
         let brace_pos = output.rfind('}').expect("closing brace should exist");
 
-        assert!(comment_pos < brace_pos, "Trailing comment should be before closing brace");
+        assert!(
+            comment_pos < brace_pos,
+            "Trailing comment should be before closing brace"
+        );
 
         // Verify indentation (should be 4 spaces)
         let lines: Vec<&str> = output.lines().collect();
-        let comment_line = lines.iter().find(|l| l.contains("// trailing comment")).unwrap();
-        assert!(comment_line.starts_with("    "), "Trailing comment should be indented");
+        let comment_line = lines
+            .iter()
+            .find(|l| l.contains("// trailing comment"))
+            .unwrap();
+        assert!(
+            comment_line.starts_with("    "),
+            "Trailing comment should be indented"
+        );
     }
 
     #[test]
@@ -1100,11 +1105,16 @@ func main() {
 
         // Verify the comment is between first and second
         let first_pos = output.find("first;").expect("first should exist");
-        let comment_pos = output.find("// middle comment").expect("middle comment should exist");
+        let comment_pos = output
+            .find("// middle comment")
+            .expect("middle comment should exist");
         let second_pos = output.find("second;").expect("second should exist");
 
         assert!(first_pos < comment_pos, "Comment should be after 'first'");
-        assert!(comment_pos < second_pos, "Comment should be before 'second'");
+        assert!(
+            comment_pos < second_pos,
+            "Comment should be before 'second'"
+        );
     }
 
     #[test]
@@ -1121,13 +1131,19 @@ func main() {
 
         // Verify comment has proper indentation (matching the code)
         let lines: Vec<&str> = output.lines().collect();
-        let comment_line = lines.iter().find(|l| l.contains("// indented comment")).unwrap();
+        let comment_line = lines
+            .iter()
+            .find(|l| l.contains("// indented comment"))
+            .unwrap();
         let b_line = lines.iter().find(|l| l.contains("b;")).unwrap();
 
         let comment_indent = comment_line.len() - comment_line.trim_start().len();
         let b_indent = b_line.len() - b_line.trim_start().len();
 
-        assert_eq!(comment_indent, b_indent, "Comment should have same indentation as code");
+        assert_eq!(
+            comment_indent, b_indent,
+            "Comment should have same indentation as code"
+        );
     }
 
     #[test]
@@ -1148,12 +1164,24 @@ func main() {
         let output = build_go(go_code).unwrap();
 
         // Verify exact placement: comment should be between arosietnaotn and arstarstararsto
-        let first_pos = output.find("arosietnaotn;").expect("arosietnaotn should exist");
-        let comment_pos = output.find("// Start typing and see the changes!").expect("comment should exist");
-        let second_pos = output.find("arstarstararsto;").expect("arstarstararsto should exist");
+        let first_pos = output
+            .find("arosietnaotn;")
+            .expect("arosietnaotn should exist");
+        let comment_pos = output
+            .find("// Start typing and see the changes!")
+            .expect("comment should exist");
+        let second_pos = output
+            .find("arstarstararsto;")
+            .expect("arstarstararsto should exist");
 
-        assert!(first_pos < comment_pos, "Comment should be after arosietnaotn");
-        assert!(comment_pos < second_pos, "Comment should be before arstarstararsto");
+        assert!(
+            first_pos < comment_pos,
+            "Comment should be after arosietnaotn"
+        );
+        assert!(
+            comment_pos < second_pos,
+            "Comment should be before arstarstararsto"
+        );
     }
 
     #[test]
@@ -1173,7 +1201,11 @@ func hello() {
         let count = output.matches("hello is a function").count();
 
         // Should appear exactly once (as a doc comment, not duplicated)
-        assert!(count <= 1, "Doc comment should not be duplicated, found {} times", count);
+        assert!(
+            count <= 1,
+            "Doc comment should not be duplicated, found {} times",
+            count
+        );
     }
 
     #[test]
@@ -1189,12 +1221,18 @@ func main() {
         let output = build_go(go_code).unwrap();
 
         // The comment should appear before the closing brace
-        assert!(output.contains("// comment before closing brace"), "Comment should be preserved");
+        assert!(
+            output.contains("// comment before closing brace"),
+            "Comment should be preserved"
+        );
 
         // Verify it's inside the function (before the closing brace)
         let comment_pos = output.find("// comment before closing brace").unwrap();
         let brace_pos = output.rfind('}').unwrap();
-        assert!(comment_pos < brace_pos, "Comment should be before closing brace");
+        assert!(
+            comment_pos < brace_pos,
+            "Comment should be before closing brace"
+        );
     }
 
     #[test]
@@ -1232,13 +1270,22 @@ func bar() {
         let output = build_go(go_code).unwrap();
 
         // Both comments should exist
-        assert!(output.contains("// comment in foo"), "Comment in foo should exist");
-        assert!(output.contains("// comment in bar"), "Comment in bar should exist");
+        assert!(
+            output.contains("// comment in foo"),
+            "Comment in foo should exist"
+        );
+        assert!(
+            output.contains("// comment in bar"),
+            "Comment in bar should exist"
+        );
 
         // Verify order: foo's comment before bar's comment
         let foo_comment_pos = output.find("// comment in foo").unwrap();
         let bar_comment_pos = output.find("// comment in bar").unwrap();
-        assert!(foo_comment_pos < bar_comment_pos, "foo's comment should come before bar's");
+        assert!(
+            foo_comment_pos < bar_comment_pos,
+            "foo's comment should come before bar's"
+        );
     }
 
     /// Helper to build and return the source map along with output
@@ -1247,7 +1294,8 @@ func bar() {
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
         let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut doc_comment_lines: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
 
         for decl in &ast.decls {
             if let gors::ast::Decl::FuncDecl(func_decl) = decl {

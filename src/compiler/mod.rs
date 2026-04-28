@@ -33,7 +33,8 @@ thread_local! {
 /// Record a mapping if tracking is enabled.
 fn record_mapping(pos: &token::Position, name: Option<&str>) {
     TRACKER.with(|t| {
-        t.borrow_mut().record(pos.line as u32, pos.column as u32, name);
+        t.borrow_mut()
+            .record(pos.line as u32, pos.column as u32, name);
     });
 }
 
@@ -419,13 +420,17 @@ impl TryFrom<ast::Field<'_>> for syn::FnArg {
     fn try_from(field: ast::Field) -> Result<Self, Self::Error> {
         let name = field
             .names
-            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field has no names".to_string()))?
+            .ok_or_else(|| {
+                CompilerError::InvalidFunctionSignature("field has no names".to_string())
+            })?
             .into_iter()
             .next()
-            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field names is empty".to_string()))?;
-        let type_ = field
-            .type_
-            .ok_or_else(|| CompilerError::InvalidFunctionSignature("field has no type".to_string()))?;
+            .ok_or_else(|| {
+                CompilerError::InvalidFunctionSignature("field names is empty".to_string())
+            })?;
+        let type_ = field.type_.ok_or_else(|| {
+            CompilerError::InvalidFunctionSignature("field has no type".to_string())
+        })?;
         Ok(Self::Typed(syn::PatType {
             attrs: vec![],
             pat: Box::new(syn::Pat::Ident(syn::PatIdent {
@@ -471,14 +476,12 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
 
         let output = if let Some(results) = func_decl.type_.results {
-            let first_result = results
-                .list
-                .into_iter()
-                .next()
-                .ok_or_else(|| CompilerError::InvalidFunctionSignature("empty result list".to_string()))?;
-            let result_type = first_result
-                .type_
-                .ok_or_else(|| CompilerError::InvalidFunctionSignature("result has no type".to_string()))?;
+            let first_result = results.list.into_iter().next().ok_or_else(|| {
+                CompilerError::InvalidFunctionSignature("empty result list".to_string())
+            })?;
+            let result_type = first_result.type_.ok_or_else(|| {
+                CompilerError::InvalidFunctionSignature("result has no type".to_string())
+            })?;
             syn::ReturnType::Type(<Token![->]>::default(), Box::new(result_type.into()))
         } else {
             syn::ReturnType::Default
@@ -591,7 +594,7 @@ impl TryFrom<ast::IfStmt<'_>> for syn::ExprIf {
                     _ => {
                         return Err(CompilerError::UnsupportedConstruct(
                             "unsupported else branch type".to_string(),
-                        ))
+                        ));
                     }
                 }),
             ))
@@ -615,7 +618,9 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
     fn try_from(stmt: ast::Stmt) -> Result<Self, Self::Error> {
         match stmt {
             ast::Stmt::AssignStmt(s) => s.try_into(),
-            ast::Stmt::BlockStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::Block(s.try_into()?), None)]),
+            ast::Stmt::BlockStmt(s) => {
+                Ok(vec![syn::Stmt::Expr(syn::Expr::Block(s.try_into()?), None)])
+            }
             ast::Stmt::BranchStmt(s) => Ok(s.into()),
             ast::Stmt::DeclStmt(s) => Ok(s.into()),
             ast::Stmt::DeferStmt(_) => {
@@ -624,9 +629,10 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 Ok(vec![])
             }
             ast::Stmt::EmptyStmt(_) => Ok(vec![]),
-            ast::Stmt::ExprStmt(s) => {
-                Ok(vec![syn::Stmt::Expr(s.x.into(), Some(<Token![;]>::default()))])
-            }
+            ast::Stmt::ExprStmt(s) => Ok(vec![syn::Stmt::Expr(
+                s.x.into(),
+                Some(<Token![;]>::default()),
+            )]),
             ast::Stmt::ForStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
             ast::Stmt::GoStmt(_) => {
                 // Goroutines would need to be converted to threads/async
@@ -636,7 +642,9 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::IfStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::If(s.try_into()?), None)]),
             ast::Stmt::IncDecStmt(s) => Ok(s.into()),
             ast::Stmt::LabeledStmt(s) => s.try_into(),
-            ast::Stmt::ReturnStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)]),
+            ast::Stmt::ReturnStmt(s) => {
+                Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)])
+            }
             ast::Stmt::SendStmt(_) => {
                 // Channel send would need different semantics
                 Ok(vec![])
@@ -844,11 +852,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         if assign_stmt.tok == token::Token::DEFINE {
             let pat = match assign_stmt.lhs.len() {
                 1 => {
-                    let first_lhs = assign_stmt
-                        .lhs
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?;
+                    let first_lhs =
+                        assign_stmt.lhs.into_iter().next().ok_or_else(|| {
+                            CompilerError::InvalidAssignment("empty lhs".to_string())
+                        })?;
                     if let ast::Expr::Ident(ident) = first_lhs {
                         syn::Pat::Ident(syn::PatIdent {
                             attrs: vec![],
@@ -892,11 +899,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 
             let init = match assign_stmt.rhs.len() {
                 1 => {
-                    let first_rhs = assign_stmt
-                        .rhs
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?;
+                    let first_rhs =
+                        assign_stmt.rhs.into_iter().next().ok_or_else(|| {
+                            CompilerError::InvalidAssignment("empty rhs".to_string())
+                        })?;
                     first_rhs.into()
                 }
                 _ => {
@@ -1132,9 +1138,12 @@ func main() {
         );
 
         // Check that Go names are stored in the source map (not Rust names)
-        let has_println = (0..parsed_sm.get_name_count())
-            .any(|i| parsed_sm.get_name(i) == Some("Println"));
-        assert!(has_println, "Expected 'Println' (Go name) in source map names");
+        let has_println =
+            (0..parsed_sm.get_name_count()).any(|i| parsed_sm.get_name(i) == Some("Println"));
+        assert!(
+            has_println,
+            "Expected 'Println' (Go name) in source map names"
+        );
 
         // Verify that "Println" has a mapping with Go name "Println"
         // Note: "fmt" has no mapping because after inline_fmt pass, fmt.Println becomes ::std::println!
@@ -1200,7 +1209,10 @@ func main() {
         let names: Vec<_> = (0..parsed_sm.get_name_count())
             .filter_map(|i| parsed_sm.get_name(i))
             .collect();
-        assert!(names.contains(&"func"), "Expected 'func' (Go name) in source map names");
+        assert!(
+            names.contains(&"func"),
+            "Expected 'func' (Go name) in source map names"
+        );
         assert!(
             names.contains(&"main"),
             "Expected 'main' in source map names"

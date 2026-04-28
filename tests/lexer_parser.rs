@@ -27,7 +27,7 @@
 
 mod common;
 
-use common::{collect_go_files, fixtures_dir, test_files_parallel, TestConfig};
+use common::{TestConfig, collect_go_files, fixtures_dir, test_files_parallel};
 
 // =============================================================================
 // Lexer Tests
@@ -39,7 +39,10 @@ fn lexer_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
     let files = collect_go_files(&files_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/go_sources/files");
+    assert!(
+        !files.is_empty(),
+        "No .go files found in fixtures/go_sources/files"
+    );
 
     let summary = test_files_parallel("tokens", &files, &config);
     summary.assert_all_passed();
@@ -51,7 +54,10 @@ fn lexer_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
     let files = collect_go_files(&programs_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/go_programs");
+    assert!(
+        !files.is_empty(),
+        "No .go files found in fixtures/go_programs"
+    );
 
     let summary = test_files_parallel("tokens", &files, &config);
     summary.assert_all_passed();
@@ -91,7 +97,10 @@ fn parser_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
     let files = collect_go_files(&files_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/go_sources/files");
+    assert!(
+        !files.is_empty(),
+        "No .go files found in fixtures/go_sources/files"
+    );
 
     let summary = test_files_parallel("ast", &files, &config);
     summary.assert_all_passed();
@@ -103,7 +112,10 @@ fn parser_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
     let files = collect_go_files(&programs_dir);
-    assert!(!files.is_empty(), "No .go files found in fixtures/go_programs");
+    assert!(
+        !files.is_empty(),
+        "No .go files found in fixtures/go_programs"
+    );
 
     let summary = test_files_parallel("ast", &files, &config);
     summary.assert_all_passed();

@@ -43,9 +43,9 @@ impl ParserError {
     pub fn location(&self) -> Option<(String, usize, usize)> {
         match self {
             Self::ScannerError(e) => Some((String::new(), e.line, e.column)),
-            Self::UnexpectedTokenAt { file, line, column, .. } => {
-                Some((file.clone(), *line, *column))
-            }
+            Self::UnexpectedTokenAt {
+                file, line, column, ..
+            } => Some((file.clone(), *line, *column)),
             _ => None,
         }
     }
@@ -65,7 +65,13 @@ impl fmt::Display for ParserError {
             Self::ScannerError(e) => write!(f, "{}", e),
             Self::UnexpectedEndOfFile => write!(f, "syntax error: unexpected end of file"),
             Self::UnexpectedToken => write!(f, "syntax error: unexpected token"),
-            Self::UnexpectedTokenAt { file, line, column, token, literal } => {
+            Self::UnexpectedTokenAt {
+                file,
+                line,
+                column,
+                token,
+                literal,
+            } => {
                 let loc = if file.is_empty() {
                     format!("{}:{}", line, column)
                 } else {
@@ -77,7 +83,11 @@ impl fmt::Display for ParserError {
                 } else if token_str == literal {
                     write!(f, "{}: syntax error: unexpected token '{}'", loc, literal)
                 } else {
-                    write!(f, "{}: syntax error: unexpected {} '{}'", loc, token_str, literal)
+                    write!(
+                        f,
+                        "{}: syntax error: unexpected {} '{}'",
+                        loc, token_str, literal
+                    )
                 }
             }
         }
@@ -127,20 +137,22 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     let scanner = scanner::Scanner::new(filename, buffer);
     let mut parser = Parser::new(scanner, go_version);
     parser.next()?;
-    parser.parse_source_file().required().map_err(|err| match err {
-        ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
-            file: format!(
-                "{}/{}",
-                parser.current_step.0.directory,
-                parser.current_step.0.file
-            ),
-            line: parser.current_step.0.line,
-            column: parser.current_step.0.column,
-            token: parser.current_step.1,
-            literal: parser.current_step.2.to_owned(),
-        },
-        err => err,
-    })
+    parser
+        .parse_source_file()
+        .required()
+        .map_err(|err| match err {
+            ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
+                file: format!(
+                    "{}/{}",
+                    parser.current_step.0.directory, parser.current_step.0.file
+                ),
+                line: parser.current_step.0.line,
+                column: parser.current_step.0.column,
+                token: parser.current_step.1,
+                literal: parser.current_step.2.to_owned(),
+            },
+            err => err,
+        })
 }
 
 /// Parse a Go source path (file or directory) into an Abstract Syntax Tree.
@@ -172,7 +184,9 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
 /// // Parse all Go files in a directory
 /// let ast = parse_path("./mypackage/").unwrap();
 /// ```
-pub fn parse_path(path: &str) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
+pub fn parse_path(
+    path: &str,
+) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| PathParseError::IoError(format!("cannot access '{}': {}", path, e)))?;
 
@@ -184,14 +198,16 @@ pub fn parse_path(path: &str) -> std::result::Result<(ast::File<'static>, Vec<(S
         let path_static: &'static str = Box::leak(path.to_string().into_boxed_str());
         let buffer_static: &'static str = Box::leak(buffer.clone().into_boxed_str());
 
-        let ast = parse_file(path_static, buffer_static)
-            .map_err(PathParseError::ParserError)?;
+        let ast = parse_file(path_static, buffer_static).map_err(PathParseError::ParserError)?;
 
         Ok((ast, vec![(path.to_string(), buffer)]))
     } else if metadata.is_dir() {
         parse_dir(path)
     } else {
-        Err(PathParseError::IoError(format!("'{}' is not a file or directory", path)))
+        Err(PathParseError::IoError(format!(
+            "'{}' is not a file or directory",
+            path
+        )))
     }
 }
 
@@ -205,7 +221,11 @@ pub enum PathParseError {
     /// No Go files found in the directory
     NoGoFiles(String),
     /// Package name mismatch between files
-    PackageMismatch { expected: String, found: String, file: String },
+    PackageMismatch {
+        expected: String,
+        found: String,
+        file: String,
+    },
 }
 
 impl std::fmt::Display for PathParseError {
@@ -214,8 +234,16 @@ impl std::fmt::Display for PathParseError {
             Self::IoError(msg) => write!(f, "{}", msg),
             Self::ParserError(e) => write!(f, "{}", e),
             Self::NoGoFiles(dir) => write!(f, "no Go files found in '{}'", dir),
-            Self::PackageMismatch { expected, found, file } => {
-                write!(f, "found packages {} ({}) and {} in same directory", found, file, expected)
+            Self::PackageMismatch {
+                expected,
+                found,
+                file,
+            } => {
+                write!(
+                    f,
+                    "found packages {} ({}) and {} in same directory",
+                    found, file, expected
+                )
             }
         }
     }
@@ -239,9 +267,12 @@ impl std::error::Error for PathParseError {}
 ///
 /// Returns a tuple of the merged AST and the list of (filename, content) pairs
 /// for all parsed files.
-fn parse_dir(dir_path: &str) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| PathParseError::IoError(format!("cannot read directory '{}': {}", dir_path, e)))?;
+fn parse_dir(
+    dir_path: &str,
+) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
+    let entries = std::fs::read_dir(dir_path).map_err(|e| {
+        PathParseError::IoError(format!("cannot read directory '{}': {}", dir_path, e))
+    })?;
 
     // Collect all .go files (excluding _test.go and dotfiles)
     let mut go_files: Vec<String> = entries
@@ -283,8 +314,7 @@ fn parse_dir(dir_path: &str) -> std::result::Result<(ast::File<'static>, Vec<(St
         let path_static: &'static str = Box::leak(file_path.clone().into_boxed_str());
         let buffer_static: &'static str = Box::leak(buffer.clone().into_boxed_str());
 
-        let ast = parse_file(path_static, buffer_static)
-            .map_err(PathParseError::ParserError)?;
+        let ast = parse_file(path_static, buffer_static).map_err(PathParseError::ParserError)?;
 
         files_content.push((file_path.clone(), buffer));
         asts.push(ast);
@@ -595,7 +625,9 @@ impl<'scanner> Parser<'scanner> {
 
         // Add same-line comments as separate groups
         for comment in same_line {
-            self.all_comments.push(ast::CommentGroup { list: vec![comment] });
+            self.all_comments.push(ast::CommentGroup {
+                list: vec![comment],
+            });
         }
     }
 
@@ -622,10 +654,7 @@ impl<'scanner> Parser<'scanner> {
         let mut current_group: Vec<ast::Comment<'scanner>> = Vec::new();
 
         for comment in comments {
-            if current_group.is_empty() {
-                current_group.push(comment);
-            } else {
-                let prev = current_group.last().expect("current_group is not empty");
+            if let Some(prev) = current_group.last() {
                 let prev_end_line = Self::comment_end_line(prev);
                 let consecutive = comment.slash.line == prev_end_line + 1;
 
@@ -643,15 +672,18 @@ impl<'scanner> Parser<'scanner> {
                     || (consecutive && !same_column);
 
                 if should_split {
-                    self.all_comments
-                        .push(ast::CommentGroup { list: std::mem::take(&mut current_group) });
+                    self.all_comments.push(ast::CommentGroup {
+                        list: std::mem::take(&mut current_group),
+                    });
                 }
-                current_group.push(comment);
             }
+            current_group.push(comment);
         }
 
         if !current_group.is_empty() {
-            self.all_comments.push(ast::CommentGroup { list: current_group });
+            self.all_comments.push(ast::CommentGroup {
+                list: current_group,
+            });
         }
     }
 
@@ -669,7 +701,7 @@ impl<'scanner> Parser<'scanner> {
         let decl_line = self.current_step.0.line;
 
         // Find the end line of the last comment
-        let last_comment = self.pending_comments.last().expect("pending_comments is not empty");
+        let last_comment = self.pending_comments.last()?;
         let last_comment_end_line = Self::comment_end_line(last_comment);
 
         // If there's a blank line between the last comment and the declaration,
@@ -718,7 +750,10 @@ impl<'scanner> Parser<'scanner> {
     }
 
     /// Take pending comments that are on the same line as the given position (for line comments).
-    fn take_line_comments(&mut self, pos: &Position<'scanner>) -> Option<ast::CommentGroup<'scanner>> {
+    fn take_line_comments(
+        &mut self,
+        pos: &Position<'scanner>,
+    ) -> Option<ast::CommentGroup<'scanner>> {
         if self.pending_comments.is_empty() {
             return None;
         }
@@ -736,10 +771,11 @@ impl<'scanner> Parser<'scanner> {
         }
 
         // Remove the taken comments from pending
-        self.pending_comments
-            .retain(|c| c.slash.line != pos.line);
+        self.pending_comments.retain(|c| c.slash.line != pos.line);
 
-        let group = ast::CommentGroup { list: same_line_comments };
+        let group = ast::CommentGroup {
+            list: same_line_comments,
+        };
         self.all_comments.push(group.clone());
         Some(group)
     }
@@ -813,7 +849,9 @@ impl<'scanner> Parser<'scanner> {
     }
 
     // PackageClause = "package" PackageName .
-    fn parse_package_clause(&mut self) -> Result<Option<(scanner::Step<'scanner>, ast::Ident<'scanner>)>> {
+    fn parse_package_clause(
+        &mut self,
+    ) -> Result<Option<(scanner::Step<'scanner>, ast::Ident<'scanner>)>> {
         log::debug!("Parser::parse_package_clause()");
 
         let package = match self.token(Token::PACKAGE)? {
@@ -1476,7 +1514,9 @@ impl<'scanner> Parser<'scanner> {
         loop {
             match self.current_step.1 {
                 Token::PERIOD => {
-                    primary_expr = self.parse_selector_or_type_assertion(primary_expr).required()?;
+                    primary_expr = self
+                        .parse_selector_or_type_assertion(primary_expr)
+                        .required()?;
                 }
                 Token::LBRACK => {
                     primary_expr = self.parse_index_or_slice(primary_expr).required()?;
@@ -1498,7 +1538,10 @@ impl<'scanner> Parser<'scanner> {
     // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
     // ElementList  = KeyedElement { "," KeyedElement } .
     // Used when type is already known from PrimaryExpr
-    fn parse_literal_value(&mut self, type_: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+    fn parse_literal_value(
+        &mut self,
+        type_: ast::Expr<'scanner>,
+    ) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::parse_literal_value()");
 
         let lbrace = match self.token(Token::LBRACE)? {
@@ -1578,7 +1621,10 @@ impl<'scanner> Parser<'scanner> {
     // Slice = "[" [ Expression ] ":" [ Expression ] "]" |
     //         "[" [ Expression ] ":" Expression ":" Expression "]" .
     // IndexListExpr (Go 1.18+ generics) = "[" Expression { "," Expression } "]" .
-    fn parse_index_or_slice(&mut self, x: ast::Expr<'scanner>) -> Result<Option<ast::Expr<'scanner>>> {
+    fn parse_index_or_slice(
+        &mut self,
+        x: ast::Expr<'scanner>,
+    ) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::parse_index_or_slice()");
 
         let lbrack = match self.token(Token::LBRACK)? {
@@ -1776,7 +1822,9 @@ impl<'scanner> Parser<'scanner> {
                 }
             }
             // Interface type for type conversions like interface{}(x)
-            INTERFACE => Some(ast::Expr::InterfaceType(self.parse_interface_type().required()?)),
+            INTERFACE => Some(ast::Expr::InterfaceType(
+                self.parse_interface_type().required()?,
+            )),
             // Handle nested composite literals without explicit type
             // Go allows eliding the type for nested composite literals
             LBRACE if self.expr_level > 0 => {
@@ -2036,7 +2084,9 @@ impl<'scanner> Parser<'scanner> {
             Token::STRUCT => Some(ast::Expr::StructType(self.parse_struct_type().required()?)),
             Token::MUL => Some(ast::Expr::StarExpr(self.parse_pointer_type().required()?)),
             Token::FUNC => Some(ast::Expr::FuncType(self.parse_function_type().required()?)),
-            Token::INTERFACE => Some(ast::Expr::InterfaceType(self.parse_interface_type().required()?)),
+            Token::INTERFACE => Some(ast::Expr::InterfaceType(
+                self.parse_interface_type().required()?,
+            )),
             Token::MAP => Some(ast::Expr::MapType(self.parse_map_type().required()?)),
             Token::CHAN => Some(ast::Expr::ChanType(self.parse_channel_type().required()?)),
             Token::ARROW => Some(ast::Expr::ChanType(self.parse_channel_type().required()?)), // <-chan (receive-only)
@@ -2050,7 +2100,10 @@ impl<'scanner> Parser<'scanner> {
     fn parse_array_type_or_slice_type<const ELLIPSIS: bool>(
         &mut self,
     ) -> Result<Option<ast::ArrayType<'scanner>>> {
-        log::debug!("Parser::parse_array_type_or_slice_type::<ELLIPSIS={}>()", ELLIPSIS);
+        log::debug!(
+            "Parser::parse_array_type_or_slice_type::<ELLIPSIS={}>()",
+            ELLIPSIS
+        );
 
         let lbrack = match self.token(Token::LBRACK)? {
             Some(v) => v,
@@ -2317,7 +2370,9 @@ impl<'scanner> Parser<'scanner> {
                     }
                     let rbrack = self.token(Token::RBRACK).required()?;
 
-                    let type_expr = if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
+                    let type_expr = if let Some(index) =
+                        (indices.len() == 1).then(|| indices.pop()).flatten()
+                    {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(ast::Expr::Ident(method_spec)),
                             lbrack: lbrack.0,
@@ -2523,7 +2578,8 @@ impl<'scanner> Parser<'scanner> {
         if let Some((mut names, _, last_is_qualified)) = self.parse_identifier_list()? {
             // Check if this is a qualified identifier for an embedded field (e.g., sync.RWMutex)
             // or a qualified generic type (e.g., listers.ResourceIndexer[*Deployment])
-            if let Some(name) = (names.len() == 1 && (self.current_step.1 == Token::PERIOD || last_is_qualified))
+            if let Some(name) = (names.len() == 1
+                && (self.current_step.1 == Token::PERIOD || last_is_qualified))
                 .then(|| names.pop())
                 .flatten()
             {
@@ -3627,7 +3683,10 @@ impl<'scanner> Parser<'scanner> {
                             tok: assign_op.1,
                             rhs,
                         }))
-                    } else if let Some(expr) = (exprs.len() == 1).then(|| exprs.into_iter().next()).flatten() {
+                    } else if let Some(expr) = (exprs.len() == 1)
+                        .then(|| exprs.into_iter().next())
+                        .flatten()
+                    {
                         // Handle IncDecStmt (e.g., for p.seq++; ; p.seq++ {})
                         if let Some(inc) = self.token(Token::INC)? {
                             Some(ast::Stmt::IncDecStmt(ast::IncDecStmt {
@@ -4038,7 +4097,10 @@ impl<'scanner> Parser<'scanner> {
     // ExprSwitchCase = "case" ExpressionList | "default" .
     // TypeCaseClause = TypeSwitchCase ":" StatementList .
     // TypeSwitchCase = "case" TypeList | "default" .
-    fn parse_case_clause(&mut self, is_type_switch: bool) -> Result<Option<ast::CaseClause<'scanner>>> {
+    fn parse_case_clause(
+        &mut self,
+        is_type_switch: bool,
+    ) -> Result<Option<ast::CaseClause<'scanner>>> {
         log::debug!("Parser::parse_case_clause()");
 
         let case = if let Some(case) = self.token(Token::CASE)? {
@@ -4854,7 +4916,8 @@ impl<'scanner> Parser<'scanner> {
             match self.steps.next() {
                 Some(Ok((pos, Token::COMMENT, text))) => {
                     // Capture the comment
-                    self.pending_comments.push(ast::Comment { slash: pos, text });
+                    self.pending_comments
+                        .push(ast::Comment { slash: pos, text });
                 }
                 Some(Ok(step)) => {
                     self.current_step = step;

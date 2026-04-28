@@ -31,8 +31,14 @@ pub struct Diagnostic {
 impl Diagnostic {
     /// Create a Diagnostic from a ScannerError with source context
     pub fn from_scanner_error(err: &ScannerError, file: &str, source: &str) -> Self {
-        Self::new(file, err.line, err.column, err.message(), DiagnosticKind::Scanner)
-            .with_source(source)
+        Self::new(
+            file,
+            err.line,
+            err.column,
+            err.message(),
+            DiagnosticKind::Scanner,
+        )
+        .with_source(source)
     }
 
     /// Create a Diagnostic from a ParserError with source context
@@ -55,10 +61,25 @@ impl Diagnostic {
                 // No position info available
                 Self::new(file, 0, 0, err.message(), DiagnosticKind::Parser)
             }
-            ParserError::UnexpectedTokenAt { file: err_file, line, column, .. } => {
-                let actual_file = if err_file.is_empty() || err_file == "/" { file } else { err_file };
-                Self::new(actual_file, *line, *column, err.message(), DiagnosticKind::Parser)
-                    .with_source(source)
+            ParserError::UnexpectedTokenAt {
+                file: err_file,
+                line,
+                column,
+                ..
+            } => {
+                let actual_file = if err_file.is_empty() || err_file == "/" {
+                    file
+                } else {
+                    err_file
+                };
+                Self::new(
+                    actual_file,
+                    *line,
+                    *column,
+                    err.message(),
+                    DiagnosticKind::Parser,
+                )
+                .with_source(source)
             }
         }
     }
@@ -157,9 +178,20 @@ impl Diagnostic {
                 let two_char: String = [start_char, chars[end]].iter().collect();
                 if matches!(
                     two_char.as_str(),
-                    ":=" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
-                        | "++" | "--" | "+=" | "-=" | "*=" | "/="
-                        | "<<" | ">>"
+                    ":=" | "=="
+                        | "!="
+                        | "<="
+                        | ">="
+                        | "&&"
+                        | "||"
+                        | "++"
+                        | "--"
+                        | "+="
+                        | "-="
+                        | "*="
+                        | "/="
+                        | "<<"
+                        | ">>"
                 ) {
                     end += 1;
                 }

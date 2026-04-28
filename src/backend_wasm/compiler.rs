@@ -4,7 +4,9 @@ use super::error::WasmError;
 use super::expr::{ExprContext, StringLiterals};
 use super::types::{params_to_wasm, return_type_to_wasm, syn_type_to_wasm};
 use std::collections::HashMap;
-use walrus::{ConstExpr, DataKind, FunctionBuilder, FunctionId, LocalId, MemoryId, Module, ValType, ir::Value};
+use walrus::{
+    ConstExpr, DataKind, FunctionBuilder, FunctionId, LocalId, MemoryId, Module, ValType, ir::Value,
+};
 
 /// WebAssembly compiler that translates syn::File to WASM bytecode.
 pub struct WasmCompiler {
@@ -48,7 +50,9 @@ impl WasmCompiler {
     /// Compile a syn::File to WASM.
     pub fn compile(&mut self, file: &syn::File) -> Result<(), WasmError> {
         // Collect all function items
-        let func_items: Vec<_> = file.items.iter()
+        let func_items: Vec<_> = file
+            .items
+            .iter()
             .filter_map(|item| {
                 if let syn::Item::Fn(func) = item {
                     Some(func)
@@ -61,28 +65,35 @@ impl WasmCompiler {
         // Pass 1: Create placeholder functions to get IDs for ALL functions
         // This ensures that when compiling any function body, all function IDs are known
         let mut placeholder_ids: HashMap<String, FunctionId> = HashMap::new();
-        
+
         for func in &func_items {
             let name = func.sig.ident.to_string();
-            
+
             if self.functions.contains_key(&name) {
                 continue;
             }
 
             let params = params_to_wasm(&func.sig.inputs)?;
-            let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?
-                .into_iter()
-                .collect();
+            let results: Vec<ValType> =
+                return_type_to_wasm(&func.sig.output)?.into_iter().collect();
 
             // Create placeholder function
             let mut builder = FunctionBuilder::new(&mut self.module.types, &params, &results);
-            
+
             if !results.is_empty() {
                 match results[0] {
-                    ValType::I32 => { builder.func_body().i32_const(0); }
-                    ValType::I64 => { builder.func_body().i64_const(0); }
-                    ValType::F32 => { builder.func_body().f32_const(0.0); }
-                    ValType::F64 => { builder.func_body().f64_const(0.0); }
+                    ValType::I32 => {
+                        builder.func_body().i32_const(0);
+                    }
+                    ValType::I64 => {
+                        builder.func_body().i64_const(0);
+                    }
+                    ValType::F32 => {
+                        builder.func_body().f32_const(0.0);
+                    }
+                    ValType::F64 => {
+                        builder.func_body().f64_const(0.0);
+                    }
                     _ => {}
                 }
             }
@@ -95,7 +106,7 @@ impl WasmCompiler {
         // Pass 2: Compile real function bodies
         // The self.functions map now has ALL function IDs (placeholders)
         let mut new_ids: HashMap<String, FunctionId> = HashMap::new();
-        
+
         for func in &func_items {
             let new_id = self.compile_function_body(func)?;
             let name = func.sig.ident.to_string();
@@ -104,7 +115,8 @@ impl WasmCompiler {
 
         // Pass 3: Update the function map and patch call instructions
         // Build a mapping from placeholder ID to real ID
-        let id_mapping: HashMap<FunctionId, FunctionId> = placeholder_ids.iter()
+        let id_mapping: HashMap<FunctionId, FunctionId> = placeholder_ids
+            .iter()
             .filter_map(|(name, &placeholder_id)| {
                 new_ids.get(name).map(|&new_id| (placeholder_id, new_id))
             })
@@ -129,21 +141,25 @@ impl WasmCompiler {
     }
 
     /// Patch all call instructions in a function to use the new function IDs.
-    fn patch_function_calls(&mut self, func_id: FunctionId, id_mapping: &HashMap<FunctionId, FunctionId>) {
+    fn patch_function_calls(
+        &mut self,
+        func_id: FunctionId,
+        id_mapping: &HashMap<FunctionId, FunctionId>,
+    ) {
         use walrus::ir::*;
-        
+
         let func = self.module.funcs.get_mut(func_id);
         if let walrus::FunctionKind::Local(local_func) = &mut func.kind {
             // Visit all instructions and patch Call instructions
             let entry = local_func.entry_block();
             let mut to_visit = vec![entry];
             let mut visited = std::collections::HashSet::new();
-            
+
             while let Some(block_id) = to_visit.pop() {
                 if !visited.insert(block_id) {
                     continue;
                 }
-                
+
                 let block = local_func.block_mut(block_id);
                 for (instr, _) in block.instrs.iter_mut() {
                     match instr {
@@ -168,17 +184,15 @@ impl WasmCompiler {
     /// Compile a function body and return the new function ID.
     fn compile_function_body(&mut self, func: &syn::ItemFn) -> Result<FunctionId, WasmError> {
         let name = func.sig.ident.to_string();
-        
+
         let params = params_to_wasm(&func.sig.inputs)?;
-        let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?
-            .into_iter()
-            .collect();
+        let results: Vec<ValType> = return_type_to_wasm(&func.sig.output)?.into_iter().collect();
 
         let mut builder = FunctionBuilder::new(&mut self.module.types, &params, &results);
 
         let mut locals: HashMap<String, LocalId> = HashMap::new();
         let mut param_locals = Vec::new();
-        
+
         for (i, arg) in func.sig.inputs.iter().enumerate() {
             if let syn::FnArg::Typed(pat_type) = arg {
                 if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
@@ -198,7 +212,7 @@ impl WasmCompiler {
             let mut body = builder.func_body();
             let mut ctx = ExprContext {
                 locals: &locals,
-                functions: &self.functions,  // Uses placeholder IDs
+                functions: &self.functions, // Uses placeholder IDs
                 builder: &mut body,
                 string_literals: &mut string_literals,
             };
@@ -237,7 +251,11 @@ impl WasmCompiler {
         for stmt in &block.stmts {
             match stmt {
                 syn::Stmt::Local(local) => {
-                    self.collect_pat_locals(&local.pat, local.init.as_ref().map(|i| &i.expr), locals)?;
+                    self.collect_pat_locals(
+                        &local.pat,
+                        local.init.as_ref().map(|i| &*i.expr),
+                        locals,
+                    )?;
                 }
                 syn::Stmt::Expr(expr, _) => {
                     // Recurse into nested blocks, while loops, etc.
@@ -283,13 +301,13 @@ impl WasmCompiler {
     fn collect_pat_locals(
         &mut self,
         pat: &syn::Pat,
-        init: Option<&Box<syn::Expr>>,
+        init: Option<&syn::Expr>,
         locals: &mut HashMap<String, LocalId>,
     ) -> Result<(), WasmError> {
         match pat {
             syn::Pat::Ident(pat_ident) => {
                 let name = pat_ident.ident.to_string();
-                
+
                 // Determine type from initializer
                 let val_type = if let Some(init_expr) = init {
                     self.infer_expr_type(init_expr)?
@@ -306,7 +324,7 @@ impl WasmCompiler {
                 if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
                     let name = pat_ident.ident.to_string();
                     let val_type = syn_type_to_wasm(&pat_type.ty)?;
-                    
+
                     if let std::collections::hash_map::Entry::Vacant(e) = locals.entry(name) {
                         let local_id = self.module.locals.add(val_type);
                         e.insert(local_id);
@@ -315,22 +333,15 @@ impl WasmCompiler {
             }
             syn::Pat::Tuple(pat_tuple) => {
                 // Handle tuple pattern - extract corresponding init expressions if available
-                let tuple_elems = if let Some(init_expr) = init {
-                    if let syn::Expr::Tuple(init_tuple) = init_expr.as_ref() {
-                        Some(&init_tuple.elems)
-                    } else {
-                        None
-                    }
+                let tuple_elems = if let Some(syn::Expr::Tuple(init_tuple)) = init {
+                    Some(&init_tuple.elems)
                 } else {
                     None
                 };
 
                 for (i, elem_pat) in pat_tuple.elems.iter().enumerate() {
-                    let elem_init = tuple_elems.and_then(|elems| elems.get(i).map(|e| {
-                        // Box the expression reference
-                        Box::new(e.clone())
-                    }));
-                    self.collect_pat_locals(elem_pat, elem_init.as_ref(), locals)?;
+                    let elem_init = tuple_elems.and_then(|elems| elems.get(i));
+                    self.collect_pat_locals(elem_pat, elem_init, locals)?;
                 }
             }
             _ => {}
@@ -369,7 +380,11 @@ impl WasmCompiler {
     }
 
     /// Compile a statement.
-    fn compile_stmt<'a, 'b, 'c>(&self, ctx: &mut ExprContext<'a, 'b, 'c>, stmt: &syn::Stmt) -> Result<(), WasmError> {
+    fn compile_stmt<'a, 'b, 'c>(
+        &self,
+        ctx: &mut ExprContext<'a, 'b, 'c>,
+        stmt: &syn::Stmt,
+    ) -> Result<(), WasmError> {
         match stmt {
             syn::Stmt::Local(local) => {
                 // Handle local variable initialization
@@ -429,7 +444,8 @@ impl WasmCompiler {
                 // For tuple patterns, we need to match with tuple expressions
                 if let syn::Expr::Tuple(expr_tuple) = expr {
                     // Compile and assign each element
-                    for (elem_pat, elem_expr) in pat_tuple.elems.iter().zip(expr_tuple.elems.iter()) {
+                    for (elem_pat, elem_expr) in pat_tuple.elems.iter().zip(expr_tuple.elems.iter())
+                    {
                         self.compile_pat_assignment(ctx, elem_pat, elem_expr)?;
                     }
                     Ok(())

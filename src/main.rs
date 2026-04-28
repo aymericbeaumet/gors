@@ -126,7 +126,8 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Get the first file's info for error reporting and source maps
-    let (primary_file, primary_buffer) = files.first()
+    let (primary_file, primary_buffer) = files
+        .first()
         .map(|(f, b)| (f.as_str(), b.as_str()))
         .unwrap_or((&cmd.path, ""));
 
@@ -135,8 +136,13 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         match gors::compiler::compile_with_source_map(ast, primary_file, primary_buffer) {
             Ok(compiled) => compiled,
             Err(err) => {
-                let diagnostic =
-                    Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                let diagnostic = Diagnostic::new(
+                    primary_file,
+                    0,
+                    0,
+                    err.to_string(),
+                    DiagnosticKind::Compiler,
+                );
                 print_error(&diagnostic);
                 std::process::exit(1);
             }
@@ -145,8 +151,13 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         match gors::compiler::compile(ast) {
             Ok(compiled) => compiled,
             Err(err) => {
-                let diagnostic =
-                    Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                let diagnostic = Diagnostic::new(
+                    primary_file,
+                    0,
+                    0,
+                    err.to_string(),
+                    DiagnosticKind::Compiler,
+                );
                 print_error(&diagnostic);
                 std::process::exit(1);
             }
@@ -173,8 +184,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 
     // Default: WASM target
     let wasm_bytes = gors::backend_wasm::compile_to_wasm(&compiled).map_err(|e| {
-        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            as Box<dyn std::error::Error>
+        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
     })?;
     let output_path = cmd.output.as_deref().unwrap_or("output.wasm");
     std::fs::write(output_path, wasm_bytes)?;
@@ -204,14 +214,18 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Get the first file's info for error reporting
-    let primary_file = files.first()
-        .map(|(f, _)| f.as_str())
-        .unwrap_or(&cmd.path);
+    let primary_file = files.first().map(|(f, _)| f.as_str()).unwrap_or(&cmd.path);
 
     let compiled = match gors::compiler::compile(ast) {
         Ok(compiled) => compiled,
         Err(err) => {
-            let diagnostic = Diagnostic::new(primary_file, 0, 0, err.to_string(), DiagnosticKind::Compiler);
+            let diagnostic = Diagnostic::new(
+                primary_file,
+                0,
+                0,
+                err.to_string(),
+                DiagnosticKind::Compiler,
+            );
             print_error(&diagnostic);
             std::process::exit(1);
         }
@@ -219,8 +233,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
 
     // Compile to WASM
     let wasm_bytes = gors::backend_wasm::compile_to_wasm(&compiled).map_err(|e| {
-        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            as Box<dyn std::error::Error>
+        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
     })?;
 
     // Run with wasmi
@@ -260,7 +273,7 @@ struct WasmRunState {
 /// Run WASM bytes using the wasmi runtime.
 /// This works both natively and when gors is compiled to WASM.
 fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+    use wasmi::{Caller, Engine, Extern, Func, Linker, Module, Store};
 
     // Create engine and store
     let engine = Engine::default();
@@ -274,34 +287,45 @@ fn run_wasm(wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let mut linker = Linker::new(&engine);
 
     // print_i32 function that prints an i32 value
-    linker.func_wrap("env", "print_i32", |_caller: Caller<'_, WasmRunState>, value: i32| {
-        println!("{value}");
-    })?;
+    linker.func_wrap(
+        "env",
+        "print_i32",
+        |_caller: Caller<'_, WasmRunState>, value: i32| {
+            println!("{value}");
+        },
+    )?;
 
     // print_str function that reads string from memory and prints it
-    linker.func_wrap("env", "print_str", |caller: Caller<'_, WasmRunState>, offset: i32, len: i32| {
-        if let Some(memory) = &caller.data().memory {
-            let mut buffer = vec![0u8; len as usize];
-            if memory.read(&caller, offset as usize, &mut buffer).is_ok() {
-                if let Ok(s) = String::from_utf8(buffer) {
-                    println!("{s}");
+    linker.func_wrap(
+        "env",
+        "print_str",
+        |caller: Caller<'_, WasmRunState>, offset: i32, len: i32| {
+            if let Some(memory) = &caller.data().memory {
+                let mut buffer = vec![0u8; len as usize];
+                if memory.read(&caller, offset as usize, &mut buffer).is_ok() {
+                    if let Ok(s) = String::from_utf8(buffer) {
+                        println!("{s}");
+                    }
                 }
             }
-        }
-    })?;
+        },
+    )?;
 
     // Instantiate the module
-    let instance = linker.instantiate(&mut store, &module)?.start(&mut store)?;
+    let instance = linker.instantiate_and_start(&mut store, &module)?;
 
     // Get memory export and store it for print_str to use
-    if let Some(memory) = instance.get_export(&store, "memory").and_then(|e| e.into_memory()) {
+    if let Some(memory) = instance
+        .get_export(&store, "memory")
+        .and_then(Extern::into_memory)
+    {
         store.data_mut().memory = Some(memory);
     }
 
     // Get and call the main function
     let main_func: Func = instance
         .get_export(&store, "main")
-        .and_then(|e| e.into_func())
+        .and_then(Extern::into_func)
         .ok_or("main function not found")?;
 
     main_func.call(&mut store, &[], &mut [])?;

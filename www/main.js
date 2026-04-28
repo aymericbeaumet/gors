@@ -10,13 +10,13 @@ monaco.languages.setMonarchTokensProvider('wat', {
     'table', 'memory', 'elem', 'data', 'start', 'import', 'export',
     'mut', 'offset', 'align', 'if', 'then', 'else', 'end', 'loop',
     'block', 'br', 'br_if', 'br_table', 'return', 'call', 'call_indirect',
-    'drop', 'select', 'unreachable', 'nop'
+    'drop', 'select', 'unreachable', 'nop',
   ],
   typeKeywords: [
-    'i32', 'i64', 'f32', 'f64', 'v128', 'funcref', 'externref', 'anyfunc'
+    'i32', 'i64', 'f32', 'f64', 'v128', 'funcref', 'externref', 'anyfunc',
   ],
   operators: [],
-  symbols: /[=><!~?:&|+\-*\/\^%]+/,
+  symbols: /[=><!~?:&|+\-*/^%]+/,
 
   tokenizer: {
     root: [
@@ -38,8 +38,8 @@ monaco.languages.setMonarchTokensProvider('wat', {
         cases: {
           '@keywords': 'keyword',
           '@typeKeywords': 'type',
-          '@default': 'identifier'
-        }
+          '@default': 'identifier',
+        },
       }],
 
       // Instructions (i32.add, f64.mul, etc.)
@@ -94,7 +94,7 @@ function formatError(result, sourceCode) {
   // Build error kind string
   const kindStr = errorKind === 'scanner' ? 'scanner error'
     : errorKind === 'parser' ? 'syntax error'
-    : 'compile error';
+      : 'compile error';
 
   // Build location and message on one line
   const location = errorLine > 0 ? `main.go:${errorLine}:${errorColumn}` : 'main.go';
@@ -200,8 +200,8 @@ class HighlightManager {
             options: {
               className: 'source-map-highlight',
               isWholeLine: false,
-            }
-          }]
+            },
+          }],
         );
       } else {
         this.clearOutputHighlight();
@@ -233,8 +233,8 @@ class HighlightManager {
           options: {
             className: 'source-map-highlight',
             isWholeLine: false,
-          }
-        }]
+          },
+        }],
       );
     } else {
       this.clearGoHighlight();
@@ -403,7 +403,7 @@ async function onDOMContentLoaded() {
       outputContainer.classList.add('rust');
       outputToggle.classList.remove('wasm');
       outputToggle.classList.add('rust');
-      
+
       if (lastRustResult && lastRustResult.success) {
         outputModel.setValue(lastRustResult.output);
       } else if (lastRustResult) {
@@ -418,18 +418,18 @@ async function onDOMContentLoaded() {
       outputContainer.classList.add('wasm');
       outputToggle.classList.remove('rust');
       outputToggle.classList.add('wasm');
-      
+
       if (lastWasmResult && lastWasmResult.success) {
         outputModel.setValue(lastWasmResult.wat);
       } else if (lastWasmResult) {
-        outputModel.setValue(';; Build failed: ' + lastWasmResult.error_message);
+        outputModel.setValue(`;; Build failed: ${lastWasmResult.error_message}`);
       } else if (lastRustResult && !lastRustResult.success) {
         outputModel.setValue(';; Build failed - see console for errors');
       } else {
         outputModel.setValue('');
       }
     }
-    
+
     highlightManager.setOutputMode(outputMode);
   }
 
@@ -484,7 +484,7 @@ async function onDOMContentLoaded() {
       }
     } else {
       lastWasmResult = null;
-      
+
       // Show error in console
       consoleManager.addFormattedError(formatError(rustResult, code));
 
@@ -507,7 +507,7 @@ async function onDOMContentLoaded() {
     if (e.target.position) {
       highlightManager.highlightFromGo(
         e.target.position.lineNumber,
-        e.target.position.column
+        e.target.position.column,
       );
     }
   });
@@ -516,7 +516,7 @@ async function onDOMContentLoaded() {
     if (e.target.position) {
       highlightManager.highlightFromOutput(
         e.target.position.lineNumber,
-        e.target.position.column
+        e.target.position.column,
       );
     }
   });
