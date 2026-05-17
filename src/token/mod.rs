@@ -25,17 +25,25 @@ pub struct Position<'a> {
 
 impl<'a> fmt::Display for Position<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.file.is_empty() {
-            write!(f, ":{}:{}", self.line, self.column)
+        let filename = if self.file.is_empty() {
+            String::new()
         } else if self.file.starts_with('/') {
-            write!(f, "{}:{}:{}", self.file, self.line, self.column)
+            self.file.to_string()
         } else {
-            write!(
-                f,
-                "{}/{}:{}:{}",
-                self.directory, self.file, self.line, self.column
-            )
+            format!("{}/{}", self.directory, self.file)
+        };
+
+        if filename.is_empty() {
+            write!(f, ":{}", self.line)?;
+        } else {
+            write!(f, "{}:{}", filename, self.line)?;
         }
+
+        if self.column != 0 {
+            write!(f, ":{}", self.column)?;
+        }
+
+        Ok(())
     }
 }
 
