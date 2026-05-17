@@ -4602,28 +4602,21 @@ impl<'scanner> Parser<'scanner> {
 
         let mut i = 0;
 
-        let on_prev_line =
-            prev.line > 0 && self.newlines_between(prev.offset, comments[0].slash.offset) == 0;
-
-        if on_prev_line {
+        if comments[0].slash.line == prev.line && prev.line > 0 {
             let (group, endline, consumed) = Self::consume_comment_group(&comments[i..], 0);
             i += consumed;
             self.all_comments.push(group.clone());
 
-            if let Some(last_comment) = group.list.last() {
-                let group_end_offset = Self::comment_end_offset(last_comment);
+            let next_on_different_line = if i < comments.len() {
+                comments[i].slash.line != endline
+            } else {
+                self.current_step.0.line != endline
+                    || self.current_step.1 == Token::SEMICOLON
+                    || self.current_step.1 == Token::EOF
+            };
 
-                let next_on_different_line = if i < comments.len() {
-                    comments[i].slash.line != endline
-                } else {
-                    self.newlines_between(group_end_offset, self.current_step.0.offset) > 0
-                        || self.current_step.1 == Token::SEMICOLON
-                        || self.current_step.1 == Token::EOF
-                };
-
-                if next_on_different_line {
-                    self.line_comment = Some(group);
-                }
+            if next_on_different_line {
+                self.line_comment = Some(group);
             }
         }
 
