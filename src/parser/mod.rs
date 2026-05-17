@@ -135,7 +135,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     let go_version = extract_go_version(buffer);
 
     let scanner = scanner::Scanner::new(filename, buffer);
-    let mut parser = Parser::new(scanner, go_version);
+    let mut parser = Parser::new(scanner, go_version, buffer);
     parser.next()?;
     parser
         .parse_source_file()
@@ -462,18 +462,24 @@ struct Parser<'scanner> {
     current_step: scanner::Step<'scanner>,
     expr_level: isize,
     go_version: &'scanner str,
+    buffer: &'scanner str,
     lead_comment: Option<ast::CommentGroup<'scanner>>,
     line_comment: Option<ast::CommentGroup<'scanner>>,
     all_comments: Vec<ast::CommentGroup<'scanner>>,
 }
 
 impl<'scanner> Parser<'scanner> {
-    pub fn new(scanner: scanner::Scanner<'scanner>, go_version: &'scanner str) -> Self {
+    pub fn new(
+        scanner: scanner::Scanner<'scanner>,
+        go_version: &'scanner str,
+        buffer: &'scanner str,
+    ) -> Self {
         Self {
             steps: scanner.into_iter(),
             current_step: (Position::default(), Token::EOF, ""),
             expr_level: 0,
             go_version,
+            buffer,
             lead_comment: None,
             line_comment: None,
             all_comments: Vec::new(),
@@ -486,6 +492,17 @@ impl<'scanner> Parser<'scanner> {
         } else {
             comment.slash.line + comment.text.matches('\n').count()
         }
+    }
+
+    fn comment_end_offset(comment: &ast::Comment) -> usize {
+        comment.slash.offset + comment.text.len()
+    }
+
+    fn newlines_between(&self, start: usize, end: usize) -> usize {
+        self.buffer[start..end]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
     }
 
     fn consume_comment_group(
@@ -603,7 +620,7 @@ impl<'scanner> Parser<'scanner> {
 
         let doc = self.lead_comment.take();
 
-        let import = self.token(Token::IMPORT)?.unwrap();
+        let import = self.token(Token::IMPORT).required()?;
 
         if let Some(lparen) = self.token(Token::LPAREN)? {
             let mut specs = vec![];
@@ -4585,37 +4602,45 @@ impl<'scanner> Parser<'scanner> {
 
         let mut i = 0;
 
-        if comments[0].slash.line == prev.line && prev.line > 0 {
+        let on_prev_line =
+            prev.line > 0 && self.newlines_between(prev.offset, comments[0].slash.offset) == 0;
+
+        if on_prev_line {
             let (group, endline, consumed) = Self::consume_comment_group(&comments[i..], 0);
             i += consumed;
             self.all_comments.push(group.clone());
 
-            let next_on_different_line = if i < comments.len() {
-                comments[i].slash.line != endline
-            } else {
-                self.current_step.0.line != endline
-                    || self.current_step.1 == Token::SEMICOLON
-                    || self.current_step.1 == Token::EOF
-            };
+            if let Some(last_comment) = group.list.last() {
+                let group_end_offset = Self::comment_end_offset(last_comment);
 
-            if next_on_different_line {
-                self.line_comment = Some(group);
+                let next_on_different_line = if i < comments.len() {
+                    comments[i].slash.line != endline
+                } else {
+                    self.newlines_between(group_end_offset, self.current_step.0.offset) > 0
+                        || self.current_step.1 == Token::SEMICOLON
+                        || self.current_step.1 == Token::EOF
+                };
+
+                if next_on_different_line {
+                    self.line_comment = Some(group);
+                }
             }
         }
 
-        let mut endline: isize = -1;
         let mut last_group: Option<ast::CommentGroup<'scanner>> = None;
         while i < comments.len() {
-            let (group, end, consumed) = Self::consume_comment_group(&comments[i..], 1);
+            let (group, _, consumed) = Self::consume_comment_group(&comments[i..], 1);
             i += consumed;
-            endline = end as isize;
             self.all_comments.push(group.clone());
             last_group = Some(group);
         }
 
-        if let Some(group) = last_group {
-            if endline + 1 == self.current_step.0.line as isize {
-                self.lead_comment = Some(group);
+        if let Some(ref group) = last_group {
+            if let Some(last_comment) = group.list.last() {
+                let group_end_offset = Self::comment_end_offset(last_comment);
+                if self.newlines_between(group_end_offset, self.current_step.0.offset) == 1 {
+                    self.lead_comment = last_group;
+                }
             }
         }
 
