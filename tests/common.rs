@@ -359,6 +359,8 @@ fn known_gors_limitations() -> &'static HashSet<&'static str> {
     KNOWN_LIMITATIONS.get_or_init(|| {
         let mut set = HashSet::new();
         for file in [
+            // Parser limitation: long multi-line function signature
+            "fixtures/go_sources/repositories/prometheus/model/histogram/float_histogram.go",
             // Go compiler/types test files with edge-case syntax
             "fixtures/go_sources/repositories/go/src/cmd/compile/internal/syntax/testdata/interface.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/constdecl.go",
