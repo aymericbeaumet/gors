@@ -1279,11 +1279,18 @@ impl<'scanner> Parser<'scanner> {
     fn parse_primary_expr(&mut self) -> Result<Option<ast::Expr<'scanner>>> {
         log::debug!("Parser::parse_primary_expr()");
 
-        let mut primary_expr = match self.parse_operand()? {
+        let primary_expr = match self.parse_operand()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
+        Ok(Some(self.continue_primary_expr(primary_expr)?))
+    }
+
+    fn continue_primary_expr(
+        &mut self,
+        mut primary_expr: ast::Expr<'scanner>,
+    ) -> Result<ast::Expr<'scanner>> {
         loop {
             match self.current_step.1 {
                 Token::PERIOD => {
@@ -1298,14 +1305,13 @@ impl<'scanner> Parser<'scanner> {
                     primary_expr = self.parse_arguments(primary_expr).required()?;
                 }
                 Token::LBRACE if self.expr_level >= 0 => {
-                    // Composite literal with type already parsed
                     primary_expr = self.parse_literal_value(primary_expr).required()?;
                 }
                 _ => break,
             }
         }
 
-        Ok(Some(primary_expr))
+        Ok(primary_expr)
     }
 
     // LiteralValue = "{" [ ElementList [ "," ] ] "}" .
@@ -2104,15 +2110,25 @@ impl<'scanner> Parser<'scanner> {
 
             if let Some(method_spec) = self.parse_method_name()? {
                 if self.current_step.1 == Token::PERIOD {
+                    // Qualified type: pkg.Type, possibly followed by [T] and/or |
                     self.token(Token::PERIOD)?;
                     let sel = self.identifier().required()?;
+                    let mut type_expr: ast::Expr<'scanner> =
+                        ast::Expr::SelectorExpr(ast::SelectorExpr {
+                            x: Box::new(ast::Expr::Ident(method_spec)),
+                            sel,
+                        });
+
+                    // Check for generic instantiation: pkg.Type[T]
+                    type_expr = self.parse_optional_type_instance(type_expr)?;
+
+                    // Check for union: pkg.Type | OtherType
+                    type_expr = self.parse_embedded_elem(type_expr)?;
+
                     fields.push(ast::Field {
                         doc,
                         names: None,
-                        type_: Some(ast::Expr::SelectorExpr(ast::SelectorExpr {
-                            x: Box::new(ast::Expr::Ident(method_spec)),
-                            sel,
-                        })),
+                        type_: Some(type_expr),
                         tag: None,
                         comment: self.line_comment.take(),
                     });
@@ -2124,50 +2140,14 @@ impl<'scanner> Parser<'scanner> {
 
                 // Check for type parameters on the embedded type (e.g., Comparable[T])
                 if self.current_step.1 == Token::LBRACK {
-                    let lbrack = self.token(Token::LBRACK).required()?;
-                    let mut indices = vec![self.parse_type().required()?];
-                    while self.token(Token::COMMA)?.is_some() {
-                        if self.current_step.1 == Token::RBRACK {
-                            break;
-                        }
-                        indices.push(self.parse_type().required()?);
-                    }
-                    let rbrack = self.token(Token::RBRACK).required()?;
-
-                    let type_expr = if let Some(index) =
-                        (indices.len() == 1).then(|| indices.pop()).flatten()
-                    {
-                        ast::Expr::IndexExpr(ast::IndexExpr {
-                            x: Box::new(ast::Expr::Ident(method_spec)),
-                            lbrack: lbrack.0,
-                            index: Box::new(index),
-                            rbrack: rbrack.0,
-                        })
-                    } else {
-                        ast::Expr::IndexListExpr(ast::IndexListExpr {
-                            x: Box::new(ast::Expr::Ident(method_spec)),
-                            lbrack: lbrack.0,
-                            indices,
-                            rbrack: rbrack.0,
-                        })
-                    };
-
-                    // Check for union with other types
-                    let mut type_elem = type_expr;
-                    while let Some(or_tok) = self.token(Token::OR)? {
-                        let next_term = self.parse_type_term().required()?;
-                        type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
-                            x: Box::new(type_elem),
-                            op_pos: or_tok.0,
-                            op: Token::OR,
-                            y: Box::new(next_term),
-                        });
-                    }
+                    let type_expr = ast::Expr::Ident(method_spec);
+                    let type_expr = self.parse_optional_type_instance(type_expr)?;
+                    let type_expr = self.parse_embedded_elem(type_expr)?;
 
                     fields.push(ast::Field {
                         doc,
                         names: None,
-                        type_: Some(type_elem),
+                        type_: Some(type_expr),
                         tag: None,
                         comment: self.line_comment.take(),
                     });
@@ -4145,36 +4125,18 @@ impl<'scanner> Parser<'scanner> {
         }
 
         // We have [ident... - need to distinguish between:
-        // - [ident] or [pkg.ident] for array type (ident is length expression)
+        // - [ident] or [pkg.Const + other] for array type (expression as length)
         // - [ident constraint] for type parameters
-        // Parse the identifier first
+        //
+        // Following Go's parser: parse ident as start of expression, then analyze.
         let first_ident = self.identifier().required()?;
 
-        // If followed by period, it's a qualified identifier like pkg.Const
-        // This is an array type [pkg.Const]Type
-        if self.current_step.1 == Token::PERIOD {
-            self.token(Token::PERIOD)?;
-            let sel = self.identifier().required()?;
-            let len_expr = ast::Expr::SelectorExpr(ast::SelectorExpr {
-                x: Box::new(ast::Expr::Ident(first_ident)),
-                sel,
-            });
-            let rbrack = self.token(Token::RBRACK).required()?;
-            return Ok(Some(ast::FieldList {
-                opening: Some(lbrack.0),
-                list: vec![ast::Field {
-                    doc: None,
-                    names: None,
-                    type_: Some(len_expr),
-                    tag: None,
-                    comment: None,
-                }],
-                closing: Some(rbrack.0),
-            }));
-        }
-
-        // If followed by ], this is [ident] for array type
-        if self.current_step.1 == Token::RBRACK {
+        // If followed by [, this could be a slice/array constraint [P []E]
+        // which we handle separately since parsing it as expression would fail
+        if self.current_step.1 == Token::LBRACK {
+            // Fall through to type parameter parsing below
+        } else if self.current_step.1 == Token::RBRACK {
+            // [ident] — array type with single ident as length
             let rbrack = self.token(Token::RBRACK).required()?;
             return Ok(Some(ast::FieldList {
                 opening: Some(lbrack.0),
@@ -4187,6 +4149,61 @@ impl<'scanner> Parser<'scanner> {
                 }],
                 closing: Some(rbrack.0),
             }));
+        } else {
+            // Parse the rest of the expression starting from first_ident.
+            // Following Go's parser: parse full expression, then determine
+            // if it's a type parameter list or array length.
+            //
+            // If the next token can continue a primary expression (.sel, (args), etc.)
+            // or is a binary operator, parse the full expression — it's an array length.
+            // Otherwise it's still just an identifier, which might be a type param name.
+            let is_expr_continuation = matches!(
+                self.current_step.1,
+                Token::PERIOD
+                    | Token::LPAREN
+                    | Token::ADD
+                    | Token::SUB
+                    | Token::MUL
+                    | Token::QUO
+                    | Token::REM
+                    | Token::AND
+                    | Token::OR
+                    | Token::XOR
+                    | Token::SHL
+                    | Token::SHR
+                    | Token::AND_NOT
+                    | Token::LAND
+                    | Token::LOR
+                    | Token::EQL
+                    | Token::LSS
+                    | Token::GTR
+                    | Token::NEQ
+                    | Token::LEQ
+                    | Token::GEQ
+            );
+
+            if is_expr_continuation {
+                self.expr_level += 1;
+                let lhs = self.continue_primary_expr(ast::Expr::Ident(first_ident))?;
+                let x = self
+                    .expression(lhs, Token::lowest_precedence())
+                    .required()?;
+                self.expr_level -= 1;
+
+                let rbrack = self.token(Token::RBRACK).required()?;
+                return Ok(Some(ast::FieldList {
+                    opening: Some(lbrack.0),
+                    list: vec![ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(x),
+                        tag: None,
+                        comment: None,
+                    }],
+                    closing: Some(rbrack.0),
+                }));
+            }
+            // Otherwise first_ident is just a name — fall through to type param parsing
         }
 
         // Special handling for * which could be a pointer type constraint or multiplication
@@ -4496,6 +4513,56 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(Some(type_))
+    }
+
+    fn parse_optional_type_instance(
+        &mut self,
+        type_: ast::Expr<'scanner>,
+    ) -> Result<ast::Expr<'scanner>> {
+        if self.current_step.1 != Token::LBRACK {
+            return Ok(type_);
+        }
+        let lbrack = self.token(Token::LBRACK).required()?;
+        let mut indices = vec![self.parse_type().required()?];
+        while self.token(Token::COMMA)?.is_some() {
+            if self.current_step.1 == Token::RBRACK {
+                break;
+            }
+            indices.push(self.parse_type().required()?);
+        }
+        let rbrack = self.token(Token::RBRACK).required()?;
+
+        if let Some(index) = (indices.len() == 1).then(|| indices.pop()).flatten() {
+            Ok(ast::Expr::IndexExpr(ast::IndexExpr {
+                x: Box::new(type_),
+                lbrack: lbrack.0,
+                index: Box::new(index),
+                rbrack: rbrack.0,
+            }))
+        } else {
+            Ok(ast::Expr::IndexListExpr(ast::IndexListExpr {
+                x: Box::new(type_),
+                lbrack: lbrack.0,
+                indices,
+                rbrack: rbrack.0,
+            }))
+        }
+    }
+
+    fn parse_embedded_elem(
+        &mut self,
+        mut type_elem: ast::Expr<'scanner>,
+    ) -> Result<ast::Expr<'scanner>> {
+        while let Some(or_tok) = self.token(Token::OR)? {
+            let next_term = self.parse_type_term().required()?;
+            type_elem = ast::Expr::BinaryExpr(ast::BinaryExpr {
+                x: Box::new(type_elem),
+                op_pos: or_tok.0,
+                op: Token::OR,
+                y: Box::new(next_term),
+            });
+        }
+        Ok(type_elem)
     }
 
     // assign_op = [ add_op | mul_op ] "=" .

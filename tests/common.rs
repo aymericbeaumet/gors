@@ -359,35 +359,9 @@ fn known_gors_limitations() -> &'static HashSet<&'static str> {
     KNOWN_LIMITATIONS.get_or_init(|| {
         let mut set = HashSet::new();
         for file in [
-            // Union type constraints (| operator)
-            "fixtures/go_sources/repositories/beats/x-pack/otel/otelmap/otelmap.go",
-            "fixtures/go_sources/repositories/kubernetes/pkg/controller/certificates/clustertrustbundlepublisher/publisher.go",
-            "fixtures/go_sources/repositories/kubernetes/pkg/kubelet/clustertrustbundle/clustertrustbundle_manager.go",
-            // Generic type instantiation in interfaces
-            "fixtures/go_sources/repositories/istio/pkg/config/mesh/meshwatcher/mesh.go",
-            "fixtures/go_sources/repositories/istio/pkg/config/schema/kubeclient/common.go",
-            "fixtures/go_sources/repositories/istio/pkg/kube/krt/conformance_test.go",
-            // Union type constraints in vendor/real-world code
-            "fixtures/go_sources/repositories/kubernetes/vendor/github.com/golang-jwt/jwt/v5/token.go",
-            "fixtures/go_sources/repositories/nomad/helper/pointer/pointer.go",
-            "fixtures/go_sources/repositories/syncthing/cmd/syncthing/perfstats_unix.go",
-            "fixtures/go_sources/repositories/terraform/internal/stacks/stackaddrs/in_stack.go",
-            "fixtures/go_sources/repositories/terraform/internal/terraform/eval_context_scope.go",
-            "fixtures/go_sources/repositories/traefik/pkg/provider/kubernetes/ingress/convert.go",
-            "fixtures/go_sources/repositories/traefik/pkg/provider/kubernetes/ingress-nginx/convert.go",
-            // Parser limitations with specific syntax
-            "fixtures/go_sources/repositories/prometheus/model/histogram/float_histogram.go",
-            // Go compiler/types test files with advanced syntax
+            // Go compiler/types test files with edge-case syntax
             "fixtures/go_sources/repositories/go/src/cmd/compile/internal/syntax/testdata/interface.go",
-            "fixtures/go_sources/repositories/go/src/cmd/trace/gstate.go",
-            "fixtures/go_sources/repositories/go/src/internal/runtime/maps/map_test.go",
-            "fixtures/go_sources/repositories/go/src/internal/trace/base.go",
-            "fixtures/go_sources/repositories/go/src/net/internal/cgotest/resstate.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/constdecl.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/cycles0.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/cycles5.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/cycles5a.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/cycles6.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/decls0.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/expr0.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue43087.go",
@@ -397,9 +371,6 @@ fn known_gors_limitations() -> &'static HashSet<&'static str> {
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue51607.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue59740.go",
             "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue62157.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue75918.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue76384.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue76478.go",
             "fixtures/go_sources/repositories/go/test/const2.go",
             "fixtures/go_sources/repositories/go/test/ddd1.go",
             "fixtures/go_sources/repositories/go/test/fixedbugs/bug280.go",
@@ -407,8 +378,6 @@ fn known_gors_limitations() -> &'static HashSet<&'static str> {
             "fixtures/go_sources/repositories/go/test/fixedbugs/bug340.go",
             "fixtures/go_sources/repositories/go/test/fixedbugs/bug351.go",
             "fixtures/go_sources/repositories/go/test/fixedbugs/bug388a.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug517.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/issue28079b.go",
             "fixtures/go_sources/repositories/go/test/fixedbugs/issue66663.go",
             "fixtures/go_sources/repositories/go/test/syntax/typesw.go",
         ] {
