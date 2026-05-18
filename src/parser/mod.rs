@@ -1898,8 +1898,6 @@ impl<'scanner> Parser<'scanner> {
                 ellipsis: ellipsis.0,
                 elt: None,
             }))
-        } else if ELLIPSIS {
-            self.parse_expression()?
         } else {
             self.parse_expression()?
         };
@@ -2876,11 +2874,20 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let (param_names, _, _) = self.parse_identifier_list().required()?;
-                    let type_ = self.parse_type().required()?;
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let param_type = self.parse_type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(param_type)),
+                        })
+                    } else {
+                        param_type
+                    };
                     fields.push(ast::Field {
                         doc: None,
                         names: Some(param_names),
-                        type_: Some(type_),
+                        type_: Some(field_type),
                         tag: None,
                         comment: None,
                     });
@@ -2911,11 +2918,20 @@ impl<'scanner> Parser<'scanner> {
                         break;
                     }
                     let (param_names, _, _) = self.parse_identifier_list().required()?;
-                    let type_ = self.parse_type().required()?;
+                    let ellipsis = self.token(Token::ELLIPSIS)?;
+                    let param_type = self.parse_type().required()?;
+                    let field_type = if let Some(ellipsis) = ellipsis {
+                        ast::Expr::Ellipsis(ast::Ellipsis {
+                            ellipsis: ellipsis.0,
+                            elt: Some(Box::new(param_type)),
+                        })
+                    } else {
+                        param_type
+                    };
                     fields.push(ast::Field {
                         doc: None,
                         names: Some(param_names),
-                        type_: Some(type_),
+                        type_: Some(field_type),
                         tag: None,
                         comment: None,
                     });
@@ -4329,13 +4345,15 @@ impl<'scanner> Parser<'scanner> {
                 // This handles cases like [P (*int)] which parses as call P(*int)
                 let x = if let ast::Expr::CallExpr(mut call) = x {
                     let is_type_param = matches!(*call.fun, ast::Expr::Ident(_))
-                        && call.args.as_ref().map_or(false, |a| a.len() == 1)
+                        && call.args.as_ref().is_some_and(|a| a.len() == 1)
                         && call.ellipsis.is_none()
                         && self.current_step.1 != Token::RBRACK;
 
                     if is_type_param {
                         if let ast::Expr::Ident(name) = *call.fun {
-                            let arg = call.args.take().unwrap().pop().unwrap();
+                            let Some(arg) = call.args.take().and_then(|mut a| a.pop()) else {
+                                unreachable!("is_type_param guarantees args has exactly 1 element");
+                            };
                             let constraint = ast::Expr::ParenExpr(ast::ParenExpr {
                                 lparen: call.lparen,
                                 x: Box::new(arg),

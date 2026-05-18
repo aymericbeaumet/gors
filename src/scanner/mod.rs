@@ -35,6 +35,7 @@ pub enum ScannerErrorKind {
     UnterminatedRune,
     UnterminatedString,
     InvalidDirective,
+    IllegalCharacter,
 }
 
 impl ScannerError {
@@ -47,6 +48,7 @@ impl ScannerError {
             ScannerErrorKind::UnterminatedRune => "rune literal not terminated",
             ScannerErrorKind::UnterminatedString => "string literal not terminated",
             ScannerErrorKind::InvalidDirective => "invalid compiler directive",
+            ScannerErrorKind::IllegalCharacter => "illegal character",
         }
     }
 }
@@ -472,7 +474,15 @@ impl<'a> Scanner<'a> {
                 '\'' => return self.scan_rune(),
                 '"' => return self.scan_interpreted_string(),
                 '`' => return self.scan_raw_string(),
-                _ => return self.scan_pkg_or_keyword_or_ident(),
+                c if is_letter(c) => return self.scan_pkg_or_keyword_or_ident(),
+                _ => {
+                    return Err(ScannerError {
+                        kind: ScannerErrorKind::IllegalCharacter,
+                        line: self.line,
+                        column: self.column,
+                        offset: self.offset,
+                    });
+                }
             };
         }
 
