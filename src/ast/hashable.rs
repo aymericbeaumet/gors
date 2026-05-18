@@ -9,13 +9,10 @@ impl<'a> Hash for &ast::ImportSpec<'a> {
 
 impl<'a> Hash for &ast::CommentGroup<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use content-based hashing since CommentGroups are stored by value
-        // and the same logical group can exist in multiple places (Doc and Comments).
-        // The position of the first comment uniquely identifies the group.
+        // Use physical byte offset for hashing — adjusted line/column from
+        // //line directives can collide for distinct comments.
         if let Some(first) = self.list.first() {
-            first.slash.line.hash(state);
-            first.slash.column.hash(state);
-            first.slash.file.hash(state);
+            first.slash.offset.hash(state);
         }
     }
 }

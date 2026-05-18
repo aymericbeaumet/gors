@@ -606,15 +606,22 @@ impl<'scanner> Parser<'scanner> {
     fn consume_comment_group(
         comments: &[ast::Comment<'scanner>],
         n: usize,
+        buffer: &str,
     ) -> (ast::CommentGroup<'scanner>, usize, usize) {
         let mut list = vec![comments[0].clone()];
+        let mut end_offset = Self::comment_end_offset(&comments[0]);
         let mut endline = Self::comment_end_line(&comments[0]);
         let mut consumed = 1;
 
         for comment in &comments[1..] {
-            if comment.slash.line > endline + n {
+            let gap_newlines = buffer[end_offset..comment.slash.offset]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count();
+            if gap_newlines > n {
                 break;
             }
+            end_offset = Self::comment_end_offset(comment);
             endline = Self::comment_end_line(comment);
             list.push(comment.clone());
             consumed += 1;
@@ -1002,6 +1009,61 @@ impl<'scanner> Parser<'scanner> {
                         }),
                         comment: None,
                     }));
+                }
+                Some(field_list)
+                    if field_list.list.len() == 1
+                        && field_list.list[0].names.is_some()
+                        && matches!(
+                            field_list.list[0].type_.as_ref(),
+                            Some(ast::Expr::StarExpr(_))
+                        )
+                        && !matches!(self.current_step.1, Token::ASSIGN) =>
+                {
+                    // Could be [Name *Expr] as type params or [Name * Expr] as array length.
+                    // Try parsing a type — if one follows, this was array multiplication.
+                    if let Some(elt) = self.parse_type()? {
+                        let f = field_list.list.into_iter().next();
+                        let Some(ast::Field {
+                            names: Some(mut names),
+                            type_: Some(ast::Expr::StarExpr(star_expr)),
+                            ..
+                        }) = f
+                        else {
+                            return Ok(Some(ast::TypeSpec {
+                                doc: None,
+                                name: Some(name),
+                                type_params: None,
+                                assign: None,
+                                type_: elt,
+                                comment: None,
+                            }));
+                        };
+                        let name_ident = names.pop();
+                        let len_expr = if let Some(lhs) = name_ident {
+                            ast::Expr::BinaryExpr(ast::BinaryExpr {
+                                x: Box::new(ast::Expr::Ident(lhs)),
+                                op_pos: star_expr.star,
+                                op: Token::MUL,
+                                y: star_expr.x,
+                            })
+                        } else {
+                            *star_expr.x
+                        };
+                        let lbrack = field_list.opening.unwrap_or_default();
+                        return Ok(Some(ast::TypeSpec {
+                            doc: None,
+                            name: Some(name),
+                            type_params: None,
+                            assign: None,
+                            type_: ast::Expr::ArrayType(ast::ArrayType {
+                                lbrack,
+                                len: Some(Box::new(len_expr)),
+                                elt: Box::new(elt),
+                            }),
+                            comment: None,
+                        }));
+                    }
+                    Some(field_list)
                 }
                 other => other,
             }
@@ -2251,14 +2313,20 @@ impl<'scanner> Parser<'scanner> {
                 }
 
                 if let Some(signature) = self.parse_signature(None)? {
-                    fields.push(ast::Field {
+                    let pre_semi_comment = self.line_comment.take();
+                    let mut field = ast::Field {
                         doc,
                         names: Some(vec![method_spec]),
                         type_: Some(ast::Expr::FuncType(signature)),
                         tag: None,
-                        comment: self.line_comment.take(),
-                    });
-                    if self.token(Token::SEMICOLON)?.is_none() {
+                        comment: None,
+                    };
+                    if self.token(Token::SEMICOLON)?.is_some() {
+                        field.comment = self.line_comment.take().or(pre_semi_comment);
+                        fields.push(field);
+                    } else {
+                        field.comment = pre_semi_comment;
+                        fields.push(field);
                         break;
                     }
                     continue;
@@ -5008,7 +5076,8 @@ impl<'scanner> Parser<'scanner> {
         let mut i = 0;
 
         if comments[0].slash.line == prev.line && prev.line > 0 {
-            let (group, endline, consumed) = Self::consume_comment_group(&comments[i..], 0);
+            let (group, endline, consumed) =
+                Self::consume_comment_group(&comments[i..], 0, self.buffer);
             i += consumed;
             self.all_comments.push(group.clone());
 
@@ -5027,7 +5096,8 @@ impl<'scanner> Parser<'scanner> {
 
         let mut last_group: Option<ast::CommentGroup<'scanner>> = None;
         while i < comments.len() {
-            let (group, _, consumed) = Self::consume_comment_group(&comments[i..], 1);
+            let (group, _, consumed) =
+                Self::consume_comment_group(&comments[i..], 1, self.buffer);
             i += consumed;
             self.all_comments.push(group.clone());
             last_group = Some(group);
