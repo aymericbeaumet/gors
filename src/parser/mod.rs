@@ -2887,23 +2887,48 @@ impl<'scanner> Parser<'scanner> {
                 }
                 return Ok(Some(fields));
             }
-            // (T, F[T]) — last ident is a generic type, all are unnamed
-            let mut type_indices = vec![self.parse_type().required()?];
-            while self.token(Token::COMMA)?.is_some() {
-                if self.current_step.1 == Token::RBRACK {
-                    break;
-                }
-                type_indices.push(self.parse_type().required()?);
-            }
+            // Parse contents of [...] and check what follows ]
+            let mut inner = self.parse_expression()?;
             let rbrack = self.token(Token::RBRACK).required()?;
+
+            // If a type follows ], this is (x, y [N]Type) — named params with array type
+            if let Some(elt) = self.parse_type()? {
+                let type_ = ast::Expr::ArrayType(ast::ArrayType {
+                    lbrack: lbrack_step.0,
+                    len: inner.map(Box::new),
+                    elt: Box::new(elt),
+                });
+                let names: Vec<ast::Ident<'scanner>> = idents.into_iter().collect();
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: Some(names),
+                    type_: Some(type_),
+                    tag: None,
+                    comment: None,
+                }];
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let (param_names, _, _) = self.parse_identifier_list().required()?;
+                    let type_ = self.parse_type().required()?;
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: Some(param_names),
+                        type_: Some(type_),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            }
+
+            // Otherwise (T, F[T]) — last ident has generic args, all unnamed
             let mut fields: Vec<ast::Field<'scanner>> = Vec::new();
             let last = idents.len() - 1;
             for (i, ident) in idents.into_iter().enumerate() {
                 if i == last {
-                    let type_expr = if let Some(index) = (type_indices.len() == 1)
-                        .then(|| type_indices.pop())
-                        .flatten()
-                    {
+                    let type_expr = if let Some(index) = inner.take() {
                         ast::Expr::IndexExpr(ast::IndexExpr {
                             x: Box::new(ast::Expr::Ident(ident)),
                             lbrack: lbrack_step.0,
@@ -2911,12 +2936,7 @@ impl<'scanner> Parser<'scanner> {
                             rbrack: rbrack.0,
                         })
                     } else {
-                        ast::Expr::IndexListExpr(ast::IndexListExpr {
-                            x: Box::new(ast::Expr::Ident(ident)),
-                            lbrack: lbrack_step.0,
-                            indices: std::mem::take(&mut type_indices),
-                            rbrack: rbrack.0,
-                        })
+                        ast::Expr::Ident(ident)
                     };
                     fields.push(ast::Field {
                         doc: None,
