@@ -702,8 +702,7 @@ impl<'scanner> Parser<'scanner> {
             self.token(Token::SEMICOLON).required()?;
             if import_decl.lparen.is_none() {
                 if let Some(comment) = self.line_comment.take() {
-                    if let Some(ast::Spec::ImportSpec(s)) = import_decl.specs.last_mut()
-                    {
+                    if let Some(ast::Spec::ImportSpec(s)) = import_decl.specs.last_mut() {
                         if s.comment.is_none() {
                             s.comment = Some(comment);
                         }
@@ -785,8 +784,7 @@ impl<'scanner> Parser<'scanner> {
                     import_spec.doc = spec_doc;
                     let pre_semi_comment = self.line_comment.take();
                     if self.token(Token::SEMICOLON)?.is_some() {
-                        import_spec.comment =
-                            self.line_comment.take().or(pre_semi_comment);
+                        import_spec.comment = self.line_comment.take().or(pre_semi_comment);
                         specs.push(ast::Spec::ImportSpec(import_spec));
                     } else {
                         import_spec.comment = pre_semi_comment;
@@ -905,8 +903,7 @@ impl<'scanner> Parser<'scanner> {
                     type_spec.doc = spec_doc;
                     let pre_semi_comment = self.line_comment.take();
                     if self.token(Token::SEMICOLON)?.is_some() {
-                        type_spec.comment =
-                            self.line_comment.take().or(pre_semi_comment);
+                        type_spec.comment = self.line_comment.take().or(pre_semi_comment);
                         specs.push(ast::Spec::TypeSpec(type_spec));
                     } else {
                         type_spec.comment = pre_semi_comment;
@@ -1105,8 +1102,7 @@ impl<'scanner> Parser<'scanner> {
                     const_spec.doc = spec_doc;
                     let pre_semi_comment = self.line_comment.take();
                     if self.token(Token::SEMICOLON)?.is_some() {
-                        const_spec.comment =
-                            self.line_comment.take().or(pre_semi_comment);
+                        const_spec.comment = self.line_comment.take().or(pre_semi_comment);
                         specs.push(ast::Spec::ValueSpec(const_spec));
                     } else {
                         const_spec.comment = pre_semi_comment;
@@ -1193,8 +1189,7 @@ impl<'scanner> Parser<'scanner> {
                     var_spec.doc = spec_doc;
                     let pre_semi_comment = self.line_comment.take();
                     if self.token(Token::SEMICOLON)?.is_some() {
-                        var_spec.comment =
-                            self.line_comment.take().or(pre_semi_comment);
+                        var_spec.comment = self.line_comment.take().or(pre_semi_comment);
                         specs.push(ast::Spec::ValueSpec(var_spec));
                     } else {
                         var_spec.comment = pre_semi_comment;
@@ -2419,8 +2414,7 @@ impl<'scanner> Parser<'scanner> {
                 field_decl.doc = doc;
                 let pre_semi_comment = self.line_comment.take();
                 if self.token(Token::SEMICOLON)?.is_some() {
-                    field_decl.comment =
-                        self.line_comment.take().or(pre_semi_comment);
+                    field_decl.comment = self.line_comment.take().or(pre_semi_comment);
                     fields.push(field_decl);
                 } else {
                     field_decl.comment = pre_semi_comment;
@@ -3532,10 +3526,7 @@ impl<'scanner> Parser<'scanner> {
             let consumed_semi = Self::stmt_consumed_semicolon(&statement);
             if !consumed_semi {
                 if self.token(Token::SEMICOLON)?.is_some() {
-                    Self::apply_line_comment_to_decl(
-                        &mut statement,
-                        self.line_comment.take(),
-                    );
+                    Self::apply_line_comment_to_decl(&mut statement, self.line_comment.take());
                 } else {
                     list.push(statement);
                     break;
@@ -5096,8 +5087,7 @@ impl<'scanner> Parser<'scanner> {
 
         let mut last_group: Option<ast::CommentGroup<'scanner>> = None;
         while i < comments.len() {
-            let (group, _, consumed) =
-                Self::consume_comment_group(&comments[i..], 1, self.buffer);
+            let (group, _, consumed) = Self::consume_comment_group(&comments[i..], 1, self.buffer);
             i += consumed;
             self.all_comments.push(group.clone());
             last_group = Some(group);
