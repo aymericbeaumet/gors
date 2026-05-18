@@ -373,6 +373,8 @@ fn known_gors_limitations() -> &'static HashSet<&'static str> {
             "fixtures/go_sources/repositories/syncthing/cmd/syncthing/perfstats_unix.go",
             "fixtures/go_sources/repositories/terraform/internal/stacks/stackaddrs/in_stack.go",
             "fixtures/go_sources/repositories/terraform/internal/terraform/eval_context_scope.go",
+            "fixtures/go_sources/repositories/traefik/pkg/provider/kubernetes/ingress/convert.go",
+            "fixtures/go_sources/repositories/traefik/pkg/provider/kubernetes/ingress-nginx/convert.go",
             // Parser limitations with specific syntax
             "fixtures/go_sources/repositories/prometheus/model/histogram/float_histogram.go",
             // Go compiler/types test files with advanced syntax
