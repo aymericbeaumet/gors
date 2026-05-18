@@ -1807,15 +1807,13 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        // Go doesn't display column when it's 0
-        if self.column == 0 {
-            write!(p.w, "{}/{}:{}", self.directory, self.file, self.line,)?;
+        if self.file.starts_with('/') {
+            write!(p.w, "{}:{}", self.file, self.line)?;
         } else {
-            write!(
-                p.w,
-                "{}/{}:{}:{}",
-                self.directory, self.file, self.line, self.column,
-            )?;
+            write!(p.w, "{}/{}:{}", self.directory, self.file, self.line)?;
+        }
+        if self.column != 0 {
+            write!(p.w, ":{}", self.column)?;
         }
         p.newline()?;
         Ok(())

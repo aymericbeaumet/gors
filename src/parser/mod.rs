@@ -135,7 +135,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
     let go_version = extract_go_version(buffer);
 
     let scanner = scanner::Scanner::new(filename, buffer);
-    let mut parser = Parser::new(scanner, go_version, buffer);
+    let mut parser = Parser::new(scanner, go_version, buffer, filename);
     parser.next()?;
     parser
         .parse_source_file()
@@ -392,69 +392,140 @@ fn extract_go_version(buffer: &str) -> &str {
     ""
 }
 
-/// Find go version pattern (goX.Y or goX.YZ) in a build constraint
-/// Returns None if:
-/// - The version is negated (e.g., !go1.17)
-/// - There's an OR (||) at the top level (outside parentheses), since the
-///   constraint can be satisfied without the go version in that case
-fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
-    let bytes = constraint.as_bytes();
+fn is_go_version(s: &str) -> bool {
+    if let Some(rest) = s.strip_prefix("go") {
+        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+    } else {
+        false
+    }
+}
 
-    // First, check if there's an OR at the top level (not inside parentheses)
-    // If so, we can't reliably extract a go version since the constraint
-    // might be satisfied without it
-    let mut paren_depth: i32 = 0;
+fn compare_go_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_parts: Vec<u32> = a
+        .strip_prefix("go")
+        .unwrap_or("")
+        .split('.')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let b_parts: Vec<u32> = b
+        .strip_prefix("go")
+        .unwrap_or("")
+        .split('.')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    a_parts.cmp(&b_parts)
+}
+
+/// Extract effective go version from a build constraint expression.
+/// Handles AND (&&), OR (||), NOT (!), and parenthesized groups.
+fn find_go_version_in_constraint(constraint: &str) -> Option<&str> {
+    // Split into top-level OR branches (respecting parentheses)
+    let branches = split_top_level(constraint, b'|');
+
+    let mut result: Option<&str> = None;
+
+    for branch in &branches {
+        let branch = branch.trim();
+        if branch.is_empty() {
+            continue;
+        }
+
+        match find_version_in_and_branch(branch) {
+            None => return None,
+            Some(v) => {
+                result = Some(match result {
+                    None => v,
+                    Some(prev) => {
+                        if compare_go_versions(v, prev) == std::cmp::Ordering::Less {
+                            v
+                        } else {
+                            prev
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    result
+}
+
+/// Split a constraint string by a top-level operator (|| or &&).
+fn split_top_level(s: &str, op: u8) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
     let mut i = 0;
+
     while i < bytes.len() {
         match bytes[i] {
-            b'(' => paren_depth += 1,
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b'|' if paren_depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
-                // Found || at top level
-                return None;
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            c if c == op && depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == op => {
+                parts.push(&s[start..i]);
+                i += 2;
+                start = i;
+                continue;
             }
             _ => {}
         }
         i += 1;
     }
+    parts.push(&s[start..]);
+    parts
+}
 
-    // No top-level OR, proceed to find go version
-    i = 0;
-    while i < bytes.len() {
-        // Track if we saw a '!' before this token (negation)
-        let mut is_negated = false;
+/// Find the effective go version in an AND branch (no top-level ||).
+/// Returns None if the branch has no go version requirement.
+fn find_version_in_and_branch(branch: &str) -> Option<&str> {
+    let terms = split_top_level(branch, b'&');
+    let mut max_version: Option<&str> = None;
 
-        // Skip non-alphanumeric, but track '!' for negation
-        while i < bytes.len() && !bytes[i].is_ascii_alphanumeric() {
-            if bytes[i] == b'!' {
-                is_negated = true;
-            } else if !matches!(bytes[i], b' ' | b'\t' | b'(' | b')') {
-                // Reset negation on other operators like && or ||
-                is_negated = false;
+    for term in &terms {
+        let term = term.trim();
+        if term.is_empty() {
+            continue;
+        }
+
+        // Negated term — skip any go version inside
+        if term.starts_with('!') {
+            continue;
+        }
+
+        // Parenthesized group — recurse
+        if term.starts_with('(') && term.ends_with(')') {
+            if let Some(v) = find_go_version_in_constraint(&term[1..term.len() - 1]) {
+                max_version = Some(match max_version {
+                    None => v,
+                    Some(prev) => {
+                        if compare_go_versions(v, prev) == std::cmp::Ordering::Greater {
+                            v
+                        } else {
+                            prev
+                        }
+                    }
+                });
             }
-            i += 1;
+            continue;
         }
 
-        let start = i;
-
-        // Read alphanumeric + dots token
-        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.') {
-            i += 1;
-        }
-
-        if i > start {
-            let token = &constraint[start..i];
-            // Check if it matches goX.Y or goX.YZ pattern and is not negated
-            if !is_negated && token.starts_with("go") && token.len() >= 4 {
-                let rest = &token[2..];
-                if rest.contains('.') && rest.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                    return Some(token);
+        // Check if this term is a go version
+        if is_go_version(term) {
+            max_version = Some(match max_version {
+                None => term,
+                Some(prev) => {
+                    if compare_go_versions(term, prev) == std::cmp::Ordering::Greater {
+                        term
+                    } else {
+                        prev
+                    }
                 }
-            }
+            });
         }
     }
 
-    None
+    max_version
 }
 
 struct Parser<'scanner> {
@@ -463,6 +534,8 @@ struct Parser<'scanner> {
     expr_level: isize,
     go_version: &'scanner str,
     buffer: &'scanner str,
+    original_directory: &'scanner str,
+    original_file: &'scanner str,
     lead_comment: Option<ast::CommentGroup<'scanner>>,
     line_comment: Option<ast::CommentGroup<'scanner>>,
     all_comments: Vec<ast::CommentGroup<'scanner>>,
@@ -473,13 +546,17 @@ impl<'scanner> Parser<'scanner> {
         scanner: scanner::Scanner<'scanner>,
         go_version: &'scanner str,
         buffer: &'scanner str,
+        filename: &'scanner str,
     ) -> Self {
+        let (directory, file) = filename.rsplit_once('/').unwrap_or(("", filename));
         Self {
             steps: scanner.into_iter(),
             current_step: (Position::default(), Token::EOF, ""),
             expr_level: 0,
             go_version,
             buffer,
+            original_directory: directory,
+            original_file: file,
             lead_comment: None,
             line_comment: None,
             all_comments: Vec::new(),
@@ -549,8 +626,8 @@ impl<'scanner> Parser<'scanner> {
         self.token(Token::SEMICOLON).required()?;
 
         let file_start = Position {
-            directory: package.0.directory,
-            file: package.0.file,
+            directory: self.original_directory,
+            file: self.original_file,
             offset: 0,
             line: 1,
             column: 1,
