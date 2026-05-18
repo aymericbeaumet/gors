@@ -1012,12 +1012,14 @@ impl<'scanner> Parser<'scanner> {
                         && field_list.list[0].names.is_some()
                         && matches!(
                             field_list.list[0].type_.as_ref(),
-                            Some(ast::Expr::StarExpr(_))
+                            Some(ast::Expr::StarExpr(s)) if matches!(*s.x, ast::Expr::Ident(_))
                         )
-                        && !matches!(self.current_step.1, Token::ASSIGN) =>
+                        && !matches!(self.current_step.1, Token::ASSIGN)
+                        && !self.buffer[field_list.opening.map_or(0, |p| p.offset)
+                            ..field_list.closing.map_or(0, |p| p.offset)]
+                            .contains(',') =>
                 {
-                    // Could be [Name *Expr] as type params or [Name * Expr] as array length.
-                    // Try parsing a type — if one follows, this was array multiplication.
+                    // [Name * Ident]Type without comma — reinterpret * as multiplication.
                     if let Some(elt) = self.parse_type()? {
                         let f = field_list.list.into_iter().next();
                         let Some(ast::Field {
@@ -5076,7 +5078,7 @@ impl<'scanner> Parser<'scanner> {
                 comments[i].slash.line != endline
             } else {
                 self.current_step.0.line != endline
-                    || self.current_step.1 == Token::SEMICOLON
+                    || (self.current_step.1 == Token::SEMICOLON && self.current_step.2 == "\n")
                     || self.current_step.1 == Token::EOF
             };
 
