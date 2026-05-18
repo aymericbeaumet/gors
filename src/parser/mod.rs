@@ -4157,17 +4157,18 @@ impl<'scanner> Parser<'scanner> {
             // If the next token can continue a primary expression (.sel, (args), etc.)
             // or is a binary operator, parse the full expression — it's an array length.
             // Otherwise it's still just an identifier, which might be a type param name.
+            // These tokens unambiguously continue an expression (not a type constraint).
+            // Notably MUL (*) and OR (|) are excluded: * could be pointer constraint,
+            // | could be union type.
             let is_expr_continuation = matches!(
                 self.current_step.1,
                 Token::PERIOD
                     | Token::LPAREN
                     | Token::ADD
                     | Token::SUB
-                    | Token::MUL
                     | Token::QUO
                     | Token::REM
                     | Token::AND
-                    | Token::OR
                     | Token::XOR
                     | Token::SHL
                     | Token::SHR
