@@ -19,4 +19,4 @@ wasm-bindgen = "0.2"
 # wasmi is used for running compiled WASM - works when gors itself is compiled to WASM
 wasmi = "1.0"
 # wasmprinter converts WASM binary to WAT text format for display
-wasmprinter = "0.248"
+wasmprinter = "0.249"
