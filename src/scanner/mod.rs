@@ -36,6 +36,7 @@ pub enum ScannerErrorKind {
     UnterminatedString,
     InvalidDirective,
     IllegalCharacter,
+    InvalidUnicodeCodePoint,
 }
 
 impl ScannerError {
@@ -49,6 +50,9 @@ impl ScannerError {
             ScannerErrorKind::UnterminatedString => "string literal not terminated",
             ScannerErrorKind::InvalidDirective => "invalid compiler directive",
             ScannerErrorKind::IllegalCharacter => "illegal character",
+            ScannerErrorKind::InvalidUnicodeCodePoint => {
+                "escape sequence is invalid Unicode code point"
+            }
         }
     }
 }
@@ -925,16 +929,29 @@ impl<'a> Scanner<'a> {
             }
             'u' => {
                 self.next();
+                let start = self.offset;
                 self.require_hex_digits::<4>()?;
+                self.validate_unicode_code_point(&self.buffer[start..start + 4])?;
             }
             'U' => {
                 self.next();
+                let start = self.offset;
                 self.require_hex_digits::<8>()?;
+                self.validate_unicode_code_point(&self.buffer[start..start + 8])?;
             }
             '0'..='7' => self.require_octal_digits::<3>()?,
             _ => return Err(self.error(ScannerErrorKind::UnterminatedEscapedChar)),
         }
 
+        Ok(())
+    }
+
+    fn validate_unicode_code_point(&self, hex_str: &str) -> Result<()> {
+        let cp = u32::from_str_radix(hex_str, 16)
+            .map_err(|_| self.error(ScannerErrorKind::InvalidUnicodeCodePoint))?;
+        if (0xD800..=0xDFFF).contains(&cp) || cp > 0x10FFFF {
+            return Err(self.error(ScannerErrorKind::InvalidUnicodeCodePoint));
+        }
         Ok(())
     }
 

@@ -34,7 +34,7 @@ impl<'a> fmt::Display for Position<'a> {
         };
 
         if filename.is_empty() {
-            write!(f, ":{}", self.line)?;
+            write!(f, "{}", self.line)?;
         } else {
             write!(f, "{}:{}", filename, self.line)?;
         }

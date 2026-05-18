@@ -292,6 +292,10 @@ impl<W: Write> Printable<W> for ast::BasicLit<'_> {
         self.value_pos.print(p)?;
 
         p.prefix()?;
+        p.write("ValueEnd: ")?;
+        self.value_end.print(p)?;
+
+        p.prefix()?;
         p.write("Kind: ")?;
         self.kind.print(p)?;
 
@@ -1808,7 +1812,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.file.is_empty() {
-            write!(p.w, ":{}", self.line)?;
+            write!(p.w, "{}", self.line)?;
         } else if self.file.starts_with('/') {
             write!(p.w, "{}:{}", self.file, self.line)?;
         } else {

@@ -335,6 +335,7 @@ pub fn must_error_files() -> &'static HashSet<&'static str> {
             "fixtures/go_sources/repositories/go/src/cmd/compile/internal/types2/testdata/examples/types.go",
             "fixtures/go_sources/repositories/go/test/func3.go",
             "fixtures/go_sources/repositories/go/test/import5.go",
+            "fixtures/go_sources/repositories/go/test/char_lit1.go",
         ] {
             set.insert(file);
         }
@@ -351,45 +352,6 @@ pub fn is_must_error_file(path: &Path) -> bool {
     } else {
         false
     }
-}
-
-fn is_known_gors_limitation(path: &Path) -> bool {
-    let fixtures_dir = fixtures_dir();
-    if let Ok(relative) = path.strip_prefix(&fixtures_dir) {
-        let s = relative.display().to_string();
-        // ~ as standalone unary op (Go error-recovery only, not valid Go)
-        s.ends_with("types/testdata/check/expr0.go")
-            // Not available locally for testing
-            || s.ends_with("prometheus/model/histogram/float_histogram.go")
-    } else {
-        false
-    }
-}
-
-fn is_known_output_difference(path: &Path, diff_info: &str) -> bool {
-    let fixtures_dir = fixtures_dir();
-    let relative_str = if let Ok(relative) = path.strip_prefix(&fixtures_dir) {
-        relative.display().to_string()
-    } else {
-        return false;
-    };
-
-    let is_go_test = relative_str.contains("go_sources/repositories/go/test/")
-        || relative_str.contains("go_sources/repositories/go/src/");
-    let is_beats_parser = relative_str.contains("decode_cef/cef/parser");
-
-    if diff_info.contains("Comment:") || diff_info.contains("Comments:") {
-        return is_go_test || is_beats_parser;
-    }
-
-    if diff_info.contains("NamePos:")
-        || diff_info.contains("TypeParams:")
-        || diff_info.contains("obj @")
-    {
-        return is_go_test;
-    }
-
-    false
 }
 
 /// Test a single file with the given command.
@@ -415,16 +377,6 @@ fn test_single_file(command: &str, file: &Path, go_bin: &Path, gors_bin: &Path) 
     // Run gors
     let (gors_output, gors_duration) = match exec(gors_bin, &args) {
         Ok(result) => result,
-        Err(_) if is_known_gors_limitation(file) => {
-            return FileTestResult {
-                path: file.to_path_buf(),
-                passed: false,
-                skipped: true,
-                error: None,
-                go_duration,
-                gors_duration: Duration::ZERO,
-            };
-        }
         Err(e) => {
             return FileTestResult {
                 path: file.to_path_buf(),
@@ -442,17 +394,6 @@ fn test_single_file(command: &str, file: &Path, go_bin: &Path, gors_bin: &Path) 
         let go_str = String::from_utf8_lossy(&go_output.stdout);
         let gors_str = String::from_utf8_lossy(&gors_output.stdout);
         let diff_info = find_first_diff(&go_str, &gors_str);
-
-        if is_known_output_difference(file, &diff_info) {
-            return FileTestResult {
-                path: file.to_path_buf(),
-                passed: false,
-                skipped: true,
-                error: None,
-                go_duration,
-                gors_duration,
-            };
-        }
 
         return FileTestResult {
             path: file.to_path_buf(),

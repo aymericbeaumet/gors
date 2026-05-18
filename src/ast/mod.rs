@@ -228,6 +228,7 @@ pub struct ValueSpec<'a> {
 #[derive(Debug)]
 pub struct BasicLit<'a> {
     pub value_pos: Position<'a>, // literal position
+    pub value_end: Position<'a>, // end of literal position
     pub kind: Token,             // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
     pub value: &'a str, // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
 }

@@ -5,6 +5,27 @@ use crate::scanner;
 use crate::token::{Position, Token};
 use std::fmt;
 
+fn make_basic_lit<'a>((value_pos, kind, value): scanner::Step<'a>) -> ast::BasicLit<'a> {
+    let hide_column = value_pos.column == 0;
+    let mut end = value_pos;
+    for c in value.chars() {
+        let byte_len = c.len_utf8();
+        if c == '\n' {
+            end.line += 1;
+            end.column = if hide_column { 0 } else { 1 };
+        } else if !hide_column {
+            end.column += byte_len;
+        }
+        end.offset += byte_len;
+    }
+    ast::BasicLit {
+        value_pos,
+        value_end: end,
+        kind,
+        value,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ParserError {
     ScannerError(scanner::ScannerError),
@@ -612,6 +633,30 @@ impl<'scanner> Parser<'scanner> {
         }
     }
 
+    fn apply_line_comment_to_decl(
+        stmt: &mut ast::Stmt<'scanner>,
+        comment: Option<ast::CommentGroup<'scanner>>,
+    ) {
+        if comment.is_none() {
+            return;
+        }
+        if let ast::Stmt::DeclStmt(decl_stmt) = stmt {
+            let gen_decl = &mut decl_stmt.decl;
+            if gen_decl.lparen.is_none() {
+                if let Some(spec) = gen_decl.specs.last_mut() {
+                    let existing = match spec {
+                        ast::Spec::ValueSpec(s) => &mut s.comment,
+                        ast::Spec::TypeSpec(s) => &mut s.comment,
+                        ast::Spec::ImportSpec(s) => &mut s.comment,
+                    };
+                    if existing.is_none() {
+                        *existing = comment;
+                    }
+                }
+            }
+        }
+    }
+
     // SourceFile = PackageClause ";" { ImportDecl ";" } { TopLevelDecl ";" } .
     fn parse_source_file(&mut self) -> Result<Option<ast::File<'scanner>>> {
         log::debug!("Parser::parse_source_file()");
@@ -646,13 +691,39 @@ impl<'scanner> Parser<'scanner> {
             go_version: self.go_version,
         };
 
-        while let Some(import_decl) = self.parse_import_decl()? {
+        while let Some(mut import_decl) = self.parse_import_decl()? {
             self.token(Token::SEMICOLON).required()?;
+            if import_decl.lparen.is_none() {
+                if let Some(comment) = self.line_comment.take() {
+                    if let Some(ast::Spec::ImportSpec(s)) = import_decl.specs.last_mut()
+                    {
+                        if s.comment.is_none() {
+                            s.comment = Some(comment);
+                        }
+                    }
+                }
+            }
             out.decls.push(ast::Decl::GenDecl(import_decl));
         }
 
-        while let Some(top_level_decl) = self.parse_top_level_decl()? {
+        while let Some(mut top_level_decl) = self.parse_top_level_decl()? {
             self.token(Token::SEMICOLON).required()?;
+            if let Some(comment) = self.line_comment.take() {
+                if let ast::Decl::GenDecl(gen_decl) = &mut top_level_decl {
+                    if gen_decl.lparen.is_none() {
+                        if let Some(spec) = gen_decl.specs.last_mut() {
+                            let existing = match spec {
+                                ast::Spec::ValueSpec(s) => &mut s.comment,
+                                ast::Spec::TypeSpec(s) => &mut s.comment,
+                                ast::Spec::ImportSpec(s) => &mut s.comment,
+                            };
+                            if existing.is_none() {
+                                *existing = Some(comment);
+                            }
+                        }
+                    }
+                }
+            }
             out.decls.push(top_level_decl);
         }
 
@@ -705,9 +776,14 @@ impl<'scanner> Parser<'scanner> {
                 let spec_doc = self.lead_comment.take();
                 if let Some(mut import_spec) = self.parse_import_spec()? {
                     import_spec.doc = spec_doc;
-                    import_spec.comment = self.line_comment.take();
-                    specs.push(ast::Spec::ImportSpec(import_spec));
-                    if self.token(Token::SEMICOLON)?.is_none() {
+                    let pre_semi_comment = self.line_comment.take();
+                    if self.token(Token::SEMICOLON)?.is_some() {
+                        import_spec.comment =
+                            self.line_comment.take().or(pre_semi_comment);
+                        specs.push(ast::Spec::ImportSpec(import_spec));
+                    } else {
+                        import_spec.comment = pre_semi_comment;
+                        specs.push(ast::Spec::ImportSpec(import_spec));
                         break;
                     }
                 } else {
@@ -820,9 +896,14 @@ impl<'scanner> Parser<'scanner> {
                 let spec_doc = self.lead_comment.take();
                 if let Some(mut type_spec) = self.parse_type_spec()? {
                     type_spec.doc = spec_doc;
-                    type_spec.comment = self.line_comment.take();
-                    specs.push(ast::Spec::TypeSpec(type_spec));
-                    if self.token(Token::SEMICOLON)?.is_none() {
+                    let pre_semi_comment = self.line_comment.take();
+                    if self.token(Token::SEMICOLON)?.is_some() {
+                        type_spec.comment =
+                            self.line_comment.take().or(pre_semi_comment);
+                        specs.push(ast::Spec::TypeSpec(type_spec));
+                    } else {
+                        type_spec.comment = pre_semi_comment;
+                        specs.push(ast::Spec::TypeSpec(type_spec));
                         break;
                     }
                 } else {
@@ -960,9 +1041,14 @@ impl<'scanner> Parser<'scanner> {
                 let spec_doc = self.lead_comment.take();
                 if let Some(mut const_spec) = self.parse_const_spec()? {
                     const_spec.doc = spec_doc;
-                    const_spec.comment = self.line_comment.take();
-                    specs.push(ast::Spec::ValueSpec(const_spec));
-                    if self.token(Token::SEMICOLON)?.is_none() {
+                    let pre_semi_comment = self.line_comment.take();
+                    if self.token(Token::SEMICOLON)?.is_some() {
+                        const_spec.comment =
+                            self.line_comment.take().or(pre_semi_comment);
+                        specs.push(ast::Spec::ValueSpec(const_spec));
+                    } else {
+                        const_spec.comment = pre_semi_comment;
+                        specs.push(ast::Spec::ValueSpec(const_spec));
                         break;
                     }
                 } else {
@@ -1043,9 +1129,14 @@ impl<'scanner> Parser<'scanner> {
                 let spec_doc = self.lead_comment.take();
                 if let Some(mut var_spec) = self.parse_var_spec()? {
                     var_spec.doc = spec_doc;
-                    var_spec.comment = self.line_comment.take();
-                    specs.push(ast::Spec::ValueSpec(var_spec));
-                    if self.token(Token::SEMICOLON)?.is_none() {
+                    let pre_semi_comment = self.line_comment.take();
+                    if self.token(Token::SEMICOLON)?.is_some() {
+                        var_spec.comment =
+                            self.line_comment.take().or(pre_semi_comment);
+                        specs.push(ast::Spec::ValueSpec(var_spec));
+                    } else {
+                        var_spec.comment = pre_semi_comment;
+                        specs.push(ast::Spec::ValueSpec(var_spec));
                         break;
                     }
                 } else {
@@ -2258,9 +2349,14 @@ impl<'scanner> Parser<'scanner> {
             let doc = self.lead_comment.take();
             if let Some(mut field_decl) = self.parse_field_decl()? {
                 field_decl.doc = doc;
-                field_decl.comment = self.line_comment.take();
-                fields.push(field_decl);
-                if self.token(Token::SEMICOLON)?.is_none() {
+                let pre_semi_comment = self.line_comment.take();
+                if self.token(Token::SEMICOLON)?.is_some() {
+                    field_decl.comment =
+                        self.line_comment.take().or(pre_semi_comment);
+                    fields.push(field_decl);
+                } else {
+                    field_decl.comment = pre_semi_comment;
+                    fields.push(field_decl);
                     break;
                 }
             } else {
@@ -3364,13 +3460,20 @@ impl<'scanner> Parser<'scanner> {
         };
 
         let mut list = vec![];
-        while let Some(statement) = self.parse_statement()? {
-            // Some statements (EmptyStmt, LabeledStmt with EmptyStmt) already consumed their semicolon
+        while let Some(mut statement) = self.parse_statement()? {
             let consumed_semi = Self::stmt_consumed_semicolon(&statement);
-            list.push(statement);
-            if !consumed_semi && self.token(Token::SEMICOLON)?.is_none() {
-                break;
+            if !consumed_semi {
+                if self.token(Token::SEMICOLON)?.is_some() {
+                    Self::apply_line_comment_to_decl(
+                        &mut statement,
+                        self.line_comment.take(),
+                    );
+                } else {
+                    list.push(statement);
+                    break;
+                }
             }
+            list.push(statement);
         }
 
         let rbrace = self.token(Token::RBRACE).required()?;
@@ -4786,13 +4889,13 @@ impl<'scanner> Parser<'scanner> {
         })
     }
 
-    // unary_op = "+" | "-" | "!" | "^" | "*" | "&" | "<-" .
+    // unary_op = "+" | "-" | "!" | "^" | "*" | "&" | "<-" | "~" .
     fn unary_op(&mut self) -> Result<Option<scanner::Step<'scanner>>> {
         log::debug!("Parser::unary_op()");
 
         use Token::*;
         Ok(match self.current_step {
-            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
+            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW | TILDE, _) => {
                 self.next()?;
                 Some(step)
             }
@@ -4840,67 +4943,27 @@ impl<'scanner> Parser<'scanner> {
 
     fn int_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::int_lit()");
-
-        self.token(Token::INT)?
-            .map_or(Ok(None), |(value_pos, kind, value)| {
-                Ok(Some(ast::BasicLit {
-                    value_pos,
-                    kind,
-                    value,
-                }))
-            })
+        Ok(self.token(Token::INT)?.map(make_basic_lit))
     }
 
     fn float_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::float_lit()");
-
-        self.token(Token::FLOAT)?
-            .map_or(Ok(None), |(value_pos, kind, value)| {
-                Ok(Some(ast::BasicLit {
-                    value_pos,
-                    kind,
-                    value,
-                }))
-            })
+        Ok(self.token(Token::FLOAT)?.map(make_basic_lit))
     }
 
     fn imaginary_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::imaginary_lit()");
-
-        self.token(Token::IMAG)?
-            .map_or(Ok(None), |(value_pos, kind, value)| {
-                Ok(Some(ast::BasicLit {
-                    value_pos,
-                    kind,
-                    value,
-                }))
-            })
+        Ok(self.token(Token::IMAG)?.map(make_basic_lit))
     }
 
     fn rune_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::rune_lit()");
-
-        self.token(Token::CHAR)?
-            .map_or(Ok(None), |(value_pos, kind, value)| {
-                Ok(Some(ast::BasicLit {
-                    value_pos,
-                    kind,
-                    value,
-                }))
-            })
+        Ok(self.token(Token::CHAR)?.map(make_basic_lit))
     }
 
     fn string_lit(&mut self) -> Result<Option<ast::BasicLit<'scanner>>> {
         log::debug!("Parser::string_lit()");
-
-        self.token(Token::STRING)?
-            .map_or(Ok(None), |(value_pos, kind, value)| {
-                Ok(Some(ast::BasicLit {
-                    value_pos,
-                    kind,
-                    value,
-                }))
-            })
+        Ok(self.token(Token::STRING)?.map(make_basic_lit))
     }
 
     /// Returns the current step and advances to the next one, but only if it matches the expected
