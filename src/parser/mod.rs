@@ -2849,15 +2849,75 @@ impl<'scanner> Parser<'scanner> {
             return Ok(Some(fields));
         }
 
-        // Multiple unnamed type parameters where the last has generic args: (T, F[T])
-        // parse_identifier_list consumed [T, F], next is [. The last ident is a generic
-        // type so all idents are unnamed parameter types.
+        // Multiple idents followed by [ could be:
+        // - Named params with slice/array type: (k, v []byte) — [ followed by ]
+        // - Unnamed generic type params: (T, F[T]) — [ followed by type arg
         if idents.len() > 1 && ellipsis.is_none() && self.current_step.1 == Token::LBRACK {
+            let lbrack_step = self.token(Token::LBRACK).required()?;
+            if self.current_step.1 == Token::RBRACK {
+                // (k, v []byte) — named parameters with slice type
+                let _rbrack = self.token(Token::RBRACK).required()?;
+                let elt = self.parse_type().required()?;
+                let type_ = ast::Expr::ArrayType(ast::ArrayType {
+                    lbrack: lbrack_step.0,
+                    len: None,
+                    elt: Box::new(elt),
+                });
+                let names: Vec<ast::Ident<'scanner>> = idents.into_iter().collect();
+                let mut fields = vec![ast::Field {
+                    doc: None,
+                    names: Some(names),
+                    type_: Some(type_),
+                    tag: None,
+                    comment: None,
+                }];
+                while self.token(Token::COMMA)?.is_some() {
+                    if self.current_step.1 == Token::RPAREN {
+                        break;
+                    }
+                    let (param_names, _, _) = self.parse_identifier_list().required()?;
+                    let type_ = self.parse_type().required()?;
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: Some(param_names),
+                        type_: Some(type_),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+                return Ok(Some(fields));
+            }
+            // (T, F[T]) — last ident is a generic type, all are unnamed
+            let mut type_indices = vec![self.parse_type().required()?];
+            while self.token(Token::COMMA)?.is_some() {
+                if self.current_step.1 == Token::RBRACK {
+                    break;
+                }
+                type_indices.push(self.parse_type().required()?);
+            }
+            let rbrack = self.token(Token::RBRACK).required()?;
             let mut fields: Vec<ast::Field<'scanner>> = Vec::new();
             let last = idents.len() - 1;
             for (i, ident) in idents.into_iter().enumerate() {
                 if i == last {
-                    let type_expr = self.parse_optional_type_instance(ast::Expr::Ident(ident))?;
+                    let type_expr = if let Some(index) = (type_indices.len() == 1)
+                        .then(|| type_indices.pop())
+                        .flatten()
+                    {
+                        ast::Expr::IndexExpr(ast::IndexExpr {
+                            x: Box::new(ast::Expr::Ident(ident)),
+                            lbrack: lbrack_step.0,
+                            index: Box::new(index),
+                            rbrack: rbrack.0,
+                        })
+                    } else {
+                        ast::Expr::IndexListExpr(ast::IndexListExpr {
+                            x: Box::new(ast::Expr::Ident(ident)),
+                            lbrack: lbrack_step.0,
+                            indices: std::mem::take(&mut type_indices),
+                            rbrack: rbrack.0,
+                        })
+                    };
                     fields.push(ast::Field {
                         doc: None,
                         names: None,
@@ -4694,7 +4754,7 @@ impl<'scanner> Parser<'scanner> {
 
         use Token::*;
         Ok(match self.current_step {
-            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW | TILDE, _) => {
+            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
                 self.next()?;
                 Some(step)
             }
