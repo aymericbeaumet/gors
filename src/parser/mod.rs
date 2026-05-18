@@ -1007,8 +1007,11 @@ impl<'scanner> Parser<'scanner> {
         let (type_, values) = if self.token(Token::ASSIGN)?.is_some() {
             (None, Some(self.parse_expression_list().required()?))
         } else if let Some(type_) = self.parse_type()? {
-            self.token(Token::ASSIGN).required()?;
-            (Some(type_), Some(self.parse_expression_list().required()?))
+            if self.token(Token::ASSIGN)?.is_some() {
+                (Some(type_), Some(self.parse_expression_list().required()?))
+            } else {
+                (Some(type_), None)
+            }
         } else {
             (None, None)
         };
@@ -1889,15 +1892,14 @@ impl<'scanner> Parser<'scanner> {
             None => return Ok(None),
         };
 
-        let len = if ELLIPSIS {
-            if let Some(ellipsis) = self.token(Token::ELLIPSIS)? {
-                Some(ast::Expr::Ellipsis(ast::Ellipsis {
-                    ellipsis: ellipsis.0,
-                    elt: None,
-                }))
-            } else {
-                self.parse_expression()?
-            }
+        // Always permit ellipsis for fault-tolerant parsing (matches Go's parser)
+        let len = if let Some(ellipsis) = self.token(Token::ELLIPSIS)? {
+            Some(ast::Expr::Ellipsis(ast::Ellipsis {
+                ellipsis: ellipsis.0,
+                elt: None,
+            }))
+        } else if ELLIPSIS {
+            self.parse_expression()?
         } else {
             self.parse_expression()?
         };
@@ -2075,6 +2077,8 @@ impl<'scanner> Parser<'scanner> {
             if matches!(
                 self.current_step.1,
                 Token::STRUCT
+                    | Token::INTERFACE
+                    | Token::LPAREN
                     | Token::LBRACK
                     | Token::MAP
                     | Token::FUNC
@@ -2845,6 +2849,48 @@ impl<'scanner> Parser<'scanner> {
             return Ok(Some(fields));
         }
 
+        // Multiple unnamed type parameters where the last has generic args: (T, F[T])
+        // parse_identifier_list consumed [T, F], next is [. The last ident is a generic
+        // type so all idents are unnamed parameter types.
+        if idents.len() > 1 && ellipsis.is_none() && self.current_step.1 == Token::LBRACK {
+            let mut fields: Vec<ast::Field<'scanner>> = Vec::new();
+            let last = idents.len() - 1;
+            for (i, ident) in idents.into_iter().enumerate() {
+                if i == last {
+                    let type_expr = self.parse_optional_type_instance(ast::Expr::Ident(ident))?;
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(type_expr),
+                        tag: None,
+                        comment: None,
+                    });
+                } else {
+                    fields.push(ast::Field {
+                        doc: None,
+                        names: None,
+                        type_: Some(ast::Expr::Ident(ident)),
+                        tag: None,
+                        comment: None,
+                    });
+                }
+            }
+            while self.token(Token::COMMA)?.is_some() {
+                if self.current_step.1 == Token::RPAREN {
+                    break;
+                }
+                let type_ = self.parse_type().required()?;
+                fields.push(ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(type_),
+                    tag: None,
+                    comment: None,
+                });
+            }
+            return Ok(Some(fields));
+        }
+
         // Special case: single identifier followed by [ could be:
         // 1. Named parameter with array/slice type: `ret []*Foo` or `n [10]int`
         // 2. Unnamed parameter with generic type: `BarType[T]`
@@ -3534,17 +3580,16 @@ impl<'scanner> Parser<'scanner> {
         log::debug!("Parser::parse_simple_stmt()");
 
         if let Some(mut exprs) = self.parse_expression_list()? {
-            // ShortVarDecl
-            if exprs.iter().all(|expr| matches!(expr, ast::Expr::Ident(_))) {
-                if let Some(define_op) = self.token(Token::DEFINE)? {
-                    let rhs = self.parse_expression_list().required()?;
-                    return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
-                        lhs: exprs,
-                        tok_pos: define_op.0,
-                        tok: define_op.1,
-                        rhs,
-                    })));
-                }
+            // ShortVarDecl — Go's parser accepts any expression list on LHS,
+            // semantic validation is deferred to the type checker
+            if let Some(define_op) = self.token(Token::DEFINE)? {
+                let rhs = self.parse_expression_list().required()?;
+                return Ok(Some(ast::Stmt::AssignStmt(ast::AssignStmt {
+                    lhs: exprs,
+                    tok_pos: define_op.0,
+                    tok: define_op.1,
+                    rhs,
+                })));
             }
 
             // Assignment
@@ -3842,9 +3887,12 @@ impl<'scanner> Parser<'scanner> {
             return Ok(None);
         };
 
-        // In type switch, parse types; otherwise parse expressions
+        // In type switch, parse types; for fault tolerance, fall back to expressions
         let list = if is_type_switch {
-            self.parse_type_list()?
+            match self.parse_type_list()? {
+                Some(list) => Some(list),
+                None => self.parse_expression_list()?,
+            }
         } else {
             self.parse_expression_list()?
         };
@@ -4103,9 +4151,15 @@ impl<'scanner> Parser<'scanner> {
         // If not followed by identifier, this is not type parameters (could be array type [5]int)
         // Return None with a special marker that we've consumed [
         if self.current_step.1 != Token::IDENT {
-            // This is [expr] for array type - return a special marker
-            // Parse the expression and ] to get the array length
-            let len = self.parse_expression().required()?;
+            // Handle [...]Type (auto-sized array)
+            let len = if let Some(ellipsis) = self.token(Token::ELLIPSIS)? {
+                ast::Expr::Ellipsis(ast::Ellipsis {
+                    ellipsis: ellipsis.0,
+                    elt: None,
+                })
+            } else {
+                self.parse_expression().required()?
+            };
             let rbrack = self.token(Token::RBRACK).required()?;
             // Return a FieldList with a special single field containing the array length expression
             // The caller will need to detect this and construct an ArrayType
@@ -4190,6 +4244,51 @@ impl<'scanner> Parser<'scanner> {
                     .expression(lhs, Token::lowest_precedence())
                     .required()?;
                 self.expr_level -= 1;
+
+                // Check if this could be type params: CallExpr(name, type) → name (type)
+                // This handles cases like [P (*int)] which parses as call P(*int)
+                let x = if let ast::Expr::CallExpr(mut call) = x {
+                    let is_type_param = matches!(*call.fun, ast::Expr::Ident(_))
+                        && call.args.as_ref().map_or(false, |a| a.len() == 1)
+                        && call.ellipsis.is_none()
+                        && self.current_step.1 != Token::RBRACK;
+
+                    if is_type_param {
+                        if let ast::Expr::Ident(name) = *call.fun {
+                            let arg = call.args.take().unwrap().pop().unwrap();
+                            let constraint = ast::Expr::ParenExpr(ast::ParenExpr {
+                                lparen: call.lparen,
+                                x: Box::new(arg),
+                                rparen: call.rparen,
+                            });
+                            let field = ast::Field {
+                                doc: None,
+                                names: Some(vec![name]),
+                                type_: Some(constraint),
+                                tag: None,
+                                comment: None,
+                            };
+                            let mut fields = vec![field];
+                            while self.token(Token::COMMA)?.is_some() {
+                                if self.current_step.1 == Token::RBRACK {
+                                    break;
+                                }
+                                fields.push(self.parse_type_param_decl().required()?);
+                            }
+                            let rbrack = self.token(Token::RBRACK).required()?;
+                            return Ok(Some(ast::FieldList {
+                                opening: Some(lbrack.0),
+                                list: fields,
+                                closing: Some(rbrack.0),
+                            }));
+                        }
+                        unreachable!()
+                    } else {
+                        ast::Expr::CallExpr(call)
+                    }
+                } else {
+                    x
+                };
 
                 let rbrack = self.token(Token::RBRACK).required()?;
                 return Ok(Some(ast::FieldList {
@@ -4595,7 +4694,7 @@ impl<'scanner> Parser<'scanner> {
 
         use Token::*;
         Ok(match self.current_step {
-            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW, _) => {
+            step @ (_, ADD | SUB | NOT | MUL | XOR | AND | ARROW | TILDE, _) => {
                 self.next()?;
                 Some(step)
             }

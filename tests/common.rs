@@ -353,52 +353,6 @@ pub fn is_must_error_file(path: &Path) -> bool {
     }
 }
 
-/// Files where gors has known parser limitations (Go succeeds but gors fails).
-fn known_gors_limitations() -> &'static HashSet<&'static str> {
-    static KNOWN_LIMITATIONS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    KNOWN_LIMITATIONS.get_or_init(|| {
-        let mut set = HashSet::new();
-        for file in [
-            // Parser limitation: long multi-line function signature
-            "fixtures/go_sources/repositories/prometheus/model/histogram/float_histogram.go",
-            // Go compiler/types test files with edge-case syntax
-            "fixtures/go_sources/repositories/go/src/cmd/compile/internal/syntax/testdata/interface.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/constdecl.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/decls0.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/check/expr0.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue43087.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue47411.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue49482.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue51472.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue51607.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue59740.go",
-            "fixtures/go_sources/repositories/go/src/internal/types/testdata/fixedbugs/issue62157.go",
-            "fixtures/go_sources/repositories/go/test/const2.go",
-            "fixtures/go_sources/repositories/go/test/ddd1.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug280.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug287.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug340.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug351.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/bug388a.go",
-            "fixtures/go_sources/repositories/go/test/fixedbugs/issue66663.go",
-            "fixtures/go_sources/repositories/go/test/syntax/typesw.go",
-        ] {
-            set.insert(file);
-        }
-        set
-    })
-}
-
-fn is_known_gors_limitation(path: &Path) -> bool {
-    let fixtures_dir = fixtures_dir();
-    if let Ok(relative) = path.strip_prefix(&fixtures_dir) {
-        let relative_str = format!("fixtures/{}", relative.display());
-        known_gors_limitations().contains(relative_str.as_str())
-    } else {
-        false
-    }
-}
-
 fn is_known_output_difference(path: &Path, diff_info: &str) -> bool {
     let fixtures_dir = fixtures_dir();
     let relative_str = if let Ok(relative) = path.strip_prefix(&fixtures_dir) {
@@ -448,16 +402,6 @@ fn test_single_file(command: &str, file: &Path, go_bin: &Path, gors_bin: &Path) 
     // Run gors
     let (gors_output, gors_duration) = match exec(gors_bin, &args) {
         Ok(result) => result,
-        Err(_) if is_known_gors_limitation(file) => {
-            return FileTestResult {
-                path: file.to_path_buf(),
-                passed: false,
-                skipped: true,
-                error: None,
-                go_duration,
-                gors_duration: Duration::ZERO,
-            };
-        }
         Err(e) => {
             return FileTestResult {
                 path: file.to_path_buf(),
