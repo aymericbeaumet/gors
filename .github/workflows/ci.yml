@@ -47,6 +47,11 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      - name: Install Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
       - name: Run unit tests
         run: make test-unit
 
@@ -66,7 +71,7 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.26.x'
 
       - name: Run integration tests (lexer + parser in parallel)
         run: make test-integrations
