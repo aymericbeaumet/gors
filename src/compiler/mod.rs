@@ -248,15 +248,15 @@ pub fn compile_program_multi(
 
     let builtins_file: syn::File =
         syn::parse_str(crate::backend_rust::GORS_BUILTINS).map_err(|e| {
-            CompilerError::UnsupportedConstruct(format!("failed to parse gors_builtins: {e}"))
+            CompilerError::UnsupportedConstruct(format!("failed to parse builtin: {e}"))
         })?;
     modules.insert(
-        "gors_builtins".to_string(),
+        "builtin".to_string(),
         CompiledModule {
-            mod_name: "gors_builtins".to_string(),
-            import_path: "gors_builtins".to_string(),
+            mod_name: "builtin".to_string(),
+            import_path: "builtin".to_string(),
             file: builtins_file,
-            filename: "gors_builtins.rs".to_string(),
+            filename: "builtin.rs".to_string(),
             content_hash: String::new(),
             is_main: false,
             is_stdlib: true,
@@ -692,7 +692,8 @@ fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn),
 }
 
 const BUILTINS: &[&str] = &[
-    "len", "cap", "append", "make", "new", "copy", "delete", "panic", "println", "print",
+    "len", "cap", "append", "make", "new", "copy", "delete", "clear", "close", "panic",
+    "println", "print", "max", "min", "complex", "real", "imag", "recover",
 ];
 
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
@@ -709,77 +710,163 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
         _ => unreachable!(),
     };
 
-    let args: Vec<syn::Expr> = call_expr
-        .args
-        .unwrap_or_default()
-        .into_iter()
-        .map(syn::Expr::from)
-        .collect();
+    let raw_args: Vec<ast::Expr> = call_expr.args.unwrap_or_default().into_iter().collect();
 
     match name.as_str() {
-        "len" => {
-            let x = &args[0];
-            syn::parse_quote! { gors_builtins::len(&#x) }
-        }
-        "cap" => {
-            let x = &args[0];
-            syn::parse_quote! { gors_builtins::cap(&#x) }
-        }
-        "append" => {
-            let slice = &args[0];
-            let elem = &args[1];
-            syn::parse_quote! { gors_builtins::append(#slice, #elem) }
-        }
         "make" => {
-            if args.len() <= 1 {
-                syn::parse_quote! { Default::default() }
-            } else if args.len() == 2 {
-                let size = &args[1];
-                syn::parse_quote! { gors_builtins::make_vec(#size) }
-            } else {
-                let cap = &args[2];
-                syn::parse_quote! { gors_builtins::make_vec_cap(#cap) }
+            let mut it = raw_args.into_iter();
+            let type_arg = it.next().unwrap();
+            let remaining: Vec<syn::Expr> = it.map(syn::Expr::from).collect();
+            match type_arg {
+                ast::Expr::ArrayType(arr) => {
+                    let elem_type: syn::Type = (*arr.elt).into();
+                    if remaining.is_empty() {
+                        syn::parse_quote! { Vec::<#elem_type>::new() }
+                    } else if remaining.len() == 1 {
+                        let size = &remaining[0];
+                        syn::parse_quote! { builtin::make_vec::<#elem_type>(#size) }
+                    } else {
+                        let size = &remaining[0];
+                        let cap_arg = &remaining[1];
+                        syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity(#cap_arg); v.resize_with(#size, Default::default); v } }
+                    }
+                }
+                ast::Expr::MapType(map) => {
+                    let key_type: syn::Type = (*map.key).into();
+                    let val_type: syn::Type = (*map.value).into();
+                    if remaining.is_empty() {
+                        syn::parse_quote! { std::collections::HashMap::<#key_type, #val_type>::new() }
+                    } else {
+                        let cap_arg = &remaining[0];
+                        syn::parse_quote! { std::collections::HashMap::<#key_type, #val_type>::with_capacity(#cap_arg) }
+                    }
+                }
+                ast::Expr::ChanType(_) => {
+                    if remaining.is_empty() {
+                        syn::parse_quote! { builtin::make_chan(0) }
+                    } else {
+                        let cap_arg = &remaining[0];
+                        syn::parse_quote! { builtin::make_chan(#cap_arg) }
+                    }
+                }
+                _ => {
+                    syn::parse_quote! { Default::default() }
+                }
             }
         }
         "new" => {
-            let type_arg = &args[0];
-            syn::parse_quote! { Box::new(#type_arg::default()) }
+            let type_arg: syn::Type = raw_args.into_iter().next().unwrap().into();
+            syn::parse_quote! { Box::new(<#type_arg>::default()) }
         }
-        "copy" => {
-            let dst = &args[0];
-            let src = &args[1];
-            syn::parse_quote! { gors_builtins::copy_slice(&mut #dst, &#src) }
-        }
-        "delete" => {
-            let map = &args[0];
-            let key = &args[1];
-            syn::parse_quote! { gors_builtins::delete(&mut #map, &#key) }
-        }
-        "panic" => {
-            if args.is_empty() {
-                syn::parse_quote! { panic!() }
-            } else {
-                let msg = &args[0];
-                syn::parse_quote! { panic!("{}", #msg) }
+        _ => {
+            let args: Vec<syn::Expr> = raw_args.into_iter().map(syn::Expr::from).collect();
+            match name.as_str() {
+                "len" => {
+                    let x = &args[0];
+                    syn::parse_quote! { builtin::len(&#x) }
+                }
+                "cap" => {
+                    let x = &args[0];
+                    syn::parse_quote! { builtin::cap(&#x) }
+                }
+                "append" => {
+                    let slice = &args[0];
+                    let elem = &args[1];
+                    syn::parse_quote! { builtin::append(#slice, #elem) }
+                }
+                "copy" => {
+                    let dst = &args[0];
+                    let src = &args[1];
+                    syn::parse_quote! { builtin::copy_slice(&mut #dst, &#src) }
+                }
+                "delete" => {
+                    let map = &args[0];
+                    let key = &args[1];
+                    syn::parse_quote! { builtin::delete(&mut #map, &#key) }
+                }
+                "clear" => {
+                    let x = &args[0];
+                    syn::parse_quote! { builtin::clear(&mut #x) }
+                }
+                "close" => {
+                    let ch = &args[0];
+                    syn::parse_quote! { builtin::close(&#ch) }
+                }
+                "max" => {
+                    if args.len() == 2 {
+                        let a = &args[0];
+                        let b = &args[1];
+                        syn::parse_quote! { builtin::max(#a, #b) }
+                    } else if args.len() == 3 {
+                        let a = &args[0];
+                        let b = &args[1];
+                        let c = &args[2];
+                        syn::parse_quote! { builtin::max3(#a, #b, #c) }
+                    } else {
+                        let a = &args[0];
+                        let b = &args[1];
+                        syn::parse_quote! { builtin::max(#a, #b) }
+                    }
+                }
+                "min" => {
+                    if args.len() == 2 {
+                        let a = &args[0];
+                        let b = &args[1];
+                        syn::parse_quote! { builtin::min(#a, #b) }
+                    } else if args.len() == 3 {
+                        let a = &args[0];
+                        let b = &args[1];
+                        let c = &args[2];
+                        syn::parse_quote! { builtin::min3(#a, #b, #c) }
+                    } else {
+                        let a = &args[0];
+                        let b = &args[1];
+                        syn::parse_quote! { builtin::min(#a, #b) }
+                    }
+                }
+                "complex" => {
+                    let re = &args[0];
+                    let im = &args[1];
+                    syn::parse_quote! { builtin::complex128(#re, #im) }
+                }
+                "real" => {
+                    let c = &args[0];
+                    syn::parse_quote! { builtin::real128(#c) }
+                }
+                "imag" => {
+                    let c = &args[0];
+                    syn::parse_quote! { builtin::imag128(#c) }
+                }
+                "recover" => {
+                    syn::parse_quote! { None::<String> }
+                }
+                "panic" => {
+                    if args.is_empty() {
+                        syn::parse_quote! { panic!() }
+                    } else {
+                        let msg = &args[0];
+                        syn::parse_quote! { panic!("{}", #msg) }
+                    }
+                }
+                "println" => {
+                    if args.is_empty() {
+                        syn::parse_quote! { ::std::println!() }
+                    } else {
+                        let first = &args[0];
+                        syn::parse_quote! { ::std::println!("{}", #first) }
+                    }
+                }
+                "print" => {
+                    if args.is_empty() {
+                        syn::parse_quote! { ::std::print!() }
+                    } else {
+                        let first = &args[0];
+                        syn::parse_quote! { ::std::print!("{}", #first) }
+                    }
+                }
+                _ => unreachable!("not a builtin: {}", name),
             }
         }
-        "println" => {
-            if args.is_empty() {
-                syn::parse_quote! { ::std::println!() }
-            } else {
-                let first = &args[0];
-                syn::parse_quote! { ::std::println!("{}", #first) }
-            }
-        }
-        "print" => {
-            if args.is_empty() {
-                syn::parse_quote! { ::std::print!() }
-            } else {
-                let first = &args[0];
-                syn::parse_quote! { ::std::print!("{}", #first) }
-            }
-        }
-        _ => unreachable!("not a builtin: {}", name),
     }
 }
 
@@ -2649,13 +2736,13 @@ func main() {
         assert!(output.files.contains_key("main.rs"));
         assert!(output.files.contains_key("lib.rs"));
         assert!(output.files.contains_key("fmt.rs"));
-        assert!(output.files.contains_key("gors_builtins.rs"));
+        assert!(output.files.contains_key("builtin.rs"));
         let main_rs = &output.files["main.rs"];
         assert!(main_rs.contains("mod lib"));
         assert!(main_rs.contains("use lib::*"));
         let lib_rs = &output.files["lib.rs"];
         assert!(lib_rs.contains("pub mod fmt"));
-        assert!(lib_rs.contains("pub mod gors_builtins"));
+        assert!(lib_rs.contains("pub mod builtin"));
     }
 
     #[test]
@@ -3065,7 +3152,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = vec![1, 2, 3];
-                    let mut n = gors_builtins::len(&s);
+                    let mut n = builtin::len(&s);
                 }
             },
         );
@@ -3085,7 +3172,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = vec![1, 2];
-                    s = gors_builtins::append(s, 3);
+                    s = builtin::append(s, 3);
                 }
             },
         );
@@ -3259,11 +3346,11 @@ func main() {
         assert!(output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("errors.rs"));
         assert!(output.files.contains_key("strconv.rs"));
-        assert!(output.files.contains_key("gors_builtins.rs"));
+        assert!(output.files.contains_key("builtin.rs"));
         let lib_rs = &output.files["lib.rs"];
         assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod errors"));
         assert!(lib_rs.contains("pub mod strconv"));
-        assert!(lib_rs.contains("pub mod gors_builtins"));
+        assert!(lib_rs.contains("pub mod builtin"));
     }
 }

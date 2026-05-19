@@ -307,27 +307,65 @@ pub fn generate_multi(
     Ok(GeneratedOutput { files })
 }
 
-pub const GORS_BUILTINS: &str = r#"#![allow(dead_code, non_snake_case)]
+pub const GORS_BUILTINS: &str = r#"#![allow(dead_code, non_snake_case, unused_imports)]
 
-#[inline]
-pub fn len<T>(v: &Vec<T>) -> usize {
-    v.len()
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Condvar};
+use std::fmt;
+
+// ---------------------------------------------------------------------------
+// len
+// ---------------------------------------------------------------------------
+
+pub trait GoLen {
+    fn go_len(&self) -> usize;
+}
+impl<T> GoLen for Vec<T> {
+    fn go_len(&self) -> usize { self.len() }
+}
+impl GoLen for String {
+    fn go_len(&self) -> usize { self.len() }
+}
+impl GoLen for str {
+    fn go_len(&self) -> usize { self.len() }
+}
+impl<K, V> GoLen for HashMap<K, V> {
+    fn go_len(&self) -> usize { self.len() }
+}
+impl<T> GoLen for GoChan<T> {
+    fn go_len(&self) -> usize { self.len() }
+}
+impl<T: GoLen + ?Sized> GoLen for &T {
+    fn go_len(&self) -> usize { (**self).go_len() }
 }
 
 #[inline]
-pub fn len_str(s: &str) -> usize {
-    s.len()
+pub fn len<T: GoLen + ?Sized>(v: &T) -> usize {
+    v.go_len()
+}
+
+// ---------------------------------------------------------------------------
+// cap
+// ---------------------------------------------------------------------------
+
+pub trait GoCap {
+    fn go_cap(&self) -> usize;
+}
+impl<T> GoCap for Vec<T> {
+    fn go_cap(&self) -> usize { self.capacity() }
+}
+impl<T> GoCap for GoChan<T> {
+    fn go_cap(&self) -> usize { self.cap() }
 }
 
 #[inline]
-pub fn len_string(s: &String) -> usize {
-    s.len()
+pub fn cap<T: GoCap + ?Sized>(v: &T) -> usize {
+    v.go_cap()
 }
 
-#[inline]
-pub fn cap<T>(v: &Vec<T>) -> usize {
-    v.capacity()
-}
+// ---------------------------------------------------------------------------
+// append
+// ---------------------------------------------------------------------------
 
 #[inline]
 pub fn append<T>(mut v: Vec<T>, elem: T) -> Vec<T> {
@@ -341,6 +379,10 @@ pub fn append_slice<T: Clone>(mut v: Vec<T>, elems: &[T]) -> Vec<T> {
     v
 }
 
+// ---------------------------------------------------------------------------
+// copy
+// ---------------------------------------------------------------------------
+
 #[inline]
 pub fn copy_slice<T: Clone>(dst: &mut [T], src: &[T]) -> usize {
     let n = dst.len().min(src.len());
@@ -348,13 +390,41 @@ pub fn copy_slice<T: Clone>(dst: &mut [T], src: &[T]) -> usize {
     n
 }
 
+// ---------------------------------------------------------------------------
+// delete
+// ---------------------------------------------------------------------------
+
 #[inline]
-pub fn delete<K: std::hash::Hash + Eq, V>(
-    m: &mut std::collections::HashMap<K, V>,
-    key: &K,
-) {
+pub fn delete<K: std::hash::Hash + Eq, V>(m: &mut HashMap<K, V>, key: &K) {
     m.remove(key);
 }
+
+// ---------------------------------------------------------------------------
+// clear
+// ---------------------------------------------------------------------------
+
+pub trait GoClear {
+    fn go_clear(&mut self);
+}
+impl<T: Default> GoClear for Vec<T> {
+    fn go_clear(&mut self) {
+        for elem in self.iter_mut() {
+            *elem = T::default();
+        }
+    }
+}
+impl<K, V> GoClear for HashMap<K, V> {
+    fn go_clear(&mut self) { self.clear(); }
+}
+
+#[inline]
+pub fn clear<T: GoClear>(v: &mut T) {
+    v.go_clear();
+}
+
+// ---------------------------------------------------------------------------
+// new / make
+// ---------------------------------------------------------------------------
 
 #[inline]
 pub fn new_box<T: Default>() -> Box<T> {
@@ -372,8 +442,320 @@ pub fn make_vec_cap<T>(cap: usize) -> Vec<T> {
 }
 
 #[inline]
-pub fn make_map<K, V>() -> std::collections::HashMap<K, V> {
-    std::collections::HashMap::new()
+pub fn make_map<K, V>() -> HashMap<K, V> {
+    HashMap::new()
+}
+
+#[inline]
+pub fn make_map_cap<K, V>(cap: usize) -> HashMap<K, V> {
+    HashMap::with_capacity(cap)
+}
+
+// ---------------------------------------------------------------------------
+// max / min
+// ---------------------------------------------------------------------------
+
+#[inline]
+pub fn max<T: PartialOrd>(a: T, b: T) -> T {
+    if a >= b { a } else { b }
+}
+
+#[inline]
+pub fn max3<T: PartialOrd>(a: T, b: T, c: T) -> T {
+    max(max(a, b), c)
+}
+
+#[inline]
+pub fn min<T: PartialOrd>(a: T, b: T) -> T {
+    if a <= b { a } else { b }
+}
+
+#[inline]
+pub fn min3<T: PartialOrd>(a: T, b: T, c: T) -> T {
+    min(min(a, b), c)
+}
+
+// ---------------------------------------------------------------------------
+// complex / real / imag
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Complex64 {
+    pub re: f32,
+    pub im: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Complex128 {
+    pub re: f64,
+    pub im: f64,
+}
+
+impl fmt::Display for Complex64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}{:+}i)", self.re, self.im)
+    }
+}
+
+impl fmt::Display for Complex128 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}{:+}i)", self.re, self.im)
+    }
+}
+
+impl std::ops::Add for Complex64 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self { Self { re: self.re + rhs.re, im: self.im + rhs.im } }
+}
+impl std::ops::Sub for Complex64 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self { Self { re: self.re - rhs.re, im: self.im - rhs.im } }
+}
+impl std::ops::Mul for Complex64 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self {
+            re: self.re * rhs.re - self.im * rhs.im,
+            im: self.re * rhs.im + self.im * rhs.re,
+        }
+    }
+}
+impl std::ops::Div for Complex64 {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self {
+        let denom = rhs.re * rhs.re + rhs.im * rhs.im;
+        Self {
+            re: (self.re * rhs.re + self.im * rhs.im) / denom,
+            im: (self.im * rhs.re - self.re * rhs.im) / denom,
+        }
+    }
+}
+impl std::ops::Add for Complex128 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self { Self { re: self.re + rhs.re, im: self.im + rhs.im } }
+}
+impl std::ops::Sub for Complex128 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self { Self { re: self.re - rhs.re, im: self.im - rhs.im } }
+}
+impl std::ops::Mul for Complex128 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self {
+            re: self.re * rhs.re - self.im * rhs.im,
+            im: self.re * rhs.im + self.im * rhs.re,
+        }
+    }
+}
+impl std::ops::Div for Complex128 {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self {
+        let denom = rhs.re * rhs.re + rhs.im * rhs.im;
+        Self {
+            re: (self.re * rhs.re + self.im * rhs.im) / denom,
+            im: (self.im * rhs.re - self.re * rhs.im) / denom,
+        }
+    }
+}
+
+#[inline]
+pub fn complex64(re: f32, im: f32) -> Complex64 {
+    Complex64 { re, im }
+}
+
+#[inline]
+pub fn complex128(re: f64, im: f64) -> Complex128 {
+    Complex128 { re, im }
+}
+
+#[inline]
+pub fn real64(c: Complex64) -> f32 {
+    c.re
+}
+
+#[inline]
+pub fn real128(c: Complex128) -> f64 {
+    c.re
+}
+
+#[inline]
+pub fn imag64(c: Complex64) -> f32 {
+    c.im
+}
+
+#[inline]
+pub fn imag128(c: Complex128) -> f64 {
+    c.im
+}
+
+// ---------------------------------------------------------------------------
+// recover
+// ---------------------------------------------------------------------------
+
+#[inline]
+pub fn recover_func<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Option<String> {
+    match std::panic::catch_unwind(f) {
+        Ok(()) => None,
+        Err(e) => {
+            if let Some(s) = e.downcast_ref::<String>() {
+                Some(s.clone())
+            } else if let Some(s) = e.downcast_ref::<&str>() {
+                Some(s.to_string())
+            } else {
+                Some("unknown panic".to_string())
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GoChan — Go-style channel using std::sync primitives
+// ---------------------------------------------------------------------------
+
+struct ChanInner<T> {
+    buf: std::collections::VecDeque<T>,
+    capacity: usize,
+    closed: bool,
+    senders_waiting: usize,
+    receivers_waiting: usize,
+}
+
+pub struct GoChan<T> {
+    inner: Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>,
+}
+
+impl<T> Clone for GoChan<T> {
+    fn clone(&self) -> Self {
+        GoChan { inner: Arc::clone(&self.inner) }
+    }
+}
+
+impl<T> GoChan<T> {
+    pub fn new(capacity: usize) -> Self {
+        GoChan {
+            inner: Arc::new((
+                Mutex::new(ChanInner {
+                    buf: std::collections::VecDeque::with_capacity(capacity),
+                    capacity,
+                    closed: false,
+                    senders_waiting: 0,
+                    receivers_waiting: 0,
+                }),
+                Condvar::new(), // notify receivers
+                Condvar::new(), // notify senders
+            )),
+        }
+    }
+
+    pub fn send(&self, val: T) {
+        let (lock, rx_cv, tx_cv) = &*self.inner;
+        let mut inner = lock.lock().unwrap();
+        if inner.closed {
+            panic!("send on closed channel");
+        }
+        while inner.buf.len() >= inner.capacity && inner.capacity > 0 {
+            inner.senders_waiting += 1;
+            inner = tx_cv.wait(inner).unwrap();
+            inner.senders_waiting -= 1;
+            if inner.closed {
+                panic!("send on closed channel");
+            }
+        }
+        if inner.capacity == 0 {
+            inner.buf.push_back(val);
+            rx_cv.notify_one();
+            inner.senders_waiting += 1;
+            while !inner.buf.is_empty() && !inner.closed {
+                inner = tx_cv.wait(inner).unwrap();
+            }
+            inner.senders_waiting -= 1;
+        } else {
+            inner.buf.push_back(val);
+            rx_cv.notify_one();
+        }
+    }
+
+    pub fn recv(&self) -> Option<T> {
+        let (lock, rx_cv, tx_cv) = &*self.inner;
+        let mut inner = lock.lock().unwrap();
+        loop {
+            if let Some(val) = inner.buf.pop_front() {
+                tx_cv.notify_one();
+                return Some(val);
+            }
+            if inner.closed {
+                return None;
+            }
+            inner.receivers_waiting += 1;
+            inner = rx_cv.wait(inner).unwrap();
+            inner.receivers_waiting -= 1;
+        }
+    }
+
+    pub fn recv_with_ok(&self) -> (T, bool) where T: Default {
+        match self.recv() {
+            Some(v) => (v, true),
+            None => (T::default(), false),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        let (lock, _, _) = &*self.inner;
+        lock.lock().unwrap().buf.len()
+    }
+
+    pub fn cap(&self) -> usize {
+        let (lock, _, _) = &*self.inner;
+        lock.lock().unwrap().capacity
+    }
+}
+
+#[inline]
+pub fn close<T>(c: &GoChan<T>) {
+    let (lock, rx_cv, tx_cv) = &*c.inner;
+    let mut inner = lock.lock().unwrap();
+    if inner.closed {
+        panic!("close of closed channel");
+    }
+    inner.closed = true;
+    rx_cv.notify_all();
+    tx_cv.notify_all();
+}
+
+#[inline]
+pub fn make_chan<T>(capacity: usize) -> GoChan<T> {
+    GoChan::new(capacity)
+}
+
+// ---------------------------------------------------------------------------
+// print helpers (variadic via macros)
+// ---------------------------------------------------------------------------
+
+#[macro_export]
+macro_rules! go_print {
+    () => {};
+    ($($arg:expr),+ $(,)?) => {{
+        let mut _first = true;
+        $(
+            if !_first { eprint!(" "); }
+            eprint!("{}", $arg);
+            _first = false;
+        )+
+    }};
+}
+
+#[macro_export]
+macro_rules! go_println {
+    () => { eprintln!() };
+    ($($arg:expr),+ $(,)?) => {{
+        let mut _first = true;
+        $(
+            if !_first { eprint!(" "); }
+            eprint!("{}", $arg);
+            _first = false;
+        )+
+        eprintln!();
+    }};
 }
 "#;
 
