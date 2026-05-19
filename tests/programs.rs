@@ -1,13 +1,7 @@
 //! Program execution tests.
 //!
 //! These tests compile real-world Go programs and verify their output matches
-//! the expected output when run through different backends.
-//!
-//! # Backend comparison
-//!
-//! - `go run` - Native Go execution (reference output)
-//! - `gors build --emit=rust` + `rustc` + exec - Rust backend
-//! - `gors run` - WASM backend
+//! the expected output from `go run`.
 //!
 //! # Adding a new program
 //!
@@ -20,8 +14,6 @@ mod common;
 use common::{fixtures_dir, gors_bin};
 use std::path::PathBuf;
 use std::process::Command;
-
-use wasmi::{Caller, Engine, Extern, Func, Linker, Module, Store};
 
 /// Discovered program with its expected output.
 #[derive(Debug)]
@@ -122,7 +114,7 @@ impl BackendResult {
 }
 
 /// Compile and run via Rust backend using CLI:
-/// 1. `gors build --emit=rust -o <temp>.rs <path>`
+/// 1. `gors build -o <temp>.rs <path>`
 /// 2. `rustc <temp>.rs -o <temp_bin>`
 /// 3. Execute `<temp_bin>`
 pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
@@ -134,12 +126,10 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
     let rust_file = temp_dir.path().join("main.rs");
     let bin_file = temp_dir.path().join("main");
 
-    // Step 1: gors build --emit=rust
     let gors = gors_bin();
     let build_output = Command::new(gors)
         .args([
             "build",
-            "--emit=rust",
             "-o",
             rust_file.to_str().unwrap(),
             path.to_str().unwrap(),
@@ -158,7 +148,6 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
         ));
     }
 
-    // Step 2: Compile with rustc
     let rustc_output = Command::new("rustc")
         .args([
             rust_file.to_str().unwrap(),
@@ -174,7 +163,6 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
     };
 
     if !rustc_output.status.success() {
-        // Include the generated Rust source for debugging
         let rust_source = std::fs::read_to_string(&rust_file).unwrap_or_default();
         return BackendResult::failure(format!(
             "rustc compilation failed:\n{}\n{}\n\nGenerated Rust source:\n{}",
@@ -184,7 +172,6 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
         ));
     }
 
-    // Step 3: Execute the binary
     let exec_output = Command::new(&bin_file).output();
 
     let exec_output = match exec_output {
@@ -202,50 +189,23 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
     BackendResult::success(String::from_utf8_lossy(&exec_output.stdout).to_string())
 }
 
-/// Compile and run via WASM backend using CLI:
-/// `gors run <path>`
-pub fn run_via_wasm_cli(path: &std::path::Path) -> BackendResult {
-    let gors = gors_bin();
-    let output = Command::new(gors)
-        .args(["run", path.to_str().unwrap()])
-        .output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to run gors run: {}", e)),
-    };
-
-    if !output.status.success() {
-        return BackendResult::failure(format!(
-            "gors run failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    BackendResult::success(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Run a Go program via the Rust backend using library APIs (for comparison).
+/// Run a Go program via the Rust backend using library APIs.
 pub fn run_via_rust_lib(path: &std::path::Path) -> BackendResult {
-    // Parse (supports both files and directories)
     let (ast, _files) = match gors::parser::parse_path(path.to_str().unwrap()) {
         Ok(result) => result,
         Err(e) => return BackendResult::failure(format!("Parse error: {:?}", e)),
     };
 
-    // Compile
     let compiled = match gors::compiler::compile(ast) {
         Ok(c) => c,
         Err(e) => return BackendResult::failure(format!("Compile error: {:?}", e)),
     };
 
-    // Generate Rust
     let rust_source = match gors::backend_rust::generate(compiled) {
         Ok(s) => s,
         Err(e) => return BackendResult::failure(format!("Codegen error: {:?}", e)),
     };
 
-    // Write to temp file
     let temp_dir = match tempfile::tempdir() {
         Ok(d) => d,
         Err(e) => return BackendResult::failure(format!("Failed to create temp dir: {}", e)),
@@ -258,7 +218,6 @@ pub fn run_via_rust_lib(path: &std::path::Path) -> BackendResult {
         return BackendResult::failure(format!("Failed to write Rust file: {}", e));
     }
 
-    // Compile with rustc
     let rustc = Command::new("rustc")
         .args([
             rust_file.to_str().unwrap(),
@@ -282,7 +241,6 @@ pub fn run_via_rust_lib(path: &std::path::Path) -> BackendResult {
         ));
     }
 
-    // Run the binary
     let output = Command::new(&bin_file).output();
 
     let output = match output {
@@ -300,160 +258,10 @@ pub fn run_via_rust_lib(path: &std::path::Path) -> BackendResult {
     BackendResult::success(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Compile and run via WASM backend using library APIs.
-pub fn run_via_wasm_lib(path: &std::path::Path) -> BackendResult {
-    // Parse (supports both files and directories)
-    let (ast, _files) = match gors::parser::parse_path(path.to_str().unwrap()) {
-        Ok(result) => result,
-        Err(e) => return BackendResult::failure(format!("Parse error: {:?}", e)),
-    };
-
-    // Compile to Rust AST
-    let compiled = match gors::compiler::compile(ast) {
-        Ok(c) => c,
-        Err(e) => return BackendResult::failure(format!("Compile error: {:?}", e)),
-    };
-
-    // Compile to WASM
-    let wasm_bytes = match gors::backend_wasm::compile_to_wasm(&compiled) {
-        Ok(bytes) => bytes,
-        Err(e) => return BackendResult::failure(format!("WASM compile error: {:?}", e)),
-    };
-
-    // Run with wasmi
-    match run_wasm_bytes(&wasm_bytes) {
-        Ok(output) => BackendResult::success(output),
-        Err(e) => BackendResult::failure(e),
-    }
-}
-
-/// State for WASM execution - holds output buffer and memory reference
-struct WasmState {
-    output: Vec<String>,
-    memory: Option<wasmi::Memory>,
-}
-
-/// Run WASM bytes using wasmi and capture output.
-fn run_wasm_bytes(wasm_bytes: &[u8]) -> Result<String, String> {
-    // Create engine and store with state
-    let engine = Engine::default();
-    let state = WasmState {
-        output: Vec::new(),
-        memory: None,
-    };
-    let mut store = Store::new(&engine, state);
-
-    // Compile the WASM module
-    let module =
-        Module::new(&engine, wasm_bytes).map_err(|e| format!("WASM module error: {}", e))?;
-
-    // Create linker and add imports
-    let mut linker = Linker::new(&engine);
-
-    // print_i32 function that captures output to the store's state
-    linker
-        .func_wrap(
-            "env",
-            "print_i32",
-            |mut caller: Caller<'_, WasmState>, value: i32| {
-                caller.data_mut().output.push(value.to_string());
-            },
-        )
-        .map_err(|e| format!("Failed to add print_i32: {}", e))?;
-
-    // print_str function that reads string from memory
-    linker
-        .func_wrap(
-            "env",
-            "print_str",
-            |mut caller: Caller<'_, WasmState>, offset: i32, len: i32| {
-                let memory = caller.data().memory;
-                if let Some(mem) = memory {
-                    let mut buffer = vec![0u8; len as usize];
-                    if mem.read(&caller, offset as usize, &mut buffer).is_ok() {
-                        if let Ok(s) = String::from_utf8(buffer) {
-                            caller.data_mut().output.push(s);
-                        }
-                    }
-                }
-            },
-        )
-        .map_err(|e| format!("Failed to add print_str: {}", e))?;
-
-    // Instantiate the module
-    let instance = linker
-        .instantiate_and_start(&mut store, &module)
-        .map_err(|e| format!("WASM instantiation error: {}", e))?;
-
-    // Get memory export and store it in state for print_str to use
-    if let Some(memory) = instance
-        .get_export(&store, "memory")
-        .and_then(Extern::into_memory)
-    {
-        store.data_mut().memory = Some(memory);
-    }
-
-    // Get and call the main function
-    let main_func: Func = instance
-        .get_export(&store, "main")
-        .and_then(Extern::into_func)
-        .ok_or("main function not found")?;
-
-    main_func
-        .call(&mut store, &[], &mut [])
-        .map_err(|e| format!("WASM execution error: {}", e))?;
-
-    // Get output
-    let output = &store.data().output;
-    Ok(output.join("\n") + if output.is_empty() { "" } else { "\n" })
-}
-
 // =============================================================================
 // Test Cases
 // =============================================================================
 
-/// Summary of test results for a backend
-#[derive(Default)]
-struct TestSummary {
-    passed: Vec<String>,
-    failed: Vec<(String, String)>, // (program_name, error)
-}
-
-impl TestSummary {
-    fn add_pass(&mut self, name: &str) {
-        self.passed.push(name.to_string());
-    }
-
-    fn add_fail(&mut self, name: &str, error: &str) {
-        self.failed.push((name.to_string(), error.to_string()));
-    }
-
-    fn print_summary(&self, backend_name: &str) {
-        eprintln!("\n=== {} Backend Summary ===", backend_name);
-        eprintln!("Passed: {}", self.passed.len());
-        eprintln!("Failed: {}", self.failed.len());
-
-        if !self.passed.is_empty() {
-            eprintln!("\nPassing tests:");
-            for name in &self.passed {
-                eprintln!("  ✓ {}", name);
-            }
-        }
-
-        if !self.failed.is_empty() {
-            eprintln!("\nFailing tests:");
-            for (name, error) in &self.failed {
-                eprintln!("  ✗ {}", name);
-                // Show first line of error
-                if let Some(first_line) = error.lines().next() {
-                    eprintln!("    {}", first_line);
-                }
-            }
-        }
-    }
-}
-
-/// Test all programs via the Rust backend (CLI: gors build --emit=rust + rustc)
 #[test]
 fn test_programs_rust_backend() {
     let programs = discover_programs();
@@ -462,11 +270,10 @@ fn test_programs_rust_backend() {
         "No programs found in fixtures/go_programs"
     );
 
-    let mut summary = TestSummary::default();
-    let mut all_passed = true;
+    let mut passed = 0;
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     for program in &programs {
-        // Skip programs with empty expected output (go run failed)
         if program.expected_output.is_empty() {
             eprintln!(
                 "Skipping {} - no reference output from go run",
@@ -477,91 +284,43 @@ fn test_programs_rust_backend() {
 
         let result = run_via_rust_cli(&program.dir);
 
-        if result.success {
-            if result.output == program.expected_output {
-                summary.add_pass(&program.name);
-            } else {
-                all_passed = false;
-                summary.add_fail(
-                    &program.name,
-                    &format!(
-                        "Output mismatch:\nExpected: {:?}\nGot: {:?}",
-                        program.expected_output, result.output
-                    ),
-                );
-            }
+        if result.success && result.output == program.expected_output {
+            passed += 1;
+        } else if result.success {
+            failed.push((
+                program.name.clone(),
+                format!(
+                    "Output mismatch:\nExpected: {:?}\nGot: {:?}",
+                    program.expected_output, result.output
+                ),
+            ));
         } else {
-            all_passed = false;
-            summary.add_fail(
-                &program.name,
-                result.error.as_deref().unwrap_or("Unknown error"),
-            );
+            failed.push((
+                program.name.clone(),
+                result
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
+            ));
         }
     }
 
-    summary.print_summary("Rust (CLI)");
+    eprintln!("\n=== Rust Backend Summary ===");
+    eprintln!("Passed: {passed}");
+    eprintln!("Failed: {}", failed.len());
 
-    // Assert that at least some tests pass (soft assertion for now)
-    // When the backend is more complete, change this to assert all pass
-    if !all_passed {
-        eprintln!("\nNote: Some Rust backend tests failed. This is expected during development.");
+    if !failed.is_empty() {
+        eprintln!("\nFailing tests:");
+        for (name, error) in &failed {
+            eprintln!("  ✗ {}", name);
+            for line in error.lines().take(3) {
+                eprintln!("    {}", line);
+            }
+        }
     }
+
+    assert!(failed.is_empty(), "{} tests failed", failed.len());
 }
 
-/// Test all programs via the WASM backend (CLI: gors run)
-#[test]
-fn test_programs_wasm_backend() {
-    let programs = discover_programs();
-    assert!(
-        !programs.is_empty(),
-        "No programs found in fixtures/go_programs"
-    );
-
-    let mut summary = TestSummary::default();
-    let mut all_passed = true;
-
-    for program in &programs {
-        // Skip programs with empty expected output
-        if program.expected_output.is_empty() {
-            eprintln!(
-                "Skipping {} - no reference output from go run",
-                program.name
-            );
-            continue;
-        }
-
-        let result = run_via_wasm_cli(&program.dir);
-
-        if result.success {
-            if result.output == program.expected_output {
-                summary.add_pass(&program.name);
-            } else {
-                all_passed = false;
-                summary.add_fail(
-                    &program.name,
-                    &format!(
-                        "Output mismatch:\nExpected: {:?}\nGot: {:?}",
-                        program.expected_output, result.output
-                    ),
-                );
-            }
-        } else {
-            all_passed = false;
-            summary.add_fail(
-                &program.name,
-                result.error.as_deref().unwrap_or("Unknown error"),
-            );
-        }
-    }
-
-    summary.print_summary("WASM (CLI)");
-
-    if !all_passed {
-        eprintln!("\nNote: Some WASM backend tests failed. This is expected during development.");
-    }
-}
-
-/// Test all programs via the Go runner (uses the custom Go-based runner)
 #[test]
 fn test_programs_go_runner() {
     use common::go_runner_bin;
@@ -575,7 +334,6 @@ fn test_programs_go_runner() {
     let go_bin = go_runner_bin();
 
     for program in &programs {
-        // Skip programs with empty expected output
         if program.expected_output.is_empty() {
             eprintln!(
                 "Skipping {} - no reference output from go run",
@@ -601,40 +359,33 @@ fn test_programs_go_runner() {
     }
 }
 
-/// Test source map generation for compilable programs.
 #[test]
 fn test_programs_sourcemap() {
     let programs = discover_programs();
 
     for program in &programs {
-        // Parse the directory (supports both files and directories)
         let (ast, files) = match gors::parser::parse_path(program.dir.to_str().unwrap()) {
             Ok(result) => result,
             Err(_) => continue,
         };
 
-        // Get the first file's info for source map
         let (go_file, go_source) = match files.first() {
             Some((f, s)) => (f.as_str(), s.as_str()),
             None => continue,
         };
 
-        // Compile with source map tracking
         let compiled = match gors::compiler::compile_with_source_map(ast, go_file, go_source) {
             Ok(compiled) => compiled,
             Err(_) => continue,
         };
 
-        // Generate Rust code
         let rust_source = match gors::backend_rust::generate(compiled) {
             Ok(s) => s,
             Err(_) => continue,
         };
 
-        // Build the source map
         let source_map = gors::compiler::build_source_map(&rust_source);
 
-        // Validate: serialize and parse back (round-trip)
         let mut buf = Vec::new();
         if source_map.to_writer(&mut buf).is_err() {
             continue;
@@ -645,7 +396,6 @@ fn test_programs_sourcemap() {
             Err(e) => panic!("Invalid sourcemap for {}: {}", go_file, e),
         };
 
-        // Basic validation
         assert!(
             parsed.get_token_count() > 0,
             "Empty sourcemap for {}",
@@ -660,8 +410,7 @@ fn test_programs_sourcemap() {
     }
 }
 
-/// Comprehensive test that reports detailed results for all backends.
-/// This test is the main entry point for testing program execution.
+/// Comprehensive test that reports detailed results.
 #[test]
 fn test_all_programs() {
     let programs = discover_programs();
@@ -674,98 +423,40 @@ fn test_all_programs() {
     eprintln!("Testing {} programs", programs.len());
     eprintln!("========================================\n");
 
-    let mut rust_results: Vec<(String, bool, String)> = Vec::new();
-    let mut wasm_results: Vec<(String, bool, String)> = Vec::new();
+    let mut passed = 0;
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     for program in &programs {
-        eprintln!("Testing: {}", program.name);
-        eprintln!("  Expected output: {:?}", program.expected_output);
+        eprint!("  {}: ", program.name);
 
-        // Skip if no expected output
         if program.expected_output.is_empty() {
-            eprintln!("  [SKIP] No reference output from go run");
+            eprintln!("SKIP (no reference output)");
             continue;
         }
 
-        // Test Rust backend
-        let rust_result = run_via_rust_cli(&program.dir);
-        if rust_result.success && rust_result.output == program.expected_output {
-            eprintln!("  [RUST] PASS");
-            rust_results.push((program.name.clone(), true, String::new()));
-        } else if rust_result.success {
-            eprintln!("  [RUST] FAIL - Output mismatch");
-            eprintln!("    Got: {:?}", rust_result.output);
-            rust_results.push((
+        let result = run_via_rust_cli(&program.dir);
+        if result.success && result.output == program.expected_output {
+            eprintln!("PASS");
+            passed += 1;
+        } else if result.success {
+            eprintln!("FAIL (output mismatch)");
+            eprintln!("    Expected: {:?}", program.expected_output);
+            eprintln!("    Got:      {:?}", result.output);
+            failed.push((
                 program.name.clone(),
-                false,
                 format!(
-                    "Output mismatch: expected {:?}, got {:?}",
-                    program.expected_output, rust_result.output
+                    "expected {:?}, got {:?}",
+                    program.expected_output, result.output
                 ),
             ));
         } else {
-            eprintln!(
-                "  [RUST] FAIL - {}",
-                rust_result.error.as_deref().unwrap_or("Unknown error")
-            );
-            rust_results.push((
-                program.name.clone(),
-                false,
-                rust_result
-                    .error
-                    .unwrap_or_else(|| "Unknown error".to_string()),
-            ));
+            let err = result.error.as_deref().unwrap_or("Unknown error");
+            eprintln!("FAIL ({})", err.lines().next().unwrap_or(err));
+            failed.push((program.name.clone(), err.to_string()));
         }
-
-        // Test WASM backend
-        let wasm_result = run_via_wasm_cli(&program.dir);
-        if wasm_result.success && wasm_result.output == program.expected_output {
-            eprintln!("  [WASM] PASS");
-            wasm_results.push((program.name.clone(), true, String::new()));
-        } else if wasm_result.success {
-            eprintln!("  [WASM] FAIL - Output mismatch");
-            eprintln!("    Got: {:?}", wasm_result.output);
-            wasm_results.push((
-                program.name.clone(),
-                false,
-                format!(
-                    "Output mismatch: expected {:?}, got {:?}",
-                    program.expected_output, wasm_result.output
-                ),
-            ));
-        } else {
-            eprintln!(
-                "  [WASM] FAIL - {}",
-                wasm_result.error.as_deref().unwrap_or("Unknown error")
-            );
-            wasm_results.push((
-                program.name.clone(),
-                false,
-                wasm_result
-                    .error
-                    .unwrap_or_else(|| "Unknown error".to_string()),
-            ));
-        }
-
-        eprintln!();
     }
 
-    // Final summary
-    let rust_passed = rust_results.iter().filter(|(_, p, _)| *p).count();
-    let wasm_passed = wasm_results.iter().filter(|(_, p, _)| *p).count();
-
-    eprintln!("========================================");
-    eprintln!("FINAL RESULTS");
-    eprintln!("========================================");
-    eprintln!(
-        "Rust backend: {}/{} passed",
-        rust_passed,
-        rust_results.len()
-    );
-    eprintln!(
-        "WASM backend: {}/{} passed",
-        wasm_passed,
-        wasm_results.len()
-    );
+    eprintln!("\n========================================");
+    eprintln!("RESULTS: {passed}/{} passed", passed + failed.len());
     eprintln!("========================================\n");
 }

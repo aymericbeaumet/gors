@@ -12,7 +12,6 @@
 //! - [`ast`] - Go AST data structures based on the Go language specification
 //! - [`compiler`] - Transforms Go AST into Rust `syn` AST
 //! - [`backend_rust`] - Formats the Rust AST into source code
-//! - [`backend_wasm`] - Compiles Rust AST directly to WebAssembly
 //! - [`error`] - Error types and diagnostic formatting
 //! - [`token`] - Token types and source position tracking
 //!
@@ -88,8 +87,3 @@ pub mod mapping;
 /// position tracking for source locations.
 pub mod token;
 
-/// WebAssembly backend for direct WASM compilation.
-///
-/// Compiles Rust AST (syn::File) directly to WebAssembly bytecode
-/// using the Walrus library. Works in both native CLI and browser.
-pub mod backend_wasm;

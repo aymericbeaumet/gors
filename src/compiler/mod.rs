@@ -760,8 +760,39 @@ impl TryFrom<ast::ForStmt<'_>> for syn::Expr {
         }
 
         let mut body: syn::Block = for_stmt.body.try_into()?;
+
         if let Some(post) = for_stmt.post {
-            body.stmts.extend(Vec::<syn::Stmt>::try_from(*post)?);
+            let post_stmts = Vec::<syn::Stmt>::try_from(*post)?;
+
+            if has_unlabeled_continue(&body.stmts) {
+                // Go's `continue` executes the post statement before re-checking
+                // the condition. Rust's `continue` skips to the condition directly.
+                // Fix: wrap body in `'body: { ... }` and rewrite `continue` as
+                // `break 'body` so control falls through to the post statements.
+                rewrite_continue_as_break_body(&mut body.stmts);
+
+                let labeled_body = syn::Stmt::Expr(
+                    Self::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: Some(syn::Label {
+                            name: syn::Lifetime::new("'body", Span::mixed_site()),
+                            colon_token: <Token![:]>::default(),
+                        }),
+                        block: body,
+                    }),
+                    Some(<Token![;]>::default()),
+                );
+
+                let mut loop_stmts = vec![labeled_body];
+                loop_stmts.extend(post_stmts);
+
+                body = syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: loop_stmts,
+                };
+            } else {
+                body.stmts.extend(post_stmts);
+            }
         }
 
         stmts.push(syn::Stmt::Expr(
@@ -792,6 +823,69 @@ impl TryFrom<ast::ForStmt<'_>> for syn::Expr {
                 brace_token: syn::token::Brace::default(),
             },
         }))
+    }
+}
+
+fn has_unlabeled_continue(stmts: &[syn::Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        syn::Stmt::Expr(syn::Expr::Continue(cont), _) => cont.label.is_none(),
+        syn::Stmt::Expr(expr, _) => has_unlabeled_continue_in_expr(expr),
+        _ => false,
+    })
+}
+
+fn has_unlabeled_continue_in_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::If(if_expr) => {
+            has_unlabeled_continue(&if_expr.then_branch.stmts)
+                || if_expr
+                    .else_branch
+                    .as_ref()
+                    .is_some_and(|(_, e)| has_unlabeled_continue_in_expr(e))
+        }
+        syn::Expr::Block(block) => has_unlabeled_continue(&block.block.stmts),
+        syn::Expr::While(_) | syn::Expr::Loop(_) | syn::Expr::ForLoop(_) => false,
+        _ => false,
+    }
+}
+
+/// Rewrite unlabeled `continue;` to `break 'body;` in a statement list.
+/// Recurses into if/else and blocks but stops at nested loops (which have
+/// their own continue targets).
+fn rewrite_continue_as_break_body(stmts: &mut Vec<syn::Stmt>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            syn::Stmt::Expr(syn::Expr::Continue(cont), semi) if cont.label.is_none() => {
+                *stmt = syn::Stmt::Expr(
+                    syn::Expr::Break(syn::ExprBreak {
+                        attrs: vec![],
+                        break_token: <Token![break]>::default(),
+                        label: Some(syn::Lifetime::new("'body", Span::mixed_site())),
+                        expr: None,
+                    }),
+                    *semi,
+                );
+            }
+            syn::Stmt::Expr(expr, _) => rewrite_continue_in_expr(expr),
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_continue_in_expr(expr: &mut syn::Expr) {
+    match expr {
+        syn::Expr::If(if_expr) => {
+            rewrite_continue_as_break_body(&mut if_expr.then_branch.stmts);
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                rewrite_continue_in_expr(else_expr);
+            }
+        }
+        syn::Expr::Block(block) => {
+            rewrite_continue_as_break_body(&mut block.block.stmts);
+        }
+        // Don't recurse into loops — they have their own continue targets
+        syn::Expr::While(_) | syn::Expr::Loop(_) | syn::Expr::ForLoop(_) => {}
+        _ => {}
     }
 }
 

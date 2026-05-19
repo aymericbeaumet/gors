@@ -19,7 +19,6 @@ path = "src/main.rs"
 resolver = "3"
 members = [
   ".",
-  "www/wasm",
   "fuzz",
 ]
 
@@ -61,11 +60,6 @@ serde = { version = "1.0", features = ["derive"] }
 sourcemap = "9"
 syn = { version = "2.0", features = ["full", "visit-mut"] }
 unicode-general-category = "1.1"
-
-# WASM backend dependencies
-walrus = "0.26"
-# WASM runtime - wasmi works both natively and when compiled to WASM
-wasmi = "1.0"
 
 # Binary dependencies
 atty = "0.2"
