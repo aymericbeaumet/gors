@@ -702,35 +702,26 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
     match name.as_str() {
         "len" => {
             let x = &args[0];
-            syn::parse_quote! { (#x).len() }
+            syn::parse_quote! { gors_builtins::len(&#x) }
         }
         "cap" => {
             let x = &args[0];
-            syn::parse_quote! { (#x).capacity() }
+            syn::parse_quote! { gors_builtins::cap(&#x) }
         }
         "append" => {
             let slice = &args[0];
-            let elems = &args[1..];
-            if elems.len() == 1 {
-                let elem = &elems[0];
-                syn::parse_quote! { { let mut __tmp = #slice; __tmp.push(#elem); __tmp } }
-            } else {
-                let pushes: Vec<proc_macro2::TokenStream> = elems
-                    .iter()
-                    .map(|e| quote::quote! { __tmp.push(#e); })
-                    .collect();
-                syn::parse_quote! { { let mut __tmp = #slice; #(#pushes)* __tmp } }
-            }
+            let elem = &args[1];
+            syn::parse_quote! { gors_builtins::append(#slice, #elem) }
         }
         "make" => {
             if args.len() <= 1 {
                 syn::parse_quote! { Default::default() }
             } else if args.len() == 2 {
                 let size = &args[1];
-                syn::parse_quote! { vec![Default::default(); #size] }
+                syn::parse_quote! { gors_builtins::make_vec(#size) }
             } else {
                 let cap = &args[2];
-                syn::parse_quote! { Vec::with_capacity(#cap) }
+                syn::parse_quote! { gors_builtins::make_vec_cap(#cap) }
             }
         }
         "new" => {
@@ -740,12 +731,12 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
         "copy" => {
             let dst = &args[0];
             let src = &args[1];
-            syn::parse_quote! { (#dst)[..].copy_from_slice(&(#src)) }
+            syn::parse_quote! { gors_builtins::copy_slice(&mut #dst, &#src) }
         }
         "delete" => {
             let map = &args[0];
             let key = &args[1];
-            syn::parse_quote! { (#map).remove(&#key) }
+            syn::parse_quote! { gors_builtins::delete(&mut #map, &#key) }
         }
         "panic" => {
             if args.is_empty() {
@@ -2641,11 +2632,13 @@ func main() {
         assert!(output.files.contains_key("main.rs"));
         assert!(output.files.contains_key("lib.rs"));
         assert!(output.files.contains_key("fmt.rs"));
+        assert!(output.files.contains_key("gors_builtins.rs"));
         let main_rs = &output.files["main.rs"];
         assert!(main_rs.contains("mod lib"));
         assert!(main_rs.contains("use lib::*"));
         let lib_rs = &output.files["lib.rs"];
         assert!(lib_rs.contains("pub mod fmt"));
+        assert!(lib_rs.contains("pub mod gors_builtins"));
     }
 
     #[test]
@@ -3055,7 +3048,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = vec![1, 2, 3];
-                    let mut n = (s).len();
+                    let mut n = gors_builtins::len(&s);
                 }
             },
         );
@@ -3075,7 +3068,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = vec![1, 2];
-                    s = { let mut __tmp = s; __tmp.push(3); __tmp };
+                    s = gors_builtins::append(s, 3);
                 }
             },
         );
@@ -3249,9 +3242,11 @@ func main() {
         assert!(output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("errors.rs"));
         assert!(output.files.contains_key("strconv.rs"));
+        assert!(output.files.contains_key("gors_builtins.rs"));
         let lib_rs = &output.files["lib.rs"];
         assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod errors"));
         assert!(lib_rs.contains("pub mod strconv"));
+        assert!(lib_rs.contains("pub mod gors_builtins"));
     }
 }

@@ -271,6 +271,9 @@ pub fn generate_multi(
     let mut files = std::collections::BTreeMap::new();
     let mut mod_decls = Vec::new();
 
+    files.insert("gors_builtins.rs".to_string(), GORS_BUILTINS.to_string());
+    mod_decls.push("pub mod gors_builtins;".to_string());
+
     for module in program.modules.values() {
         if module.is_main {
             continue;
@@ -306,6 +309,76 @@ pub fn generate_multi(
 
     Ok(GeneratedOutput { files })
 }
+
+const GORS_BUILTINS: &str = r#"#![allow(dead_code, non_snake_case)]
+
+#[inline]
+pub fn len<T>(v: &Vec<T>) -> usize {
+    v.len()
+}
+
+#[inline]
+pub fn len_str(s: &str) -> usize {
+    s.len()
+}
+
+#[inline]
+pub fn len_string(s: &String) -> usize {
+    s.len()
+}
+
+#[inline]
+pub fn cap<T>(v: &Vec<T>) -> usize {
+    v.capacity()
+}
+
+#[inline]
+pub fn append<T>(mut v: Vec<T>, elem: T) -> Vec<T> {
+    v.push(elem);
+    v
+}
+
+#[inline]
+pub fn append_slice<T: Clone>(mut v: Vec<T>, elems: &[T]) -> Vec<T> {
+    v.extend_from_slice(elems);
+    v
+}
+
+#[inline]
+pub fn copy_slice<T: Clone>(dst: &mut [T], src: &[T]) -> usize {
+    let n = dst.len().min(src.len());
+    dst[..n].clone_from_slice(&src[..n]);
+    n
+}
+
+#[inline]
+pub fn delete<K: std::hash::Hash + Eq, V>(
+    m: &mut std::collections::HashMap<K, V>,
+    key: &K,
+) {
+    m.remove(key);
+}
+
+#[inline]
+pub fn new_box<T: Default>() -> Box<T> {
+    Box::new(T::default())
+}
+
+#[inline]
+pub fn make_vec<T: Default + Clone>(size: usize) -> Vec<T> {
+    vec![T::default(); size]
+}
+
+#[inline]
+pub fn make_vec_cap<T>(cap: usize) -> Vec<T> {
+    Vec::with_capacity(cap)
+}
+
+#[inline]
+pub fn make_map<K, V>() -> std::collections::HashMap<K, V> {
+    std::collections::HashMap::new()
+}
+"#;
 
 pub fn generate_with_sourcemap(
     file: syn::File,
