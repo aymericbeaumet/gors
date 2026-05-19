@@ -11,7 +11,9 @@ impl VisitMut for FlattenBlock {
         visit_mut::visit_block_mut(self, block); // depth-first
 
         for stmt in block.stmts.iter_mut() {
-            if let syn::Stmt::Expr(syn::Expr::Block(b), None) = stmt {
+            if let syn::Stmt::Expr(syn::Expr::Block(b), None) = stmt
+                && b.label.is_none()
+            {
                 let bstmts = &b.block.stmts;
                 if bstmts.len() == 1 {
                     if let syn::Stmt::Expr(expr, None) = &bstmts[0] {
