@@ -37,6 +37,11 @@ struct CollectUses {
 }
 
 impl VisitMut for CollectUses {
+    // Skip descending into module definitions — their internal paths should not be hoisted
+    fn visit_item_mod_mut(&mut self, _: &mut syn::ItemMod) {
+        // Do not recurse into mod blocks
+    }
+
     fn visit_path_mut(&mut self, path: &mut syn::Path) {
         syn::visit_mut::visit_path_mut(self, path);
 
@@ -44,7 +49,23 @@ impl VisitMut for CollectUses {
             .segments
             .iter()
             .any(|s| !matches!(s.arguments, syn::PathArguments::None));
-        if path.segments.len() > 1 && !has_generics && path.leading_colon.is_some() {
+
+        // Skip type method paths like Box::new — those are type-associated, not modules
+        let is_type_method_path = path.segments.len() == 2
+            && path.leading_colon.is_none()
+            && path
+                .segments
+                .first()
+                .is_some_and(|s| {
+                    let name = s.ident.to_string();
+                    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                });
+
+        if path.segments.len() > 1
+            && !has_generics
+            && !is_type_method_path
+            && path.leading_colon.is_some()
+        {
             self.uses.insert(
                 (quote::quote! { #path }).to_string(),
                 syn::parse_quote! { use #path; },
@@ -59,6 +80,11 @@ struct Hoist<'a> {
 }
 
 impl VisitMut for Hoist<'_> {
+    // Skip descending into module definitions
+    fn visit_item_mod_mut(&mut self, _: &mut syn::ItemMod) {
+        // Do not recurse into mod blocks
+    }
+
     fn visit_path_mut(&mut self, path: &mut syn::Path) {
         syn::visit_mut::visit_path_mut(self, path);
 

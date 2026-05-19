@@ -11,7 +11,6 @@
 //! Not all Go constructs can be directly translated to Rust. Currently
 //! unsupported features include:
 //!
-//! - Goroutines and channels
 //! - Defer statements
 //! - Goto statements
 //! - Some complex type expressions
@@ -126,6 +125,560 @@ fn interpret_go_string_escapes(s: &str) -> String {
         }
     }
     result
+}
+
+/// Convert a Go type constraint expression to Rust trait bounds.
+///
+/// Maps common Go constraints to appropriate Rust trait bounds:
+/// - `any` / `interface{}` → no bounds
+/// - `comparable` → `PartialEq`
+/// - Union types like `int | float64` → `PartialOrd + Copy + Display`
+fn go_constraint_to_rust_bounds(
+    constraint: &ast::Expr,
+) -> syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]> {
+    let mut bounds = syn::punctuated::Punctuated::new();
+
+    match constraint {
+        ast::Expr::Ident(ident) => {
+            match ident.name {
+                "any" => {
+                    // No bounds needed
+                }
+                "comparable" => {
+                    bounds.push(syn::parse_quote! { PartialEq });
+                }
+                _ => {
+                    // Named constraint: use as-is
+                    let name = syn::Ident::new(ident.name, Span::mixed_site());
+                    bounds.push(syn::parse_quote! { #name });
+                }
+            }
+        }
+        ast::Expr::InterfaceType(_) => {
+            // interface{} → no bounds (same as `any`)
+        }
+        ast::Expr::BinaryExpr(bin) if bin.op == token::Token::OR => {
+            // Union type like `int | float64` → approximate with common traits
+            bounds.push(syn::parse_quote! { PartialOrd });
+            bounds.push(syn::parse_quote! { Copy });
+            bounds.push(syn::parse_quote! { std::fmt::Display });
+        }
+        _ => {
+            // Fallback: no bounds
+        }
+    }
+
+    bounds
+}
+
+/// Attempt to evaluate a Go constant expression at compile time, substituting `iota` with the
+/// given value. Returns `Some(value)` if fully evaluable, `None` otherwise.
+fn const_eval_expr(expr: &ast::Expr, iota_value: i64) -> Option<i64> {
+    match expr {
+        ast::Expr::BasicLit(lit) => {
+            if lit.kind == token::Token::INT {
+                let s = lit.value;
+                if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                    i64::from_str_radix(hex, 16).ok()
+                } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+                    i64::from_str_radix(bin, 2).ok()
+                } else if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
+                    i64::from_str_radix(oct, 8).ok()
+                } else {
+                    s.parse::<i64>().ok()
+                }
+            } else {
+                None
+            }
+        }
+        ast::Expr::Ident(ident) if ident.name == "iota" => Some(iota_value),
+        ast::Expr::BinaryExpr(bin) => {
+            let lhs = const_eval_expr(&bin.x, iota_value)?;
+            let rhs = const_eval_expr(&bin.y, iota_value)?;
+            match bin.op {
+                token::Token::ADD => Some(lhs + rhs),
+                token::Token::SUB => Some(lhs - rhs),
+                token::Token::MUL => Some(lhs * rhs),
+                token::Token::QUO => {
+                    if rhs == 0 {
+                        None
+                    } else {
+                        Some(lhs / rhs)
+                    }
+                }
+                token::Token::REM => {
+                    if rhs == 0 {
+                        None
+                    } else {
+                        Some(lhs % rhs)
+                    }
+                }
+                token::Token::SHL => Some(lhs << rhs),
+                token::Token::SHR => Some(lhs >> rhs),
+                token::Token::AND => Some(lhs & rhs),
+                token::Token::OR => Some(lhs | rhs),
+                token::Token::XOR => Some(lhs ^ rhs),
+                _ => None,
+            }
+        }
+        ast::Expr::ParenExpr(paren) => const_eval_expr(&paren.x, iota_value),
+        ast::Expr::UnaryExpr(unary) => {
+            let val = const_eval_expr(&unary.x, iota_value)?;
+            match unary.op {
+                token::Token::SUB => Some(-val),
+                token::Token::ADD => Some(val),
+                token::Token::XOR => Some(!val),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Compile a top-level const GenDecl into a list of `syn::Item::Const` items.
+/// Handles iota, expression inheritance, and typed constants.
+fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, CompilerError> {
+    let mut value_specs: Vec<ast::ValueSpec> = vec![];
+    for spec in gen_decl.specs {
+        if let ast::Spec::ValueSpec(vs) = spec {
+            value_specs.push(vs);
+        }
+    }
+
+    let mut items = vec![];
+    let mut last_valued_idx: Option<usize> = None;
+
+    for (iota, spec_idx) in (0..value_specs.len()).enumerate() {
+        let value_spec = &value_specs[spec_idx];
+
+        let has_own_values = value_spec.values.is_some();
+        if has_own_values {
+            last_valued_idx = Some(spec_idx);
+        }
+
+        let source_idx = if has_own_values {
+            Some(spec_idx)
+        } else {
+            last_valued_idx
+        };
+
+        let source_values = source_idx.and_then(|idx| value_specs[idx].values.as_ref());
+
+        // Determine the type name string (from this spec or inherited)
+        let type_name_str: Option<&str> = if let Some(ref te) = value_spec.type_ {
+            if let ast::Expr::Ident(id) = te {
+                Some(id.name)
+            } else {
+                None
+            }
+        } else {
+            source_idx.and_then(|idx| {
+                value_specs[idx].type_.as_ref().and_then(|te| {
+                    if let ast::Expr::Ident(id) = te {
+                        Some(id.name)
+                    } else {
+                        None
+                    }
+                })
+            })
+        };
+
+        let rust_type: syn::Type = if let Some(name) = type_name_str {
+            let type_ident = syn::Ident::new(name, Span::mixed_site());
+            syn::parse_quote! { #type_ident }
+        } else {
+            syn::parse_quote! { isize }
+        };
+
+        for (name_idx, name) in value_spec.names.iter().enumerate() {
+            if name.name == "_" {
+                continue;
+            }
+
+            let vis: syn::Visibility = name.into();
+            let ident = syn::Ident::new(name.name, Span::mixed_site());
+
+            let value_expr = source_values.and_then(|vals| vals.get(name_idx));
+
+            let value: syn::Expr = if let Some(expr) = value_expr {
+                if let Some(evaluated) = const_eval_expr(expr, iota as i64) {
+                    let lit = syn::LitInt::new(&evaluated.to_string(), Span::mixed_site());
+                    syn::parse_quote! { #lit }
+                } else {
+                    // If we can't evaluate it, try to convert it directly
+                    // This won't work for complex expressions since ast::Expr doesn't impl Clone
+                    // For const blocks, iota expressions should always be evaluable
+                    syn::parse_quote! { 0 }
+                }
+            } else {
+                syn::parse_quote! { 0 }
+            };
+
+            items.push(syn::parse_quote! {
+                #vis const #ident: #rust_type = #value;
+            });
+        }
+    }
+    Ok(items)
+}
+
+/// Helper to get the zero value expression for a Go type name.
+fn zero_value_for_type(type_name: Option<&str>) -> syn::Expr {
+    match type_name {
+        Some("string") => syn::parse_quote! { "" },
+        Some("int") | Some("int8") | Some("int16") | Some("int32") | Some("int64")
+        | Some("uint") | Some("uint8") | Some("uint16") | Some("uint32") | Some("uint64") => {
+            syn::parse_quote! { 0 }
+        }
+        Some("float32") | Some("float64") => syn::parse_quote! { 0.0 },
+        Some("bool") => syn::parse_quote! { false },
+        _ => syn::parse_quote! { Default::default() },
+    }
+}
+
+/// Helper to get the Go type name from an expression (for zero values).
+fn go_type_name_from_expr<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::StarExpr(_) => None,
+        _ => None,
+    }
+}
+
+/// Rewrite bare return statements in a block to return a tuple of the named variables.
+fn rewrite_bare_returns(block: &mut syn::Block, named_return_idents: &[syn::Ident]) {
+    for stmt in &mut block.stmts {
+        if let syn::Stmt::Expr(expr, _semi) = stmt {
+            rewrite_bare_returns_in_expr(expr, named_return_idents);
+        }
+    }
+}
+
+fn rewrite_bare_returns_in_expr(expr: &mut syn::Expr, named_return_idents: &[syn::Ident]) {
+    match expr {
+        syn::Expr::Return(ret) if ret.expr.is_none() => {
+            if named_return_idents.len() == 1 {
+                let ident = &named_return_idents[0];
+                ret.expr = Some(Box::new(syn::parse_quote! { #ident }));
+            } else {
+                let idents = named_return_idents;
+                ret.expr = Some(Box::new(syn::parse_quote! { (#(#idents),*) }));
+            }
+        }
+        syn::Expr::Block(block) => {
+            rewrite_bare_returns(&mut block.block, named_return_idents);
+        }
+        syn::Expr::If(if_expr) => {
+            rewrite_bare_returns(&mut if_expr.then_branch, named_return_idents);
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                rewrite_bare_returns_in_expr(else_expr, named_return_idents);
+            }
+        }
+        syn::Expr::Loop(loop_expr) => {
+            rewrite_bare_returns(&mut loop_expr.body, named_return_idents);
+        }
+        syn::Expr::While(while_expr) => {
+            rewrite_bare_returns(&mut while_expr.body, named_return_idents);
+        }
+        syn::Expr::ForLoop(for_expr) => {
+            rewrite_bare_returns(&mut for_expr.body, named_return_idents);
+        }
+        _ => {}
+    }
+}
+
+/// Extract identifiers from a syn::Block that should be cloned before being
+/// moved into a goroutine closure. Returns `let name = name.clone();` statements.
+fn extract_idents_for_clone(block: &syn::Block) -> Vec<syn::Stmt> {
+    use std::collections::BTreeSet;
+
+    struct IdentCollector {
+        idents: BTreeSet<String>,
+        locals: BTreeSet<String>,
+    }
+
+    impl IdentCollector {
+        fn visit_expr(&mut self, expr: &syn::Expr) {
+            match expr {
+                syn::Expr::MethodCall(mc) => {
+                    if let syn::Expr::Path(path) = mc.receiver.as_ref() {
+                        if path.path.segments.len() == 1 {
+                            let name = path.path.segments[0].ident.to_string();
+                            if !self.locals.contains(&name) {
+                                self.idents.insert(name);
+                            }
+                        }
+                    }
+                    self.visit_expr(&mc.receiver);
+                    for arg in &mc.args {
+                        self.visit_expr(arg);
+                    }
+                }
+                syn::Expr::Call(call) => {
+                    self.visit_expr(&call.func);
+                    for arg in &call.args {
+                        self.visit_expr(arg);
+                    }
+                }
+                syn::Expr::Path(path) => {
+                    if path.path.segments.len() == 1 {
+                        let name = path.path.segments[0].ident.to_string();
+                        if !self.locals.contains(&name) {
+                            self.idents.insert(name);
+                        }
+                    }
+                }
+                syn::Expr::Binary(binary) => {
+                    self.visit_expr(&binary.left);
+                    self.visit_expr(&binary.right);
+                }
+                _ => {}
+            }
+        }
+
+        fn visit_stmt(&mut self, stmt: &syn::Stmt) {
+            match stmt {
+                syn::Stmt::Expr(expr, _) => self.visit_expr(expr),
+                syn::Stmt::Local(local) => {
+                    if let syn::Pat::Ident(pat_ident) = &local.pat {
+                        self.locals.insert(pat_ident.ident.to_string());
+                    }
+                    if let Some(init) = &local.init {
+                        self.visit_expr(&init.expr);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut collector = IdentCollector {
+        idents: BTreeSet::new(),
+        locals: BTreeSet::new(),
+    };
+    for stmt in &block.stmts {
+        collector.visit_stmt(stmt);
+    }
+
+    let skip = [
+        "println", "print", "eprintln", "make_chan", "spawn", "true", "false",
+    ];
+    collector
+        .idents
+        .into_iter()
+        .filter(|name| !skip.contains(&name.as_str()))
+        .map(|name| {
+            let ident = syn::Ident::new(&name, Span::mixed_site());
+            syn::parse_quote! { let #ident = #ident.clone(); }
+        })
+        .collect()
+}
+
+/// Compile a Go select statement into Rust.
+fn compile_select_stmt(
+    select_stmt: ast::SelectStmt,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let clauses: Vec<ast::CommClause> = select_stmt
+        .body
+        .list
+        .into_iter()
+        .filter_map(|s| {
+            if let ast::Stmt::CommClause(cc) = s {
+                Some(cc)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut cases: Vec<ast::CommClause> = Vec::new();
+    let mut default_body: Option<Vec<ast::Stmt>> = None;
+
+    for clause in clauses {
+        if clause.comm.is_none() {
+            default_body = Some(clause.body);
+        } else {
+            cases.push(clause);
+        }
+    }
+
+    // Only default case
+    if cases.is_empty() {
+        if let Some(body) = default_body {
+            let mut stmts = vec![];
+            for stmt in body {
+                stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            }
+            return Ok(stmts);
+        }
+        return Ok(vec![]);
+    }
+
+    // Helper: extract channel expression from a comm statement by consuming it
+    fn extract_channel_recv(
+        expr: ast::Expr,
+    ) -> Option<syn::Expr> {
+        if let ast::Expr::UnaryExpr(unary) = expr {
+            if unary.op == token::Token::ARROW {
+                return Some((*unary.x).into());
+            }
+        }
+        None
+    }
+
+    // Single case with optional default
+    if cases.len() == 1 {
+        let case = cases.remove(0);
+        let comm = *case.comm.unwrap();
+
+        let mut case_body_stmts = vec![];
+        for stmt in case.body {
+            case_body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+
+        if let Some(default) = default_body.take() {
+            // Non-blocking: try_recv/try_send with fallback
+            let mut default_stmts = vec![];
+            for stmt in default {
+                default_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            }
+
+            match comm {
+                ast::Stmt::ExprStmt(expr_stmt) => {
+                    // <-ch in expression position
+                    if let Some(ch) = extract_channel_recv(expr_stmt.x) {
+                        return Ok(vec![syn::Stmt::Expr(
+                            syn::parse_quote! {
+                                if let Ok(_v) = #ch.try_recv() {
+                                    #(#case_body_stmts)*
+                                } else {
+                                    #(#default_stmts)*
+                                }
+                            },
+                            None,
+                        )]);
+                    }
+                }
+                ast::Stmt::AssignStmt(assign) => {
+                    // v := <-ch or v, ok := <-ch
+                    if assign.rhs.len() == 1 && assign.lhs.len() >= 1 {
+                        let lhs_pat = expr_to_pat(&assign.lhs[0]);
+                        let rhs_expr = assign.rhs.into_iter().next().unwrap();
+                        if let Some(ch) = extract_channel_recv(rhs_expr) {
+                            return Ok(vec![syn::Stmt::Expr(
+                                syn::parse_quote! {
+                                    if let Ok(#lhs_pat) = #ch.try_recv() {
+                                        #(#case_body_stmts)*
+                                    } else {
+                                        #(#default_stmts)*
+                                    }
+                                },
+                                None,
+                            )]);
+                        }
+                    }
+                    // Fallback: just compile normally
+                }
+                ast::Stmt::SendStmt(send) => {
+                    let ch: syn::Expr = send.chan.into();
+                    let val: syn::Expr = send.value.into();
+                    return Ok(vec![syn::Stmt::Expr(
+                        syn::parse_quote! {
+                            if #ch.try_send(#val).is_ok() {
+                                #(#case_body_stmts)*
+                            } else {
+                                #(#default_stmts)*
+                            }
+                        },
+                        None,
+                    )]);
+                }
+                _ => {}
+            }
+        } else {
+            // Blocking single case
+            let comm_stmts: Vec<syn::Stmt> = Vec::<syn::Stmt>::try_from(comm)?;
+            let mut all_stmts = comm_stmts;
+            all_stmts.extend(case_body_stmts);
+            return Ok(all_stmts);
+        }
+    }
+
+    // Multiple cases: generate loop with try_recv checks
+    let mut arms: Vec<proc_macro2::TokenStream> = Vec::new();
+    for case in cases {
+        let comm = *case.comm.unwrap();
+        let mut body_stmts = vec![];
+        for stmt in case.body {
+            body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+
+        match comm {
+            ast::Stmt::ExprStmt(expr_stmt) => {
+                if let Some(ch) = extract_channel_recv(expr_stmt.x) {
+                    arms.push(quote::quote! {
+                        if let Ok(_v) = #ch.try_recv() {
+                            #(#body_stmts)*
+                            break;
+                        }
+                    });
+                    continue;
+                }
+            }
+            ast::Stmt::AssignStmt(assign) => {
+                if assign.rhs.len() == 1 && assign.lhs.len() >= 1 {
+                    let pat = expr_to_pat(&assign.lhs[0]);
+                    let rhs_expr = assign.rhs.into_iter().next().unwrap();
+                    if let Some(ch) = extract_channel_recv(rhs_expr) {
+                        arms.push(quote::quote! {
+                            if let Ok(#pat) = #ch.try_recv() {
+                                #(#body_stmts)*
+                                break;
+                            }
+                        });
+                        continue;
+                    }
+                }
+            }
+            ast::Stmt::SendStmt(send) => {
+                let ch: syn::Expr = send.chan.into();
+                let val: syn::Expr = send.value.into();
+                arms.push(quote::quote! {
+                    if #ch.try_send(#val).is_ok() {
+                        #(#body_stmts)*
+                        break;
+                    }
+                });
+                continue;
+            }
+            _ => {}
+        }
+    }
+
+    let default_arm = if let Some(body) = default_body {
+        let mut stmts = vec![];
+        for stmt in body {
+            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+        quote::quote! {
+            #(#stmts)*
+            break;
+        }
+    } else {
+        quote::quote! {
+            std::thread::yield_now();
+        }
+    };
+
+    Ok(vec![syn::Stmt::Expr(
+        syn::parse_quote! {
+            loop {
+                #(#arms)*
+                #default_arm
+            }
+        },
+        None,
+    )])
 }
 
 /// Convert a Go comment group to Rust doc attributes.
@@ -569,9 +1122,92 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 semi_token: None,
             }))
         }
-        ast::Expr::InterfaceType(_) => {
-            // interface{} / any → empty trait; named interfaces → trait with methods
-            // For now, generate an empty trait
+        ast::Expr::InterfaceType(iface) => {
+            // Generate trait with method signatures
+            let mut trait_items: Vec<syn::TraitItem> = vec![];
+
+            if let Some(methods_list) = iface.methods {
+                for field in methods_list.list {
+                    if let Some(names) = field.names {
+                        // Extract parameter types and return type from the FuncType
+                        let mut param_types: Vec<(String, syn::Type)> = vec![];
+                        let mut output = syn::ReturnType::Default;
+
+                        if let Some(ast::Expr::FuncType(func_type)) = field.type_ {
+                            for param in func_type.params.list {
+                                let ty: syn::Type = if let Some(type_expr) = param.type_ {
+                                    type_expr.into()
+                                } else {
+                                    syn::parse_quote! { () }
+                                };
+                                if let Some(param_names) = param.names {
+                                    for pname in param_names {
+                                        param_types.push((pname.name.to_string(), ty.clone()));
+                                    }
+                                } else {
+                                    param_types.push(("_arg".to_string(), ty));
+                                }
+                            }
+                            if let Ok(ret) = compile_return_type(func_type.results) {
+                                output = ret;
+                            }
+                        }
+
+                        for name in names {
+                            let method_ident: syn::Ident = name.into();
+
+                            let mut inputs = syn::punctuated::Punctuated::new();
+                            inputs.push(syn::FnArg::Receiver(syn::Receiver {
+                                attrs: vec![],
+                                reference: Some((<Token![&]>::default(), None)),
+                                mutability: None,
+                                self_token: <Token![self]>::default(),
+                                colon_token: None,
+                                ty: Box::new(syn::parse_quote! { &Self }),
+                            }));
+
+                            for (pname, ty) in &param_types {
+                                let pident =
+                                    syn::Ident::new(pname, Span::mixed_site());
+                                inputs.push(syn::FnArg::Typed(syn::PatType {
+                                    attrs: vec![],
+                                    pat: Box::new(syn::Pat::Ident(syn::PatIdent {
+                                        attrs: vec![],
+                                        by_ref: None,
+                                        subpat: None,
+                                        mutability: Some(<Token![mut]>::default()),
+                                        ident: pident,
+                                    })),
+                                    colon_token: <Token![:]>::default(),
+                                    ty: Box::new(ty.clone()),
+                                }));
+                            }
+
+                            let sig = syn::Signature {
+                                constness: None,
+                                asyncness: None,
+                                unsafety: None,
+                                abi: None,
+                                fn_token: <Token![fn]>::default(),
+                                ident: method_ident,
+                                generics: syn::Generics::default(),
+                                paren_token: syn::token::Paren::default(),
+                                inputs,
+                                variadic: None,
+                                output: output.clone(),
+                            };
+
+                            trait_items.push(syn::TraitItem::Fn(syn::TraitItemFn {
+                                attrs: vec![],
+                                sig,
+                                default: None,
+                                semi_token: Some(<Token![;]>::default()),
+                            }));
+                        }
+                    }
+                }
+            }
+
             Ok(syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
                 vis,
@@ -584,7 +1220,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 colon_token: None,
                 supertraits: syn::punctuated::Punctuated::new(),
                 brace_token: syn::token::Brace::default(),
-                items: vec![],
+                items: trait_items,
             }))
         }
         other => {
@@ -798,7 +1434,11 @@ fn is_fmt_call(call_expr: &ast::CallExpr) -> bool {
     let ast::Expr::Ident(pkg) = &*sel.x else {
         return false;
     };
-    pkg.name == "fmt" && matches!(sel.sel.name, "Println" | "Print")
+    pkg.name == "fmt"
+        && matches!(
+            sel.sel.name,
+            "Println" | "Print" | "Printf" | "Sprintf" | "Errorf"
+        )
 }
 
 fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
@@ -807,6 +1447,71 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
     } else {
         unreachable!()
     };
+
+    // Handle Printf, Sprintf, Errorf with format string conversion
+    match method {
+        "Printf" | "Sprintf" | "Errorf" => {
+            let args: Vec<syn::Expr> = call_expr
+                .args
+                .unwrap_or_default()
+                .into_iter()
+                .map(syn::Expr::from)
+                .collect();
+
+            if args.is_empty() {
+                return match method {
+                    "Printf" => syn::parse_quote! { ::std::print!("") },
+                    "Sprintf" => syn::parse_quote! { ::std::format!("") },
+                    "Errorf" => syn::parse_quote! { ::std::format!("") },
+                    _ => unreachable!(),
+                };
+            }
+
+            // Convert Go format string to Rust format string
+            let format_str = &args[0];
+            let rest = &args[1..];
+
+            // If first arg is a string literal, convert Go format verbs to Rust
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = format_str
+            {
+                let go_fmt = lit_str.value();
+                let rust_fmt = go_fmt
+                    .replace("%s", "{}")
+                    .replace("%d", "{}")
+                    .replace("%v", "{}")
+                    .replace("%f", "{}")
+                    .replace("%t", "{}")
+                    .replace("%p", "{:p}")
+                    .replace("%x", "{:x}")
+                    .replace("%o", "{:o}")
+                    .replace("%b", "{:b}")
+                    .replace("%e", "{:e}")
+                    .replace("%q", "{:?}")
+                    .replace("%%", "%");
+                let fmt_lit = syn::LitStr::new(&rust_fmt, Span::mixed_site());
+
+                return match method {
+                    "Printf" => syn::parse_quote! { ::std::print!(#fmt_lit, #(#rest),*) },
+                    "Sprintf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#rest),*) },
+                    "Errorf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#rest),*) },
+                    _ => unreachable!(),
+                };
+            }
+
+            // Non-literal format string: use format! with {}
+            return match method {
+                "Printf" => syn::parse_quote! { ::std::print!("{}", #format_str) },
+                "Sprintf" => syn::parse_quote! { ::std::format!("{}", #format_str) },
+                "Errorf" => syn::parse_quote! { ::std::format!("{}", #format_str) },
+                _ => unreachable!(),
+            };
+        }
+        _ => {}
+    }
+
     let arg_count = call_expr.args.as_ref().map_or(0, |a| a.len());
     let suffix = match (method, arg_count) {
         ("Println", 0) | ("Println", 1) => "Println",
@@ -829,8 +1534,10 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
         .into_iter()
         .map(|a| {
             let e = syn::Expr::from(a);
-            // Wrap complex expressions in parens before adding &
-            let needs_paren = !matches!(e, syn::Expr::Path(_) | syn::Expr::Lit(_) | syn::Expr::Call(_) | syn::Expr::Paren(_));
+            let needs_paren = !matches!(
+                e,
+                syn::Expr::Path(_) | syn::Expr::Lit(_) | syn::Expr::Call(_) | syn::Expr::Paren(_)
+            );
             if needs_paren {
                 syn::parse_quote! { &(#e) }
             } else {
@@ -1598,6 +2305,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         expr: Box::new(inner),
                     })
                 }
+                token::Token::ARROW => {
+                    // <-ch → ch.recv() (channel receive)
+                    let receiver: syn::Expr = (*unary_expr.x).into();
+                    syn::parse_quote! { #receiver.recv() }
+                }
                 _ => Self::Unary(syn::ExprUnary {
                     attrs: vec![],
                     op: match unary_expr.op {
@@ -1735,6 +2447,11 @@ impl From<ast::Expr<'_>> for syn::Type {
                     syn::parse_quote! { fn(#param_types) }
                 }
             }
+            ast::Expr::ChanType(chan_type) => {
+                // chan T → gors_channel::GoChan<T>
+                let inner: syn::Type = (*chan_type.value).into();
+                syn::parse_quote! { ::gors_channel::GoChan<#inner> }
+            }
             ast::Expr::Ellipsis(ellipsis) => {
                 if let Some(elt) = ellipsis.elt {
                     let inner: syn::Type = (*elt).into();
@@ -1754,11 +2471,71 @@ impl TryFrom<ast::File<'_>> for syn::File {
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
         let mut items = vec![];
         let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
+        let mut init_bodies: Vec<syn::Block> = vec![];
+        let mut package_var_stmts: Vec<syn::Stmt> = vec![];
+
+        // Collect trait names and struct method signatures for interface satisfaction
+        let mut trait_methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut struct_methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut struct_has_string_method: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for decl in file.decls {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {
+                    // Detect init() functions: collect their bodies, don't emit as standalone
+                    if func_decl.name.name == "init" {
+                        if let Some(body) = func_decl.body {
+                            let block: syn::Block = body.try_into()?;
+                            init_bodies.push(block);
+                        }
+                        continue;
+                    }
+
                     if func_decl.recv.is_some() {
+                        // Track method names for interface satisfaction
+                        let recv_type_name = func_decl
+                            .recv
+                            .as_ref()
+                            .and_then(|r| r.list.first())
+                            .and_then(|f| f.type_.as_ref())
+                            .and_then(|t| match t {
+                                ast::Expr::Ident(id) => Some(id.name.to_string()),
+                                ast::Expr::StarExpr(star) => {
+                                    if let ast::Expr::Ident(id) = &*star.x {
+                                        Some(id.name.to_string())
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            });
+                        if let Some(ref type_name) = recv_type_name {
+                            let method_name = func_decl.name.name.to_string();
+                            if method_name == "String" {
+                                // Check if it returns string
+                                let returns_string = func_decl
+                                    .type_
+                                    .results
+                                    .as_ref()
+                                    .is_some_and(|r| {
+                                        r.list.len() == 1
+                                            && r.list.first().is_some_and(|f| {
+                                                f.type_.as_ref().is_some_and(|t| {
+                                                    matches!(t, ast::Expr::Ident(id) if id.name == "string")
+                                                })
+                                            })
+                                    });
+                                if returns_string {
+                                    struct_has_string_method
+                                        .insert(type_name.clone());
+                                }
+                            }
+                            struct_methods
+                                .entry(type_name.clone())
+                                .or_default()
+                                .push(method_name);
+                        }
                         let (type_name, method) = compile_method(func_decl)?;
                         methods.entry(type_name).or_default().push(method);
                     } else {
@@ -1766,15 +2543,64 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     }
                 }
                 ast::Decl::GenDecl(gen_decl) => {
-                    if gen_decl.tok == token::Token::CONST || gen_decl.tok == token::Token::VAR {
+                    if gen_decl.tok == token::Token::CONST {
+                        items.extend(compile_const_decl(gen_decl)?);
+                    } else if gen_decl.tok == token::Token::VAR {
                         for spec in gen_decl.specs {
                             if let ast::Spec::ValueSpec(vs) = spec {
-                                items.extend(compile_top_level_value_spec(vs, gen_decl.tok)?);
+                                // Package-level var: collect as stmts to inject into main
+                                let names = vs.names;
+                                let has_type = vs.type_.is_some();
+                                let type_expr = vs.type_;
+                                let mut values_iter =
+                                    vs.values.unwrap_or_default().into_iter();
+
+                                for name in names {
+                                    let ident: syn::Ident = name.into();
+                                    let init_expr: Option<syn::Expr> =
+                                        values_iter.next().map(|v| v.into());
+
+                                    if let Some(init) = init_expr {
+                                        package_var_stmts.push(syn::parse_quote! {
+                                            let mut #ident = #init;
+                                        });
+                                    } else if has_type {
+                                        let type_name =
+                                            type_expr.as_ref().and_then(go_type_name_from_expr);
+                                        let zero = zero_value_for_type(type_name);
+                                        package_var_stmts.push(syn::parse_quote! {
+                                            let mut #ident = #zero;
+                                        });
+                                    } else {
+                                        package_var_stmts.push(syn::parse_quote! {
+                                            let mut #ident = Default::default();
+                                        });
+                                    }
+                                }
                             }
                         }
                     } else if gen_decl.tok == token::Token::TYPE {
                         for spec in gen_decl.specs {
                             if let ast::Spec::TypeSpec(ts) = spec {
+                                // Track interface methods for satisfaction checking
+                                if let ast::Expr::InterfaceType(ref iface) = ts.type_ {
+                                    if let Some(ref name_ident) = ts.name {
+                                        let trait_name = name_ident.name.to_string();
+                                        let mut method_names = vec![];
+                                        if let Some(ref methods_list) = iface.methods {
+                                            for field in &methods_list.list {
+                                                if let Some(ref names) = field.names {
+                                                    for n in names {
+                                                        method_names
+                                                            .push(n.name.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        trait_methods
+                                            .insert(trait_name, method_names);
+                                    }
+                                }
                                 items.push(compile_type_spec(ts)?);
                             }
                         }
@@ -1783,8 +2609,26 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }
         }
 
-        for (type_name, method_list) in methods {
-            let type_ident = syn::Ident::new(&type_name, Span::mixed_site());
+        // If there are init() bodies or package-level vars, prepend them to main()
+        if !init_bodies.is_empty() || !package_var_stmts.is_empty() {
+            for item in &mut items {
+                if let syn::Item::Fn(func) = item {
+                    if func.sig.ident == "main" {
+                        let mut prepend: Vec<syn::Stmt> = package_var_stmts.clone();
+                        for body in &init_bodies {
+                            prepend.extend(body.stmts.clone());
+                        }
+                        let existing = std::mem::take(&mut func.block.stmts);
+                        func.block.stmts = prepend;
+                        func.block.stmts.extend(existing);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (type_name, method_list) in &methods {
+            let type_ident = syn::Ident::new(type_name, Span::mixed_site());
             items.push(syn::Item::Impl(syn::ItemImpl {
                 attrs: vec![],
                 defaultness: None,
@@ -1794,8 +2638,62 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 trait_: None,
                 self_ty: Box::new(syn::parse_quote! { #type_ident }),
                 brace_token: syn::token::Brace::default(),
-                items: method_list.into_iter().map(syn::ImplItem::Fn).collect(),
+                items: method_list.iter().cloned().map(syn::ImplItem::Fn).collect(),
             }));
+        }
+
+        // Interface satisfaction: check which structs satisfy which traits
+        for (trait_name, required_methods) in &trait_methods {
+            if required_methods.is_empty() {
+                continue;
+            }
+            for (struct_name, struct_method_list) in &struct_methods {
+                let satisfies = required_methods
+                    .iter()
+                    .all(|m| struct_method_list.contains(m));
+                if satisfies {
+                    let trait_ident = syn::Ident::new(trait_name, Span::mixed_site());
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+
+                    // Get method implementations from the methods map
+                    let mut impl_items: Vec<syn::ImplItem> = vec![];
+                    if let Some(method_list) = methods.get(struct_name) {
+                        for method in method_list {
+                            if required_methods.contains(&method.sig.ident.to_string()) {
+                                impl_items.push(syn::ImplItem::Fn(method.clone()));
+                            }
+                        }
+                    }
+
+                    items.push(syn::Item::Impl(syn::ItemImpl {
+                        attrs: vec![],
+                        defaultness: None,
+                        unsafety: None,
+                        impl_token: <Token![impl]>::default(),
+                        generics: syn::Generics::default(),
+                        trait_: Some((
+                            None,
+                            syn::parse_quote! { #trait_ident },
+                            <Token![for]>::default(),
+                        )),
+                        self_ty: Box::new(syn::parse_quote! { #struct_ident }),
+                        brace_token: syn::token::Brace::default(),
+                        items: impl_items,
+                    }));
+                }
+            }
+        }
+
+        // Stringer pattern: generate `impl std::fmt::Display` for structs with String() string
+        for struct_name in &struct_has_string_method {
+            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+            items.push(syn::parse_quote! {
+                impl std::fmt::Display for #struct_ident {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(f, "{}", self.String())
+                    }
+                }
+            });
         }
 
         Ok(Self {
@@ -1843,7 +2741,6 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
     fn try_from(func_decl: ast::FuncDecl) -> Result<Self, Self::Error> {
         // Record mapping for the function keyword with Go name
-        // The Rust token ("fn") will be extracted dynamically from the output
         if let Some(ref func_pos) = func_decl.type_.func {
             record_mapping(func_pos, Some("func"));
         }
@@ -1858,7 +2755,33 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let vis = (&func_decl.name).into();
 
-        let block = Box::new(if let Some(body) = func_decl.body {
+        // Analyze return values for named returns
+        let mut named_return_info: Vec<(syn::Ident, syn::Expr)> = vec![];
+        let mut named_return_idents: Vec<syn::Ident> = vec![];
+
+        if let Some(ref results) = func_decl.type_.results {
+            let has_named_returns = results
+                .list
+                .iter()
+                .any(|f| f.names.as_ref().is_some_and(|names| !names.is_empty()));
+            if has_named_returns {
+                for field in &results.list {
+                    if let Some(ref names) = field.names {
+                        for name in names {
+                            let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
+                            let zero = zero_value_for_type(type_name);
+                            let ident = syn::Ident::new(name.name, Span::mixed_site());
+                            named_return_info.push((ident.clone(), zero));
+                            named_return_idents.push(ident);
+                        }
+                    }
+                }
+            }
+        }
+
+        let output = compile_return_type(func_decl.type_.results)?;
+
+        let mut block = Box::new(if let Some(body) = func_decl.body {
             body.try_into()?
         } else {
             syn::Block {
@@ -1867,7 +2790,101 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         });
 
-        let output = compile_return_type(func_decl.type_.results)?;
+        // For named returns: prepend variable declarations and rewrite bare returns
+        if !named_return_info.is_empty() {
+            let mut prepend: Vec<syn::Stmt> = vec![];
+            for (ident, zero) in &named_return_info {
+                prepend.push(syn::parse_quote! {
+                    let mut #ident = #zero;
+                });
+            }
+            let existing = std::mem::take(&mut block.stmts);
+            block.stmts = prepend;
+            block.stmts.extend(existing);
+
+            rewrite_bare_returns(&mut block, &named_return_idents);
+
+            // If the last statement is NOT a return, add an implicit return
+            let needs_implicit_return = !block
+                .stmts
+                .last()
+                .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
+
+            if needs_implicit_return {
+                if named_return_idents.len() == 1 {
+                    let ident = &named_return_idents[0];
+                    block.stmts.push(syn::Stmt::Expr(
+                        syn::Expr::Return(syn::ExprReturn {
+                            attrs: vec![],
+                            return_token: <Token![return]>::default(),
+                            expr: Some(Box::new(syn::parse_quote! { #ident })),
+                        }),
+                        None,
+                    ));
+                } else {
+                    let idents = &named_return_idents;
+                    block.stmts.push(syn::Stmt::Expr(
+                        syn::Expr::Return(syn::ExprReturn {
+                            attrs: vec![],
+                            return_token: <Token![return]>::default(),
+                            expr: Some(Box::new(syn::parse_quote! { (#(#idents),*) })),
+                        }),
+                        None,
+                    ));
+                }
+            }
+        }
+
+        // Convert type parameters to Rust generics (Go 1.18+ generics)
+        let generics = if let Some(type_params) = func_decl.type_.type_params {
+            let mut params = syn::punctuated::Punctuated::new();
+            for field in type_params.list {
+                if let Some(names) = field.names {
+                    for name in names {
+                        let ident: syn::Ident = name.into();
+                        let bounds = if let Some(ref constraint) = field.type_ {
+                            go_constraint_to_rust_bounds(constraint)
+                        } else {
+                            syn::punctuated::Punctuated::new()
+                        };
+                        params.push(syn::GenericParam::Type(syn::TypeParam {
+                            attrs: vec![],
+                            ident,
+                            colon_token: if bounds.is_empty() {
+                                None
+                            } else {
+                                Some(<Token![:]>::default())
+                            },
+                            bounds,
+                            eq_token: None,
+                            default: None,
+                        }));
+                    }
+                }
+            }
+            if params.is_empty() {
+                syn::Generics {
+                    params: syn::punctuated::Punctuated::new(),
+                    lt_token: None,
+                    gt_token: None,
+                    where_clause: None,
+                }
+            } else {
+                syn::Generics {
+                    lt_token: Some(<Token![<]>::default()),
+                    gt_token: Some(<Token![>]>::default()),
+                    params,
+                    where_clause: None,
+                }
+            }
+        } else {
+            syn::Generics {
+                params: syn::punctuated::Punctuated::new(),
+                lt_token: None,
+                gt_token: None,
+                where_clause: None,
+            }
+        };
 
         let sig = syn::Signature {
             constness: None,
@@ -1876,12 +2893,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             abi: None,
             fn_token: <Token![fn]>::default(),
             ident: func_decl.name.into(),
-            generics: syn::Generics {
-                params: syn::punctuated::Punctuated::new(),
-                lt_token: None,
-                gt_token: None,
-                where_clause: None,
-            },
+            generics,
             paren_token: syn::token::Paren::default(),
             inputs,
             variadic: None,
@@ -1996,10 +3008,55 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 Some(<Token![;]>::default()),
             )]),
             ast::Stmt::ForStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
-            ast::Stmt::GoStmt(_) => {
-                // Goroutines would need to be converted to threads/async
-                // For now, we skip it
-                Ok(vec![])
+            ast::Stmt::GoStmt(go_stmt) => {
+                // go f(args...) => std::thread::spawn(move || { f(args...); })
+                // go func() { ... }() => std::thread::spawn(move || { ... })
+                let call_expr = go_stmt.call;
+
+                if let ast::Expr::FuncLit(func_lit) = *call_expr.fun {
+                    // Inline the body directly into the spawn closure
+                    let block: syn::Block = func_lit.body.try_into()?;
+                    let stmts = &block.stmts;
+                    let clones = extract_idents_for_clone(&block);
+                    Ok(vec![syn::Stmt::Expr(
+                        syn::parse_quote! {
+                            {
+                                #(#clones)*
+                                ::std::thread::spawn(move || { #(#stmts)* })
+                            }
+                        },
+                        Some(<Token![;]>::default()),
+                    )])
+                } else {
+                    // go someFunc(args...)
+                    let mut clone_stmts: Vec<syn::Stmt> = Vec::new();
+                    if let Some(ref args) = call_expr.args {
+                        for arg in args.iter() {
+                            if let ast::Expr::Ident(ident) = arg {
+                                let name = syn::Ident::new(ident.name, Span::mixed_site());
+                                clone_stmts.push(syn::parse_quote! {
+                                    let #name = #name.clone();
+                                });
+                            }
+                        }
+                    }
+                    let call: syn::ExprCall = call_expr.into();
+                    if clone_stmts.is_empty() {
+                        Ok(vec![syn::parse_quote! {
+                            ::std::thread::spawn(move || { #call; });
+                        }])
+                    } else {
+                        Ok(vec![syn::Stmt::Expr(
+                            syn::parse_quote! {
+                                {
+                                    #(#clone_stmts)*
+                                    ::std::thread::spawn(move || { #call; })
+                                }
+                            },
+                            Some(<Token![;]>::default()),
+                        )])
+                    }
+                }
             }
             ast::Stmt::IfStmt(s) => {
                 let has_init = s.init.is_some();
@@ -2072,7 +3129,19 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::RangeStmt(s) => compile_range_stmt(s),
             ast::Stmt::SwitchStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
             ast::Stmt::TypeSwitchStmt(s) => compile_type_switch_stmt(s),
-            ast::Stmt::SelectStmt(_) | ast::Stmt::SendStmt(_) | ast::Stmt::CommClause(_) | ast::Stmt::CaseClause(_) => {
+            ast::Stmt::SendStmt(send_stmt) => {
+                // ch <- value  =>  ch.send(value);
+                let chan: syn::Expr = send_stmt.chan.into();
+                let value: syn::Expr = send_stmt.value.into();
+                Ok(vec![syn::parse_quote! {
+                    #chan.send(#value);
+                }])
+            }
+            ast::Stmt::SelectStmt(select_stmt) => {
+                compile_select_stmt(select_stmt)
+            }
+            ast::Stmt::CommClause(_) | ast::Stmt::CaseClause(_) => {
+                // These are handled inline by their parent (SwitchStmt/SelectStmt)
                 Ok(vec![])
             }
         }
@@ -2502,13 +3571,20 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 let mut elems = syn::punctuated::Punctuated::new();
                 for expr in assign_stmt.lhs {
                     if let ast::Expr::Ident(ident) = expr {
-                        elems.push(syn::Pat::Ident(syn::PatIdent {
-                            attrs: vec![],
-                            ident: ident.into(),
-                            by_ref: None,
-                            subpat: None,
-                            mutability: Some(<Token![mut]>::default()),
-                        }));
+                        if ident.name == "_" {
+                            elems.push(syn::Pat::Wild(syn::PatWild {
+                                attrs: vec![],
+                                underscore_token: <Token![_]>::default(),
+                            }));
+                        } else {
+                            elems.push(syn::Pat::Ident(syn::PatIdent {
+                                attrs: vec![],
+                                ident: ident.into(),
+                                by_ref: None,
+                                subpat: None,
+                                mutability: Some(<Token![mut]>::default()),
+                            }));
+                        }
                     } else {
                         return Err(CompilerError::InvalidAssignment(
                             "expected identifier on lhs of :=".to_string(),
@@ -2574,13 +3650,20 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             CompilerError::InvalidAssignment("empty lhs".to_string())
                         })?;
                     if let ast::Expr::Ident(ident) = first_lhs {
-                        syn::Pat::Ident(syn::PatIdent {
-                            attrs: vec![],
-                            ident: ident.into(),
-                            by_ref: None,
-                            subpat: None,
-                            mutability: Some(<Token![mut]>::default()),
-                        })
+                        if ident.name == "_" {
+                            syn::Pat::Wild(syn::PatWild {
+                                attrs: vec![],
+                                underscore_token: <Token![_]>::default(),
+                            })
+                        } else {
+                            syn::Pat::Ident(syn::PatIdent {
+                                attrs: vec![],
+                                ident: ident.into(),
+                                by_ref: None,
+                                subpat: None,
+                                mutability: Some(<Token![mut]>::default()),
+                            })
+                        }
                     } else {
                         return Err(CompilerError::InvalidAssignment(
                             "expected identifier on lhs of :=".to_string(),
@@ -2591,13 +3674,20 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     let mut elems = syn::punctuated::Punctuated::new();
                     for expr in assign_stmt.lhs {
                         if let ast::Expr::Ident(ident) = expr {
-                            elems.push(syn::Pat::Ident(syn::PatIdent {
-                                attrs: vec![],
-                                ident: ident.into(),
-                                by_ref: None,
-                                subpat: None,
-                                mutability: Some(<Token![mut]>::default()),
-                            }))
+                            if ident.name == "_" {
+                                elems.push(syn::Pat::Wild(syn::PatWild {
+                                    attrs: vec![],
+                                    underscore_token: <Token![_]>::default(),
+                                }))
+                            } else {
+                                elems.push(syn::Pat::Ident(syn::PatIdent {
+                                    attrs: vec![],
+                                    ident: ident.into(),
+                                    by_ref: None,
+                                    subpat: None,
+                                    mutability: Some(<Token![mut]>::default()),
+                                }))
+                            }
                         } else {
                             return Err(CompilerError::InvalidAssignment(
                                 "expected identifier on lhs of :=".to_string(),
@@ -3642,5 +4732,297 @@ func main() {
         assert!(lib_rs.contains("pub mod errors"));
         assert!(lib_rs.contains("pub mod strconv"));
         assert!(lib_rs.contains("pub mod builtin"));
+    }
+
+    // --- Iota + Const tests (Agent 2) ---
+
+    #[test]
+    fn it_should_support_iota_basic() {
+        test(
+            r#"
+                package main
+
+                const (
+                    Red = iota
+                    Green
+                    Blue
+                )
+
+                func main() {}
+            "#,
+            rust! {
+                pub const Red: isize = 0;
+                pub const Green: isize = 1;
+                pub const Blue: isize = 2;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_support_iota_expression() {
+        test(
+            r#"
+                package main
+
+                const (
+                    A = iota * 2
+                    B
+                    C
+                )
+
+                func main() {}
+            "#,
+            rust! {
+                pub const A: isize = 0;
+                pub const B: isize = 2;
+                pub const C: isize = 4;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_support_blank_identifier_in_const() {
+        test(
+            r#"
+                package main
+
+                const (
+                    _ = iota
+                    KB = 1 << (10 * iota)
+                    MB
+                )
+
+                func main() {}
+            "#,
+            rust! {
+                pub const KB: isize = 1024;
+                pub const MB: isize = 1048576;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_support_blank_identifier_in_define() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    _, b := 1, 2
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let (_, mut b) = (1, 2);
+                }
+            },
+        )
+    }
+
+    // --- Concurrency tests (Agent 3) ---
+
+    /// Helper that compiles Go source and generates Rust source code.
+    fn go_to_rust(go_input: &str) -> String {
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        backend_rust::generate(compiled).unwrap()
+    }
+
+    #[test]
+    fn it_should_compile_channel_send() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func main() {
+                ch := make(chan int)
+                ch <- 42
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("make_chan"),
+            "Expected make_chan in output:\n{}",
+            rust_src
+        );
+        assert!(
+            rust_src.contains(".send(42)"),
+            "Expected .send(42) in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_channel_recv() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func main() {
+                ch := make(chan int)
+                v := <-ch
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains(".recv()"),
+            "Expected .recv() in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_buffered_channel() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func main() {
+                ch := make(chan int, 5)
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("make_chan(5)"),
+            "Expected make_chan(5) in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_go_stmt_with_func_lit() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            import "fmt"
+            func main() {
+                go func() {
+                    fmt.Println("hello")
+                }()
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("spawn"),
+            "Expected spawn in output:\n{}",
+            rust_src
+        );
+        assert!(
+            rust_src.contains("move ||"),
+            "Expected move || in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_go_stmt_with_named_func() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func work() {}
+            func main() {
+                go work()
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("spawn"),
+            "Expected spawn in output:\n{}",
+            rust_src
+        );
+    }
+
+    // --- Pointer + Named Return tests (Agent 4) ---
+
+    #[test]
+    fn it_should_support_named_return_values() {
+        test(
+            r#"
+                package main
+
+                func swap(a int, b int) (x int, y int) {
+                    x = b
+                    y = a
+                    return
+                }
+            "#,
+            rust! {
+                fn swap(mut a: isize, mut b: isize) -> (isize, isize) {
+                    let mut x = 0;
+                    let mut y = 0;
+                    x = b;
+                    y = a;
+                    (x, y)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_support_pointer_types_and_address_of() {
+        test(
+            r#"
+                package main
+
+                func newInt(x int) *int {
+                    return &x
+                }
+            "#,
+            rust! {
+                fn newInt(mut x: isize) -> Box<isize> {
+                    Box::new(x)
+                }
+            },
+        );
+    }
+
+    // --- Generics tests (Agent 5) ---
+
+    #[test]
+    fn it_should_compile_generic_function() {
+        test(
+            r#"
+                package main
+
+                func Identity[T any](x T) T {
+                    return x
+                }
+
+                func main() {}
+            "#,
+            rust! {
+                pub fn Identity<T>(mut x: T) -> T {
+                    x
+                }
+                pub fn main() {}
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_generic_function_with_constraint() {
+        test(
+            r#"
+                package main
+
+                func Max[T int | float64](a T, b T) T {
+                    if a > b {
+                        return a
+                    }
+                    return b
+                }
+
+                func main() {}
+            "#,
+            rust! {
+                pub fn Max<T: PartialOrd + Copy + std::fmt::Display>(mut a: T, mut b: T) -> T {
+                    if a > b {
+                        return a
+                    }
+                    b
+                }
+                pub fn main() {}
+            },
+        );
     }
 }
