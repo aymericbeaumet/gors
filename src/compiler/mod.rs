@@ -674,6 +674,271 @@ fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn),
     ))
 }
 
+fn elts_to_field_values(elts: Vec<syn::Expr>) -> Vec<syn::FieldValue> {
+    elts.into_iter()
+        .map(|e| {
+            if let syn::Expr::Tuple(ref tuple) = e {
+                if tuple.elems.len() == 2 {
+                    let mut iter = tuple.elems.clone().into_iter();
+                    let key = iter.next().unwrap();
+                    let value = iter.next().unwrap();
+                    if let syn::Expr::Path(ref path) = key {
+                        return syn::FieldValue {
+                            attrs: vec![],
+                            member: syn::Member::Named(
+                                path.path.segments.last().unwrap().ident.clone(),
+                            ),
+                            colon_token: Some(<Token![:]>::default()),
+                            expr: value,
+                        };
+                    }
+                }
+            }
+            syn::FieldValue {
+                attrs: vec![],
+                member: syn::Member::Unnamed(syn::Index {
+                    index: 0,
+                    span: Span::mixed_site(),
+                }),
+                colon_token: None,
+                expr: e,
+            }
+        })
+        .collect()
+}
+
+fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
+    let elts: Vec<syn::Expr> = comp_lit
+        .elts
+        .unwrap_or_default()
+        .into_iter()
+        .map(syn::Expr::from)
+        .collect();
+
+    if let Some(type_expr) = comp_lit.type_ {
+        match *type_expr {
+            ast::Expr::Ident(ident) => {
+                let type_ident: syn::Ident = ident.into();
+                let field_values = elts_to_field_values(elts);
+                let mut fields = syn::punctuated::Punctuated::new();
+                for fv in field_values {
+                    fields.push(fv);
+                }
+                syn::Expr::Struct(syn::ExprStruct {
+                    attrs: vec![],
+                    qself: None,
+                    path: syn::parse_quote! { #type_ident },
+                    brace_token: syn::token::Brace::default(),
+                    fields,
+                    dot2_token: None,
+                    rest: None,
+                })
+            }
+            ast::Expr::SelectorExpr(sel) => {
+                let path: syn::ExprPath = sel.into();
+                let field_values = elts_to_field_values(elts);
+                let mut fields = syn::punctuated::Punctuated::new();
+                for fv in field_values {
+                    fields.push(fv);
+                }
+                syn::Expr::Struct(syn::ExprStruct {
+                    attrs: vec![],
+                    qself: None,
+                    path: path.path,
+                    brace_token: syn::token::Brace::default(),
+                    fields,
+                    dot2_token: None,
+                    rest: None,
+                })
+            }
+            ast::Expr::ArrayType(array_type) => {
+                // Slice/array literal: []T{e1, e2, ...} → vec![e1, e2, ...]
+                if array_type.len.is_none() {
+                    syn::parse_quote! { vec![#(#elts),*] }
+                } else {
+                    syn::parse_quote! { [#(#elts),*] }
+                }
+            }
+            ast::Expr::MapType(_) => {
+                // Map literal: map[K]V{k1: v1, ...}
+                // elts are already (key, value) tuples from KeyValueExpr
+                syn::parse_quote! {
+                    std::collections::HashMap::from([#(#elts),*])
+                }
+            }
+            _ => {
+                // Fallback: treat as array/vec
+                syn::parse_quote! { vec![#(#elts),*] }
+            }
+        }
+    } else {
+        // No type — nested composite lit in an array/slice context
+        syn::parse_quote! { vec![#(#elts),*] }
+    }
+}
+
+fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
+    let mut params = syn::punctuated::Punctuated::<syn::Pat, Token![,]>::new();
+    let mut param_types = Vec::new();
+
+    for field in func_lit.type_.params.list {
+        let ty: Option<syn::Type> = field.type_.map(syn::Type::from);
+        if let Some(names) = field.names {
+            for name in names {
+                let ident: syn::Ident = name.into();
+                params.push(syn::Pat::Ident(syn::PatIdent {
+                    attrs: vec![],
+                    by_ref: None,
+                    subpat: None,
+                    mutability: Some(<Token![mut]>::default()),
+                    ident,
+                }));
+                if let Some(ref t) = ty {
+                    param_types.push(t.clone());
+                }
+            }
+        }
+    }
+
+    let ret = compile_return_type(func_lit.type_.results).unwrap_or(syn::ReturnType::Default);
+
+    let block: syn::Block = func_lit.body.try_into().unwrap_or(syn::Block {
+        brace_token: syn::token::Brace::default(),
+        stmts: vec![],
+    });
+
+    if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
+        syn::parse_quote! { move || #block }
+    } else if param_types.is_empty() {
+        syn::parse_quote! { move || #ret #block }
+    } else {
+        let typed_params: Vec<proc_macro2::TokenStream> = params
+            .iter()
+            .zip(param_types.iter())
+            .map(|(p, t)| quote::quote! { #p: #t })
+            .collect();
+        syn::parse_quote! { move |#(#typed_params),*| #ret #block }
+    }
+}
+
+fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
+    let x: syn::Expr = (*slice_expr.x).into();
+    let low = slice_expr.low.map(|l| syn::Expr::from(*l));
+    let high = slice_expr.high.map(|h| syn::Expr::from(*h));
+
+    match (low, high) {
+        (None, None) => {
+            // x[:] → x.clone() or x[..]
+            syn::parse_quote! { #x[..] }
+        }
+        (Some(lo), None) => {
+            // x[lo:] → x[lo..]
+            syn::parse_quote! { #x[#lo..] }
+        }
+        (None, Some(hi)) => {
+            // x[:hi] → x[..hi]
+            syn::parse_quote! { #x[..#hi] }
+        }
+        (Some(lo), Some(hi)) => {
+            // x[lo:hi] → x[lo..hi]
+            syn::parse_quote! { #x[#lo..#hi] }
+        }
+    }
+}
+
+fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let x: syn::Expr = range_stmt.x.into();
+    let body: syn::Block = range_stmt.body.try_into()?;
+
+    let is_define = range_stmt.tok == Some(token::Token::DEFINE);
+
+    match (range_stmt.key, range_stmt.value) {
+        (Some(key_expr), Some(val_expr)) => {
+            let key_pat = expr_to_pat(&key_expr);
+            let val_pat = expr_to_pat(&val_expr);
+            let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
+            if is_define {
+                Ok(vec![syn::Stmt::Expr(
+                    syn::Expr::ForLoop(syn::ExprForLoop {
+                        attrs: vec![],
+                        label: None,
+                        for_token: <Token![for]>::default(),
+                        pat: Box::new(pat),
+                        in_token: <Token![in]>::default(),
+                        expr: Box::new(syn::parse_quote! { (#x).iter().enumerate() }),
+                        body,
+                    }),
+                    None,
+                )])
+            } else {
+                Ok(vec![syn::Stmt::Expr(
+                    syn::Expr::ForLoop(syn::ExprForLoop {
+                        attrs: vec![],
+                        label: None,
+                        for_token: <Token![for]>::default(),
+                        pat: Box::new(pat),
+                        in_token: <Token![in]>::default(),
+                        expr: Box::new(syn::parse_quote! { (#x).iter().enumerate() }),
+                        body,
+                    }),
+                    None,
+                )])
+            }
+        }
+        (Some(key_expr), None) => {
+            let key_pat = expr_to_pat(&key_expr);
+            Ok(vec![syn::Stmt::Expr(
+                syn::Expr::ForLoop(syn::ExprForLoop {
+                    attrs: vec![],
+                    label: None,
+                    for_token: <Token![for]>::default(),
+                    pat: Box::new(key_pat),
+                    in_token: <Token![in]>::default(),
+                    expr: Box::new(syn::parse_quote! { 0..(#x).len() }),
+                    body,
+                }),
+                None,
+            )])
+        }
+        (None, None) => {
+            // for range x { ... } → for _ in x { ... }
+            let pat: syn::Pat = syn::parse_quote! { _ };
+            Ok(vec![syn::Stmt::Expr(
+                syn::Expr::ForLoop(syn::ExprForLoop {
+                    attrs: vec![],
+                    label: None,
+                    for_token: <Token![for]>::default(),
+                    pat: Box::new(pat),
+                    in_token: <Token![in]>::default(),
+                    expr: Box::new(x),
+                    body,
+                }),
+                None,
+            )])
+        }
+        _ => Err(CompilerError::UnsupportedConstruct(
+            "range with value but no key".to_string(),
+        )),
+    }
+}
+
+fn expr_to_pat(expr: &ast::Expr) -> syn::Pat {
+    match expr {
+        ast::Expr::Ident(ident) if ident.name == "_" => syn::parse_quote! { _ },
+        ast::Expr::Ident(ident) => {
+            let name = syn::Ident::new(ident.name, Span::mixed_site());
+            syn::Pat::Ident(syn::PatIdent {
+                attrs: vec![],
+                by_ref: None,
+                subpat: None,
+                mutability: Some(<Token![mut]>::default()),
+                ident: name,
+            })
+        }
+        _ => syn::parse_quote! { _ },
+    }
+}
+
 fn compile_top_level_value_spec(
     vs: ast::ValueSpec,
     tok: token::Token,
@@ -830,6 +1095,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
             ast::Expr::BinaryExpr(binary_expr) => Self::Binary(binary_expr.into()),
             ast::Expr::CallExpr(call_expr) => Self::Call(call_expr.into()),
+            ast::Expr::Ident(ident) if ident.name == "nil" => syn::parse_quote! { None },
+            ast::Expr::Ident(ident) if ident.name == "true" => syn::parse_quote! { true },
+            ast::Expr::Ident(ident) if ident.name == "false" => syn::parse_quote! { false },
             ast::Expr::Ident(ident) => Self::Path(ident.into()),
             ast::Expr::SelectorExpr(selector_expr) => Self::Path(selector_expr.into()),
             ast::Expr::ParenExpr(paren_expr) => Self::Paren(syn::ExprParen {
@@ -843,6 +1111,20 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     token::Token::SUB => syn::UnOp::Neg(<Token![-]>::default()),
                     token::Token::NOT => syn::UnOp::Not(<Token![!]>::default()),
                     token::Token::MUL => syn::UnOp::Deref(<Token![*]>::default()),
+                    token::Token::AND => {
+                        // &x → Box::new(x)
+                        let inner: syn::Expr = (*unary_expr.x).into();
+                        return Self::Call(syn::ExprCall {
+                            attrs: vec![],
+                            func: Box::new(syn::parse_quote! { Box::new }),
+                            paren_token: syn::token::Paren::default(),
+                            args: {
+                                let mut a = syn::punctuated::Punctuated::new();
+                                a.push(inner);
+                                a
+                            },
+                        });
+                    }
                     _ => unimplemented!("unary op: {:?}", unary_expr.op),
                 },
                 expr: Box::new((*unary_expr.x).into()),
@@ -858,7 +1140,23 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 op: syn::UnOp::Deref(<Token![*]>::default()),
                 expr: Box::new((*star_expr.x).into()),
             }),
-            _ => unimplemented!("{:?}", expr),
+            ast::Expr::CompositeLit(comp_lit) => {
+                compile_composite_lit(comp_lit)
+            }
+            ast::Expr::FuncLit(func_lit) => {
+                compile_func_lit(func_lit)
+            }
+            ast::Expr::SliceExpr(slice_expr) => {
+                compile_slice_expr(slice_expr)
+            }
+            ast::Expr::KeyValueExpr(kv) => {
+                // Used inside composite literals — shouldn't appear standalone,
+                // but handle gracefully
+                let key: syn::Expr = (*kv.key).into();
+                let value: syn::Expr = (*kv.value).into();
+                syn::parse_quote! { (#key, #value) }
+            }
+            _ => unimplemented!("expr: {:?}", expr),
         }
     }
 }
@@ -1238,6 +1536,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::ReturnStmt(s) => {
                 Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)])
             }
+            ast::Stmt::RangeStmt(s) => compile_range_stmt(s),
             ast::Stmt::SwitchStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
             ast::Stmt::SendStmt(_) => Ok(vec![]),
             _ => Err(CompilerError::UnsupportedConstruct(format!(
@@ -2357,6 +2656,151 @@ func main() {
                     pub fn Swap(&mut self) {
                         self.A = self.B;
                     }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_struct_literal() {
+        test(
+            r#"
+                package main
+
+                type Point struct {
+                    X int
+                    Y int
+                }
+
+                func main() {
+                    p := Point{X: 1, Y: 2}
+                }
+            "#,
+            rust! {
+                pub struct Point {
+                    pub X: isize,
+                    pub Y: isize,
+                }
+                pub fn main() {
+                    let mut p = Point { X: 1, Y: 2 };
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_slice_literal() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2, 3}
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = vec![1, 2, 3];
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_nil() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    x := nil
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut x = None;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_range_with_key_value() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2, 3}
+                    for i, v := range s {
+                        x := i + v
+                    }
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = vec![1, 2, 3];
+                    for (mut i, mut v) in (s).iter().enumerate() {
+                        let mut x = i + v;
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_slice_expression() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2, 3}
+                    t := s[1:2]
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = vec![1, 2, 3];
+                    let mut t = s[1..2];
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_address_of_as_box() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    x := 42
+                    p := &x
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut x = 42;
+                    let mut p = Box::new(x);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_closure() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    f := func() { x := 1 }
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut f = move || { let mut x = 1; };
                 }
             },
         );
