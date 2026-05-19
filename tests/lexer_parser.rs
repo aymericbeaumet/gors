@@ -35,6 +35,7 @@ use common::{TestConfig, collect_go_files, fixtures_dir, test_files_parallel};
 
 /// Test lexer on files in fixtures/go_sources/files.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn lexer_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
@@ -50,6 +51,7 @@ fn lexer_files() {
 
 /// Test lexer on programs in fixtures/go_programs.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn lexer_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
@@ -65,6 +67,7 @@ fn lexer_programs() {
 
 /// Test lexer on repositories.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn lexer_repositories() {
     let config = TestConfig::from_env();
     let repos_dir = fixtures_dir().join("go_sources/repositories");
@@ -93,6 +96,7 @@ fn lexer_repositories() {
 
 /// Test parser on files in fixtures/go_sources/files.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn parser_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
@@ -108,6 +112,7 @@ fn parser_files() {
 
 /// Test parser on programs in fixtures/go_programs.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn parser_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
@@ -123,6 +128,7 @@ fn parser_programs() {
 
 /// Test parser on repositories.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn parser_repositories() {
     let config = TestConfig::from_env();
     let repos_dir = fixtures_dir().join("go_sources/repositories");

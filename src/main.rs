@@ -133,60 +133,69 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         .first()
         .map(|(f, _)| f.clone())
         .unwrap_or_else(|| cmd.path.clone());
-    let primary_buffer = program
-        .main_package
-        .files
-        .first()
-        .map(|(_, b)| b.clone())
-        .unwrap_or_default();
 
-    let compiled = if cmd.sourcemap.is_some() {
-        let main_ast = program.main_package.ast;
-        match gors::compiler::compile_with_source_map(main_ast, &primary_file, &primary_buffer) {
-            Ok(compiled) => compiled,
-            Err(err) => {
-                let diagnostic = Diagnostic::new(
-                    &primary_file,
-                    0,
-                    0,
-                    err.to_string(),
-                    DiagnosticKind::Compiler,
-                );
-                print_error(&diagnostic);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        match gors::compiler::compile_program(program) {
-            Ok(compiled) => compiled,
-            Err(err) => {
-                let diagnostic = Diagnostic::new(
-                    &primary_file,
-                    0,
-                    0,
-                    err.to_string(),
-                    DiagnosticKind::Compiler,
-                );
-                print_error(&diagnostic);
-                std::process::exit(1);
-            }
+    let compiled = match gors::compiler::compile_program_multi(program) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            let diagnostic = Diagnostic::new(
+                &primary_file,
+                0,
+                0,
+                err.to_string(),
+                DiagnosticKind::Compiler,
+            );
+            print_error(&diagnostic);
+            std::process::exit(1);
         }
     };
 
-    if let Some(ref map_path) = cmd.sourcemap {
-        let rust_source = gors::backend_rust::generate(compiled.clone())?;
-        let source_map = gors::compiler::build_source_map(&rust_source);
-        let mut map_file = std::fs::File::create(map_path)?;
-        source_map.to_writer(&mut map_file)?;
+    let output = gors::backend_rust::generate_multi(compiled)?;
+    let output_dir = cmd.output.as_deref().unwrap_or("gors_output");
+    std::fs::create_dir_all(output_dir)?;
+
+    let prev_manifest =
+        gors::compiler::manifest::BuildManifest::load(std::path::Path::new(output_dir));
+
+    let mut new_manifest = gors::compiler::manifest::BuildManifest::new();
+    let mut written = 0;
+    let mut skipped = 0;
+
+    for (filename, source) in &output.files {
+        let file_path = std::path::Path::new(output_dir).join(filename);
+        let current_hash = sha2_hash(source);
+
+        let unchanged = prev_manifest
+            .as_ref()
+            .and_then(|m| m.modules.get(filename))
+            .is_some_and(|entry| entry.content_hash == current_hash);
+
+        if unchanged && file_path.exists() {
+            skipped += 1;
+        } else {
+            std::fs::write(&file_path, source)?;
+            written += 1;
+        }
+
+        new_manifest.modules.insert(
+            filename.clone(),
+            gors::compiler::manifest::ModuleEntry {
+                content_hash: current_hash,
+                output_file: filename.clone(),
+            },
+        );
     }
 
-    let rust_source = gors::backend_rust::generate(compiled)?;
-    let output_path = cmd.output.as_deref().unwrap_or("main.rs");
-    let mut w = std::fs::File::create(output_path)?;
-    w.write_all(rust_source.as_bytes())?;
-    println!("Wrote {output_path}");
+    new_manifest.save(std::path::Path::new(output_dir))?;
+    println!("Wrote {written} files to {output_dir} ({skipped} unchanged)");
 
     Ok(())
+}
+
+fn sha2_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
@@ -217,7 +226,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         .map(|(f, _)| f.clone())
         .unwrap_or_else(|| cmd.path.clone());
 
-    let compiled = match gors::compiler::compile_program(program) {
+    let compiled = match gors::compiler::compile_program_multi(program) {
         Ok(compiled) => compiled,
         Err(err) => {
             let diagnostic = Diagnostic::new(
@@ -232,13 +241,15 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let rust_source = gors::backend_rust::generate(compiled)?;
+    let output = gors::backend_rust::generate_multi(compiled)?;
 
     let tmp_dir = tempfile::tempdir()?;
+    for (filename, source) in &output.files {
+        std::fs::write(tmp_dir.path().join(filename), source)?;
+    }
+
     let src_path = tmp_dir.path().join("main.rs");
     let bin_path = tmp_dir.path().join("main");
-
-    std::fs::write(&src_path, rust_source.as_bytes())?;
 
     let rustc_args = RustcArgs {
         src: src_path.to_str().unwrap(),

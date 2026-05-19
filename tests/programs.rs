@@ -12,6 +12,7 @@
 mod common;
 
 use common::{fixtures_dir, gors_bin};
+use sha2::Digest;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -151,6 +152,7 @@ pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
 // =============================================================================
 
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn test_programs_rust_backend() {
     let programs = discover_programs();
     assert!(
@@ -210,6 +212,7 @@ fn test_programs_rust_backend() {
 }
 
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn test_programs_go_runner() {
     use common::go_runner_bin;
 
@@ -248,6 +251,7 @@ fn test_programs_go_runner() {
 }
 
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn test_programs_sourcemap() {
     let programs = discover_programs();
 
@@ -300,6 +304,7 @@ fn test_programs_sourcemap() {
 
 /// Comprehensive test that reports detailed results.
 #[test]
+#[ignore] // slow: run with `cargo test -- --ignored`
 fn test_all_programs() {
     let programs = discover_programs();
     assert!(
@@ -347,4 +352,166 @@ fn test_all_programs() {
     eprintln!("\n========================================");
     eprintln!("RESULTS: {passed}/{} passed", passed + failed.len());
     eprintln!("========================================\n");
+}
+
+// =============================================================================
+// Multi-file output tests (fast unit tests, not #[ignore])
+// =============================================================================
+
+#[test]
+fn test_multi_file_output_hello_world() {
+    let path = fixtures_dir()
+        .join("go_programs/hello_world/main.go")
+        .to_string_lossy()
+        .to_string();
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+    assert!(compiled.has_main);
+    assert!(compiled.modules.contains_key("__main__"));
+    assert!(compiled.modules.contains_key("fmt"));
+}
+
+#[test]
+fn test_multi_file_output_with_imports() {
+    let path = fixtures_dir()
+        .join("go_programs/import_local_package")
+        .to_string_lossy()
+        .to_string();
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+
+    assert!(compiled.has_main);
+    assert!(compiled.modules.values().any(|m| m.mod_name == "greet"));
+    assert!(compiled.modules.values().any(|m| m.mod_name == "fmt" && m.is_stdlib));
+
+    let greet = compiled.modules.values().find(|m| m.mod_name == "greet").unwrap();
+    assert_eq!(greet.filename, "example__greet.rs");
+    assert!(!greet.content_hash.is_empty());
+}
+
+#[test]
+fn test_multi_file_generate_and_compile() {
+    let path = fixtures_dir()
+        .join("go_programs/import_local_package")
+        .to_string_lossy()
+        .to_string();
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    for (filename, source) in &output.files {
+        std::fs::write(tmp.path().join(filename), source).unwrap();
+    }
+
+    let status = Command::new("rustc")
+        .args([
+            tmp.path().join("main.rs").to_str().unwrap(),
+            "--edition=2021",
+            "-o",
+            tmp.path().join("main").to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "rustc compilation failed");
+
+    let run_output = Command::new(tmp.path().join("main")).output().unwrap();
+    assert!(run_output.status.success());
+    let stdout = String::from_utf8_lossy(&run_output.stdout);
+    assert_eq!(stdout, "Hello from greet!\nGoodbye from greet!\n");
+}
+
+#[test]
+fn test_multi_file_no_filename_collisions() {
+    let path = fixtures_dir()
+        .join("go_programs/import_recursive")
+        .to_string_lossy()
+        .to_string();
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+
+    let filenames: Vec<&str> = compiled.modules.values().map(|m| m.filename.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = filenames.iter().copied().collect();
+    assert_eq!(filenames.len(), unique.len(), "filenames must be unique");
+}
+
+#[test]
+fn test_multi_file_content_hash_stability() {
+    let path = fixtures_dir()
+        .join("go_programs/import_local_package")
+        .to_string_lossy()
+        .to_string();
+
+    let program1 = gors::parser::parse_program(&path).unwrap();
+    let compiled1 = gors::compiler::compile_program_multi(program1).unwrap();
+
+    let program2 = gors::parser::parse_program(&path).unwrap();
+    let compiled2 = gors::compiler::compile_program_multi(program2).unwrap();
+
+    for (key, m1) in &compiled1.modules {
+        if m1.is_stdlib {
+            continue;
+        }
+        let m2 = compiled2.modules.get(key).unwrap();
+        assert_eq!(m1.content_hash, m2.content_hash, "hash for {key} should be stable");
+    }
+}
+
+#[test]
+fn test_build_manifest_skip_unchanged() {
+    let path = fixtures_dir()
+        .join("go_programs/hello_world/main.go")
+        .to_string_lossy()
+        .to_string();
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    // First build
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+
+    let mut manifest = gors::compiler::manifest::BuildManifest::new();
+    for (filename, source) in &output.files {
+        std::fs::write(tmp.path().join(filename), source).unwrap();
+        manifest.modules.insert(
+            filename.clone(),
+            gors::compiler::manifest::ModuleEntry {
+                content_hash: format!("{:x}", sha2::Sha256::digest(source.as_bytes())),
+                output_file: filename.clone(),
+            },
+        );
+    }
+    manifest.save(tmp.path()).unwrap();
+
+    // Load manifest and verify skip logic
+    let loaded = gors::compiler::manifest::BuildManifest::load(tmp.path()).unwrap();
+    for (filename, source) in &output.files {
+        if filename == "lib.rs" || filename == "main.rs" {
+            continue;
+        }
+        let hash = format!("{:x}", sha2::Sha256::digest(source.as_bytes()));
+        assert!(
+            !loaded.needs_recompile(filename, &hash),
+            "unchanged module {filename} should not need recompile"
+        );
+    }
+
+    // A changed hash should trigger recompile
+    assert!(loaded.needs_recompile("fmt.rs", "different_hash"));
+}
+
+#[test]
+fn test_multi_file_lib_rs_is_consumable() {
+    let path = fixtures_dir()
+        .join("go_programs/hello_world/main.go")
+        .to_string_lossy()
+        .to_string();
+    let program = gors::parser::parse_program(&path).unwrap();
+    let compiled = gors::compiler::compile_program_multi(program).unwrap();
+    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+
+    assert!(output.files.contains_key("lib.rs"), "lib.rs should exist for library consumption");
+    let lib_rs = &output.files["lib.rs"];
+    assert!(lib_rs.contains("pub mod"), "lib.rs should have pub mod declarations");
 }

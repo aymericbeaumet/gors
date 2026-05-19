@@ -261,6 +261,52 @@ pub fn generate(file: syn::File) -> Result<String, Box<dyn std::error::Error>> {
 /// # Returns
 ///
 /// Returns `Ok((String, SourceMap))` containing the formatted source code and source map.
+pub struct GeneratedOutput {
+    pub files: std::collections::BTreeMap<String, String>,
+}
+
+pub fn generate_multi(
+    program: crate::compiler::CompiledProgram,
+) -> Result<GeneratedOutput, Box<dyn std::error::Error>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut mod_decls = Vec::new();
+
+    for module in program.modules.values() {
+        if module.is_main {
+            continue;
+        }
+
+        let source = generate(module.file.clone())?;
+        files.insert(module.filename.clone(), source);
+
+        if module.filename == format!("{}.rs", module.mod_name) {
+            mod_decls.push(format!("pub mod {};", module.mod_name));
+        } else {
+            mod_decls.push(format!(
+                "#[path = \"{}\"]\npub mod {};",
+                module.filename, module.mod_name
+            ));
+        }
+    }
+
+    files.insert("lib.rs".to_string(), mod_decls.join("\n") + "\n");
+
+    if let Some(main_module) = program.modules.get("__main__") {
+        let mut main_parts = Vec::new();
+
+        if program.has_main {
+            main_parts.push("#[path = \"lib.rs\"]\nmod lib;\nuse lib::*;".to_string());
+        }
+
+        let main_body = generate(main_module.file.clone())?;
+        main_parts.push(main_body);
+
+        files.insert("main.rs".to_string(), main_parts.join("\n\n") + "\n");
+    }
+
+    Ok(GeneratedOutput { files })
+}
+
 pub fn generate_with_sourcemap(
     file: syn::File,
     source_file: &str,

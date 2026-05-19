@@ -16,12 +16,15 @@
 //! - Goto statements
 //! - Some complex type expressions
 
+pub mod manifest;
 mod passes;
 
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use proc_macro2::Span;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt;
 use syn::Token;
 
@@ -186,6 +189,139 @@ pub fn compile_program(
         attrs: vec![],
         items: all_items,
         shebang: None,
+    })
+}
+
+#[derive(Clone)]
+pub struct CompiledModule {
+    pub mod_name: String,
+    pub import_path: String,
+    pub file: syn::File,
+    pub filename: String,
+    pub content_hash: String,
+    pub is_main: bool,
+    pub is_stdlib: bool,
+}
+
+#[derive(Clone)]
+pub struct CompiledProgram {
+    pub modules: BTreeMap<String, CompiledModule>,
+    pub has_main: bool,
+}
+
+pub fn import_path_to_filename(import_path: &str) -> String {
+    if import_path.is_empty() || import_path == "main" {
+        return "main.rs".to_string();
+    }
+    format!("{}.rs", import_path.replace('/', "__"))
+}
+
+pub fn compute_content_hash(files: &[(String, String)]) -> String {
+    let mut hasher = Sha256::new();
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by_key(|(name, _)| name.as_str());
+    for (name, content) in sorted {
+        hasher.update(name.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(content.as_bytes());
+        hasher.update(b"\x00");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn compile_program_multi(
+    program: crate::parser::ParsedProgram,
+) -> Result<CompiledProgram, CompilerError> {
+    let mut modules = BTreeMap::new();
+
+    let pkg_names: std::collections::HashSet<String> = program
+        .imports
+        .iter()
+        .map(|p| p.name.clone())
+        .chain(
+            program
+                .stdlib_imports
+                .iter()
+                .map(|path| path.rsplit('/').next().unwrap_or(path).to_string()),
+        )
+        .collect();
+
+    for stdlib_path in &program.stdlib_imports {
+        if let Some(stdlib_mod) = crate::stdlib::resolve_stdlib(stdlib_path) {
+            let mod_name = stdlib_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(stdlib_path)
+                .to_string();
+            let items = match stdlib_mod.content {
+                Some((_, items)) => items,
+                None => vec![],
+            };
+            modules.insert(
+                stdlib_path.clone(),
+                CompiledModule {
+                    mod_name: mod_name.clone(),
+                    import_path: stdlib_path.clone(),
+                    file: syn::File {
+                        attrs: vec![],
+                        items,
+                        shebang: None,
+                    },
+                    filename: format!("{mod_name}.rs"),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: true,
+                },
+            );
+        }
+    }
+
+    for pkg in program.imports {
+        let content_hash = compute_content_hash(&pkg.files);
+        let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
+        passes::pass_for_imported_package(&mut pkg_file);
+        prefix_sibling_paths(&mut pkg_file, &pkg_names);
+
+        let filename = import_path_to_filename(&pkg.import_path);
+        modules.insert(
+            pkg.import_path.clone(),
+            CompiledModule {
+                mod_name: pkg.name.clone(),
+                import_path: pkg.import_path.clone(),
+                file: pkg_file,
+                filename,
+                content_hash,
+                is_main: false,
+                is_stdlib: false,
+            },
+        );
+    }
+
+    let has_main_fn = program.main_package.name == "main"
+        && program.main_package.ast.decls.iter().any(|d| {
+            matches!(d, ast::Decl::FuncDecl(f) if f.name.name == "main")
+        });
+
+    let main_hash = compute_content_hash(&program.main_package.files);
+    let mut main_file: syn::File = program.main_package.ast.try_into()?;
+    passes::pass(&mut main_file);
+
+    modules.insert(
+        "__main__".to_string(),
+        CompiledModule {
+            mod_name: "main".to_string(),
+            import_path: String::new(),
+            file: main_file,
+            filename: "main.rs".to_string(),
+            content_hash: main_hash,
+            is_main: true,
+            is_stdlib: false,
+        },
+    );
+
+    Ok(CompiledProgram {
+        modules,
+        has_main: has_main_fn,
     })
 }
 
@@ -1505,5 +1641,108 @@ func main() {
             names.contains(&"main"),
             "Expected 'main' in source map names"
         );
+    }
+
+    #[test]
+    fn import_path_to_filename_simple() {
+        assert_eq!(super::import_path_to_filename("fmt"), "fmt.rs");
+        assert_eq!(
+            super::import_path_to_filename("example/greet"),
+            "example__greet.rs"
+        );
+        assert_eq!(
+            super::import_path_to_filename("example/math/calc"),
+            "example__math__calc.rs"
+        );
+    }
+
+    #[test]
+    fn import_path_to_filename_main() {
+        assert_eq!(super::import_path_to_filename("main"), "main.rs");
+        assert_eq!(super::import_path_to_filename(""), "main.rs");
+    }
+
+    #[test]
+    fn import_path_to_filename_no_collisions() {
+        let paths = ["example/foo", "example/bar", "other/foo", "example/foo/bar"];
+        let filenames: Vec<String> = paths.iter().map(|p| super::import_path_to_filename(p)).collect();
+        let unique: std::collections::HashSet<_> = filenames.iter().collect();
+        assert_eq!(filenames.len(), unique.len(), "filenames must be unique");
+    }
+
+    #[test]
+    fn content_hash_is_deterministic() {
+        let files1 = vec![
+            ("b.go".to_string(), "package b".to_string()),
+            ("a.go".to_string(), "package a".to_string()),
+        ];
+        let files2 = vec![
+            ("a.go".to_string(), "package a".to_string()),
+            ("b.go".to_string(), "package b".to_string()),
+        ];
+        assert_eq!(
+            super::compute_content_hash(&files1),
+            super::compute_content_hash(&files2)
+        );
+    }
+
+    #[test]
+    fn content_hash_changes_on_modification() {
+        let files1 = vec![("a.go".to_string(), "package a".to_string())];
+        let files2 = vec![("a.go".to_string(), "package a // changed".to_string())];
+        assert_ne!(
+            super::compute_content_hash(&files1),
+            super::compute_content_hash(&files2)
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_hello_world() {
+        let go_source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n";
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec!["fmt".to_string()],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        assert!(compiled.has_main);
+        assert!(compiled.modules.contains_key("__main__"));
+        assert!(compiled.modules.contains_key("fmt"));
+        let fmt_mod = &compiled.modules["fmt"];
+        assert_eq!(fmt_mod.mod_name, "fmt");
+        assert_eq!(fmt_mod.filename, "fmt.rs");
+        assert!(fmt_mod.is_stdlib);
+    }
+
+    #[test]
+    fn compile_program_multi_generates_valid_rust() {
+        let go_source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"test\")\n}\n";
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec!["fmt".to_string()],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        let output = backend_rust::generate_multi(compiled).unwrap();
+        assert!(output.files.contains_key("main.rs"));
+        assert!(output.files.contains_key("lib.rs"));
+        assert!(output.files.contains_key("fmt.rs"));
+        let main_rs = &output.files["main.rs"];
+        assert!(main_rs.contains("mod lib"));
+        assert!(main_rs.contains("use lib::*"));
+        let lib_rs = &output.files["lib.rs"];
+        assert!(lib_rs.contains("pub mod fmt"));
     }
 }
