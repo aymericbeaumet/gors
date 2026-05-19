@@ -113,144 +113,22 @@ impl BackendResult {
     }
 }
 
-/// Compile and run via Rust backend using CLI:
-/// 1. `gors build -o <temp>.rs <path>`
-/// 2. `rustc <temp>.rs -o <temp_bin>`
-/// 3. Execute `<temp_bin>`
+/// Compile and run via `gors run <path>`.
 pub fn run_via_rust_cli(path: &std::path::Path) -> BackendResult {
-    let temp_dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(e) => return BackendResult::failure(format!("Failed to create temp dir: {}", e)),
-    };
-
-    let rust_file = temp_dir.path().join("main.rs");
-    let bin_file = temp_dir.path().join("main");
-
     let gors = gors_bin();
-    let build_output = Command::new(gors)
-        .args([
-            "build",
-            "-o",
-            rust_file.to_str().unwrap(),
-            path.to_str().unwrap(),
-        ])
+    let output = Command::new(gors)
+        .args(["run", path.to_str().unwrap()])
         .output();
-
-    let build_output = match build_output {
-        Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to run gors build: {}", e)),
-    };
-
-    if !build_output.status.success() {
-        return BackendResult::failure(format!(
-            "gors build failed:\n{}",
-            String::from_utf8_lossy(&build_output.stderr)
-        ));
-    }
-
-    let rustc_output = Command::new("rustc")
-        .args([
-            rust_file.to_str().unwrap(),
-            "-o",
-            bin_file.to_str().unwrap(),
-            "--edition=2021",
-        ])
-        .output();
-
-    let rustc_output = match rustc_output {
-        Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to run rustc: {}", e)),
-    };
-
-    if !rustc_output.status.success() {
-        let rust_source = std::fs::read_to_string(&rust_file).unwrap_or_default();
-        return BackendResult::failure(format!(
-            "rustc compilation failed:\n{}\n{}\n\nGenerated Rust source:\n{}",
-            String::from_utf8_lossy(&rustc_output.stdout),
-            String::from_utf8_lossy(&rustc_output.stderr),
-            rust_source
-        ));
-    }
-
-    let exec_output = Command::new(&bin_file).output();
-
-    let exec_output = match exec_output {
-        Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to execute binary: {}", e)),
-    };
-
-    if !exec_output.status.success() {
-        return BackendResult::failure(format!(
-            "Execution failed:\n{}",
-            String::from_utf8_lossy(&exec_output.stderr)
-        ));
-    }
-
-    BackendResult::success(String::from_utf8_lossy(&exec_output.stdout).to_string())
-}
-
-/// Run a Go program via the Rust backend using library APIs.
-pub fn run_via_rust_lib(path: &std::path::Path) -> BackendResult {
-    let (ast, _files) = match gors::parser::parse_path(path.to_str().unwrap()) {
-        Ok(result) => result,
-        Err(e) => return BackendResult::failure(format!("Parse error: {:?}", e)),
-    };
-
-    let compiled = match gors::compiler::compile(ast) {
-        Ok(c) => c,
-        Err(e) => return BackendResult::failure(format!("Compile error: {:?}", e)),
-    };
-
-    let rust_source = match gors::backend_rust::generate(compiled) {
-        Ok(s) => s,
-        Err(e) => return BackendResult::failure(format!("Codegen error: {:?}", e)),
-    };
-
-    let temp_dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(e) => return BackendResult::failure(format!("Failed to create temp dir: {}", e)),
-    };
-
-    let rust_file = temp_dir.path().join("main.rs");
-    let bin_file = temp_dir.path().join("main");
-
-    if let Err(e) = std::fs::write(&rust_file, &rust_source) {
-        return BackendResult::failure(format!("Failed to write Rust file: {}", e));
-    }
-
-    let rustc = Command::new("rustc")
-        .args([
-            rust_file.to_str().unwrap(),
-            "-o",
-            bin_file.to_str().unwrap(),
-            "--edition=2021",
-        ])
-        .output();
-
-    let rustc = match rustc {
-        Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to run rustc: {}", e)),
-    };
-
-    if !rustc.status.success() {
-        return BackendResult::failure(format!(
-            "Rust compilation failed:\n{}\n{}\n\nGenerated source:\n{}",
-            String::from_utf8_lossy(&rustc.stdout),
-            String::from_utf8_lossy(&rustc.stderr),
-            rust_source
-        ));
-    }
-
-    let output = Command::new(&bin_file).output();
 
     let output = match output {
         Ok(o) => o,
-        Err(e) => return BackendResult::failure(format!("Failed to run binary: {}", e)),
+        Err(e) => return BackendResult::failure(format!("Failed to run gors run: {}", e)),
     };
 
     if !output.status.success() {
         return BackendResult::failure(format!(
-            "Execution failed:\n{}",
+            "gors run failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
     }

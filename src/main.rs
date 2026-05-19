@@ -3,6 +3,7 @@
 use clap::Parser;
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
+use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
@@ -11,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match opts.subcmd {
         SubCommand::Ast(cmd) => ast(cmd),
         SubCommand::Build(cmd) => build(cmd),
+        SubCommand::Run(cmd) => run(cmd),
         SubCommand::Tokens(cmd) => tokens(cmd),
     }
 }
@@ -40,6 +42,8 @@ enum SubCommand {
     Ast(Ast),
     /// Compile the named Go source file or directory to Rust
     Build(Build),
+    /// Compile and run the named Go source file or directory
+    Run(Run),
     /// Scan the named Go file and print the tokens
     Tokens(Tokens),
 }
@@ -63,6 +67,18 @@ struct Build {
     /// Output file path
     #[arg(short, long)]
     output: Option<String>,
+}
+
+#[derive(Parser)]
+struct Run {
+    /// The Go source file or directory to run
+    path: String,
+    /// Build in release mode, with optimizations
+    #[arg(long)]
+    release: bool,
+    /// Arguments to pass to the compiled program
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -162,6 +178,73 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
+    let (ast, files) = match gors::parser::parse_path(&cmd.path) {
+        Ok(result) => result,
+        Err(gors::parser::PathParseError::ParserError(err)) => {
+            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
+                (f, b)
+            } else {
+                (cmd.path.clone(), String::new())
+            };
+            let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("error: {}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let (primary_file, _) = files
+        .first()
+        .map(|(f, b)| (f.as_str(), b.as_str()))
+        .unwrap_or((&cmd.path, ""));
+
+    let compiled = match gors::compiler::compile(ast) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            let diagnostic = Diagnostic::new(
+                primary_file,
+                0,
+                0,
+                err.to_string(),
+                DiagnosticKind::Compiler,
+            );
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+    };
+
+    let rust_source = gors::backend_rust::generate(compiled)?;
+
+    let tmp_dir = tempfile::tempdir()?;
+    let src_path = tmp_dir.path().join("main.rs");
+    let bin_path = tmp_dir.path().join("main");
+
+    std::fs::write(&src_path, rust_source.as_bytes())?;
+
+    let rustc_args = RustcArgs {
+        src: src_path.to_str().unwrap(),
+        out: Some(bin_path.to_str().unwrap()),
+        emit: None,
+        release: cmd.release,
+    };
+
+    let rustc_status = Command::new("rustc")
+        .args(Vec::from(rustc_args))
+        .status()?;
+
+    if !rustc_status.success() {
+        std::process::exit(rustc_status.code().unwrap_or(1));
+    }
+
+    let status = Command::new(&bin_path).args(&cmd.args).status()?;
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 /// Helper to get file path and contents for error reporting.
 /// If path is a directory, returns the first .go file in it.
 fn get_file_for_error(path: &str) -> Option<(String, String)> {
@@ -209,7 +292,6 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(dead_code)]
 struct RustcArgs<'a> {
     src: &'a str,
     out: Option<&'a str>,
