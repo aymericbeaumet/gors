@@ -459,6 +459,94 @@ pub fn parse_program(
     })
 }
 
+/// Parse a Go program from an explicit list of source file paths.
+///
+/// All files must be `.go` files in the same package. If only one path is given,
+/// delegates to [`parse_program`]. For multiple files, parses each individually
+/// and merges their ASTs before resolving imports.
+pub fn parse_program_files(
+    file_paths: &[String],
+) -> std::result::Result<ParsedProgram, PathParseError> {
+    if file_paths.len() == 1 {
+        return parse_program(&file_paths[0]);
+    }
+
+    let (main_ast, files) = parse_explicit_files(file_paths)?;
+
+    let dir_path = std::path::Path::new(&file_paths[0])
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+
+    let module_root = find_module_root(&dir_path);
+    let module_name = module_root
+        .as_ref()
+        .and_then(|root| parse_go_mod(root).ok());
+
+    let mut imports = Vec::new();
+    let mut stdlib_imports = Vec::new();
+    if let (Some(root), Some(mod_name)) = (&module_root, &module_name) {
+        let mut visited = std::collections::HashSet::new();
+        resolve_imports_recursive(
+            &main_ast,
+            root,
+            mod_name,
+            &mut imports,
+            &mut stdlib_imports,
+            &mut visited,
+        )?;
+    } else {
+        collect_stdlib_imports(&main_ast, &mut stdlib_imports);
+    }
+
+    let pkg_name = main_ast.name.name.to_string();
+    Ok(ParsedProgram {
+        main_package: ParsedPackage {
+            name: pkg_name,
+            import_path: String::new(),
+            ast: main_ast,
+            files,
+        },
+        imports,
+        stdlib_imports,
+    })
+}
+
+fn parse_explicit_files(
+    file_paths: &[String],
+) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
+    if file_paths.is_empty() {
+        return Err(PathParseError::NoGoFiles("(no files given)".to_string()));
+    }
+
+    let mut files_content: Vec<(String, String)> = Vec::new();
+    let mut asts: Vec<ast::File<'static>> = Vec::new();
+
+    for file_path in file_paths {
+        let buffer = std::fs::read_to_string(file_path)
+            .map_err(|e| PathParseError::IoError(format!("cannot read '{}': {}", file_path, e)))?;
+        let path_static: &'static str = Box::leak(file_path.clone().into_boxed_str());
+        let buffer_static: &'static str = Box::leak(buffer.clone().into_boxed_str());
+        let ast = parse_file(path_static, buffer_static).map_err(PathParseError::ParserError)?;
+        files_content.push((file_path.clone(), buffer));
+        asts.push(ast);
+    }
+
+    let expected_package = asts[0].name.name;
+    for (i, ast) in asts.iter().enumerate().skip(1) {
+        if ast.name.name != expected_package {
+            return Err(PathParseError::PackageMismatch {
+                expected: expected_package.to_string(),
+                found: ast.name.name.to_string(),
+                file: file_paths[i].clone(),
+            });
+        }
+    }
+
+    let merged = merge_files(asts);
+    Ok((merged, files_content))
+}
+
 fn find_module_root(start_dir: &str) -> Option<String> {
     let mut dir = std::path::PathBuf::from(start_dir);
     loop {

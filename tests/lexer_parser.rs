@@ -1,7 +1,8 @@
-//! Parser and lexer tests.
+//! Parser and lexer conformance tests.
 //!
 //! These tests compare gors parser/lexer output with the Go reference implementation.
-//! Tests run in parallel for maximum performance.
+//! They are gated behind the `integration` feature flag — use
+//! `cargo test --features integration` to run them locally.
 //!
 //! ## Environment Variables
 //!
@@ -12,17 +13,17 @@
 //! ## Examples
 //!
 //! ```bash
-//! # Run all parser tests
-//! cargo test --release parser
+//! # Run all parser conformance tests
+//! cargo test --release --features integration parser
 //!
 //! # Run with a limit of 100 files
-//! GORS_TEST_LIMIT=100 cargo test --release parser_repositories
+//! GORS_TEST_LIMIT=100 cargo test --release --features integration parser_repositories
 //!
 //! # Run only tests matching "kubernetes"
-//! GORS_TEST_FILTER=kubernetes cargo test --release parser_repositories
+//! GORS_TEST_FILTER=kubernetes cargo test --release --features integration parser_repositories
 //!
 //! # Run with verbose progress output
-//! GORS_TEST_VERBOSE=1 cargo test --release parser_repositories -- --nocapture
+//! GORS_TEST_VERBOSE=1 cargo test --release --features integration parser_repositories -- --nocapture
 //! ```
 
 mod common;
@@ -35,7 +36,7 @@ use common::{TestConfig, collect_go_files, fixtures_dir, test_files_parallel};
 
 /// Test lexer on files in fixtures/go_sources/files.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn lexer_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
@@ -51,7 +52,7 @@ fn lexer_files() {
 
 /// Test lexer on programs in fixtures/go_programs.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn lexer_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
@@ -67,7 +68,7 @@ fn lexer_programs() {
 
 /// Test lexer on repositories.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn lexer_repositories() {
     let config = TestConfig::from_env();
     let repos_dir = fixtures_dir().join("go_sources/repositories");
@@ -96,7 +97,7 @@ fn lexer_repositories() {
 
 /// Test parser on files in fixtures/go_sources/files.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn parser_files() {
     let config = TestConfig::from_env();
     let files_dir = fixtures_dir().join("go_sources/files");
@@ -112,7 +113,7 @@ fn parser_files() {
 
 /// Test parser on programs in fixtures/go_programs.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn parser_programs() {
     let config = TestConfig::from_env();
     let programs_dir = fixtures_dir().join("go_programs");
@@ -128,7 +129,7 @@ fn parser_programs() {
 
 /// Test parser on repositories.
 #[test]
-#[ignore] // slow: run with `cargo test -- --ignored`
+#[cfg_attr(not(feature = "integration"), ignore)]
 fn parser_repositories() {
     let config = TestConfig::from_env();
     let repos_dir = fixtures_dir().join("go_sources/repositories");

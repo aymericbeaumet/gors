@@ -71,13 +71,11 @@ struct Build {
 
 #[derive(Parser)]
 struct Run {
-    /// The Go source file or directory to run
-    path: String,
     /// Build in release mode, with optimizations
     #[arg(long)]
     release: bool,
-    /// Arguments to pass to the compiled program
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    /// Go source file(s), directory, or package path, followed by optional program arguments
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     args: Vec<String>,
 }
 
@@ -198,16 +196,35 @@ fn sha2_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Split CLI arguments into source paths and program arguments.
+///
+/// If the first argument ends with `.go`, all leading `.go` arguments are source
+/// files. Otherwise, the first argument is a directory/package path. Everything
+/// after the source paths is passed through to the compiled program.
+fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
+    if args.first().is_some_and(|a| a.ends_with(".go")) {
+        let split = args
+            .iter()
+            .position(|a| !a.ends_with(".go"))
+            .unwrap_or(args.len());
+        (args[..split].to_vec(), args[split..].to_vec())
+    } else {
+        (vec![args[0].clone()], args[1..].to_vec())
+    }
+}
+
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let _toolchain = gors::toolchain::ensure()?;
 
-    let program = match gors::parser::parse_program(&cmd.path) {
+    let (source_paths, program_args) = split_run_args(&cmd.args);
+
+    let program = match gors::parser::parse_program_files(&source_paths) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
-            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
+            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&source_paths[0]) {
                 (f, b)
             } else {
-                (cmd.path.clone(), String::new())
+                (source_paths[0].clone(), String::new())
             };
             let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
             print_error(&diagnostic);
@@ -224,7 +241,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         .files
         .first()
         .map(|(f, _)| f.clone())
-        .unwrap_or_else(|| cmd.path.clone());
+        .unwrap_or_else(|| source_paths[0].clone());
 
     let compiled = match gors::compiler::compile_program_multi(program) {
         Ok(compiled) => compiled,
@@ -266,7 +283,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(rustc_status.code().unwrap_or(1));
     }
 
-    let status = Command::new(&bin_path).args(&cmd.args).status()?;
+    let status = Command::new(&bin_path).args(&program_args).status()?;
 
     std::process::exit(status.code().unwrap_or(1));
 }

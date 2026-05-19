@@ -139,17 +139,17 @@ test-integrations: build-release
 
 # Internal targets for parallel execution (do not call directly)
 _test-lexer:
-	cargo test --release --package=gors lexer
+	cargo test --release --package=gors --features integration lexer
 
 _test-parser:
-	cargo test --release --package=gors parser
+	cargo test --release --package=gors --features integration parser
 
 # Individual test targets (for debugging specific failures)
 test-lexer:
-	cargo test --release --package=gors lexer -- --nocapture
+	cargo test --release --package=gors --features integration lexer -- --nocapture
 
 test-parser:
-	cargo test --release --package=gors parser -- --nocapture
+	cargo test --release --package=gors --features integration parser -- --nocapture
 
 # Legacy alias for backward compatibility
 test: test-unit

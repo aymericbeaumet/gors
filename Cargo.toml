@@ -49,6 +49,9 @@ needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
 large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
 fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
 
+[features]
+integration = []
+
 [dependencies]
 # Library dependencies
 log = { version = "0.4", features = ["release_max_level_warn"] }

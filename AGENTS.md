@@ -87,16 +87,18 @@ the start of `build` and `run` commands.
 ### Fast tests (default)
 
 ```bash
-cargo test              # ~0.2s, runs unit tests + fast integration tests
+cargo test              # Runs unit tests + program execution tests
 ```
 
-### Slow tests (explicit)
+### Lexer/parser conformance tests
 
 ```bash
-cargo test -- --ignored  # Full program execution + lexer/parser conformance
+cargo test --features integration  # Also runs lexer/parser conformance against Go reference
 ```
 
-Slow tests are marked `#[ignore]` in `tests/programs.rs` and `tests/lexer_parser.rs`.
+Conformance tests in `tests/lexer_parser.rs` are gated behind the `integration` Cargo
+feature flag. Without `--features integration` they are `#[ignore]`d. CI runs them
+via `make test-integrations`.
 
 ### Adding a test program
 
@@ -109,6 +111,28 @@ Slow tests are marked `#[ignore]` in `tests/programs.rs` and `tests/lexer_parser
 - `GORS_TEST_LIMIT=N` — cap number of files tested
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
+
+## Run patterns
+
+`gors run` supports the same invocation styles as `go run`:
+
+| Pattern | Example | Description |
+|---------|---------|-------------|
+| Single file | `gors run main.go` | Compile and run a single Go file |
+| Multiple files | `gors run main.go utils.go` | Explicit file list, all must be same package |
+| Directory | `gors run .` | All `.go` files in the directory (go.mod aware) |
+| Package path | `gors run ./cmd/server` | A specific sub-package within the module |
+
+Arguments after the source paths are forwarded to the compiled program:
+`gors run main.go -- --flag value`.
+
+When the first argument ends with `.go`, all leading `.go` arguments are treated as
+source files. Otherwise, the first argument is a directory/package path.
+
+Key differences from `go run`:
+- Uses `GORSPATH` (`~/.local/share/gors/toolchains/`) instead of `GOPATH`
+- The Go toolchain is hermetically downloaded (pinned version in `src/toolchain/mod.rs`)
+- Transpiles Go → Rust and compiles with `rustc`, not `go build`
 
 ## Compiler passes (in order)
 
