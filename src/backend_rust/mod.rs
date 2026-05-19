@@ -271,9 +271,6 @@ pub fn generate_multi(
     let mut files = std::collections::BTreeMap::new();
     let mut mod_decls = Vec::new();
 
-    files.insert("gors_builtins.rs".to_string(), GORS_BUILTINS.to_string());
-    mod_decls.push("pub mod gors_builtins;".to_string());
-
     for module in program.modules.values() {
         if module.is_main {
             continue;
@@ -310,7 +307,7 @@ pub fn generate_multi(
     Ok(GeneratedOutput { files })
 }
 
-const GORS_BUILTINS: &str = r#"#![allow(dead_code, non_snake_case)]
+pub const GORS_BUILTINS: &str = r#"#![allow(dead_code, non_snake_case)]
 
 #[inline]
 pub fn len<T>(v: &Vec<T>) -> usize {

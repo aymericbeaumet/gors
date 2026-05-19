@@ -246,6 +246,23 @@ pub fn compile_program_multi(
         )
         .collect();
 
+    let builtins_file: syn::File =
+        syn::parse_str(crate::backend_rust::GORS_BUILTINS).map_err(|e| {
+            CompilerError::UnsupportedConstruct(format!("failed to parse gors_builtins: {e}"))
+        })?;
+    modules.insert(
+        "gors_builtins".to_string(),
+        CompiledModule {
+            mod_name: "gors_builtins".to_string(),
+            import_path: "gors_builtins".to_string(),
+            file: builtins_file,
+            filename: "gors_builtins.rs".to_string(),
+            content_hash: String::new(),
+            is_main: false,
+            is_stdlib: true,
+        },
+    );
+
     for stdlib_path in &program.stdlib_imports {
         if let Some(stdlib_mod) = crate::stdlib::resolve_stdlib(stdlib_path) {
             let mod_name = stdlib_path
