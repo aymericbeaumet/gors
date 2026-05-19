@@ -3211,4 +3211,47 @@ func main() {
             },
         );
     }
+
+    #[test]
+    fn compile_program_multi_with_stdlib_chain() {
+        let go_source = r#"package main
+
+import "fmt"
+import "errors"
+import "strconv"
+
+func main() {
+	fmt.Println("hello")
+	e := errors.New("fail")
+	s := strconv.Itoa(42)
+}
+"#;
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec![
+                "errors".to_string(),
+                "fmt".to_string(),
+                "strconv".to_string(),
+            ],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        assert!(compiled.modules.contains_key("fmt"));
+        assert!(compiled.modules.contains_key("errors"));
+        assert!(compiled.modules.contains_key("strconv"));
+        let output = backend_rust::generate_multi(compiled).unwrap();
+        assert!(output.files.contains_key("fmt.rs"));
+        assert!(output.files.contains_key("errors.rs"));
+        assert!(output.files.contains_key("strconv.rs"));
+        let lib_rs = &output.files["lib.rs"];
+        assert!(lib_rs.contains("pub mod fmt"));
+        assert!(lib_rs.contains("pub mod errors"));
+        assert!(lib_rs.contains("pub mod strconv"));
+    }
 }
