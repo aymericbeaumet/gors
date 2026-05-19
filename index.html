@@ -1,33 +1,290 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>gors: experimental go compiler</title><style>#input {
-        border-width: 3px 1px 1px 1px;
-        border-style: solid;
-        border-color: #00ADD8;
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>gors: experimental go compiler</title><style>* {
+        box-sizing: border-box;
       }
 
-      #output {
-        border-width: 3px 1px 1px 1px;
-        border-style: solid;
-        border-color: #FFC832;
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0d1117;
+        color: #c9d1d9;
+        min-height: 100vh;
       }
 
-      #input:empty, #output:empty {
-        border: 1px dotted gray;
+      main {
+        max-width: 1800px;
+        margin: 0 auto;
       }
 
-      #output .cursor {
-        display: none !important;
+      main > p {
+        margin: 0 0 16px 0;
+        font-size: 14px;
+      }
+
+      main > p a {
+        color: #58a6ff;
+        text-decoration: none;
+      }
+
+      main > p a:hover {
+        text-decoration: underline;
+      }
+
+      .workspace {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
       }
 
       .editors {
         display: flex;
-        gap: 12px;
-        height: 600px;
+        gap: 16px;
+        height: 500px;
       }
 
-      .editors > * {
-        width: 500px;
+      .editor-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .editor-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: #161b22;
+        border-radius: 8px 8px 0 0;
+        font-size: 12px;
+        font-weight: 600;
+        height: 36px;
+      }
+
+      .editor-header .label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .editor-header .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+
+      .editor-container.go .dot { background: #00ADD8; }
+      .editor-container.rust .dot { background: #FFC832; }
+      .editor-container.wasm .dot { background: #654FF0; }
+
+      /* Output mode toggle - sliding switch */
+      .output-toggle {
+        display: flex;
+        align-items: center;
+        background: #21262d;
+        border-radius: 6px;
+        padding: 2px;
+        position: relative;
+        cursor: pointer;
+        user-select: none;
+        width: 100px; /* Fixed width for consistent centering */
+      }
+
+      .output-toggle .toggle-slider {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: calc(50% - 2px);
+        height: calc(100% - 4px);
+        border-radius: 4px;
+        transition: transform 0.2s ease, background 0.2s ease;
+        z-index: 0;
+      }
+
+      .output-toggle.rust .toggle-slider {
+        transform: translateX(0);
+        background: rgba(255, 200, 50, 0.25);
+      }
+
+      .output-toggle.wasm .toggle-slider {
+        transform: translateX(100%);
+        background: rgba(101, 79, 240, 0.25);
+      }
+
+      .output-toggle .toggle-option {
+        flex: 1;
+        padding: 4px 0;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 500;
+        color: #8b949e;
+        transition: color 0.2s ease;
+        z-index: 1;
+        position: relative;
+      }
+
+      .output-toggle.rust .toggle-option.rust {
+        color: #FFC832;
+      }
+
+      .output-toggle.wasm .toggle-option.wasm {
+        color: #654FF0;
+      }
+
+      .editor-wrapper {
+        flex: 1;
+        position: relative;
+        border: 2px solid;
+        border-top: none;
+        border-radius: 0 0 8px 8px;
+        overflow: hidden;
+      }
+
+      .editor-container.go .editor-wrapper { border-color: #00ADD8; }
+      .editor-container.rust .editor-wrapper { border-color: #FFC832; }
+      .editor-container.wasm .editor-wrapper { border-color: #654FF0; }
+
+      .editor {
+        width: 100%;
+        height: 100%;
       }
 
       .monaco-editor .lines-content {
         padding-left: 5px;
-      }</style><link rel="shortcut icon" href="assets/favicon.ico"><link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png"><link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png"><link rel="icon" type="image/png" sizes="48x48" href="assets/favicon-48x48.png"><link rel="manifest" href="assets/manifest.json"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#fff"><meta name="application-name" content="www"><link rel="apple-touch-icon" sizes="57x57" href="assets/apple-touch-icon-57x57.png"><link rel="apple-touch-icon" sizes="60x60" href="assets/apple-touch-icon-60x60.png"><link rel="apple-touch-icon" sizes="72x72" href="assets/apple-touch-icon-72x72.png"><link rel="apple-touch-icon" sizes="76x76" href="assets/apple-touch-icon-76x76.png"><link rel="apple-touch-icon" sizes="114x114" href="assets/apple-touch-icon-114x114.png"><link rel="apple-touch-icon" sizes="120x120" href="assets/apple-touch-icon-120x120.png"><link rel="apple-touch-icon" sizes="144x144" href="assets/apple-touch-icon-144x144.png"><link rel="apple-touch-icon" sizes="152x152" href="assets/apple-touch-icon-152x152.png"><link rel="apple-touch-icon" sizes="167x167" href="assets/apple-touch-icon-167x167.png"><link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon-180x180.png"><link rel="apple-touch-icon" sizes="1024x1024" href="assets/apple-touch-icon-1024x1024.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="www"><link rel="apple-touch-startup-image" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-640x1136.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-750x1334.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-828x1792.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1125x2436.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1242x2208.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1242x2688.png"><link rel="apple-touch-startup-image" media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1536x2048.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1668x2224.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1668x2388.png"><link rel="apple-touch-startup-image" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-2048x2732.png"><link rel="apple-touch-startup-image" media="(device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1620x2160.png"><link rel="apple-touch-startup-image" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1136x640.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1334x750.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1792x828.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2436x1125.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2208x1242.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2688x1242.png"><link rel="apple-touch-startup-image" media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2048x1536.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2224x1668.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2388x1668.png"><link rel="apple-touch-startup-image" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2732x2048.png"><link rel="apple-touch-startup-image" media="(device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2160x1620.png"><link rel="icon" type="image/png" sizes="228x228" href="assets/coast-228x228.png"><meta name="msapplication-TileColor" content="#fff"><meta name="msapplication-TileImage" content="assets/mstile-144x144.png"><meta name="msapplication-config" content="assets/browserconfig.xml"><link rel="yandex-tableau-widget" href="assets/yandex-browser-manifest.json"><script defer="defer" src="bundle.js"></script></head><body><main><p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go compiler that generates Rust code.</p><div class="editors"><div id="input"></div><div id="output"></div></div><pre id="error"></pre></main></body></html>
+      }
+
+      /* Copy button */
+      .copy-button {
+        padding: 4px 8px;
+        background: transparent;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        color: #8b949e;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        transition: all 0.15s ease;
+      }
+
+      .copy-button:hover {
+        background: #21262d;
+        border-color: #8b949e;
+        color: #c9d1d9;
+      }
+
+      .copy-button.copied {
+        background: #238636;
+        border-color: #238636;
+        color: #ffffff;
+      }
+
+      .copy-button svg {
+        width: 12px;
+        height: 12px;
+        fill: currentColor;
+      }
+
+      /* Console */
+      #console-container {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      #console-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      #console-header .terminal-icon {
+        width: 14px;
+        height: 14px;
+        fill: #8b949e;
+      }
+
+      #console {
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
+        font-size: 13px;
+        padding: 12px;
+        min-height: 120px;
+        max-height: 200px;
+        overflow-y: auto;
+        background: #0d1117;
+      }
+
+      .console-line {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+
+      .console-line .prompt {
+        color: #3fb950;
+        user-select: none;
+      }
+
+      .console-line .command {
+        color: #c9d1d9;
+      }
+
+      .console-output {
+        color: #8b949e;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .console-output.error {
+        color: #f85149;
+      }
+
+      .console-output.success {
+        color: #3fb950;
+      }
+
+      /* Error block in console */
+      .console-error-block {
+        margin-top: 8px;
+        padding: 12px;
+        background: rgba(248, 81, 73, 0.1);
+        border: 1px solid #f85149;
+        border-radius: 6px;
+        white-space: pre;
+        overflow-x: auto;
+      }
+
+      .console-error-block .error-location { color: #79c0ff; font-weight: bold; }
+      .console-error-block .error-kind { color: #f85149; }
+      .console-error-block .error-message { color: #c9d1d9; }
+      .console-error-block .error-line-number { color: #7ee787; }
+      .console-error-block .error-source { color: #c9d1d9; }
+      .console-error-block .error-caret { color: #a5d6ff; }
+
+      /* Formatted error (no border/background) */
+      .console-formatted-error {
+        white-space: pre;
+        overflow-x: auto;
+        color: #c9d1d9;
+      }
+
+      .console-formatted-error .error-location { color: #79c0ff; }
+      .console-formatted-error .error-kind { color: #f85149; }
+      .console-formatted-error .error-message { color: #c9d1d9; }
+      .console-formatted-error .error-line-number { color: #7ee787; }
+      .console-formatted-error .error-source { color: #c9d1d9; }
+      .console-formatted-error .error-caret { color: #f85149; }
+
+      /* Source map hover highlighting */
+      .source-map-highlight {
+        background-color: rgba(88, 166, 255, 0.2);
+        border-radius: 2px;
+      }</style><link rel="icon" type="image/x-icon" href="assets/favicon.ico"><link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png"><link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png"><link rel="icon" type="image/png" sizes="48x48" href="assets/favicon-48x48.png"><link rel="manifest" href="assets/manifest.webmanifest"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#fff"><meta name="application-name" content="www"><link rel="apple-touch-icon" sizes="57x57" href="assets/apple-touch-icon-57x57.png"><link rel="apple-touch-icon" sizes="60x60" href="assets/apple-touch-icon-60x60.png"><link rel="apple-touch-icon" sizes="72x72" href="assets/apple-touch-icon-72x72.png"><link rel="apple-touch-icon" sizes="76x76" href="assets/apple-touch-icon-76x76.png"><link rel="apple-touch-icon" sizes="114x114" href="assets/apple-touch-icon-114x114.png"><link rel="apple-touch-icon" sizes="120x120" href="assets/apple-touch-icon-120x120.png"><link rel="apple-touch-icon" sizes="144x144" href="assets/apple-touch-icon-144x144.png"><link rel="apple-touch-icon" sizes="152x152" href="assets/apple-touch-icon-152x152.png"><link rel="apple-touch-icon" sizes="167x167" href="assets/apple-touch-icon-167x167.png"><link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon-180x180.png"><link rel="apple-touch-icon" sizes="1024x1024" href="assets/apple-touch-icon-1024x1024.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="www"><link rel="apple-touch-startup-image" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-640x1136.png"><link rel="apple-touch-startup-image" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1136x640.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-750x1334.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1334x750.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1125x2436.png"><link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2436x1125.png"><link rel="apple-touch-startup-image" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1170x2532.png"><link rel="apple-touch-startup-image" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2532x1170.png"><link rel="apple-touch-startup-image" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1179x2556.png"><link rel="apple-touch-startup-image" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2556x1179.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-828x1792.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-1792x828.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1242x2688.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2688x1242.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1242x2208.png"><link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2208x1242.png"><link rel="apple-touch-startup-image" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1284x2778.png"><link rel="apple-touch-startup-image" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2778x1284.png"><link rel="apple-touch-startup-image" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="assets/apple-touch-startup-image-1290x2796.png"><link rel="apple-touch-startup-image" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="assets/apple-touch-startup-image-2796x1290.png"><link rel="apple-touch-startup-image" media="(device-width: 744px) and (device-height: 1133px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1488x2266.png"><link rel="apple-touch-startup-image" media="(device-width: 744px) and (device-height: 1133px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2266x1488.png"><link rel="apple-touch-startup-image" media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1536x2048.png"><link rel="apple-touch-startup-image" media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2048x1536.png"><link rel="apple-touch-startup-image" media="(device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1620x2160.png"><link rel="apple-touch-startup-image" media="(device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2160x1620.png"><link rel="apple-touch-startup-image" media="(device-width: 820px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1640x2160.png"><link rel="apple-touch-startup-image" media="(device-width: 820px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2160x1640.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1668x2388.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2388x1668.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-1668x2224.png"><link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2224x1668.png"><link rel="apple-touch-startup-image" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="assets/apple-touch-startup-image-2048x2732.png"><link rel="apple-touch-startup-image" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)" href="assets/apple-touch-startup-image-2732x2048.png"><meta name="msapplication-TileColor" content="#fff"><meta name="msapplication-TileImage" content="assets/mstile-144x144.png"><meta name="msapplication-config" content="assets/browserconfig.xml"><link rel="yandex-tableau-widget" href="assets/yandex-browser-manifest.json"><script defer="defer" src="bundle.js"></script></head><body><main><p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go to Rust transpiler.</p><div class="workspace"><div class="editors"><div class="editor-container go"><div class="editor-header"><div class="label"><span class="dot"></span> <span>Go</span></div></div><div class="editor-wrapper"><div id="go-editor" class="editor"></div></div></div><div id="output-container" class="editor-container rust"><div class="editor-header"><div class="label"><span class="dot"></span><div id="output-toggle" class="output-toggle rust" title="Click to switch output format"><div class="toggle-slider"></div><span class="toggle-option rust">Rust</span> <span class="toggle-option wasm">WASM</span></div></div><button id="copy-output" class="copy-button" title="Copy output code"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> <span>Copy</span></button></div><div class="editor-wrapper"><div id="output-editor" class="editor"></div></div></div></div><div id="console-container"><div id="console-header"><svg class="terminal-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/></svg> <span>Console</span></div><div id="console"></div></div></div></main></body></html>
