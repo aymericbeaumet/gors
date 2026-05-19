@@ -1,0 +1,14 @@
+package main
+
+// line comment
+/* block comment */
+
+/*
+multi
+line
+comment
+*/
+
+//go:build linux && amd64
+
+//go:generate echo hello

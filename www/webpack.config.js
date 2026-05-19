@@ -9,6 +9,12 @@ module.exports = {
     filename: 'bundle.js',
     path: path.resolve(__dirname, 'dist'),
   },
+  resolve: {
+    fallback: {
+      fs: false,
+      path: false,
+    },
+  },
   module: {
     rules: [
       {

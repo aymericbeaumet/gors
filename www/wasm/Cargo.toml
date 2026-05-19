@@ -1,0 +1,22 @@
+[package]
+name = "gors-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "gors"
+path = "lib.rs"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+console_error_panic_hook = "0.1"
+gors = { path = "../.." }
+wasm-bindgen = "0.2"
+# wasmi is used for running compiled WASM - works when gors itself is compiled to WASM
+wasmi = "1.0"
+# wasmprinter converts WASM binary to WAT text format for display
+wasmprinter = "0.249"

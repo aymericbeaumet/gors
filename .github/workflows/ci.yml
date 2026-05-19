@@ -1,135 +1,128 @@
 name: ci
 on: [push, pull_request]
-jobs:
 
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
-      - name: Run `cargo fmt`
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+      - name: Run make lint
+        run: make lint
 
-      - name: Run `cargo clippy`
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --workspace --all-features -- -D warnings
-
-      - name: Run `cargo doc`
-        uses: actions-rs/cargo@v1
-        with:
-          command: doc
-          args: --package=gors
+      - name: Run make doc
+        run: make doc
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
-      - name: Run `cargo build`
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --workspace --all-features --release
+      - name: Run make build-release
+        run: make build-release
 
-  test:
+  test-unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Run unit tests
+        run: make test-unit
+
+  test-integrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Install Go toolchain
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
-          go-version: '^1.17'
+          go-version: '1.26.x'
 
-      - name: Run unit tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --exclude=gors-cli
-
-      - name: Run integration tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace --all-features --package=gors-cli lexer -- --nocapture --test-threads=1
+      - name: Run integration tests (lexer + parser in parallel)
+        run: make test-integrations
 
   www:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Install Node.js toolchain
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '20'
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        run: make install-tools
 
-      - name: Build gors-wasm
-        working-directory: ./gors-wasm
-        run: wasm-pack build --release
+      - name: Build www
+        run: make www
 
-      - name: Install www dependencies
-        working-directory: ./www
-        run: npm ci
-
-      - name: Lint www code
-        working-directory: ./www
-        run: npm run lint
-
-      - name: Build www code
-        working-directory: ./www
-        run: npm run build
+      - name: Lint www
+        run: make www-lint
 
       - name: Upload the build artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: www-dist
           path: ./www/dist
 
+  # Deploy website on every push to master (nightly)
   deploy-www:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
-    needs: [lint, build, test, www]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    needs: [lint, build, test-unit, test-integrations, www]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Download the build artifacts
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: www-dist
           path: ./www/dist
 
-      - name: Deploy www
-        uses: JamesIves/github-pages-deploy-action@4.1.7
+      - name: Deploy www to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
           branch: gh-pages
           folder: ./www/dist

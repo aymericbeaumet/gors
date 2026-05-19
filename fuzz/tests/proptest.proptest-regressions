@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2091c103bfd20917595d901ac90a793140fea420b19bae83640d8ad939748b7c # shrinks to source = "package main\n\nconst go = 0\n\nfunc main() {\n}\n"

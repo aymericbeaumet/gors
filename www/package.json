@@ -1,28 +1,28 @@
 {
   "name": "www",
   "scripts": {
-    "start": "webpack serve --mode=development",
+    "dev": "webpack serve --mode=development",
     "build": "webpack --mode=production",
     "lint": "eslint ."
   },
   "dependencies": {
-    "gors": "file:../gors-wasm/pkg",
-    "monaco-editor": "0.31.1"
+    "gors": "file:./wasm/pkg",
+    "monaco-editor": "0.55.1"
   },
   "devDependencies": {
-    "css-loader": "6.5.1",
-    "eslint": "8.5.0",
+    "css-loader": "7.1.4",
+    "eslint": "8.57.1",
     "eslint-config-airbnb-base": "15.0.0",
-    "eslint-plugin-import": "2.25.3",
-    "favicons": "6.2.2",
-    "favicons-webpack-plugin": "5.0.2",
+    "eslint-plugin-import": "2.32.0",
+    "favicons": "7.2.0",
+    "favicons-webpack-plugin": "6.0.1",
     "file-loader": "6.2.0",
-    "html-webpack-plugin": "5.5.0",
-    "monaco-editor-webpack-plugin": "7.0.1",
-    "prettier": "2.5.1",
-    "style-loader": "3.3.1",
-    "webpack": "5.65.0",
-    "webpack-cli": "4.9.1",
-    "webpack-dev-server": "4.6.0"
+    "html-webpack-plugin": "5.6.7",
+    "monaco-editor-webpack-plugin": "7.1.1",
+    "prettier": "3.8.3",
+    "style-loader": "4.0.0",
+    "webpack": "5.106.2",
+    "webpack-cli": "6.0.1",
+    "webpack-dev-server": "5.2.3"
   }
 }

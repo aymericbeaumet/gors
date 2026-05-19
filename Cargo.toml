@@ -1,9 +1,81 @@
+[package]
+name = "gors"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Experimental go toolchain written in rust (parser, compiler) "
+homepage = "https://aymericbeaumet.github.io/gors/"
+repository = "https://github.com/aymericbeaumet/gors/"
+
+[lib]
+name = "gors"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gors"
+path = "src/main.rs"
+
 [workspace]
+resolver = "3"
 members = [
-  "gors",
-  "gors-cli",
-  "gors-wasm",
+  ".",
+  "www/wasm",
+  "fuzz",
 ]
+
+[lints]
+workspace = true
+
+# Workspace-level lints configuration
+[workspace.lints.rust]
+# Forbid dead code in the entire workspace
+dead_code = "deny"
+
+[workspace.lints.clippy]
+# Enable all pedantic lints as warnings, with specific exceptions
+# Use priority -1 so individual lints can override the group
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Forbid panic-inducing code in production
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+# Allow lints that are too pedantic for this codebase
+collapsible_if = "allow"           # Let chains are suggested but not always clearer
+option_if_let_else = "allow"       # map_or_else is not always clearer
+use_self = "allow"                 # Explicit type names can improve readability
+missing_const_for_fn = "allow"     # Not all functions need to be const
+unnecessary_struct_initialization = "allow"  # Sometimes explicit initialization is clearer
+needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
+large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
+fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
+
+[dependencies]
+# Library dependencies
+log = { version = "0.4", features = ["release_max_level_warn"] }
+phf = { version = "0.13", features = ["macros"] }
+prettyplease = "0.2"
+proc-macro2 = "1.0"
+quote = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+sourcemap = "9"
+syn = { version = "2.0", features = ["full", "visit-mut"] }
+unicode-general-category = "1.1"
+
+# WASM backend dependencies
+walrus = "0.26"
+# WASM runtime - wasmi works both natively and when compiled to WASM
+wasmi = "1.0"
+
+# Binary dependencies
+atty = "0.2"
+clap = { version = "4.6", features = ["derive"] }
+pretty_env_logger = "0.5"
+serde_json = "1.0"
+tempfile = "3.27"
+
+[dev-dependencies]
+rayon = "1.12"
 
 [profile.dev]
 opt-level = 0

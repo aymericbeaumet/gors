@@ -4,6 +4,70 @@ use crate::token;
 use std::collections::BTreeMap;
 use std::io::Write;
 
+/// Print a string using Go-compatible escape format.
+/// Go's %q format preserves printable unicode characters and only escapes
+/// control characters and non-printable characters.
+fn print_go_string<W: Write>(w: &mut W, s: &str) -> std::io::Result<()> {
+    write!(w, "\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => write!(w, "\\\"")?,
+            '\\' => write!(w, "\\\\")?,
+            '\n' => write!(w, "\\n")?,
+            '\r' => write!(w, "\\r")?,
+            '\t' => write!(w, "\\t")?,
+            // Control characters, surrogate pairs, and non-printable characters
+            c if !is_go_printable(c) => {
+                let code = c as u32;
+                if code <= 0xFFFF {
+                    write!(w, "\\u{:04x}", code)?;
+                } else {
+                    write!(w, "\\U{:08x}", code)?;
+                }
+            }
+            // All other characters (printable unicode) are kept as-is
+            c => write!(w, "{}", c)?,
+        }
+    }
+    write!(w, "\"")?;
+    Ok(())
+}
+
+/// Check if a character is printable according to Go's strconv.IsPrint.
+/// This matches Go's behavior for the %q format.
+/// Go's IsPrint uses unicode.IsPrint which returns true only for:
+/// - Letters (L category)
+/// - Marks (M category)
+/// - Numbers (N category)
+/// - Punctuation (P category)
+/// - Symbols (S category)
+/// - ASCII space (U+0020)
+fn is_go_printable(c: char) -> bool {
+    use unicode_general_category::GeneralCategory::*;
+
+    // ASCII space is explicitly printable
+    if c == ' ' {
+        return true;
+    }
+
+    // Use whitelist approach: only specific categories are printable
+    match unicode_general_category::get_general_category(c) {
+        // Letters (L)
+        UppercaseLetter | LowercaseLetter | TitlecaseLetter | ModifierLetter | OtherLetter => true,
+        // Marks (M)
+        NonspacingMark | SpacingMark | EnclosingMark => true,
+        // Numbers (N)
+        DecimalNumber | LetterNumber | OtherNumber => true,
+        // Punctuation (P)
+        ConnectorPunctuation | DashPunctuation | OpenPunctuation | ClosePunctuation
+        | InitialPunctuation | FinalPunctuation | OtherPunctuation => true,
+        // Symbols (S)
+        MathSymbol | CurrencySymbol | ModifierSymbol | OtherSymbol => true,
+        // Everything else is not printable (including Unassigned, Control, Private Use, etc.)
+        _ => false,
+    }
+}
+
 impl<W: Write, T: Printable<W>> Printable<W> for Box<T> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         (**self).print(p)?;
@@ -43,7 +107,7 @@ impl<W: Write> Printable<W> for BTreeMap<&str, ast::Object<'_>> {
     }
 }
 
-impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
+impl<W: Write> Printable<W> for Vec<ast::CommentGroup<'_>> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         if self.is_empty() {
             p.write("nil")?;
@@ -51,6 +115,9 @@ impl<W: Write> Printable<W> for Vec<ast::CommentGroup> {
         } else {
             write!(p.w, "[]ast.CommentGroup (len = {}) ", self.len())?;
             p.open_bracket()?;
+            for comment_group in self {
+                comment_group.print(p)?;
+            }
             p.close_bracket()?;
         }
         Ok(())
@@ -227,7 +294,8 @@ impl<W: Write> Printable<W> for ast::BasicLit<'_> {
 
         p.prefix()?;
         p.write("Value: ")?;
-        write!(p.w, "{:?}", self.value)?;
+        // Print string using Go-compatible escape format (use \uXXXX instead of \u{XXXX})
+        print_go_string(&mut p.w, self.value)?;
         p.newline()?;
 
         p.close_bracket()?;
@@ -274,8 +342,32 @@ impl<W: Write> Printable<W> for ast::Ellipsis<'_> {
     }
 }
 
-impl<W: Write> Printable<W> for ast::CommentGroup {
-    fn print(&self, _: &mut Printer<W>) -> PrintResult {
+impl<W: Write> Printable<W> for ast::CommentGroup<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        if self.list.is_empty() {
+            p.write("nil")?;
+            p.newline()?;
+        } else {
+            write!(p.w, "*ast.CommentGroup ")?;
+            p.open_bracket()?;
+            p.prefix()?;
+            write!(p.w, "List: []ast.Comment (len = {}) ", self.list.len())?;
+            p.open_bracket()?;
+            for (i, comment) in self.list.iter().enumerate() {
+                p.prefix()?;
+                write!(p.w, "{}: *ast.Comment ", i)?;
+                p.open_bracket()?;
+                p.prefix()?;
+                write!(p.w, "Slash: {}", comment.slash)?;
+                p.newline()?;
+                p.prefix()?;
+                write!(p.w, "Text: {:?}", comment.text)?;
+                p.newline()?;
+                p.close_bracket()?;
+            }
+            p.close_bracket()?;
+            p.close_bracket()?;
+        }
         Ok(())
     }
 }
@@ -334,6 +426,14 @@ impl<W: Write> Printable<W> for ast::EmptyStmt<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
         p.write("*ast.EmptyStmt ")?;
         p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Semicolon: ")?;
+        self.semicolon.print(p)?;
+
+        p.prefix()?;
+        p.write("Implicit: ")?;
+        self.implicit.print(p)?;
 
         p.close_bracket()?;
 
@@ -404,6 +504,10 @@ impl<W: Write> Printable<W> for ast::FuncType<'_> {
             p.write("-")?;
             p.newline()?;
         }
+
+        p.prefix()?;
+        p.write("TypeParams: ")?;
+        self.type_params.print(p)?;
 
         p.prefix()?;
         p.write("Params: ")?;
@@ -518,6 +622,14 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         self.decls.print(p)?;
 
         p.prefix()?;
+        p.write("FileStart: ")?;
+        self.file_start.print(p)?;
+
+        p.prefix()?;
+        p.write("FileEnd: ")?;
+        self.file_end.print(p)?;
+
+        p.prefix()?;
         p.write("Scope: ")?;
         self.scope.print(p)?;
 
@@ -532,6 +644,11 @@ impl<W: Write> Printable<W> for ast::File<'_> {
         p.prefix()?;
         p.write("Comments: ")?;
         self.comments.print(p)?;
+
+        p.prefix()?;
+        p.write("GoVersion: ")?;
+        write!(p.w, "{:?}", self.go_version)?;
+        p.newline()?;
 
         p.close_bracket()?;
 
@@ -638,6 +755,10 @@ impl<W: Write> Printable<W> for ast::TypeSpec<'_> {
         p.prefix()?;
         p.write("Name: ")?;
         self.name.print(p)?;
+
+        p.prefix()?;
+        p.write("TypeParams: ")?;
+        self.type_params.print(p)?;
 
         p.prefix()?;
         p.write("Assign: ")?;
@@ -779,6 +900,33 @@ impl<W: Write> Printable<W> for ast::IndexExpr<'_> {
         p.prefix()?;
         p.write("Index: ")?;
         self.index.print(p)?;
+
+        p.prefix()?;
+        p.write("Rbrack: ")?;
+        self.rbrack.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::IndexListExpr<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.IndexListExpr ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("X: ")?;
+        self.x.print(p)?;
+
+        p.prefix()?;
+        p.write("Lbrack: ")?;
+        self.lbrack.print(p)?;
+
+        p.prefix()?;
+        p.write("Indices: ")?;
+        self.indices.print(p)?;
 
         p.prefix()?;
         p.write("Rbrack: ")?;
@@ -1223,6 +1371,10 @@ impl<W: Write> Printable<W> for ast::RangeStmt<'_> {
         }
 
         p.prefix()?;
+        p.write("Range: ")?;
+        self.range.print(p)?;
+
+        p.prefix()?;
         p.write("X: ")?;
         self.x.print(p)?;
 
@@ -1319,6 +1471,7 @@ impl<W: Write> Printable<W> for ast::Expr<'_> {
             ast::Expr::FuncType(node) => node.print(p),
             ast::Expr::Ident(node) => node.print(p),
             ast::Expr::IndexExpr(node) => node.print(p),
+            ast::Expr::IndexListExpr(node) => node.print(p),
             ast::Expr::InterfaceType(node) => node.print(p),
             ast::Expr::KeyValueExpr(node) => node.print(p),
             ast::Expr::MapType(node) => node.print(p),
@@ -1435,6 +1588,9 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
         match self {
             ast::Stmt::AssignStmt(stmt) => stmt.print(p),
             ast::Stmt::BlockStmt(stmt) => stmt.print(p),
+            ast::Stmt::BranchStmt(stmt) => stmt.print(p),
+            ast::Stmt::CaseClause(stmt) => stmt.print(p),
+            ast::Stmt::CommClause(stmt) => stmt.print(p),
             ast::Stmt::DeclStmt(stmt) => stmt.print(p),
             ast::Stmt::DeferStmt(stmt) => stmt.print(p),
             ast::Stmt::EmptyStmt(stmt) => stmt.print(p),
@@ -1443,10 +1599,187 @@ impl<W: Write> Printable<W> for ast::Stmt<'_> {
             ast::Stmt::GoStmt(stmt) => stmt.print(p),
             ast::Stmt::IfStmt(stmt) => stmt.print(p),
             ast::Stmt::IncDecStmt(stmt) => stmt.print(p),
+            ast::Stmt::LabeledStmt(stmt) => stmt.print(p),
             ast::Stmt::RangeStmt(stmt) => stmt.print(p),
             ast::Stmt::ReturnStmt(stmt) => stmt.print(p),
+            ast::Stmt::SelectStmt(stmt) => stmt.print(p),
             ast::Stmt::SendStmt(stmt) => stmt.print(p),
+            ast::Stmt::SwitchStmt(stmt) => stmt.print(p),
+            ast::Stmt::TypeSwitchStmt(stmt) => stmt.print(p),
         }
+    }
+}
+
+impl<W: Write> Printable<W> for ast::SwitchStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.SwitchStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Switch: ")?;
+        self.switch.print(p)?;
+
+        p.prefix()?;
+        p.write("Init: ")?;
+        self.init.print(p)?;
+
+        p.prefix()?;
+        p.write("Tag: ")?;
+        self.tag.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::TypeSwitchStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.TypeSwitchStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Switch: ")?;
+        self.switch.print(p)?;
+
+        p.prefix()?;
+        p.write("Init: ")?;
+        self.init.print(p)?;
+
+        p.prefix()?;
+        p.write("Assign: ")?;
+        self.assign.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::CaseClause<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.CaseClause ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Case: ")?;
+        self.case.print(p)?;
+
+        p.prefix()?;
+        p.write("List: ")?;
+        self.list.print(p)?;
+
+        p.prefix()?;
+        p.write("Colon: ")?;
+        self.colon.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::SelectStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.SelectStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Select: ")?;
+        self.select.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::CommClause<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.CommClause ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Case: ")?;
+        self.case.print(p)?;
+
+        p.prefix()?;
+        p.write("Comm: ")?;
+        self.comm.print(p)?;
+
+        p.prefix()?;
+        p.write("Colon: ")?;
+        self.colon.print(p)?;
+
+        p.prefix()?;
+        p.write("Body: ")?;
+        self.body.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::BranchStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.BranchStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("TokPos: ")?;
+        self.tok_pos.print(p)?;
+
+        p.prefix()?;
+        p.write("Tok: ")?;
+        self.tok.print(p)?;
+
+        p.prefix()?;
+        p.write("Label: ")?;
+        self.label.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
+    }
+}
+
+impl<W: Write> Printable<W> for ast::LabeledStmt<'_> {
+    fn print(&self, p: &mut Printer<W>) -> PrintResult {
+        p.write("*ast.LabeledStmt ")?;
+        p.open_bracket()?;
+
+        p.prefix()?;
+        p.write("Label: ")?;
+        self.label.print(p)?;
+
+        p.prefix()?;
+        p.write("Colon: ")?;
+        self.colon.print(p)?;
+
+        p.prefix()?;
+        p.write("Stmt: ")?;
+        self.stmt.print(p)?;
+
+        p.close_bracket()?;
+
+        Ok(())
     }
 }
 
@@ -1465,11 +1798,16 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        write!(
-            p.w,
-            "{}/{}:{}:{}",
-            self.directory, self.file, self.line, self.column,
-        )?;
+        // Go doesn't display column when it's 0
+        if self.column == 0 {
+            write!(p.w, "{}/{}:{}", self.directory, self.file, self.line,)?;
+        } else {
+            write!(
+                p.w,
+                "{}/{}:{}:{}",
+                self.directory, self.file, self.line, self.column,
+            )?;
+        }
         p.newline()?;
         Ok(())
     }
