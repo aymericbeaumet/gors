@@ -1,12 +1,10 @@
 mod flatten_block;
 mod hoist_use;
-mod inline_fmt;
 mod map_type;
 mod simplify_return;
 mod type_conversion;
 
 pub fn pass(file: &mut syn::File) {
-    inline_fmt::pass(file);
     map_type::pass(file);
     type_conversion::pass(file);
     hoist_use::pass(file);
@@ -15,7 +13,6 @@ pub fn pass(file: &mut syn::File) {
 }
 
 pub fn pass_for_imported_package(file: &mut syn::File) {
-    inline_fmt::pass(file);
     map_type::pass(file);
     type_conversion::pass(file);
     simplify_return::pass(file);

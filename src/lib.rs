@@ -81,9 +81,21 @@ pub mod scanner;
 /// positions in Go source code and generated Rust output.
 pub mod mapping;
 
+/// Hand-written Rust implementations of Go standard library packages.
+///
+/// Provides pre-built Rust modules for Go stdlib packages like `fmt`
+/// that are injected into the output during compilation.
+pub mod stdlib;
+
 /// Go token definitions and source positions.
 ///
 /// Contains token types matching the Go specification and
 /// position tracking for source locations.
 pub mod token;
+
+/// Go toolchain download and management.
+///
+/// Downloads and caches a hermetic Go toolchain in the user's
+/// data directory, providing access to stdlib source files.
+pub mod toolchain;
 

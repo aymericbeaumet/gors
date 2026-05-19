@@ -136,12 +136,7 @@ impl SourceMapTracker {
 /// The actual Go name is still stored in the source map for highlighting.
 fn go_name_to_rust_name(go_name: &str) -> &str {
     match go_name {
-        // Keywords that change name
         "func" => "fn",
-        "Println" => "println",
-        "Printf" => "print", // fmt.Printf -> print! macro
-        "Print" => "print",
-        // Most identifiers keep the same name
         _ => go_name,
     }
 }

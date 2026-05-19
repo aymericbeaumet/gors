@@ -107,6 +107,8 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+    let _toolchain = gors::toolchain::ensure()?;
+
     let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
@@ -188,6 +190,8 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
+    let _toolchain = gors::toolchain::ensure()?;
+
     let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {

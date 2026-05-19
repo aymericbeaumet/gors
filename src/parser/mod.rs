@@ -401,6 +401,7 @@ pub struct ParsedPackage {
 pub struct ParsedProgram {
     pub main_package: ParsedPackage,
     pub imports: Vec<ParsedPackage>,
+    pub stdlib_imports: Vec<String>,
 }
 
 /// Parse a Go program with full import resolution.
@@ -430,9 +431,19 @@ pub fn parse_program(
         .and_then(|root| parse_go_mod(root).ok());
 
     let mut imports = Vec::new();
+    let mut stdlib_imports = Vec::new();
     if let (Some(root), Some(mod_name)) = (&module_root, &module_name) {
         let mut visited = std::collections::HashSet::new();
-        resolve_imports_recursive(&main_ast, root, mod_name, &mut imports, &mut visited)?;
+        resolve_imports_recursive(
+            &main_ast,
+            root,
+            mod_name,
+            &mut imports,
+            &mut stdlib_imports,
+            &mut visited,
+        )?;
+    } else {
+        collect_stdlib_imports(&main_ast, &mut stdlib_imports);
     }
 
     let pkg_name = main_ast.name.name.to_string();
@@ -444,6 +455,7 @@ pub fn parse_program(
             files,
         },
         imports,
+        stdlib_imports,
     })
 }
 
@@ -476,11 +488,22 @@ fn parse_go_mod(module_root: &str) -> std::result::Result<String, PathParseError
     ))
 }
 
+fn collect_stdlib_imports(file: &ast::File<'_>, stdlib_imports: &mut Vec<String>) {
+    for import_spec in file.imports() {
+        let import_path = import_spec.path.value.trim_matches('"');
+        if crate::stdlib::is_known(import_path) && !stdlib_imports.contains(&import_path.to_string())
+        {
+            stdlib_imports.push(import_path.to_string());
+        }
+    }
+}
+
 fn resolve_imports_recursive(
     file: &ast::File<'static>,
     module_root: &str,
     module_name: &str,
     imports: &mut Vec<ParsedPackage>,
+    stdlib_imports: &mut Vec<String>,
     visited: &mut std::collections::HashSet<String>,
 ) -> std::result::Result<(), PathParseError> {
     for import_spec in file.imports() {
@@ -493,7 +516,14 @@ fn resolve_imports_recursive(
 
         let rel_path = match import_path.strip_prefix(module_name) {
             Some(rest) => rest.trim_start_matches('/'),
-            None => continue,
+            None => {
+                if crate::stdlib::is_known(import_path)
+                    && !stdlib_imports.contains(&import_path.to_string())
+                {
+                    stdlib_imports.push(import_path.to_string());
+                }
+                continue;
+            }
         };
 
         let pkg_dir = std::path::Path::new(module_root).join(rel_path);
@@ -510,7 +540,14 @@ fn resolve_imports_recursive(
         let pkg_dir_str = pkg_dir.to_string_lossy().into_owned();
         let (pkg_ast, pkg_files) = parse_dir(&pkg_dir_str)?;
 
-        resolve_imports_recursive(&pkg_ast, module_root, module_name, imports, visited)?;
+        resolve_imports_recursive(
+            &pkg_ast,
+            module_root,
+            module_name,
+            imports,
+            stdlib_imports,
+            visited,
+        )?;
 
         let pkg_name = pkg_ast.name.name.to_string();
         imports.push(ParsedPackage {
