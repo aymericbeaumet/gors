@@ -674,6 +674,107 @@ fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn),
     ))
 }
 
+const BUILTINS: &[&str] = &[
+    "len", "cap", "append", "make", "new", "copy", "delete", "panic", "println", "print",
+];
+
+fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
+    if let ast::Expr::Ident(ident) = &*call_expr.fun {
+        BUILTINS.contains(&ident.name)
+    } else {
+        false
+    }
+}
+
+fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
+    let name = match *call_expr.fun {
+        ast::Expr::Ident(ident) => ident.name.to_string(),
+        _ => unreachable!(),
+    };
+
+    let args: Vec<syn::Expr> = call_expr
+        .args
+        .unwrap_or_default()
+        .into_iter()
+        .map(syn::Expr::from)
+        .collect();
+
+    match name.as_str() {
+        "len" => {
+            let x = &args[0];
+            syn::parse_quote! { (#x).len() }
+        }
+        "cap" => {
+            let x = &args[0];
+            syn::parse_quote! { (#x).capacity() }
+        }
+        "append" => {
+            let slice = &args[0];
+            let elems = &args[1..];
+            if elems.len() == 1 {
+                let elem = &elems[0];
+                syn::parse_quote! { { let mut __tmp = #slice; __tmp.push(#elem); __tmp } }
+            } else {
+                let pushes: Vec<proc_macro2::TokenStream> = elems
+                    .iter()
+                    .map(|e| quote::quote! { __tmp.push(#e); })
+                    .collect();
+                syn::parse_quote! { { let mut __tmp = #slice; #(#pushes)* __tmp } }
+            }
+        }
+        "make" => {
+            if args.len() <= 1 {
+                syn::parse_quote! { Default::default() }
+            } else if args.len() == 2 {
+                let size = &args[1];
+                syn::parse_quote! { vec![Default::default(); #size] }
+            } else {
+                let cap = &args[2];
+                syn::parse_quote! { Vec::with_capacity(#cap) }
+            }
+        }
+        "new" => {
+            let type_arg = &args[0];
+            syn::parse_quote! { Box::new(#type_arg::default()) }
+        }
+        "copy" => {
+            let dst = &args[0];
+            let src = &args[1];
+            syn::parse_quote! { (#dst)[..].copy_from_slice(&(#src)) }
+        }
+        "delete" => {
+            let map = &args[0];
+            let key = &args[1];
+            syn::parse_quote! { (#map).remove(&#key) }
+        }
+        "panic" => {
+            if args.is_empty() {
+                syn::parse_quote! { panic!() }
+            } else {
+                let msg = &args[0];
+                syn::parse_quote! { panic!("{}", #msg) }
+            }
+        }
+        "println" => {
+            if args.is_empty() {
+                syn::parse_quote! { ::std::println!() }
+            } else {
+                let first = &args[0];
+                syn::parse_quote! { ::std::println!("{}", #first) }
+            }
+        }
+        "print" => {
+            if args.is_empty() {
+                syn::parse_quote! { ::std::print!() }
+            } else {
+                let first = &args[0];
+                syn::parse_quote! { ::std::print!("{}", #first) }
+            }
+        }
+        _ => unreachable!("not a builtin: {}", name),
+    }
+}
+
 fn elts_to_field_values(elts: Vec<syn::Expr>) -> Vec<syn::FieldValue> {
     elts.into_iter()
         .map(|e| {
@@ -1094,7 +1195,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
         match expr {
             ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
             ast::Expr::BinaryExpr(binary_expr) => Self::Binary(binary_expr.into()),
-            ast::Expr::CallExpr(call_expr) => Self::Call(call_expr.into()),
+            ast::Expr::CallExpr(call_expr) => {
+                if is_builtin_call(&call_expr) {
+                    return compile_builtin(call_expr);
+                }
+                Self::Call(call_expr.into())
+            }
             ast::Expr::Ident(ident) if ident.name == "nil" => syn::parse_quote! { None },
             ast::Expr::Ident(ident) if ident.name == "true" => syn::parse_quote! { true },
             ast::Expr::Ident(ident) if ident.name == "false" => syn::parse_quote! { false },
@@ -2801,6 +2907,107 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut f = move || { let mut x = 1; };
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_len() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2, 3}
+                    n := len(s)
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = vec![1, 2, 3];
+                    let mut n = (s).len();
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_append() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2}
+                    s = append(s, 3)
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = vec![1, 2];
+                    s = { let mut __tmp = s; __tmp.push(3); __tmp };
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_panic() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    panic("oh no")
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    panic!("{}", "oh no");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_println() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    println("hello")
+                }
+            "#,
+            rust! {
+                use ::std::println;
+                pub fn main() {
+                    println!("{}", "hello");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_multiple_return_values_with_error() {
+        test(
+            r#"
+                package main
+
+                func divide(a int, b int) (int, bool) {
+                    if b == 0 {
+                        return 0, false
+                    }
+                    return a / b, true
+                }
+            "#,
+            rust! {
+                fn divide(mut a: isize, mut b: isize) -> (isize, bool) {
+                    if b == 0 {
+                        return (0, false)
+                    }
+                    (a / b, true)
                 }
             },
         );
