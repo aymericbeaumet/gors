@@ -206,15 +206,15 @@ impl WasmCompiler {
 
         self.collect_locals(&func.block, &mut locals)?;
 
-        let mut string_literals = StringLiterals::new();
+        let string_literals = std::cell::RefCell::new(StringLiterals::new());
 
         {
             let mut body = builder.func_body();
             let mut ctx = ExprContext {
                 locals: &locals,
-                functions: &self.functions, // Uses placeholder IDs
+                functions: &self.functions,
                 builder: &mut body,
-                string_literals: &mut string_literals,
+                string_literals: &string_literals,
             };
 
             for stmt in &func.block.stmts {
@@ -224,7 +224,7 @@ impl WasmCompiler {
 
         let func_id = builder.finish(param_locals, &mut self.module.funcs);
 
-        for (offset, _len, content) in string_literals.into_vec() {
+        for (offset, _len, content) in string_literals.into_inner().into_vec() {
             self.module.data.add(
                 DataKind::Active {
                     memory: self.memory,

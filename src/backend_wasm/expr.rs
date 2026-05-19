@@ -2,6 +2,7 @@
 
 use super::error::WasmError;
 use super::types::syn_type_to_wasm;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use walrus::ir::{BinaryOp, UnaryOp};
 use walrus::{FunctionId, InstrSeqBuilder, LocalId, ValType};
@@ -59,8 +60,8 @@ pub struct ExprContext<'a, 'b, 'c> {
     pub functions: &'a HashMap<String, FunctionId>,
     /// The current instruction sequence builder
     pub builder: &'b mut InstrSeqBuilder<'a>,
-    /// String literals collector
-    pub string_literals: &'c mut StringLiterals,
+    /// String literals collector (RefCell for interior mutability in walrus closures)
+    pub string_literals: &'c RefCell<StringLiterals>,
 }
 
 impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
@@ -152,7 +153,7 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                     {
                         // String literal - store in memory and call print_str
                         let s = lit_str.value();
-                        let (offset, len) = self.string_literals.add(&s);
+                        let (offset, len) = self.string_literals.borrow_mut().add(&s);
 
                         // Push offset and length onto stack
                         self.builder.i32_const(offset as i32);
@@ -352,22 +353,18 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
         // Compile condition
         self.compile_expr(&if_expr.cond)?;
 
-        // For now, inline simple println! calls in if blocks
-        // Extract print function IDs before entering the closure
         let print_i32_id = self.functions.get("print_i32").copied();
         let print_str_id = self.functions.get("print_str").copied();
         let locals_clone = self.locals.clone();
         let functions_clone = self.functions.clone();
+        let string_literals = self.string_literals;
 
-        // Collect what we need from then branch
         let then_stmts = &if_expr.then_branch.stmts;
         let else_branch = &if_expr.else_branch;
 
-        // Use if-else structure
         self.builder.if_else(
-            None, // No result type for statement-like if
+            None,
             |then_builder| {
-                // Compile then block - inline simple statements
                 for stmt in then_stmts {
                     compile_stmt_inline(
                         stmt,
@@ -376,11 +373,11 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                         &functions_clone,
                         print_i32_id,
                         print_str_id,
+                        string_literals,
                     );
                 }
             },
             |else_builder| {
-                // Compile else block if present
                 if let Some((_, else_expr)) = else_branch {
                     match else_expr.as_ref() {
                         syn::Expr::Block(block) => {
@@ -392,11 +389,11 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                                     &functions_clone,
                                     print_i32_id,
                                     print_str_id,
+                                    string_literals,
                                 );
                             }
                         }
                         syn::Expr::If(nested_if) => {
-                            // Nested if - compile condition and recurse
                             compile_if_inline(
                                 nested_if,
                                 else_builder,
@@ -404,6 +401,7 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                                 &functions_clone,
                                 print_i32_id,
                                 print_str_id,
+                                string_literals,
                             );
                         }
                         _ => {}
@@ -416,20 +414,17 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
     }
 
     fn compile_while(&mut self, while_expr: &syn::ExprWhile) -> Result<(), WasmError> {
-        // Extract function IDs before entering the closure
         let print_i32_id = self.functions.get("print_i32").copied();
         let print_str_id = self.functions.get("print_str").copied();
         let locals_clone = self.locals.clone();
         let functions_clone = self.functions.clone();
+        let string_literals = self.string_literals;
         let cond = &while_expr.cond;
         let body_stmts = &while_expr.body.stmts;
 
-        // WASM loop structure: loop { if (cond) { body; continue } else { break } }
         self.builder.loop_(None, |loop_builder| {
-            // Get loop id before entering nested closures
             let loop_id = loop_builder.id();
 
-            // Compile condition
             compile_expr_inline(
                 cond,
                 loop_builder,
@@ -437,13 +432,12 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                 &functions_clone,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
 
-            // if condition { body; br loop } else { break }
             loop_builder.if_else(
                 None,
                 |then_builder| {
-                    // Compile body
                     for stmt in body_stmts {
                         compile_stmt_inline(
                             stmt,
@@ -452,14 +446,12 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                             &functions_clone,
                             print_i32_id,
                             print_str_id,
+                            string_literals,
                         );
                     }
-                    // Branch back to loop start
                     then_builder.br(loop_id);
                 },
-                |_else_builder| {
-                    // Exit loop (implicit)
-                },
+                |_else_builder| {},
             );
         });
 
@@ -471,6 +463,7 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
         let print_str_id = self.functions.get("print_str").copied();
         let locals_clone = self.locals.clone();
         let functions_clone = self.functions.clone();
+        let string_literals = self.string_literals;
         let body_stmts = &loop_expr.body.stmts;
 
         self.builder.loop_(None, |loop_builder| {
@@ -483,9 +476,9 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
                     &functions_clone,
                     print_i32_id,
                     print_str_id,
+                    string_literals,
                 );
             }
-            // Infinite loop - branch back
             loop_builder.br(loop_id);
         });
 
@@ -554,13 +547,47 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
         Ok(())
     }
 
+    fn compile_pat_init(&mut self, pat: &syn::Pat, expr: &syn::Expr) -> Result<(), WasmError> {
+        match pat {
+            syn::Pat::Ident(pat_ident) => {
+                self.compile_expr(expr)?;
+                let name = pat_ident.ident.to_string();
+                if let Some(&local_id) = self.locals.get(&name) {
+                    self.builder.local_set(local_id);
+                }
+                Ok(())
+            }
+            syn::Pat::Type(pat_type) => {
+                if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                    self.compile_expr(expr)?;
+                    let name = pat_ident.ident.to_string();
+                    if let Some(&local_id) = self.locals.get(&name) {
+                        self.builder.local_set(local_id);
+                    }
+                }
+                Ok(())
+            }
+            syn::Pat::Tuple(pat_tuple) => {
+                if let syn::Expr::Tuple(expr_tuple) = expr {
+                    for (elem_pat, elem_expr) in
+                        pat_tuple.elems.iter().zip(expr_tuple.elems.iter())
+                    {
+                        self.compile_pat_init(elem_pat, elem_expr)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Compile a statement.
     pub fn compile_stmt(&mut self, stmt: &syn::Stmt) -> Result<(), WasmError> {
         match stmt {
-            syn::Stmt::Local(_local) => {
-                // Local variable declarations are handled at function level
-                // The initialization expression would be compiled here
-                // For now, skip (variables are pre-declared)
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    self.compile_pat_init(&local.pat, &init.expr)?;
+                }
                 Ok(())
             }
             syn::Stmt::Expr(expr, _semi) => {
@@ -585,8 +612,8 @@ impl<'a, 'b, 'c> ExprContext<'a, 'b, 'c> {
     }
 }
 
-// Helper functions for inline compilation within closures
-// These are needed because we can't pass the full ExprContext into closure builders
+// Helper functions for inline compilation within closures.
+// These are needed because we can't pass the full ExprContext into walrus closure builders.
 
 fn compile_stmt_inline(
     stmt: &syn::Stmt,
@@ -595,13 +622,21 @@ fn compile_stmt_inline(
     functions: &HashMap<String, FunctionId>,
     print_i32_id: Option<FunctionId>,
     print_str_id: Option<FunctionId>,
+    string_literals: &RefCell<StringLiterals>,
 ) {
     match stmt {
         syn::Stmt::Expr(expr, _) => {
-            compile_expr_inline(expr, builder, locals, functions, print_i32_id, print_str_id);
+            compile_expr_inline(
+                expr,
+                builder,
+                locals,
+                functions,
+                print_i32_id,
+                print_str_id,
+                string_literals,
+            );
         }
         syn::Stmt::Local(local) => {
-            // Handle local variable initialization
             if let Some(init) = &local.init {
                 compile_pat_assignment_inline(
                     &local.pat,
@@ -611,6 +646,7 @@ fn compile_stmt_inline(
                     functions,
                     print_i32_id,
                     print_str_id,
+                    string_literals,
                 );
             }
         }
@@ -626,6 +662,7 @@ fn compile_stmt_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
         }
         _ => {}
@@ -640,10 +677,19 @@ fn compile_pat_assignment_inline(
     functions: &HashMap<String, FunctionId>,
     print_i32_id: Option<FunctionId>,
     print_str_id: Option<FunctionId>,
+    string_literals: &RefCell<StringLiterals>,
 ) {
     match pat {
         syn::Pat::Ident(pat_ident) => {
-            compile_expr_inline(expr, builder, locals, functions, print_i32_id, print_str_id);
+            compile_expr_inline(
+                expr,
+                builder,
+                locals,
+                functions,
+                print_i32_id,
+                print_str_id,
+                string_literals,
+            );
             let name = pat_ident.ident.to_string();
             if let Some(&local_id) = locals.get(&name) {
                 builder.local_set(local_id);
@@ -651,7 +697,15 @@ fn compile_pat_assignment_inline(
         }
         syn::Pat::Type(pat_type) => {
             if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                compile_expr_inline(expr, builder, locals, functions, print_i32_id, print_str_id);
+                compile_expr_inline(
+                    expr,
+                    builder,
+                    locals,
+                    functions,
+                    print_i32_id,
+                    print_str_id,
+                    string_literals,
+                );
                 let name = pat_ident.ident.to_string();
                 if let Some(&local_id) = locals.get(&name) {
                     builder.local_set(local_id);
@@ -659,7 +713,6 @@ fn compile_pat_assignment_inline(
             }
         }
         syn::Pat::Tuple(pat_tuple) => {
-            // Handle tuple pattern: let (a, b) = (expr1, expr2)
             if let syn::Expr::Tuple(expr_tuple) = expr {
                 for (elem_pat, elem_expr) in pat_tuple.elems.iter().zip(expr_tuple.elems.iter()) {
                     compile_pat_assignment_inline(
@@ -670,6 +723,7 @@ fn compile_pat_assignment_inline(
                         functions,
                         print_i32_id,
                         print_str_id,
+                        string_literals,
                     );
                 }
             }
@@ -685,12 +739,18 @@ fn compile_expr_inline(
     functions: &HashMap<String, FunctionId>,
     print_i32_id: Option<FunctionId>,
     print_str_id: Option<FunctionId>,
+    string_literals: &RefCell<StringLiterals>,
 ) {
     match expr {
         syn::Expr::Lit(lit) => match &lit.lit {
             syn::Lit::Int(int) => {
                 if let Ok(value) = int.base10_parse::<i64>() {
-                    builder.i32_const(value as i32);
+                    let suffix = int.suffix();
+                    if suffix == "i64" || suffix == "u64" {
+                        builder.i64_const(value);
+                    } else {
+                        builder.i32_const(value as i32);
+                    }
                 }
             }
             syn::Lit::Bool(b) => {
@@ -699,20 +759,16 @@ fn compile_expr_inline(
             _ => {}
         },
         syn::Expr::Binary(binary) => {
-            // Check for compound assignment operators (+=, -=, etc.)
             match &binary.op {
                 syn::BinOp::AddAssign(_)
                 | syn::BinOp::SubAssign(_)
                 | syn::BinOp::MulAssign(_)
                 | syn::BinOp::DivAssign(_) => {
-                    // Get the variable name
                     if let syn::Expr::Path(path) = binary.left.as_ref() {
                         if path.path.segments.len() == 1 {
                             let name = path.path.segments[0].ident.to_string();
                             if let Some(&local_id) = locals.get(&name) {
-                                // Load current value
                                 builder.local_get(local_id);
-                                // Compile right side
                                 compile_expr_inline(
                                     &binary.right,
                                     builder,
@@ -720,8 +776,8 @@ fn compile_expr_inline(
                                     functions,
                                     print_i32_id,
                                     print_str_id,
+                                    string_literals,
                                 );
-                                // Apply operation
                                 let op = match &binary.op {
                                     syn::BinOp::AddAssign(_) => BinaryOp::I32Add,
                                     syn::BinOp::SubAssign(_) => BinaryOp::I32Sub,
@@ -730,7 +786,6 @@ fn compile_expr_inline(
                                     _ => return,
                                 };
                                 builder.binop(op);
-                                // Store result
                                 builder.local_set(local_id);
                             }
                         }
@@ -740,7 +795,6 @@ fn compile_expr_inline(
                 _ => {}
             }
 
-            // Regular binary operations
             compile_expr_inline(
                 &binary.left,
                 builder,
@@ -748,6 +802,7 @@ fn compile_expr_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
             compile_expr_inline(
                 &binary.right,
@@ -756,6 +811,7 @@ fn compile_expr_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
 
             let op = match &binary.op {
@@ -770,6 +826,8 @@ fn compile_expr_inline(
                 syn::BinOp::Le(_) => BinaryOp::I32LeS,
                 syn::BinOp::Gt(_) => BinaryOp::I32GtS,
                 syn::BinOp::Ge(_) => BinaryOp::I32GeS,
+                syn::BinOp::And(_) => BinaryOp::I32And,
+                syn::BinOp::Or(_) => BinaryOp::I32Or,
                 _ => return,
             };
             builder.binop(op);
@@ -788,7 +846,40 @@ fn compile_expr_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
+        }
+        syn::Expr::Cast(cast) => {
+            compile_expr_inline(
+                &cast.expr,
+                builder,
+                locals,
+                functions,
+                print_i32_id,
+                print_str_id,
+                string_literals,
+            );
+        }
+        syn::Expr::Unary(unary) => {
+            compile_expr_inline(
+                &unary.expr,
+                builder,
+                locals,
+                functions,
+                print_i32_id,
+                print_str_id,
+                string_literals,
+            );
+            match &unary.op {
+                syn::UnOp::Neg(_) => {
+                    builder.i32_const(-1);
+                    builder.binop(BinaryOp::I32Mul);
+                }
+                syn::UnOp::Not(_) => {
+                    builder.unop(UnaryOp::I32Eqz);
+                }
+                _ => {}
+            }
         }
         syn::Expr::Assign(assign) => {
             compile_expr_inline(
@@ -798,6 +889,7 @@ fn compile_expr_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
             if let syn::Expr::Path(path) = assign.left.as_ref() {
                 if path.path.segments.len() == 1 {
@@ -809,11 +901,17 @@ fn compile_expr_inline(
             }
         }
         syn::Expr::Call(call) => {
-            // Compile arguments
             for arg in &call.args {
-                compile_expr_inline(arg, builder, locals, functions, print_i32_id, print_str_id);
+                compile_expr_inline(
+                    arg,
+                    builder,
+                    locals,
+                    functions,
+                    print_i32_id,
+                    print_str_id,
+                    string_literals,
+                );
             }
-            // Get function name and call
             if let syn::Expr::Path(path) = call.func.as_ref() {
                 if path.path.segments.len() == 1 {
                     let func_name = path.path.segments[0].ident.to_string();
@@ -836,7 +934,6 @@ fn compile_expr_inline(
                 let tokens = mac.mac.tokens.clone();
                 let tokens_str = tokens.to_string();
 
-                // Handle format string with arguments
                 if tokens_str.contains(',') {
                     let parts: Vec<&str> = tokens_str.splitn(2, ',').collect();
                     if parts.len() == 2 {
@@ -852,6 +949,7 @@ fn compile_expr_inline(
                                     functions,
                                     print_i32_id,
                                     print_str_id,
+                                    string_literals,
                                 );
                                 if let Some(func_id) = print_i32_id {
                                     builder.call(func_id);
@@ -860,17 +958,18 @@ fn compile_expr_inline(
                         }
                     }
                 } else if let Ok(inner_expr) = syn::parse2::<syn::Expr>(tokens) {
-                    // Check if it's a string literal
-                    if let syn::Expr::Lit(lit_expr) = &inner_expr {
-                        if let syn::Lit::Str(_) = &lit_expr.lit {
-                            // String literals in inline context - we can't easily handle them
-                            // because we don't have access to string_literals collector.
-                            // For now, just skip (produces no output)
-                            // A proper fix would pass string_literals through
-                            return;
+                    if let syn::Expr::Lit(lit_expr) = &inner_expr
+                        && let syn::Lit::Str(lit_str) = &lit_expr.lit
+                    {
+                        let s = lit_str.value();
+                        let (offset, len) = string_literals.borrow_mut().add(&s);
+                        builder.i32_const(offset as i32);
+                        builder.i32_const(len as i32);
+                        if let Some(func_id) = print_str_id {
+                            builder.call(func_id);
                         }
+                        return;
                     }
-                    // Not a string literal - compile as integer expression
                     compile_expr_inline(
                         &inner_expr,
                         builder,
@@ -878,6 +977,7 @@ fn compile_expr_inline(
                         functions,
                         print_i32_id,
                         print_str_id,
+                        string_literals,
                     );
                     if let Some(func_id) = print_i32_id {
                         builder.call(func_id);
@@ -893,18 +993,93 @@ fn compile_expr_inline(
                 functions,
                 print_i32_id,
                 print_str_id,
+                string_literals,
             );
         }
         syn::Expr::Block(block) => {
             for stmt in &block.block.stmts {
-                compile_stmt_inline(stmt, builder, locals, functions, print_i32_id, print_str_id);
+                compile_stmt_inline(
+                    stmt,
+                    builder,
+                    locals,
+                    functions,
+                    print_i32_id,
+                    print_str_id,
+                    string_literals,
+                );
             }
         }
         syn::Expr::Return(ret) => {
             if let Some(expr) = &ret.expr {
-                compile_expr_inline(expr, builder, locals, functions, print_i32_id, print_str_id);
+                compile_expr_inline(
+                    expr,
+                    builder,
+                    locals,
+                    functions,
+                    print_i32_id,
+                    print_str_id,
+                    string_literals,
+                );
             }
             builder.return_();
+        }
+        syn::Expr::While(while_expr) => {
+            let cond = &while_expr.cond;
+            let body_stmts = &while_expr.body.stmts;
+            let locals = locals.clone();
+            let functions = functions.clone();
+
+            builder.loop_(None, |loop_builder| {
+                let loop_id = loop_builder.id();
+                compile_expr_inline(
+                    cond,
+                    loop_builder,
+                    &locals,
+                    &functions,
+                    print_i32_id,
+                    print_str_id,
+                    string_literals,
+                );
+                loop_builder.if_else(
+                    None,
+                    |then_builder| {
+                        for stmt in body_stmts {
+                            compile_stmt_inline(
+                                stmt,
+                                then_builder,
+                                &locals,
+                                &functions,
+                                print_i32_id,
+                                print_str_id,
+                                string_literals,
+                            );
+                        }
+                        then_builder.br(loop_id);
+                    },
+                    |_else_builder| {},
+                );
+            });
+        }
+        syn::Expr::Loop(loop_expr) => {
+            let body_stmts = &loop_expr.body.stmts;
+            let locals = locals.clone();
+            let functions = functions.clone();
+
+            builder.loop_(None, |loop_builder| {
+                let loop_id = loop_builder.id();
+                for stmt in body_stmts {
+                    compile_stmt_inline(
+                        stmt,
+                        loop_builder,
+                        &locals,
+                        &functions,
+                        print_i32_id,
+                        print_str_id,
+                        string_literals,
+                    );
+                }
+                loop_builder.br(loop_id);
+            });
         }
         _ => {}
     }
@@ -917,8 +1092,8 @@ fn compile_if_inline(
     functions: &HashMap<String, FunctionId>,
     print_i32_id: Option<FunctionId>,
     print_str_id: Option<FunctionId>,
+    string_literals: &RefCell<StringLiterals>,
 ) {
-    // Compile condition
     compile_expr_inline(
         &if_expr.cond,
         builder,
@@ -926,6 +1101,7 @@ fn compile_if_inline(
         functions,
         print_i32_id,
         print_str_id,
+        string_literals,
     );
 
     let then_stmts = &if_expr.then_branch.stmts;
@@ -944,6 +1120,7 @@ fn compile_if_inline(
                     &functions,
                     print_i32_id,
                     print_str_id,
+                    string_literals,
                 );
             }
         },
@@ -959,6 +1136,7 @@ fn compile_if_inline(
                                 &functions,
                                 print_i32_id,
                                 print_str_id,
+                                string_literals,
                             );
                         }
                     }
@@ -970,6 +1148,7 @@ fn compile_if_inline(
                             &functions,
                             print_i32_id,
                             print_str_id,
+                            string_literals,
                         );
                     }
                     _ => {}
