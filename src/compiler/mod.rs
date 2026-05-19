@@ -194,6 +194,33 @@ pub fn clear_source_map_tracker() {
     });
 }
 
+fn compile_top_level_value_spec(
+    vs: ast::ValueSpec,
+    tok: token::Token,
+) -> Result<Vec<syn::Item>, CompilerError> {
+    let mut items = vec![];
+    let mut values_iter = vs.values.unwrap_or_default().into_iter();
+
+    for name in vs.names {
+        let vis: syn::Visibility = (&name).into();
+        let ident: syn::Ident = name.into();
+        let init = values_iter.next().map(syn::Expr::from);
+
+        if tok == token::Token::CONST {
+            let value = init.unwrap_or_else(|| syn::parse_quote! { 0 });
+            items.push(syn::parse_quote! {
+                #vis const #ident: isize = #value;
+            });
+        } else {
+            let value = init.unwrap_or_else(|| go_zero_value(vs.type_.as_ref()));
+            items.push(syn::parse_quote! {
+                static mut #ident: isize = #value;
+            });
+        }
+    }
+    Ok(items)
+}
+
 impl From<ast::BasicLit<'_>> for syn::ExprLit {
     fn from(basic_lit: ast::BasicLit) -> Self {
         // Record mapping for the literal
@@ -397,14 +424,21 @@ impl TryFrom<ast::File<'_>> for syn::File {
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
         let mut items = vec![];
         for decl in file.decls {
-            if let ast::Decl::FuncDecl(func_decl) = decl {
-                items.push(syn::Item::Fn(func_decl.try_into()?));
+            match decl {
+                ast::Decl::FuncDecl(func_decl) => {
+                    items.push(syn::Item::Fn(func_decl.try_into()?));
+                }
+                ast::Decl::GenDecl(gen_decl) => {
+                    if gen_decl.tok == token::Token::CONST || gen_decl.tok == token::Token::VAR {
+                        for spec in gen_decl.specs {
+                            if let ast::Spec::ValueSpec(vs) = spec {
+                                items.extend(compile_top_level_value_spec(vs, gen_decl.tok)?);
+                            }
+                        }
+                    }
+                }
             }
         }
-
-        // Note: We don't add #![no_std] here because the generated code uses
-        // std::println! for fmt.Println() calls. The WASM backend handles
-        // no_std requirements separately during WASM compilation.
 
         Ok(Self {
             attrs: vec![],
