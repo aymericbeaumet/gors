@@ -146,9 +146,10 @@ Imported packages skip `hoist_use`.
 
 ## Known limitations
 
-- Only `fmt.Println` and `fmt.Print` with single arguments are supported
-- No struct types, methods, interfaces, slices, closures, or variadic functions
-- No type declarations or multiple return values
+- `fmt.Println` and `fmt.Print` support up to 4 arguments (via Println2/Println3/Println4)
+- No closures or variadic function definitions
+- No string concatenation with `+` (needs type inference)
+- No `for range` over strings (uses `.iter()` instead of `.chars()`)
 - `reflect` package is infeasible to transpile — stdlib packages using it must be hand-written
 - Source maps are single-file only (not yet supported for multi-file output)
 

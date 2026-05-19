@@ -112,19 +112,49 @@ pub fn module_items() -> Vec<syn::Item> {
         },
         rust! {
             #[allow(non_snake_case, dead_code)]
-            pub fn Println<T: GoDisplay>(a: T) {
+            pub fn Println<T: GoDisplay>(a: &T) {
                 ::std::println!("{}", a.go_fmt());
             }
         },
         rust! {
             #[allow(non_snake_case, dead_code)]
-            pub fn Print<T: GoDisplay>(a: T) {
+            pub fn Println2<A: GoDisplay, B: GoDisplay>(a: &A, b: &B) {
+                ::std::println!("{} {}", a.go_fmt(), b.go_fmt());
+            }
+        },
+        rust! {
+            #[allow(non_snake_case, dead_code)]
+            pub fn Println3<A: GoDisplay, B: GoDisplay, C: GoDisplay>(a: &A, b: &B, c: &C) {
+                ::std::println!("{} {} {}", a.go_fmt(), b.go_fmt(), c.go_fmt());
+            }
+        },
+        rust! {
+            #[allow(non_snake_case, dead_code)]
+            pub fn Println4<A: GoDisplay, B: GoDisplay, C: GoDisplay, D: GoDisplay>(a: &A, b: &B, c: &C, d: &D) {
+                ::std::println!("{} {} {} {}", a.go_fmt(), b.go_fmt(), c.go_fmt(), d.go_fmt());
+            }
+        },
+        rust! {
+            #[allow(non_snake_case, dead_code)]
+            pub fn Print<T: GoDisplay>(a: &T) {
                 ::std::print!("{}", a.go_fmt());
             }
         },
         rust! {
             #[allow(non_snake_case, dead_code)]
-            pub fn Sprintf<T: GoDisplay>(format: &str, a: T) -> String {
+            pub fn Print2<A: GoDisplay, B: GoDisplay>(a: &A, b: &B) {
+                ::std::print!("{} {}", a.go_fmt(), b.go_fmt());
+            }
+        },
+        rust! {
+            #[allow(non_snake_case, dead_code)]
+            pub fn Print3<A: GoDisplay, B: GoDisplay, C: GoDisplay>(a: &A, b: &B, c: &C) {
+                ::std::print!("{} {} {}", a.go_fmt(), b.go_fmt(), c.go_fmt());
+            }
+        },
+        rust! {
+            #[allow(non_snake_case, dead_code)]
+            pub fn Sprintf<T: GoDisplay>(format: &str, a: &T) -> String {
                 format.replace("%v", &a.go_fmt())
                     .replace("%d", &a.go_fmt())
                     .replace("%s", &a.go_fmt())

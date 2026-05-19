@@ -41,6 +41,93 @@ fn record_mapping(pos: &token::Position, name: Option<&str>) {
     });
 }
 
+fn interpret_go_string_escapes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => result.push('\n'),
+            Some('t') => result.push('\t'),
+            Some('r') => result.push('\r'),
+            Some('\\') => result.push('\\'),
+            Some('"') => result.push('"'),
+            Some('\'') => result.push('\''),
+            Some('a') => result.push('\x07'),
+            Some('b') => result.push('\x08'),
+            Some('f') => result.push('\x0C'),
+            Some('v') => result.push('\x0B'),
+            Some('0') => result.push('\0'),
+            Some('x') => {
+                let hex: String = chars.by_ref().take(2).collect();
+                if let Ok(val) = u8::from_str_radix(&hex, 16) {
+                    result.push(val as char);
+                } else {
+                    result.push('\\');
+                    result.push('x');
+                    result.push_str(&hex);
+                }
+            }
+            Some('u') => {
+                let hex: String = chars.by_ref().take(4).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                {
+                    result.push(ch);
+                } else {
+                    result.push('\\');
+                    result.push('u');
+                    result.push_str(&hex);
+                }
+            }
+            Some('U') => {
+                let hex: String = chars.by_ref().take(8).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                {
+                    result.push(ch);
+                } else {
+                    result.push('\\');
+                    result.push('U');
+                    result.push_str(&hex);
+                }
+            }
+            Some(other) => {
+                // Octal escapes (e.g., \377)
+                if other.is_ascii_digit() {
+                    let mut oct = String::new();
+                    oct.push(other);
+                    for _ in 0..2 {
+                        if let Some(&next) = chars.as_str().chars().next().as_ref() {
+                            if next.is_ascii_digit() {
+                                oct.push(chars.next().unwrap_or('0'));
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    if let Ok(val) = u8::from_str_radix(&oct, 8) {
+                        result.push(val as char);
+                    } else {
+                        result.push('\\');
+                        result.push_str(&oct);
+                    }
+                } else {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+            None => result.push('\\'),
+        }
+    }
+    result
+}
+
 /// Convert a Go comment group to Rust doc attributes.
 fn comment_group_to_attrs(comment_group: &Option<crate::ast::CommentGroup>) -> Vec<syn::Attribute> {
     let Some(group) = comment_group else {
@@ -704,6 +791,65 @@ fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
     }
 }
 
+fn is_fmt_call(call_expr: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(sel) = &*call_expr.fun else {
+        return false;
+    };
+    let ast::Expr::Ident(pkg) = &*sel.x else {
+        return false;
+    };
+    pkg.name == "fmt" && matches!(sel.sel.name, "Println" | "Print")
+}
+
+fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
+    let method = if let ast::Expr::SelectorExpr(ref sel) = *call_expr.fun {
+        sel.sel.name
+    } else {
+        unreachable!()
+    };
+    let arg_count = call_expr.args.as_ref().map_or(0, |a| a.len());
+    let suffix = match (method, arg_count) {
+        ("Println", 0) | ("Println", 1) => "Println",
+        ("Println", 2) => "Println2",
+        ("Println", 3) => "Println3",
+        ("Println", 4) => "Println4",
+        ("Print", 0) | ("Print", 1) => "Print",
+        ("Print", 2) => "Print2",
+        ("Print", 3) => "Print3",
+        _ => {
+            return syn::Expr::Call(call_expr.into());
+        }
+    };
+    let func_ident = syn::Ident::new(suffix, Span::mixed_site());
+    let fmt_ident = syn::Ident::new("fmt", Span::mixed_site());
+    let func: syn::Expr = syn::parse_quote! { #fmt_ident::#func_ident };
+    let args: Vec<syn::Expr> = call_expr
+        .args
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| {
+            let e = syn::Expr::from(a);
+            // Wrap complex expressions in parens before adding &
+            let needs_paren = !matches!(e, syn::Expr::Path(_) | syn::Expr::Lit(_) | syn::Expr::Call(_) | syn::Expr::Paren(_));
+            if needs_paren {
+                syn::parse_quote! { &(#e) }
+            } else {
+                syn::parse_quote! { &#e }
+            }
+        })
+        .collect();
+    let mut punct_args = syn::punctuated::Punctuated::new();
+    for arg in args {
+        punct_args.push(arg);
+    }
+    syn::Expr::Call(syn::ExprCall {
+        attrs: vec![],
+        func: Box::new(func),
+        paren_token: syn::token::Paren::default(),
+        args: punct_args,
+    })
+}
+
 fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
     let name = match *call_expr.fun {
         ast::Expr::Ident(ident) => ident.name.to_string(),
@@ -1289,16 +1435,22 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
         match basic_lit.kind {
             INT => Self::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
             STRING => {
-                let mut value = basic_lit.value.chars();
-                value.next();
-                value.next_back();
-                Self::Str(syn::LitStr::new(value.as_str(), Span::mixed_site()))
+                let raw = basic_lit.value;
+                if raw.starts_with('`') {
+                    // Raw string literal — no escape processing
+                    let inner = &raw[1..raw.len() - 1];
+                    Self::Str(syn::LitStr::new(inner, Span::mixed_site()))
+                } else {
+                    let inner = &raw[1..raw.len() - 1];
+                    let interpreted = interpret_go_string_escapes(inner);
+                    Self::Str(syn::LitStr::new(&interpreted, Span::mixed_site()))
+                }
             }
             CHAR => {
-                // Handle character literals
-                let mut value = basic_lit.value.chars();
-                value.next(); // skip opening '
-                let ch = value.next().unwrap_or(' ');
+                let raw = basic_lit.value;
+                let inner = &raw[1..raw.len() - 1];
+                let interpreted = interpret_go_string_escapes(inner);
+                let ch = interpreted.chars().next().unwrap_or(' ');
                 Self::Char(syn::LitChar::new(ch, Span::mixed_site()))
             }
             FLOAT => Self::Float(syn::LitFloat::new(basic_lit.value, Span::mixed_site())),
@@ -1403,6 +1555,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
+                if is_fmt_call(&call_expr) {
+                    return compile_fmt_call(call_expr);
+                }
                 Self::Call(call_expr.into())
             }
             ast::Expr::Ident(ident) if ident.name == "nil" => syn::parse_quote! { None },
@@ -1415,30 +1570,45 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 paren_token: syn::token::Paren::default(),
                 expr: Box::new((*paren_expr.x).into()),
             }),
-            ast::Expr::UnaryExpr(unary_expr) => Self::Unary(syn::ExprUnary {
-                attrs: vec![],
-                op: match unary_expr.op {
-                    token::Token::SUB => syn::UnOp::Neg(<Token![-]>::default()),
-                    token::Token::NOT => syn::UnOp::Not(<Token![!]>::default()),
-                    token::Token::MUL => syn::UnOp::Deref(<Token![*]>::default()),
-                    token::Token::AND => {
-                        // &x → Box::new(x)
-                        let inner: syn::Expr = (*unary_expr.x).into();
-                        return Self::Call(syn::ExprCall {
-                            attrs: vec![],
-                            func: Box::new(syn::parse_quote! { Box::new }),
-                            paren_token: syn::token::Paren::default(),
-                            args: {
-                                let mut a = syn::punctuated::Punctuated::new();
-                                a.push(inner);
-                                a
-                            },
-                        });
-                    }
-                    _ => unimplemented!("unary op: {:?}", unary_expr.op),
-                },
-                expr: Box::new((*unary_expr.x).into()),
-            }),
+            ast::Expr::UnaryExpr(unary_expr) => match unary_expr.op {
+                token::Token::ADD => {
+                    // +x → x (no-op in Go)
+                    (*unary_expr.x).into()
+                }
+                token::Token::AND => {
+                    // &x → Box::new(x)
+                    let inner: syn::Expr = (*unary_expr.x).into();
+                    Self::Call(syn::ExprCall {
+                        attrs: vec![],
+                        func: Box::new(syn::parse_quote! { Box::new }),
+                        paren_token: syn::token::Paren::default(),
+                        args: {
+                            let mut a = syn::punctuated::Punctuated::new();
+                            a.push(inner);
+                            a
+                        },
+                    })
+                }
+                token::Token::XOR => {
+                    // ^x → !x (bitwise NOT in Go)
+                    let inner: syn::Expr = (*unary_expr.x).into();
+                    Self::Unary(syn::ExprUnary {
+                        attrs: vec![],
+                        op: syn::UnOp::Not(<Token![!]>::default()),
+                        expr: Box::new(inner),
+                    })
+                }
+                _ => Self::Unary(syn::ExprUnary {
+                    attrs: vec![],
+                    op: match unary_expr.op {
+                        token::Token::SUB => syn::UnOp::Neg(<Token![-]>::default()),
+                        token::Token::NOT => syn::UnOp::Not(<Token![!]>::default()),
+                        token::Token::MUL => syn::UnOp::Deref(<Token![*]>::default()),
+                        _ => unimplemented!("unary op: {:?}", unary_expr.op),
+                    },
+                    expr: Box::new((*unary_expr.x).into()),
+                }),
+            },
             ast::Expr::IndexExpr(index_expr) => Self::Index(syn::ExprIndex {
                 attrs: vec![],
                 expr: Box::new((*index_expr.x).into()),
@@ -1793,36 +1963,6 @@ impl From<ast::Ident<'_>> for syn::Ident {
     }
 }
 
-impl TryFrom<ast::IfStmt<'_>> for syn::ExprIf {
-    type Error = CompilerError;
-
-    fn try_from(if_stmt: ast::IfStmt) -> Result<Self, Self::Error> {
-        let else_branch = if let Some(else_) = *if_stmt.else_ {
-            Some((
-                <Token![else]>::default(),
-                Box::new(match else_ {
-                    ast::Stmt::IfStmt(if_stmt) => syn::Expr::If(if_stmt.try_into()?),
-                    ast::Stmt::BlockStmt(block_stmt) => syn::Expr::Block(block_stmt.try_into()?),
-                    _ => {
-                        return Err(CompilerError::UnsupportedConstruct(
-                            "unsupported else branch type".to_string(),
-                        ));
-                    }
-                }),
-            ))
-        } else {
-            None
-        };
-
-        Ok(Self {
-            attrs: vec![],
-            cond: Box::new(if_stmt.cond.into()),
-            if_token: <Token![if]>::default(),
-            then_branch: if_stmt.body.try_into()?,
-            else_branch,
-        })
-    }
-}
 
 impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
@@ -1861,7 +2001,69 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 // For now, we skip it
                 Ok(vec![])
             }
-            ast::Stmt::IfStmt(s) => Ok(vec![syn::Stmt::Expr(syn::Expr::If(s.try_into()?), None)]),
+            ast::Stmt::IfStmt(s) => {
+                let has_init = s.init.is_some();
+                let init_stmts: Vec<syn::Stmt> = if let Some(init) = *s.init {
+                    Vec::<syn::Stmt>::try_from(init)?
+                } else {
+                    vec![]
+                };
+
+                let else_branch = if let Some(else_) = *s.else_ {
+                    Some((
+                        <Token![else]>::default(),
+                        Box::new(match else_ {
+                            ast::Stmt::IfStmt(if_stmt) => {
+                                let inner_stmts = Vec::<syn::Stmt>::try_from(ast::Stmt::IfStmt(if_stmt))?;
+                                syn::Expr::Block(syn::ExprBlock {
+                                    attrs: vec![],
+                                    label: None,
+                                    block: syn::Block {
+                                        brace_token: syn::token::Brace::default(),
+                                        stmts: inner_stmts,
+                                    },
+                                })
+                            }
+                            ast::Stmt::BlockStmt(block_stmt) => {
+                                syn::Expr::Block(block_stmt.try_into()?)
+                            }
+                            _ => {
+                                return Err(CompilerError::UnsupportedConstruct(
+                                    "unsupported else branch type".to_string(),
+                                ));
+                            }
+                        }),
+                    ))
+                } else {
+                    None
+                };
+
+                let if_expr = syn::Expr::If(syn::ExprIf {
+                    attrs: vec![],
+                    if_token: <Token![if]>::default(),
+                    cond: Box::new(s.cond.into()),
+                    then_branch: s.body.try_into()?,
+                    else_branch,
+                });
+
+                if has_init {
+                    let mut block_stmts = init_stmts;
+                    block_stmts.push(syn::Stmt::Expr(if_expr, None));
+                    Ok(vec![syn::Stmt::Expr(
+                        syn::Expr::Block(syn::ExprBlock {
+                            attrs: vec![],
+                            label: None,
+                            block: syn::Block {
+                                brace_token: syn::token::Brace::default(),
+                                stmts: block_stmts,
+                            },
+                        }),
+                        None,
+                    )])
+                } else {
+                    Ok(vec![syn::Stmt::Expr(if_expr, None)])
+                }
+            }
             ast::Stmt::IncDecStmt(s) => Ok(s.into()),
             ast::Stmt::LabeledStmt(s) => s.try_into(),
             ast::Stmt::ReturnStmt(s) => {
@@ -2230,17 +2432,24 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
         for spec in gen_decl.specs {
             if let ast::Spec::ValueSpec(value_spec) = spec {
                 let names = value_spec.names;
-                let type_expr = value_spec.type_.as_ref();
+                let rust_type: Option<syn::Type> = value_spec.type_.map(syn::Type::from);
                 let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
                 for name in names {
                     let ident: syn::Ident = name.into();
                     let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
 
-                    let init = init_expr.unwrap_or_else(|| go_zero_value(type_expr));
-                    stmts.push(syn::parse_quote! {
-                        let mut #ident = #init;
-                    });
+                    let init = init_expr
+                        .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
+                    if let Some(ref ty) = rust_type {
+                        stmts.push(syn::parse_quote! {
+                            let mut #ident: #ty = #init;
+                        });
+                    } else {
+                        stmts.push(syn::parse_quote! {
+                            let mut #ident = #init;
+                        });
+                    }
                 }
             }
         }
@@ -2260,10 +2469,91 @@ fn go_zero_value(type_expr: Option<&ast::Expr>) -> syn::Expr {
     syn::parse_quote! { 0 }
 }
 
+fn go_zero_value_from_type(ty: Option<&syn::Type>) -> syn::Expr {
+    if let Some(syn::Type::Path(type_path)) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            let name = seg.ident.to_string();
+            match name.as_str() {
+                "bool" => return syn::parse_quote! { false },
+                // Go type names (before map_type pass)
+                "string" | "String" => return syn::parse_quote! { String::new() },
+                "float32" | "float64" | "f32" | "f64" => return syn::parse_quote! { 0.0 },
+                _ => {}
+            }
+        }
+    }
+    syn::parse_quote! { 0 }
+}
+
 impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
 
     fn try_from(assign_stmt: ast::AssignStmt) -> Result<Self, Self::Error> {
+        // Multi-value return: x, y := f() or x, y = f()
+        if assign_stmt.lhs.len() > 1 && assign_stmt.rhs.len() == 1 {
+            let rhs_expr: syn::Expr = assign_stmt
+                .rhs
+                .into_iter()
+                .next()
+                .unwrap()
+                .into();
+
+            if assign_stmt.tok == token::Token::DEFINE {
+                let mut elems = syn::punctuated::Punctuated::new();
+                for expr in assign_stmt.lhs {
+                    if let ast::Expr::Ident(ident) = expr {
+                        elems.push(syn::Pat::Ident(syn::PatIdent {
+                            attrs: vec![],
+                            ident: ident.into(),
+                            by_ref: None,
+                            subpat: None,
+                            mutability: Some(<Token![mut]>::default()),
+                        }));
+                    } else {
+                        return Err(CompilerError::InvalidAssignment(
+                            "expected identifier on lhs of :=".to_string(),
+                        ));
+                    }
+                }
+                let pat = syn::Pat::Tuple(syn::PatTuple {
+                    attrs: vec![],
+                    paren_token: syn::token::Paren::default(),
+                    elems,
+                });
+                return Ok(vec![syn::Stmt::Local(syn::Local {
+                    attrs: vec![],
+                    pat,
+                    init: Some(syn::LocalInit {
+                        eq_token: <Token![=]>::default(),
+                        expr: Box::new(rhs_expr),
+                        diverge: None,
+                    }),
+                    let_token: <Token![let]>::default(),
+                    semi_token: <Token![;]>::default(),
+                })]);
+            } else {
+                // x, y = f()
+                let mut lhs_elems = syn::punctuated::Punctuated::new();
+                for expr in assign_stmt.lhs {
+                    lhs_elems.push(syn::Expr::from(expr));
+                }
+                let lhs_tuple = syn::Expr::Tuple(syn::ExprTuple {
+                    attrs: vec![],
+                    paren_token: syn::token::Paren::default(),
+                    elems: lhs_elems,
+                });
+                return Ok(vec![syn::Stmt::Expr(
+                    syn::Expr::Assign(syn::ExprAssign {
+                        attrs: vec![],
+                        left: Box::new(lhs_tuple),
+                        eq_token: <Token![=]>::default(),
+                        right: Box::new(rhs_expr),
+                    }),
+                    Some(<Token![;]>::default()),
+                )]);
+            }
+        }
+
         if assign_stmt.lhs.len() != assign_stmt.rhs.len() {
             return Err(CompilerError::InvalidAssignment(
                 "different numbers of lhs/rhs in assignment".to_string(),

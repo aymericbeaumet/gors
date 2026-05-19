@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>gors: experimental go compiler</title>
+    <title>gors: Go to Rust transpiler</title>
 
     <style>
       * {
@@ -23,30 +23,39 @@
         margin: 0 auto;
       }
 
-      main > p {
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
         margin: 0 0 16px 0;
-        font-size: 14px;
       }
 
-      main > p a {
-        color: #58a6ff;
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      header h1 a {
+        color: #c9d1d9;
         text-decoration: none;
       }
 
-      main > p a:hover {
-        text-decoration: underline;
+      header h1 a:hover {
+        color: #58a6ff;
       }
 
-      .workspace {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
+      header p {
+        margin: 0;
+        font-size: 13px;
+        color: #8b949e;
       }
 
       .editors {
         display: flex;
         gap: 16px;
-        height: 500px;
+        height: calc(100vh - 120px);
+        min-height: 400px;
       }
 
       .editor-container {
@@ -82,60 +91,19 @@
 
       .editor-container.go .dot { background: #00ADD8; }
       .editor-container.rust .dot { background: #FFC832; }
-      .editor-container.wasm .dot { background: #654FF0; }
 
-      /* Output mode toggle - sliding switch */
-      .output-toggle {
-        display: flex;
-        align-items: center;
-        background: #21262d;
-        border-radius: 6px;
-        padding: 2px;
-        position: relative;
-        cursor: pointer;
-        user-select: none;
-        width: 100px; /* Fixed width for consistent centering */
-      }
-
-      .output-toggle .toggle-slider {
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: calc(50% - 2px);
-        height: calc(100% - 4px);
-        border-radius: 4px;
-        transition: transform 0.2s ease, background 0.2s ease;
-        z-index: 0;
-      }
-
-      .output-toggle.rust .toggle-slider {
-        transform: translateX(0);
-        background: rgba(255, 200, 50, 0.25);
-      }
-
-      .output-toggle.wasm .toggle-slider {
-        transform: translateX(100%);
-        background: rgba(101, 79, 240, 0.25);
-      }
-
-      .output-toggle .toggle-option {
-        flex: 1;
-        padding: 4px 0;
-        text-align: center;
+      .editor-header .status {
         font-size: 11px;
-        font-weight: 500;
+        font-weight: 400;
         color: #8b949e;
-        transition: color 0.2s ease;
-        z-index: 1;
-        position: relative;
       }
 
-      .output-toggle.rust .toggle-option.rust {
-        color: #FFC832;
+      .editor-header .status.error {
+        color: #f85149;
       }
 
-      .output-toggle.wasm .toggle-option.wasm {
-        color: #654FF0;
+      .editor-header .status.ok {
+        color: #3fb950;
       }
 
       .editor-wrapper {
@@ -149,7 +117,6 @@
 
       .editor-container.go .editor-wrapper { border-color: #00ADD8; }
       .editor-container.rust .editor-wrapper { border-color: #FFC832; }
-      .editor-container.wasm .editor-wrapper { border-color: #654FF0; }
 
       .editor {
         width: 100%;
@@ -160,7 +127,6 @@
         padding-left: 5px;
       }
 
-      /* Copy button */
       .copy-button {
         padding: 4px 8px;
         background: transparent;
@@ -194,103 +160,6 @@
         fill: currentColor;
       }
 
-      /* Console */
-      #console-container {
-        background: #0d1117;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        overflow: hidden;
-      }
-
-      #console-header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 12px;
-        background: #161b22;
-        border-bottom: 1px solid #30363d;
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      #console-header .terminal-icon {
-        width: 14px;
-        height: 14px;
-        fill: #8b949e;
-      }
-
-      #console {
-        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Source Code Pro', monospace;
-        font-size: 13px;
-        padding: 12px;
-        min-height: 120px;
-        max-height: 200px;
-        overflow-y: auto;
-        background: #0d1117;
-      }
-
-      .console-line {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 4px;
-      }
-
-      .console-line .prompt {
-        color: #3fb950;
-        user-select: none;
-      }
-
-      .console-line .command {
-        color: #c9d1d9;
-      }
-
-      .console-output {
-        color: #8b949e;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-
-      .console-output.error {
-        color: #f85149;
-      }
-
-      .console-output.success {
-        color: #3fb950;
-      }
-
-      /* Error block in console */
-      .console-error-block {
-        margin-top: 8px;
-        padding: 12px;
-        background: rgba(248, 81, 73, 0.1);
-        border: 1px solid #f85149;
-        border-radius: 6px;
-        white-space: pre;
-        overflow-x: auto;
-      }
-
-      .console-error-block .error-location { color: #79c0ff; font-weight: bold; }
-      .console-error-block .error-kind { color: #f85149; }
-      .console-error-block .error-message { color: #c9d1d9; }
-      .console-error-block .error-line-number { color: #7ee787; }
-      .console-error-block .error-source { color: #c9d1d9; }
-      .console-error-block .error-caret { color: #a5d6ff; }
-
-      /* Formatted error (no border/background) */
-      .console-formatted-error {
-        white-space: pre;
-        overflow-x: auto;
-        color: #c9d1d9;
-      }
-
-      .console-formatted-error .error-location { color: #79c0ff; }
-      .console-formatted-error .error-kind { color: #f85149; }
-      .console-formatted-error .error-message { color: #c9d1d9; }
-      .console-formatted-error .error-line-number { color: #7ee787; }
-      .console-formatted-error .error-source { color: #c9d1d9; }
-      .console-formatted-error .error-caret { color: #f85149; }
-
-      /* Source map hover highlighting */
       .source-map-highlight {
         background-color: rgba(88, 166, 255, 0.2);
         border-radius: 2px;
@@ -300,56 +169,45 @@
   </head>
   <body>
     <main>
-      <p><a href="https://github.com/aymericbeaumet/gors">gors</a> is an experimental Go to Rust transpiler.</p>
+      <header>
+        <h1><a href="https://github.com/aymericbeaumet/gors">gors</a></h1>
+        <p>Go to Rust transpiler</p>
+      </header>
 
-      <div class="workspace">
-        <div class="editors">
-          <!-- Go Editor -->
-          <div class="editor-container go">
-            <div class="editor-header">
-              <div class="label">
-                <span class="dot"></span>
-                <span>Go</span>
-              </div>
-            </div>
-            <div class="editor-wrapper">
-              <div id="go-editor" class="editor"></div>
+      <div class="editors">
+        <!-- Go Editor -->
+        <div class="editor-container go">
+          <div class="editor-header">
+            <div class="label">
+              <span class="dot"></span>
+              <span>Go</span>
             </div>
           </div>
+          <div class="editor-wrapper">
+            <div id="go-editor" class="editor"></div>
+          </div>
+        </div>
 
-          <!-- Output Editor (Rust/WASM) -->
-          <div id="output-container" class="editor-container rust">
-            <div class="editor-header">
-              <div class="label">
-                <span class="dot"></span>
-                <div id="output-toggle" class="output-toggle rust" title="Click to switch output format">
-                  <div class="toggle-slider"></div>
-                  <span class="toggle-option rust">Rust</span>
-                  <span class="toggle-option wasm">WASM</span>
-                </div>
-              </div>
-              <button id="copy-output" class="copy-button" title="Copy output code">
+        <!-- Rust Output -->
+        <div class="editor-container rust">
+          <div class="editor-header">
+            <div class="label">
+              <span class="dot"></span>
+              <span>Rust</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span id="status" class="status"></span>
+              <button id="copy-output" class="copy-button" title="Copy Rust code">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                 </svg>
                 <span>Copy</span>
               </button>
             </div>
-            <div class="editor-wrapper">
-              <div id="output-editor" class="editor"></div>
-            </div>
           </div>
-        </div>
-
-        <!-- Console -->
-        <div id="console-container">
-          <div id="console-header">
-            <svg class="terminal-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/>
-            </svg>
-            <span>Console</span>
+          <div class="editor-wrapper">
+            <div id="rust-editor" class="editor"></div>
           </div>
-          <div id="console"></div>
         </div>
       </div>
     </main>
