@@ -387,6 +387,143 @@ fn merge_files(mut files: Vec<ast::File<'static>>) -> ast::File<'static> {
     base
 }
 
+/// A parsed package with its AST and metadata.
+#[derive(Debug)]
+pub struct ParsedPackage {
+    pub name: String,
+    pub import_path: String,
+    pub ast: ast::File<'static>,
+    pub files: Vec<(String, String)>,
+}
+
+/// A fully resolved program: main package plus all local imports.
+#[derive(Debug)]
+pub struct ParsedProgram {
+    pub main_package: ParsedPackage,
+    pub imports: Vec<ParsedPackage>,
+}
+
+/// Parse a Go program with full import resolution.
+///
+/// If the directory contains a go.mod, local imports are resolved recursively.
+/// Standard library imports (e.g., "fmt") are skipped.
+pub fn parse_program(
+    path: &str,
+) -> std::result::Result<ParsedProgram, PathParseError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| PathParseError::IoError(format!("cannot access '{}': {}", path, e)))?;
+
+    let dir_path = if metadata.is_file() {
+        std::path::Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string())
+    } else {
+        path.to_string()
+    };
+
+    let (main_ast, files) = parse_path(path)?;
+
+    let module_root = find_module_root(&dir_path);
+    let module_name = module_root
+        .as_ref()
+        .and_then(|root| parse_go_mod(root).ok());
+
+    let mut imports = Vec::new();
+    if let (Some(root), Some(mod_name)) = (&module_root, &module_name) {
+        let mut visited = std::collections::HashSet::new();
+        resolve_imports_recursive(&main_ast, root, mod_name, &mut imports, &mut visited)?;
+    }
+
+    let pkg_name = main_ast.name.name.to_string();
+    Ok(ParsedProgram {
+        main_package: ParsedPackage {
+            name: pkg_name,
+            import_path: String::new(),
+            ast: main_ast,
+            files,
+        },
+        imports,
+    })
+}
+
+fn find_module_root(start_dir: &str) -> Option<String> {
+    let mut dir = std::path::PathBuf::from(start_dir);
+    loop {
+        if dir.join("go.mod").exists() {
+            return Some(dir.to_string_lossy().into_owned());
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn parse_go_mod(module_root: &str) -> std::result::Result<String, PathParseError> {
+    let go_mod_path = std::path::Path::new(module_root).join("go.mod");
+    let content = std::fs::read_to_string(&go_mod_path)
+        .map_err(|e| PathParseError::IoError(format!("cannot read go.mod: {}", e)))?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("module ") {
+            return Ok(rest.trim().to_string());
+        }
+    }
+
+    Err(PathParseError::IoError(
+        "go.mod does not contain a module directive".to_string(),
+    ))
+}
+
+fn resolve_imports_recursive(
+    file: &ast::File<'static>,
+    module_root: &str,
+    module_name: &str,
+    imports: &mut Vec<ParsedPackage>,
+    visited: &mut std::collections::HashSet<String>,
+) -> std::result::Result<(), PathParseError> {
+    for import_spec in file.imports() {
+        let raw_path = import_spec.path.value;
+        let import_path = raw_path.trim_matches('"');
+
+        if visited.contains(import_path) {
+            continue;
+        }
+
+        let rel_path = match import_path.strip_prefix(module_name) {
+            Some(rest) => rest.trim_start_matches('/'),
+            None => continue,
+        };
+
+        let pkg_dir = std::path::Path::new(module_root).join(rel_path);
+        if !pkg_dir.is_dir() {
+            return Err(PathParseError::IoError(format!(
+                "cannot find package '{}' at {}",
+                import_path,
+                pkg_dir.display()
+            )));
+        }
+
+        visited.insert(import_path.to_string());
+
+        let pkg_dir_str = pkg_dir.to_string_lossy().into_owned();
+        let (pkg_ast, pkg_files) = parse_dir(&pkg_dir_str)?;
+
+        resolve_imports_recursive(&pkg_ast, module_root, module_name, imports, visited)?;
+
+        let pkg_name = pkg_ast.name.name.to_string();
+        imports.push(ParsedPackage {
+            name: pkg_name,
+            import_path: import_path.to_string(),
+            ast: pkg_ast,
+            files: pkg_files,
+        });
+    }
+
+    Ok(())
+}
+
 /// Extract Go version from //go:build directive in source
 /// Returns the go version like "go1.9" if found, empty string otherwise
 fn extract_go_version(buffer: &str) -> &str {

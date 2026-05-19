@@ -54,24 +54,34 @@ pub fn discover_programs() -> Vec<Program> {
             continue;
         }
 
-        // Run `go run main.go` to get reference output
-        let expected_output = Command::new("go")
-            .args(["run", main_go.to_str().unwrap()])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout).ok()
-                } else {
-                    eprintln!(
-                        "Warning: go run failed for {}: {}",
-                        path.display(),
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                    None
-                }
-            })
-            .unwrap_or_default();
+        // Run `go run` to get reference output.
+        // Use `go run .` from the directory when go.mod exists (multi-file/multi-package),
+        // otherwise use `go run main.go` for single-file programs.
+        let has_go_mod = path.join("go.mod").exists();
+        let expected_output = if has_go_mod {
+            Command::new("go")
+                .args(["run", "."])
+                .current_dir(&path)
+                .output()
+        } else {
+            Command::new("go")
+                .args(["run", main_go.to_str().unwrap()])
+                .output()
+        }
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                eprintln!(
+                    "Warning: go run failed for {}: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                None
+            }
+        })
+        .unwrap_or_default();
 
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
 

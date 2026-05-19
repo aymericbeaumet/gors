@@ -137,6 +137,76 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     Ok(out)
 }
 
+/// Compile a parsed program (main package + imports) into a single Rust file.
+///
+/// Imported packages are emitted as `mod` blocks before the main package items.
+pub fn compile_program(
+    program: crate::parser::ParsedProgram,
+) -> Result<syn::File, CompilerError> {
+    let mut all_items: Vec<syn::Item> = Vec::new();
+
+    let pkg_names: std::collections::HashSet<String> =
+        program.imports.iter().map(|p| p.name.clone()).collect();
+
+    for pkg in program.imports {
+        let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
+        passes::pass_for_imported_package(&mut pkg_file);
+        prefix_sibling_paths(&mut pkg_file, &pkg_names);
+
+        let mod_ident = syn::Ident::new(&pkg.name, Span::mixed_site());
+        all_items.push(syn::Item::Mod(syn::ItemMod {
+            attrs: vec![],
+            vis: syn::Visibility::Inherited,
+            unsafety: None,
+            mod_token: <Token![mod]>::default(),
+            ident: mod_ident,
+            content: Some((syn::token::Brace::default(), pkg_file.items)),
+            semi: None,
+        }));
+    }
+
+    let mut main_file: syn::File = program.main_package.ast.try_into()?;
+    passes::pass(&mut main_file);
+
+    all_items.extend(main_file.items);
+
+    Ok(syn::File {
+        attrs: vec![],
+        items: all_items,
+        shebang: None,
+    })
+}
+
+fn prefix_sibling_paths(file: &mut syn::File, pkg_names: &std::collections::HashSet<String>) {
+    use syn::visit_mut::VisitMut;
+
+    struct PrefixSiblings<'a> {
+        pkg_names: &'a std::collections::HashSet<String>,
+    }
+
+    impl VisitMut for PrefixSiblings<'_> {
+        fn visit_path_mut(&mut self, path: &mut syn::Path) {
+            syn::visit_mut::visit_path_mut(self, path);
+
+            if path.leading_colon.is_some() {
+                return;
+            }
+            if path.segments.len() >= 2 {
+                let first = path.segments[0].ident.to_string();
+                if self.pkg_names.contains(&first) {
+                    let crate_seg = syn::PathSegment {
+                        ident: syn::Ident::new("crate", Span::mixed_site()),
+                        arguments: syn::PathArguments::None,
+                    };
+                    path.segments.insert(0, crate_seg);
+                }
+            }
+        }
+    }
+
+    PrefixSiblings { pkg_names }.visit_file_mut(file);
+}
+
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
 ///
 /// This is like [`compile`], but also enables source map tracking.

@@ -107,7 +107,7 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
-    let (ast, files) = match gors::parser::parse_path(&cmd.path) {
+    let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
             let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
@@ -125,17 +125,26 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (primary_file, primary_buffer) = files
+    let primary_file = program
+        .main_package
+        .files
         .first()
-        .map(|(f, b)| (f.as_str(), b.as_str()))
-        .unwrap_or((&cmd.path, ""));
+        .map(|(f, _)| f.clone())
+        .unwrap_or_else(|| cmd.path.clone());
+    let primary_buffer = program
+        .main_package
+        .files
+        .first()
+        .map(|(_, b)| b.clone())
+        .unwrap_or_default();
 
     let compiled = if cmd.sourcemap.is_some() {
-        match gors::compiler::compile_with_source_map(ast, primary_file, primary_buffer) {
+        let main_ast = program.main_package.ast;
+        match gors::compiler::compile_with_source_map(main_ast, &primary_file, &primary_buffer) {
             Ok(compiled) => compiled,
             Err(err) => {
                 let diagnostic = Diagnostic::new(
-                    primary_file,
+                    &primary_file,
                     0,
                     0,
                     err.to_string(),
@@ -146,11 +155,11 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        match gors::compiler::compile(ast) {
+        match gors::compiler::compile_program(program) {
             Ok(compiled) => compiled,
             Err(err) => {
                 let diagnostic = Diagnostic::new(
-                    primary_file,
+                    &primary_file,
                     0,
                     0,
                     err.to_string(),
@@ -179,7 +188,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
-    let (ast, files) = match gors::parser::parse_path(&cmd.path) {
+    let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
             let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
@@ -197,16 +206,18 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (primary_file, _) = files
+    let primary_file = program
+        .main_package
+        .files
         .first()
-        .map(|(f, b)| (f.as_str(), b.as_str()))
-        .unwrap_or((&cmd.path, ""));
+        .map(|(f, _)| f.clone())
+        .unwrap_or_else(|| cmd.path.clone());
 
-    let compiled = match gors::compiler::compile(ast) {
+    let compiled = match gors::compiler::compile_program(program) {
         Ok(compiled) => compiled,
         Err(err) => {
             let diagnostic = Diagnostic::new(
-                primary_file,
+                &primary_file,
                 0,
                 0,
                 err.to_string(),

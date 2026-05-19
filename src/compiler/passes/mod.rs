@@ -12,9 +12,14 @@ pub fn pass(file: &mut syn::File) {
     hoist_use::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
-    // Future enhancement: Add a pass to remove unnecessary `mut` keywords
-    // by tracking variable mutability usage. This would require implementing
-    // data flow analysis to determine which variables are actually mutated.
+}
+
+pub fn pass_for_imported_package(file: &mut syn::File) {
+    inline_fmt::pass(file);
+    map_type::pass(file);
+    type_conversion::pass(file);
+    simplify_return::pass(file);
+    flatten_block::pass(file);
 }
 
 #[cfg(test)]
