@@ -6,9 +6,9 @@ pub fn pass(file: &mut syn::File) {
 
 struct SimplifyReturn;
 
-impl VisitMut for SimplifyReturn {
-    fn visit_item_fn_mut(&mut self, item_fn: &mut syn::ItemFn) {
-        if let Some(last) = item_fn.block.stmts.last_mut() {
+impl SimplifyReturn {
+    fn simplify_last_return(stmts: &mut [syn::Stmt]) {
+        if let Some(last) = stmts.last_mut() {
             let expr = match last {
                 syn::Stmt::Expr(expr, _) => expr,
                 _ => return,
@@ -20,5 +20,15 @@ impl VisitMut for SimplifyReturn {
                 }
             }
         }
+    }
+}
+
+impl VisitMut for SimplifyReturn {
+    fn visit_item_fn_mut(&mut self, item_fn: &mut syn::ItemFn) {
+        Self::simplify_last_return(&mut item_fn.block.stmts);
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, item_fn: &mut syn::ImplItemFn) {
+        Self::simplify_last_return(&mut item_fn.block.stmts);
     }
 }

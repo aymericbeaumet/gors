@@ -10,6 +10,7 @@ impl VisitMut for MapType {
     fn visit_ident_mut(&mut self, ident: &mut syn::Ident) {
         let name = match ident.to_string().as_str() {
             "bool" => "bool",
+            "byte" => "u8",
             "rune" => "u32",
             "string" => "String",
             "float32" => "f32",
@@ -24,6 +25,7 @@ impl VisitMut for MapType {
             "uint16" => "u16",
             "uint32" => "u32",
             "uint64" => "u64",
+            "uintptr" => "usize",
             _ => return,
         };
         *ident = quote::format_ident!("{}", name);

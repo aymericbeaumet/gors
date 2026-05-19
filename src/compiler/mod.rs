@@ -412,6 +412,268 @@ pub fn clear_source_map_tracker() {
     });
 }
 
+fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
+    let name = ts.name.ok_or_else(|| {
+        CompilerError::UnsupportedConstruct("type spec has no name".to_string())
+    })?;
+    let vis: syn::Visibility = (&name).into();
+    let ident: syn::Ident = name.into();
+
+    match ts.type_ {
+        ast::Expr::StructType(struct_type) => {
+            let mut fields = syn::punctuated::Punctuated::new();
+            if let Some(field_list) = struct_type.fields {
+                for field in field_list.list {
+                    let field_type = field.type_.ok_or_else(|| {
+                        CompilerError::UnsupportedConstruct(
+                            "struct field has no type".to_string(),
+                        )
+                    })?;
+                    let rust_type: syn::Type = field_type.into();
+
+                    if let Some(names) = field.names {
+                        for field_name in names {
+                            let field_vis: syn::Visibility = (&field_name).into();
+                            let field_ident: syn::Ident = field_name.into();
+                            fields.push(syn::Field {
+                                attrs: vec![],
+                                vis: field_vis,
+                                mutability: syn::FieldMutability::None,
+                                ident: Some(field_ident),
+                                colon_token: Some(<Token![:]>::default()),
+                                ty: rust_type.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !fields.empty_or_trailing() {
+                fields.push_punct(<Token![,]>::default());
+            }
+
+            Ok(syn::Item::Struct(syn::ItemStruct {
+                attrs: vec![],
+                vis,
+                struct_token: <Token![struct]>::default(),
+                ident,
+                generics: syn::Generics::default(),
+                fields: syn::Fields::Named(syn::FieldsNamed {
+                    brace_token: syn::token::Brace::default(),
+                    named: fields,
+                }),
+                semi_token: None,
+            }))
+        }
+        ast::Expr::InterfaceType(_) => {
+            // interface{} / any → empty trait; named interfaces → trait with methods
+            // For now, generate an empty trait
+            Ok(syn::Item::Trait(syn::ItemTrait {
+                attrs: vec![],
+                vis,
+                unsafety: None,
+                auto_token: None,
+                restriction: None,
+                trait_token: <Token![trait]>::default(),
+                ident,
+                generics: syn::Generics::default(),
+                colon_token: None,
+                supertraits: syn::punctuated::Punctuated::new(),
+                brace_token: syn::token::Brace::default(),
+                items: vec![],
+            }))
+        }
+        other => {
+            let rust_type: syn::Type = other.into();
+            Ok(syn::Item::Type(syn::ItemType {
+                attrs: vec![],
+                vis,
+                type_token: <Token![type]>::default(),
+                ident,
+                generics: syn::Generics::default(),
+                eq_token: <Token![=]>::default(),
+                ty: Box::new(rust_type),
+                semi_token: <Token![;]>::default(),
+            }))
+        }
+    }
+}
+
+fn compile_return_type(
+    results: Option<ast::FieldList>,
+) -> Result<syn::ReturnType, CompilerError> {
+    let Some(results) = results else {
+        return Ok(syn::ReturnType::Default);
+    };
+    let result_types: Vec<syn::Type> = results
+        .list
+        .into_iter()
+        .filter_map(|f| f.type_.map(syn::Type::from))
+        .collect();
+    match result_types.len() {
+        0 => Ok(syn::ReturnType::Default),
+        1 => Ok(syn::ReturnType::Type(
+            <Token![->]>::default(),
+            Box::new(result_types.into_iter().next().unwrap()),
+        )),
+        _ => {
+            let mut elems = syn::punctuated::Punctuated::new();
+            for ty in result_types {
+                elems.push(ty);
+            }
+            Ok(syn::ReturnType::Type(
+                <Token![->]>::default(),
+                Box::new(syn::Type::Tuple(syn::TypeTuple {
+                    paren_token: syn::token::Paren::default(),
+                    elems,
+                })),
+            ))
+        }
+    }
+}
+
+fn extract_receiver_type(expr: &ast::Expr) -> Result<(String, bool), CompilerError> {
+    match expr {
+        ast::Expr::StarExpr(star) => {
+            if let ast::Expr::Ident(ident) = &*star.x {
+                Ok((ident.name.to_string(), true))
+            } else {
+                Err(CompilerError::UnsupportedConstruct(
+                    "complex receiver type".to_string(),
+                ))
+            }
+        }
+        ast::Expr::Ident(ident) => Ok((ident.name.to_string(), false)),
+        _ => Err(CompilerError::UnsupportedConstruct(format!(
+            "unsupported receiver type: {:?}",
+            expr
+        ))),
+    }
+}
+
+fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
+    use syn::visit_mut::VisitMut;
+
+    struct RewriteReceiver<'a> {
+        recv_name: &'a str,
+    }
+
+    impl VisitMut for RewriteReceiver<'_> {
+        fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+            // First recurse into children
+            syn::visit_mut::visit_expr_mut(self, expr);
+
+            // Rewrite `recv::Field` paths to `self.Field` field access
+            if let syn::Expr::Path(expr_path) = expr {
+                if expr_path.path.leading_colon.is_none() && expr_path.path.segments.len() == 2 {
+                    let first = expr_path.path.segments[0].ident.to_string();
+                    if first == self.recv_name {
+                        let field_ident = expr_path.path.segments[1].ident.clone();
+                        *expr = syn::Expr::Field(syn::ExprField {
+                            attrs: vec![],
+                            base: Box::new(syn::Expr::Path(syn::ExprPath {
+                                attrs: vec![],
+                                qself: None,
+                                path: syn::parse_quote! { self },
+                            })),
+                            dot_token: <Token![.]>::default(),
+                            member: syn::Member::Named(field_ident),
+                        });
+                        return;
+                    }
+                }
+                // Rewrite standalone receiver name to `self`
+                if expr_path.path.leading_colon.is_none() && expr_path.path.segments.len() == 1 {
+                    let name = expr_path.path.segments[0].ident.to_string();
+                    if name == self.recv_name {
+                        expr_path.path = syn::parse_quote! { self };
+                    }
+                }
+            }
+        }
+    }
+
+    RewriteReceiver { recv_name }.visit_block_mut(block);
+}
+
+fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn), CompilerError> {
+    let recv = func_decl.recv.ok_or_else(|| {
+        CompilerError::UnsupportedConstruct("method has no receiver".to_string())
+    })?;
+
+    let recv_field = recv.list.into_iter().next().ok_or_else(|| {
+        CompilerError::UnsupportedConstruct("empty receiver list".to_string())
+    })?;
+
+    let recv_name = recv_field
+        .names
+        .as_ref()
+        .and_then(|n| n.first())
+        .map(|n| n.name.to_string())
+        .unwrap_or_default();
+
+    let recv_type = recv_field.type_.ok_or_else(|| {
+        CompilerError::UnsupportedConstruct("receiver has no type".to_string())
+    })?;
+
+    let (type_name, is_pointer) = extract_receiver_type(&recv_type)?;
+
+    let self_arg: syn::FnArg = if is_pointer {
+        syn::parse_quote! { &mut self }
+    } else {
+        syn::parse_quote! { &self }
+    };
+
+    let mut inputs = syn::punctuated::Punctuated::new();
+    inputs.push(self_arg);
+    for param in func_decl.type_.params.list {
+        inputs.push(param.try_into()?);
+    }
+
+    let vis: syn::Visibility = (&func_decl.name).into();
+    let attrs = comment_group_to_attrs(&func_decl.doc);
+
+    let mut block = if let Some(body) = func_decl.body {
+        body.try_into()?
+    } else {
+        syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: vec![],
+        }
+    };
+
+    if !recv_name.is_empty() {
+        rewrite_receiver(&mut block, &recv_name);
+    }
+
+    let output = compile_return_type(func_decl.type_.results)?;
+
+    let sig = syn::Signature {
+        constness: None,
+        asyncness: None,
+        unsafety: None,
+        abi: None,
+        fn_token: <Token![fn]>::default(),
+        ident: func_decl.name.into(),
+        generics: syn::Generics::default(),
+        paren_token: syn::token::Paren::default(),
+        inputs,
+        variadic: None,
+        output,
+    };
+
+    Ok((
+        type_name,
+        syn::ImplItemFn {
+            attrs,
+            vis,
+            defaultness: None,
+            sig,
+            block,
+        },
+    ))
+}
+
 fn compile_top_level_value_spec(
     vs: ast::ValueSpec,
     tok: token::Token,
@@ -618,7 +880,81 @@ impl From<ast::Expr<'_>> for syn::Type {
                     },
                 })
             }
-            _ => unimplemented!("{:?}", expr),
+            ast::Expr::StarExpr(star_expr) => {
+                let inner: syn::Type = (*star_expr.x).into();
+                syn::parse_quote! { Box<#inner> }
+            }
+            ast::Expr::ArrayType(array_type) => {
+                let elem: syn::Type = (*array_type.elt).into();
+                if array_type.len.is_some() {
+                    // Fixed-size array: [N]T → [T; N]
+                    let len_expr: syn::Expr = (*array_type.len.unwrap()).into();
+                    syn::parse_quote! { [#elem; #len_expr] }
+                } else {
+                    // Slice: []T → Vec<T>
+                    syn::parse_quote! { Vec<#elem> }
+                }
+            }
+            ast::Expr::SelectorExpr(selector_expr) => {
+                let path: syn::ExprPath = selector_expr.into();
+                Self::Path(syn::TypePath {
+                    qself: None,
+                    path: path.path,
+                })
+            }
+            ast::Expr::InterfaceType(_) => {
+                syn::parse_quote! { Box<dyn std::any::Any> }
+            }
+            ast::Expr::MapType(map_type) => {
+                let key: syn::Type = (*map_type.key).into();
+                let value: syn::Type = (*map_type.value).into();
+                syn::parse_quote! { std::collections::HashMap<#key, #value> }
+            }
+            ast::Expr::FuncType(func_type) => {
+                let mut param_types = syn::punctuated::Punctuated::<syn::Type, Token![,]>::new();
+                for field in func_type.params.list {
+                    if let Some(type_expr) = field.type_ {
+                        let ty: syn::Type = type_expr.into();
+                        let count = field.names.as_ref().map_or(1, |n| n.len());
+                        for _ in 0..count {
+                            param_types.push(ty.clone());
+                        }
+                    }
+                }
+                if let Some(results) = func_type.results {
+                    if results.list.len() == 1 {
+                        let ret_type: syn::Type = results
+                            .list
+                            .into_iter()
+                            .next()
+                            .unwrap()
+                            .type_
+                            .unwrap()
+                            .into();
+                        syn::parse_quote! { fn(#param_types) -> #ret_type }
+                    } else {
+                        let mut ret_types =
+                            syn::punctuated::Punctuated::<syn::Type, Token![,]>::new();
+                        for field in results.list {
+                            if let Some(type_expr) = field.type_ {
+                                ret_types.push(type_expr.into());
+                            }
+                        }
+                        syn::parse_quote! { fn(#param_types) -> (#ret_types) }
+                    }
+                } else {
+                    syn::parse_quote! { fn(#param_types) }
+                }
+            }
+            ast::Expr::Ellipsis(ellipsis) => {
+                if let Some(elt) = ellipsis.elt {
+                    let inner: syn::Type = (*elt).into();
+                    syn::parse_quote! { Vec<#inner> }
+                } else {
+                    syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
+                }
+            }
+            _ => unimplemented!("type expr: {:?}", expr),
         }
     }
 }
@@ -628,10 +964,17 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
         let mut items = vec![];
+        let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
+
         for decl in file.decls {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {
-                    items.push(syn::Item::Fn(func_decl.try_into()?));
+                    if func_decl.recv.is_some() {
+                        let (type_name, method) = compile_method(func_decl)?;
+                        methods.entry(type_name).or_default().push(method);
+                    } else {
+                        items.push(syn::Item::Fn(func_decl.try_into()?));
+                    }
                 }
                 ast::Decl::GenDecl(gen_decl) => {
                     if gen_decl.tok == token::Token::CONST || gen_decl.tok == token::Token::VAR {
@@ -640,9 +983,30 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 items.extend(compile_top_level_value_spec(vs, gen_decl.tok)?);
                             }
                         }
+                    } else if gen_decl.tok == token::Token::TYPE {
+                        for spec in gen_decl.specs {
+                            if let ast::Spec::TypeSpec(ts) = spec {
+                                items.push(compile_type_spec(ts)?);
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        for (type_name, method_list) in methods {
+            let type_ident = syn::Ident::new(&type_name, Span::mixed_site());
+            items.push(syn::Item::Impl(syn::ItemImpl {
+                attrs: vec![],
+                defaultness: None,
+                unsafety: None,
+                impl_token: <Token![impl]>::default(),
+                generics: syn::Generics::default(),
+                trait_: None,
+                self_ty: Box::new(syn::parse_quote! { #type_ident }),
+                brace_token: syn::token::Brace::default(),
+                items: method_list.into_iter().map(syn::ImplItem::Fn).collect(),
+            }));
         }
 
         Ok(Self {
@@ -714,17 +1078,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         });
 
-        let output = if let Some(results) = func_decl.type_.results {
-            let first_result = results.list.into_iter().next().ok_or_else(|| {
-                CompilerError::InvalidFunctionSignature("empty result list".to_string())
-            })?;
-            let result_type = first_result.type_.ok_or_else(|| {
-                CompilerError::InvalidFunctionSignature("result has no type".to_string())
-            })?;
-            syn::ReturnType::Type(<Token![->]>::default(), Box::new(result_type.into()))
-        } else {
-            syn::ReturnType::Default
-        };
+        let output = compile_return_type(func_decl.type_.results)?;
 
         let sig = syn::Signature {
             constness: None,
@@ -1459,11 +1813,25 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 
 impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
     fn from(return_stmt: ast::ReturnStmt) -> Self {
-        // Record mapping for the return keyword
         record_mapping(&return_stmt.return_, Some("return"));
 
-        // Handle return statements: if there are results, convert the first one
-        let expr = return_stmt.results.into_iter().next().map(Into::into);
+        let expr = match return_stmt.results.len() {
+            0 => None,
+            1 => Some(syn::Expr::from(
+                return_stmt.results.into_iter().next().unwrap(),
+            )),
+            _ => {
+                let mut elems = syn::punctuated::Punctuated::new();
+                for result in return_stmt.results {
+                    elems.push(result.into());
+                }
+                Some(syn::Expr::Tuple(syn::ExprTuple {
+                    attrs: vec![],
+                    paren_token: syn::token::Paren::default(),
+                    elems,
+                }))
+            }
+        };
         Self {
             attrs: vec![],
             expr: expr.map(Box::new),
@@ -1744,5 +2112,253 @@ func main() {
         assert!(main_rs.contains("use lib::*"));
         let lib_rs = &output.files["lib.rs"];
         assert!(lib_rs.contains("pub mod fmt"));
+    }
+
+    #[test]
+    fn it_should_compile_struct_type_declaration() {
+        test(
+            r#"
+                package main
+
+                type Point struct {
+                    X int
+                    Y int
+                }
+            "#,
+            rust! {
+                pub struct Point {
+                    pub X: isize,
+                    pub Y: isize,
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_struct_with_mixed_visibility() {
+        test(
+            r#"
+                package main
+
+                type point struct {
+                    x int
+                    Y int
+                }
+            "#,
+            rust! {
+                struct point {
+                    x: isize,
+                    pub Y: isize,
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_named_type_definition() {
+        test(
+            r#"
+                package main
+
+                type MyInt int
+            "#,
+            rust! {
+                pub type MyInt = isize;
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_slice_type_alias() {
+        test(
+            r#"
+                package main
+
+                type buffer []byte
+            "#,
+            rust! {
+                type buffer = Vec<u8>;
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_pointer_type_in_params() {
+        test(
+            r#"
+                package main
+
+                func deref(p *int) int {
+                    return *p
+                }
+            "#,
+            rust! {
+                fn deref(mut p: Box<isize>) -> isize {
+                    *p
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_struct_with_pointer_field() {
+        test(
+            r#"
+                package main
+
+                type Node struct {
+                    Value int
+                    Next *Node
+                }
+            "#,
+            rust! {
+                pub struct Node {
+                    pub Value: isize,
+                    pub Next: Box<Node>,
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_map_type() {
+        test(
+            r#"
+                package main
+
+                type Dict map[string]int
+            "#,
+            rust! {
+                pub type Dict = std::collections::HashMap<String, isize>;
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_map_byte_type() {
+        test(
+            r#"
+                package main
+
+                func f(b byte) byte {
+                    return b
+                }
+            "#,
+            rust! {
+                fn f(mut b: u8) -> u8 {
+                    b
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_method_with_pointer_receiver() {
+        test(
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+            "#,
+            rust! {
+                pub struct Counter {
+                    pub Value: isize,
+                }
+                impl Counter {
+                    pub fn Increment(&mut self) {
+                        self.Value = self.Value + 1;
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_method_with_value_receiver() {
+        test(
+            r#"
+                package main
+
+                type Point struct {
+                    X int
+                    Y int
+                }
+
+                func (p Point) Sum() int {
+                    return p.X + p.Y
+                }
+            "#,
+            rust! {
+                pub struct Point {
+                    pub X: isize,
+                    pub Y: isize,
+                }
+                impl Point {
+                    pub fn Sum(&self) -> isize {
+                        self.X + self.Y
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_multiple_return_values() {
+        test(
+            r#"
+                package main
+
+                func divmod(a int, b int) (int, int) {
+                    return a / b, a % b
+                }
+            "#,
+            rust! {
+                fn divmod(mut a: isize, mut b: isize) -> (isize, isize) {
+                    (a / b, a % b)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_multiple_methods_on_same_type() {
+        test(
+            r#"
+                package main
+
+                type Pair struct {
+                    A int
+                    B int
+                }
+
+                func (p *Pair) Sum() int {
+                    return p.A + p.B
+                }
+
+                func (p *Pair) Swap() {
+                    p.A = p.B
+                }
+            "#,
+            rust! {
+                pub struct Pair {
+                    pub A: isize,
+                    pub B: isize,
+                }
+                impl Pair {
+                    pub fn Sum(&mut self) -> isize {
+                        self.A + self.B
+                    }
+                    pub fn Swap(&mut self) {
+                        self.A = self.B;
+                    }
+                }
+            },
+        );
     }
 }

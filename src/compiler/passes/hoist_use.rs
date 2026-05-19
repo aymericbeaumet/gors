@@ -40,7 +40,11 @@ impl VisitMut for CollectUses {
     fn visit_path_mut(&mut self, path: &mut syn::Path) {
         syn::visit_mut::visit_path_mut(self, path);
 
-        if path.segments.len() > 1 {
+        let has_generics = path
+            .segments
+            .iter()
+            .any(|s| !matches!(s.arguments, syn::PathArguments::None));
+        if path.segments.len() > 1 && !has_generics {
             self.uses.insert(
                 (quote::quote! { #path }).to_string(),
                 syn::parse_quote! { use #path; },
