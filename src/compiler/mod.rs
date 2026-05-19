@@ -645,10 +645,8 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::ReturnStmt(s) => {
                 Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)])
             }
-            ast::Stmt::SendStmt(_) => {
-                // Channel send would need different semantics
-                Ok(vec![])
-            }
+            ast::Stmt::SwitchStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
+            ast::Stmt::SendStmt(_) => Ok(vec![]),
             _ => Err(CompilerError::UnsupportedConstruct(format!(
                 "unsupported statement type: {:?}",
                 stmt
@@ -826,6 +824,119 @@ impl TryFrom<ast::ForStmt<'_>> for syn::Expr {
     }
 }
 
+impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
+    type Error = CompilerError;
+
+    fn try_from(switch_stmt: ast::SwitchStmt) -> Result<Self, Self::Error> {
+        let clauses: Vec<ast::CaseClause> = switch_stmt
+            .body
+            .list
+            .into_iter()
+            .filter_map(|s| {
+                if let ast::Stmt::CaseClause(cc) = s {
+                    Some(cc)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Separate default from cases
+        let mut cases: Vec<ast::CaseClause> = Vec::new();
+        let mut default_body: Option<Vec<ast::Stmt>> = None;
+        for clause in clauses {
+            if clause.list.is_none() {
+                default_body = Some(clause.body);
+            } else {
+                cases.push(clause);
+            }
+        }
+
+        // Build the if/else chain from bottom up
+        let else_block: Option<syn::Expr> = if let Some(body) = default_body {
+            let mut stmts = vec![];
+            for stmt in body {
+                stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            }
+            Some(syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: None,
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts,
+                },
+            }))
+        } else {
+            None
+        };
+
+        let tag_syn: Option<syn::Expr> = switch_stmt.tag.map(Into::into);
+
+        let mut result: Option<syn::Expr> = else_block;
+        for case in cases.into_iter().rev() {
+            let cond = build_case_condition(case.list, tag_syn.as_ref());
+            let mut body_stmts = vec![];
+            for stmt in case.body {
+                body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            }
+
+            result = Some(syn::Expr::If(syn::ExprIf {
+                attrs: vec![],
+                if_token: <Token![if]>::default(),
+                cond: Box::new(cond),
+                then_branch: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: body_stmts,
+                },
+                else_branch: result
+                    .map(|e| (<Token![else]>::default(), Box::new(e))),
+            }));
+        }
+
+        result.ok_or_else(|| {
+            CompilerError::UnsupportedConstruct("empty switch statement".to_string())
+        })
+    }
+}
+
+fn build_case_condition(
+    list: Option<Vec<ast::Expr>>,
+    tag: Option<&syn::Expr>,
+) -> syn::Expr {
+    let exprs = list.unwrap_or_default();
+
+    if let Some(tag) = tag {
+        let mut conditions: Vec<syn::Expr> = exprs
+            .into_iter()
+            .map(|e| {
+                let tag_expr = tag.clone();
+                let val_expr: syn::Expr = e.into();
+                syn::parse_quote! { #tag_expr == #val_expr }
+            })
+            .collect();
+
+        if conditions.len() == 1 {
+            conditions.remove(0)
+        } else {
+            conditions
+                .into_iter()
+                .reduce(|acc, e| syn::parse_quote! { #acc || #e })
+                .unwrap_or_else(|| syn::parse_quote! { true })
+        }
+    } else {
+        // Tagless switch: `switch { case cond: ... }` → conditions are already booleans
+        if exprs.len() == 1 {
+            exprs.into_iter().next().unwrap().into()
+        } else {
+            let conditions: Vec<syn::Expr> = exprs.into_iter().map(Into::into).collect();
+            conditions
+                .into_iter()
+                .reduce(|acc, e| syn::parse_quote! { #acc || #e })
+                .unwrap_or_else(|| syn::parse_quote! { true })
+        }
+    }
+}
+
 fn has_unlabeled_continue(stmts: &[syn::Stmt]) -> bool {
     stmts.iter().any(|stmt| match stmt {
         syn::Stmt::Expr(syn::Expr::Continue(cont), _) => cont.label.is_none(),
@@ -896,35 +1007,35 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
 
         for spec in gen_decl.specs {
             if let ast::Spec::ValueSpec(value_spec) = spec {
-                // Convert to let statement
                 let names = value_spec.names;
+                let type_expr = value_spec.type_.as_ref();
                 let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
                 for name in names {
                     let ident: syn::Ident = name.into();
-
-                    // Get the init value if available
                     let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
 
-                    // For type annotation, we'd need to pass type_ through properly
-                    // For now, just use the init expression without type annotation
-                    if let Some(init) = init_expr {
-                        stmts.push(syn::parse_quote! {
-                            let mut #ident = #init;
-                        });
-                    } else {
-                        // Variable declared without initialization
-                        // Would need default value or explicit type
-                        stmts.push(syn::parse_quote! {
-                            let mut #ident = Default::default();
-                        });
-                    }
+                    let init = init_expr.unwrap_or_else(|| go_zero_value(type_expr));
+                    stmts.push(syn::parse_quote! {
+                        let mut #ident = #init;
+                    });
                 }
             }
-            // Skip type specs and import specs in statement context
         }
         stmts
     }
+}
+
+fn go_zero_value(type_expr: Option<&ast::Expr>) -> syn::Expr {
+    if let Some(ast::Expr::Ident(ident)) = type_expr {
+        match ident.name {
+            "bool" => return syn::parse_quote! { false },
+            "string" => return syn::parse_quote! { String::new() },
+            "float32" | "float64" => return syn::parse_quote! { 0.0 },
+            _ => {}
+        }
+    }
+    syn::parse_quote! { 0 }
 }
 
 impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
