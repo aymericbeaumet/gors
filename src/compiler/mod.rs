@@ -947,6 +947,115 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     }
 }
 
+fn compile_type_switch_stmt(
+    ts: ast::TypeSwitchStmt,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    // type switch: switch x := val.(type) { case T: ... }
+    // Compile to if/else chain with downcast checks
+    let assign_expr = match *ts.assign {
+        ast::Stmt::ExprStmt(s) => syn::Expr::from(s.x),
+        ast::Stmt::AssignStmt(s) => {
+            let rhs: syn::Expr = s
+                .rhs
+                .into_iter()
+                .next()
+                .map(syn::Expr::from)
+                .unwrap_or_else(|| syn::parse_quote! { () });
+            rhs
+        }
+        _ => syn::parse_quote! { () },
+    };
+
+    let clauses: Vec<ast::CaseClause> = ts
+        .body
+        .list
+        .into_iter()
+        .filter_map(|s| {
+            if let ast::Stmt::CaseClause(cc) = s {
+                Some(cc)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut cases: Vec<ast::CaseClause> = Vec::new();
+    let mut default_body: Option<Vec<ast::Stmt>> = None;
+    for clause in clauses {
+        if clause.list.is_none() {
+            default_body = Some(clause.body);
+        } else {
+            cases.push(clause);
+        }
+    }
+
+    let else_block: Option<syn::Expr> = if let Some(body) = default_body {
+        let mut stmts = vec![];
+        for stmt in body {
+            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+        Some(syn::Expr::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: None,
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts,
+            },
+        }))
+    } else {
+        None
+    };
+
+    let mut result: Option<syn::Expr> = else_block;
+    for case in cases.into_iter().rev() {
+        let type_exprs: Vec<syn::Type> = case
+            .list
+            .unwrap_or_default()
+            .into_iter()
+            .map(syn::Type::from)
+            .collect();
+
+        let cond = if type_exprs.len() == 1 {
+            let ty = &type_exprs[0];
+            let val = &assign_expr;
+            syn::parse_quote! { (#val as &dyn std::any::Any).is::<#ty>() }
+        } else {
+            let checks: Vec<syn::Expr> = type_exprs
+                .iter()
+                .map(|ty| {
+                    let val = &assign_expr;
+                    syn::parse_quote! { (#val as &dyn std::any::Any).is::<#ty>() }
+                })
+                .collect();
+            checks
+                .into_iter()
+                .reduce(|acc, e| syn::parse_quote! { #acc || #e })
+                .unwrap_or_else(|| syn::parse_quote! { true })
+        };
+
+        let mut body_stmts = vec![];
+        for stmt in case.body {
+            body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+
+        result = Some(syn::Expr::If(syn::ExprIf {
+            attrs: vec![],
+            if_token: <Token![if]>::default(),
+            cond: Box::new(cond),
+            then_branch: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: body_stmts,
+            },
+            else_branch: result.map(|e| (<Token![else]>::default(), Box::new(e))),
+        }));
+    }
+
+    match result {
+        Some(expr) => Ok(vec![syn::Stmt::Expr(expr, None)]),
+        None => Ok(vec![]),
+    }
+}
+
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let x: syn::Expr = range_stmt.x.into();
     let body: syn::Block = range_stmt.body.try_into()?;
@@ -1255,9 +1364,20 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::SliceExpr(slice_expr) => {
                 compile_slice_expr(slice_expr)
             }
+            ast::Expr::TypeAssertExpr(ta) => {
+                // x.(T) → downcast or type check
+                let x: syn::Expr = (*ta.x).into();
+                if let Some(type_expr) = ta.type_ {
+                    let ty: syn::Type = (*type_expr).into();
+                    syn::parse_quote! {
+                        *((#x) as Box<dyn std::any::Any>).downcast::<#ty>().unwrap()
+                    }
+                } else {
+                    // type switch x.(type) — handled at statement level
+                    x
+                }
+            }
             ast::Expr::KeyValueExpr(kv) => {
-                // Used inside composite literals — shouldn't appear standalone,
-                // but handle gracefully
                 let key: syn::Expr = (*kv.key).into();
                 let value: syn::Expr = (*kv.value).into();
                 syn::parse_quote! { (#key, #value) }
@@ -1620,10 +1740,20 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             }
             ast::Stmt::BranchStmt(s) => Ok(s.into()),
             ast::Stmt::DeclStmt(s) => Ok(s.into()),
-            ast::Stmt::DeferStmt(_) => {
-                // Rust doesn't have defer, would need to use Drop/scope guards
-                // For now, we skip it
-                Ok(vec![])
+            ast::Stmt::DeferStmt(s) => {
+                // defer f() → scopeguard-style: let _defer = { let __f = move || { f(); }; ... };
+                // Simplified: just wrap the call in a closure assigned to a _defer binding.
+                // The deferred call will execute at scope exit via Drop.
+                let call: syn::Expr = syn::Expr::Call(s.call.into());
+                Ok(vec![syn::parse_quote! {
+                    let _defer = {
+                        struct __Defer<F: FnOnce()>(Option<F>);
+                        impl<F: FnOnce()> Drop for __Defer<F> {
+                            fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
+                        }
+                        __Defer(Some(move || { #call; }))
+                    };
+                }])
             }
             ast::Stmt::EmptyStmt(_) => Ok(vec![]),
             ast::Stmt::ExprStmt(s) => Ok(vec![syn::Stmt::Expr(
@@ -1644,11 +1774,10 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             }
             ast::Stmt::RangeStmt(s) => compile_range_stmt(s),
             ast::Stmt::SwitchStmt(s) => Ok(vec![syn::Stmt::Expr(s.try_into()?, None)]),
-            ast::Stmt::SendStmt(_) => Ok(vec![]),
-            _ => Err(CompilerError::UnsupportedConstruct(format!(
-                "unsupported statement type: {:?}",
-                stmt
-            ))),
+            ast::Stmt::TypeSwitchStmt(s) => compile_type_switch_stmt(s),
+            ast::Stmt::SelectStmt(_) | ast::Stmt::SendStmt(_) | ast::Stmt::CommClause(_) | ast::Stmt::CaseClause(_) => {
+                Ok(vec![])
+            }
         }
     }
 }
@@ -3008,6 +3137,76 @@ func main() {
                         return (0, false)
                     }
                     (a / b, true)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_defer_statement() {
+        test(
+            r#"
+                package main
+
+                func cleanup() {}
+
+                func main() {
+                    defer cleanup()
+                }
+            "#,
+            rust! {
+                fn cleanup() {}
+                pub fn main() {
+                    let _defer = {
+                        struct __Defer<F: FnOnce()>(Option<F>);
+                        impl<F: FnOnce()> Drop for __Defer<F> {
+                            fn drop(&mut self) {
+                                if let Some(f) = self.0.take() {
+                                    f();
+                                }
+                            }
+                        }
+                        __Defer(Some(move || { cleanup(); }))
+                    };
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_interface_type_declaration() {
+        test(
+            r#"
+                package main
+
+                type Stringer interface {}
+            "#,
+            rust! {
+                pub trait Stringer {}
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_empty_struct_literal() {
+        test(
+            r#"
+                package main
+
+                type Flags struct {
+                    X bool
+                }
+
+                func main() {
+                    f := Flags{}
+                }
+            "#,
+            rust! {
+                pub struct Flags {
+                    pub X: bool,
+                }
+                pub fn main() {
+                    let mut f = Flags {};
                 }
             },
         );
