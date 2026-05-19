@@ -471,7 +471,7 @@ impl TryFrom<ast::Field<'_>> for syn::FnArg {
                 attrs: vec![],
                 by_ref: None,
                 subpat: None,
-                mutability: None,
+                mutability: Some(<Token![mut]>::default()),
                 ident: name.into(),
             })),
             colon_token: <Token![:]>::default(),
