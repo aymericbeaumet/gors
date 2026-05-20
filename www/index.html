@@ -2,18 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>gors: Go to Rust transpiler</title>
+    <title>gors: Go toolchain written in Rust (parser, compiler, sandbox)</title>
 
-    <script>
-      (function() {
-        var p = new URLSearchParams(window.location.search);
-        if (p.get('wasm') === '1') document.documentElement.classList.add('show-wasm');
-      })();
-    </script>
     <style>
       * { box-sizing: border-box; }
 
-      html, body { height: 100%; }
+      html, body { height: 100%; overflow: hidden; }
 
       body {
         margin: 0;
@@ -35,7 +29,10 @@
         display: flex;
         align-items: baseline;
         gap: 12px;
-        margin: 0 0 16px 0;
+        margin: 0 -24px;
+        padding: 0 24px 16px;
+        margin-bottom: 24px;
+        border-bottom: 1px solid #30363d;
       }
 
       header h1 { margin: 0; font-size: 16px; font-weight: 600; }
@@ -56,9 +53,6 @@
         flex-direction: column;
         min-width: 0;
       }
-
-      .editor-container.hidden { display: none; }
-      html.show-wasm .editor-container.wasm.hidden { display: flex; }
 
       .editor-header {
         display: flex;
@@ -86,7 +80,6 @@
 
       .editor-container.go .dot { background: #00ADD8; }
       .editor-container.rust .dot { background: #FFC832; }
-      .editor-container.wasm .dot { background: #654FF0; }
 
       .editor-header .status {
         font-size: 11px;
@@ -102,17 +95,17 @@
         border: 2px solid;
         border-top: none;
         border-radius: 0 0 8px 8px;
-        overflow: hidden;
+        overflow: visible;
       }
 
       .editor-container.go .editor-wrapper { border-color: #00ADD8; }
       .editor-container.rust .editor-wrapper { border-color: #FFC832; }
-      .editor-container.wasm .editor-wrapper { border-color: #654FF0; }
 
       .editor { width: 100%; height: 100%; }
       .monaco-editor .lines-content { padding-left: 5px; }
+      .monaco-editor .editor-widget { z-index: 50; }
 
-      .copy-button, .small-button {
+      .copy-button {
         padding: 4px 8px;
         background: transparent;
         border: 1px solid #30363d;
@@ -127,7 +120,7 @@
         transition: all 0.15s ease;
       }
 
-      .copy-button:hover, .small-button:hover {
+      .copy-button:hover {
         background: #21262d;
         border-color: #8b949e;
         color: #c9d1d9;
@@ -146,23 +139,6 @@
         border-radius: 2px;
       }
 
-      /* Debug toggle (in editor header) */
-
-      .debug-toggle {
-        padding: 4px 10px;
-        background: transparent;
-        border: 1px solid #30363d;
-        border-radius: 4px;
-        color: #8b949e;
-        font-size: 11px;
-        font-family: inherit;
-        cursor: pointer;
-        transition: all 0.15s ease;
-      }
-
-      .debug-toggle:hover { background: #21262d; border-color: #8b949e; color: #c9d1d9; }
-      .debug-toggle.active,
-      html.show-wasm .debug-toggle { background: #654FF0; border-color: #654FF0; color: #fff; }
 
       /* Resize handle */
 
@@ -218,6 +194,12 @@
         gap: 12px;
       }
 
+      .console-header .console-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
       .console-header .console-title {
         display: flex;
         align-items: center;
@@ -227,26 +209,28 @@
       .console-header .console-title .dot {
         width: 8px; height: 8px;
         border-radius: 50%;
-        background: #3fb950;
+        background: #c9d1d9;
       }
 
-      /* VM status indicator (inline in console header) */
+      /* VM status indicator */
 
       .vm-status {
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 2px 8px;
+        padding: 4px 8px;
         border-radius: 4px;
         font-size: 11px;
-        cursor: pointer;
         user-select: none;
-        transition: background 0.15s ease;
+        transition: all 0.15s ease;
         border: 1px solid transparent;
         font-weight: 400;
+        font-family: inherit;
+        cursor: default;
       }
 
-      .vm-status:hover { background: #21262d; border-color: #30363d; }
+      .vm-status[data-state="ready"] { cursor: pointer; }
+      .vm-status[data-state="ready"]:hover { background: #21262d; border-color: #30363d; }
 
       .vm-status .vm-dot {
         width: 6px; height: 6px;
@@ -254,19 +238,19 @@
         flex-shrink: 0;
       }
 
-      .vm-status[data-state="initializing"] .vm-dot,
-      .vm-status[data-state="downloading"] .vm-dot { background: #d29922; }
-      .vm-status[data-state="booting"] .vm-dot { background: #d29922; animation: pulse 1.5s ease-in-out infinite; }
-      .vm-status[data-state="ready"] .vm-dot { background: #3fb950; }
-      .vm-status[data-state="compiling"] .vm-dot { background: #58a6ff; animation: pulse 0.8s ease-in-out infinite; }
-      .vm-status[data-state="error"] .vm-dot { background: #f85149; }
+      [data-state="initializing"] > .vm-dot,
+      [data-state="downloading"] > .vm-dot { background: #d29922; }
+      [data-state="booting"] > .vm-dot { background: #d29922; animation: pulse 1.5s ease-in-out infinite; }
+      [data-state="ready"] > .vm-dot { background: #3fb950; }
+      [data-state="compiling"] > .vm-dot { background: #58a6ff; animation: pulse 0.8s ease-in-out infinite; }
+      [data-state="error"] > .vm-dot { background: #f85149; }
 
-      .vm-status[data-state="initializing"] .vm-label,
-      .vm-status[data-state="downloading"] .vm-label { color: #d29922; }
-      .vm-status[data-state="booting"] .vm-label { color: #d29922; }
-      .vm-status[data-state="ready"] .vm-label { color: #3fb950; }
-      .vm-status[data-state="compiling"] .vm-label { color: #58a6ff; }
-      .vm-status[data-state="error"] .vm-label { color: #f85149; }
+      [data-state="initializing"] > .vm-label,
+      [data-state="downloading"] > .vm-label { color: #d29922; }
+      [data-state="booting"] > .vm-label { color: #d29922; }
+      [data-state="ready"] > .vm-label { color: #3fb950; }
+      [data-state="compiling"] > .vm-label { color: #58a6ff; }
+      [data-state="error"] > .vm-label { color: #f85149; }
 
       @keyframes pulse {
         0%, 100% { opacity: 1; }
@@ -275,7 +259,7 @@
 
       .console-content {
         flex: 1;
-        padding: 12px;
+        margin: 12px;
         background: #0d1117;
         font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
         font-size: 13px;
@@ -286,7 +270,11 @@
         color: #c9d1d9;
       }
 
-      .console-content.error { color: #f85149; }
+      .console-content .cmd { color: #c9d1d9; }
+      .console-content .err { color: #f85149; }
+      .console-content .out { color: #c9d1d9; }
+      .console-content a { color: #58a6ff; text-decoration: none; }
+      .console-content a:hover { text-decoration: underline; }
       .console-content.placeholder { color: #484f58; font-style: italic; }
 
       /* VM terminal overlay */
@@ -317,20 +305,27 @@
       }
 
       .vm-terminal-header {
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        justify-content: space-between;
-        padding: 8px 12px;
+        padding: 10px 12px;
         background: #161b22;
         border-bottom: 1px solid #21262d;
+      }
+
+      .vm-terminal-header .vm-terminal-left {
+        min-width: 0;
       }
 
       .vm-terminal-header .vm-terminal-title {
         font-size: 13px;
         font-weight: 600;
+        text-align: center;
+      }
+
+      .vm-terminal-header .vm-terminal-right {
         display: flex;
-        align-items: center;
-        gap: 10px;
+        justify-content: flex-end;
       }
 
       .vm-terminal-header .vm-terminal-close {
@@ -344,39 +339,10 @@
       }
       .vm-terminal-header .vm-terminal-close:hover { background: #21262d; color: #c9d1d9; }
 
-      .vm-spinner {
-        width: 14px; height: 14px;
-        border: 2px solid #30363d;
-        border-top-color: #d29922;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-      }
-
-      .vm-spinner.ready { display: none; }
-
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-
-      .vm-terminal-note {
-        padding: 8px 12px;
-        background: #161b22;
-        border-bottom: 1px solid #21262d;
-        font-size: 12px;
-        color: #8b949e;
-        line-height: 1.5;
-      }
-
-      .vm-terminal-output {
+      .vm-terminal-body {
         flex: 1;
-        padding: 12px;
-        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-        font-size: 12px;
-        line-height: 1.6;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        word-break: break-all;
-        color: #8b949e;
+        overflow: hidden;
+        padding: 8px;
       }
 
     </style>
@@ -384,14 +350,14 @@
   <body>
     <main>
       <header>
-        <h1><a href="https://github.com/aymericbeaumet/gors">gors</a></h1>
-        <p>Go to Rust transpiler</p>
+        <h1><a href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener">gors</a></h1>
+        <p>Go toolchain written in Rust (parser, compiler, sandbox)</p>
       </header>
 
       <div class="editors">
         <div class="editor-container go">
           <div class="editor-header">
-            <div class="label"><span class="dot"></span><span>Go</span></div>
+            <div class="label"><span class="dot"></span><span>main.go</span></div>
           </div>
           <div class="editor-wrapper">
             <div id="go-editor" class="editor"></div>
@@ -400,29 +366,18 @@
 
         <div class="editor-container rust">
           <div class="editor-header">
-            <div class="label"><span class="dot"></span><span>Rust</span></div>
+            <div class="label"><span class="dot"></span><span>main.rs</span></div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span id="status" class="status"></span>
               <button id="copy-output" class="copy-button" title="Copy Rust code">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                 </svg>
                 <span>Copy</span>
               </button>
-              <button id="debug-toggle" class="debug-toggle" title="Toggle WASM debug panel">WASM</button>
             </div>
           </div>
           <div class="editor-wrapper">
             <div id="rust-editor" class="editor"></div>
-          </div>
-        </div>
-
-        <div id="wasm-container" class="editor-container wasm hidden">
-          <div class="editor-header">
-            <div class="label"><span class="dot"></span><span>WASM (debug)</span></div>
-          </div>
-          <div class="editor-wrapper">
-            <div id="wasm-editor" class="editor"></div>
           </div>
         </div>
       </div>
@@ -432,32 +387,35 @@
       <div id="console-section" class="console-section">
         <div class="console-header">
           <div class="console-left">
-            <div class="console-title"><span class="dot"></span><span>Console</span></div>
+            <div class="console-title"><span id="console-dot" class="dot"></span><span>Console</span></div>
+          </div>
+          <div class="console-right">
             <div id="vm-status" class="vm-status" data-state="initializing" title="Click to view VM details">
               <span class="vm-dot"></span>
-              <span class="vm-label">Initializing...</span>
+              <span class="vm-label">VM initializing...</span>
             </div>
+            <button id="copy-console" class="copy-button" title="Copy console output">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+              <span>Copy</span>
+            </button>
           </div>
         </div>
-        <pre id="console-content" class="console-content placeholder">Waiting for output...</pre>
+        <pre id="console-content" class="console-content"></pre>
       </div>
     </main>
 
     <div id="vm-terminal-overlay" class="vm-terminal-overlay">
       <div class="vm-terminal-panel">
         <div class="vm-terminal-header">
-          <span class="vm-terminal-title">
-            <span id="vm-spinner" class="vm-spinner"></span>
-            Rust Compiler VM
-          </span>
-          <button id="vm-terminal-close" class="vm-terminal-close" title="Close">&times;</button>
+          <div class="vm-terminal-left"></div>
+          <span class="vm-terminal-title">Rust Runner VM</span>
+          <div class="vm-terminal-right">
+            <button id="vm-terminal-close" class="vm-terminal-close" title="Close">&times;</button>
+          </div>
         </div>
-        <div class="vm-terminal-note">
-          The Go &rarr; Rust transpiler runs entirely in the browser. To run the produced code,
-          this VM boots a lightweight Linux with <code>rustc</code> to compile Rust &rarr; WASM.
-          The compiled WASM is then executed directly in the browser, not inside the VM.
-        </div>
-        <pre id="vm-terminal-output" class="vm-terminal-output"></pre>
+        <div id="vm-terminal-output" class="vm-terminal-body"></div>
       </div>
     </div>
   </body>

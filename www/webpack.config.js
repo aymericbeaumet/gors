@@ -33,8 +33,8 @@ for (const { src, name, ext } of staticAssets) {
 }
 
 copyPatterns.push(
-  { from: 'v86/dist/*.img', to: 'assets/[name][ext]' },
-  { from: 'v86/dist/manifest.json', to: 'assets/[name][ext]' },
+  { from: 'v86/dist/rootfs.json', to: 'assets/[name][ext]', noErrorOnMissing: true },
+  { from: 'v86/dist/rootfs-flat/', to: 'assets/rootfs-flat/', noErrorOnMissing: true },
 );
 
 class AssetManifestPlugin {

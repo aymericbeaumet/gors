@@ -1,16 +1,18 @@
 import * as monaco from 'monaco-editor';
+import { Terminal } from 'xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import 'xterm/css/xterm.css';
 import { Go2RustCompiler } from './go2rust-compiler.js';
-import { Rust2WasmCompiler, State } from './rust2wasm-compiler.js';
-import { WasmRunner } from './wasm-runner.js';
+import { RustRunner, State } from './rust-runner.js';
 
-function stateLabel(state, progress) {
+function stateLabel(state) {
   switch (state) {
-    case State.INITIALIZING: return 'Initializing...';
-    case State.DOWNLOADING: return progress > 0 ? `Downloading VM ${progress}%` : 'Downloading VM...';
-    case State.BOOTING: return progress > 0 ? `Booting VM ${progress}%` : 'Booting VM...';
-    case State.READY: return 'VM Ready';
+    case State.INITIALIZING: return 'VM initializing...';
+    case State.DOWNLOADING: return 'VM downloading...';
+    case State.BOOTING: return 'VM booting...';
+    case State.READY: return 'VM ready';
     case State.COMPILING: return 'Compiling...';
-    case State.ERROR: return 'VM Error';
+    case State.ERROR: return 'VM error';
     default: return state;
   }
 }
@@ -23,64 +25,34 @@ class HighlightManager {
     this.rustDecorations = [];
     this.result = null;
   }
-
-  setResult(result) {
-    this.result = result;
-  }
-
+  setResult(result) { this.result = result; }
   highlightFromGo(line, column) {
-    if (!this.result || !this.result.success) {
-      this.clearRustHighlight();
-      return;
-    }
-
+    if (!this.result || !this.result.success) { this.clearRustHighlight(); return; }
     const span = this.result.go_to_output(line, column);
     if (span.length === 4) {
-      this.rustDecorations = this.rustEditor.deltaDecorations(
-        this.rustDecorations,
-        [{
-          range: new monaco.Range(span[0], span[1], span[2], span[3]),
-          options: { className: 'source-map-highlight', isWholeLine: false },
-        }],
-      );
-    } else {
-      this.clearRustHighlight();
-    }
+      this.rustDecorations = this.rustEditor.deltaDecorations(this.rustDecorations, [{
+        range: new monaco.Range(span[0], span[1], span[2], span[3]),
+        options: { className: 'source-map-highlight', isWholeLine: false },
+      }]);
+    } else { this.clearRustHighlight(); }
   }
-
   highlightFromRust(line, column) {
-    if (!this.result || !this.result.success) {
-      this.clearGoHighlight();
-      return;
-    }
-
+    if (!this.result || !this.result.success) { this.clearGoHighlight(); return; }
     const span = this.result.output_to_go(line, column);
     if (span.length === 4) {
-      this.goDecorations = this.goEditor.deltaDecorations(
-        this.goDecorations,
-        [{
-          range: new monaco.Range(span[0], span[1], span[2], span[3]),
-          options: { className: 'source-map-highlight', isWholeLine: false },
-        }],
-      );
-    } else {
-      this.clearGoHighlight();
-    }
+      this.goDecorations = this.goEditor.deltaDecorations(this.goDecorations, [{
+        range: new monaco.Range(span[0], span[1], span[2], span[3]),
+        options: { className: 'source-map-highlight', isWholeLine: false },
+      }]);
+    } else { this.clearGoHighlight(); }
   }
-
-  clearGoHighlight() {
-    this.goDecorations = this.goEditor.deltaDecorations(this.goDecorations, []);
-  }
-
-  clearRustHighlight() {
-    this.rustDecorations = this.rustEditor.deltaDecorations(this.rustDecorations, []);
-  }
+  clearGoHighlight() { this.goDecorations = this.goEditor.deltaDecorations(this.goDecorations, []); }
+  clearRustHighlight() { this.rustDecorations = this.rustEditor.deltaDecorations(this.rustDecorations, []); }
 }
 
 function setupCopyButton(buttonId, getContent) {
   const button = document.getElementById(buttonId);
   if (!button) return;
-
   button.addEventListener('click', async () => {
     const content = getContent();
     if (!content) return;
@@ -92,78 +64,134 @@ function setupCopyButton(buttonId, getContent) {
         button.classList.remove('copied');
         button.querySelector('span').textContent = 'Copy';
       }, 2000);
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   });
 }
 
-function showOutput(text, isError) {
-  const el = document.getElementById('console-content');
-  el.textContent = text;
-  el.className = isError ? 'console-content error' : 'console-content';
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function parseRustcErrors(text) {
+  const markers = [];
+  const clean = text.replace(ANSI_RE, '');
+  const re = /^(error|warning)(?:\[([A-Z]\d+)\])?: (.+)\n\s*--> [^:]+:(\d+):(\d+)/gm;
+  let m;
+  while ((m = re.exec(clean)) !== null) {
+    const severity = m[1] === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error;
+    const code = m[2] || '';
+    const message = m[3];
+    const line = parseInt(m[4], 10);
+    const col = parseInt(m[5], 10);
+    const after = clean.substring(m.index + m[0].length, m.index + m[0].length + 500);
+    const ul = after.match(/^\s*\|?\s*(\^+)/m);
+    const endCol = ul ? col + ul[1].length : col + 1;
+    markers.push({ severity, message: code ? `${code}: ${message}` : message,
+      startLineNumber: line, startColumn: col, endLineNumber: line, endColumn: endCol,
+      source: 'rustc', code });
+  }
+  return markers;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function linkifyRustErrors(html) {
+  return html.replace(
+    /rustc --explain (E\d{4})/g,
+    '<a href="https://doc.rust-lang.org/error_codes/$1.html" target="_blank" rel="noopener">rustc --explain $1</a>',
+  );
+}
+
+class ConsoleOutput {
+  constructor() {
+    this._el = document.getElementById('console-content');
+  }
+  clear() { this._el.innerHTML = ''; }
+  cmd(text) {
+    const span = document.createElement('span');
+    span.className = 'cmd';
+    span.textContent = text;
+    this._el.appendChild(span);
+    this._el.appendChild(document.createTextNode('\n'));
+  }
+  out(text) {
+    if (!text) return;
+    const span = document.createElement('span');
+    span.className = 'out';
+    span.textContent = text;
+    this._el.appendChild(span);
+    this._el.appendChild(document.createTextNode('\n'));
+  }
+  err(text) {
+    if (!text) return;
+    const span = document.createElement('span');
+    span.className = 'err';
+    const clean = text.replace(ANSI_RE, '');
+    span.innerHTML = linkifyRustErrors(escapeHtml(clean));
+    this._el.appendChild(span);
+    this._el.appendChild(document.createTextNode('\n'));
+  }
+  get text() { return this._el.textContent; }
 }
 
 async function onDOMContentLoaded() {
   const goEditorEl = document.getElementById('go-editor');
   const rustEditorEl = document.getElementById('rust-editor');
-  const wasmEditorEl = document.getElementById('wasm-editor');
-  const wasmContainer = document.getElementById('wasm-container');
-  const statusEl = document.getElementById('status');
-  const debugToggle = document.getElementById('debug-toggle');
   const vmStatusEl = document.getElementById('vm-status');
   const vmLabelEl = vmStatusEl.querySelector('.vm-label');
   const vmOverlay = document.getElementById('vm-terminal-overlay');
   const vmCloseBtn = document.getElementById('vm-terminal-close');
-  const vmOutput = document.getElementById('vm-terminal-output');
-  const vmSpinner = document.getElementById('vm-spinner');
-
+  const vmOutputEl = document.getElementById('vm-terminal-output');
   const consoleSection = document.getElementById('console-section');
   const resizeHandle = document.getElementById('resize-handle');
 
   const go2rust = new Go2RustCompiler();
-  const rust2wasm = new Rust2WasmCompiler();
-  const runner = new WasmRunner();
-
+  const compiler = new RustRunner();
+  const con = new ConsoleOutput();
   let pipelineGeneration = 0;
-  let serialLogInterval = null;
 
-  // WASM debug panel — initial state set by inline script via html.show-wasm class
-  let debugVisible = document.documentElement.classList.contains('show-wasm');
-  if (debugVisible) wasmContainer.classList.remove('hidden');
+  // xterm.js
+  const term = new Terminal({
+    fontSize: 12,
+    fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
+    theme: { background: '#0d1117', foreground: '#c9d1d9' },
+    convertEol: true, scrollback: 5000, cursorStyle: 'bar', cursorBlink: true,
+  });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(vmOutputEl);
+  term.onData((data) => { if (compiler._emulator) compiler._emulator.serial0_send(data); });
 
-  function setDebugVisible(v) {
-    debugVisible = v;
-    debugToggle.classList.toggle('active', debugVisible);
-    wasmContainer.classList.toggle('hidden', !debugVisible);
-    document.documentElement.classList.toggle('show-wasm', debugVisible);
-    const p = new URLSearchParams(window.location.search);
-    if (debugVisible) p.set('wasm', '1'); else p.delete('wasm');
-    const qs = p.toString();
-    history.replaceState(null, '', qs ? '?' + qs : window.location.pathname);
-  }
+  let serialByteQueue = [];
+  let serialFlushTimer = null;
+  compiler.onSerialByte((byte) => {
+    serialByteQueue.push(byte);
+    if (!serialFlushTimer) {
+      serialFlushTimer = setTimeout(() => {
+        if (serialByteQueue.length > 0) term.write(new Uint8Array(serialByteQueue));
+        serialByteQueue = [];
+        serialFlushTimer = null;
+      }, 50);
+    }
+  });
 
-  debugToggle.addEventListener('click', () => setDebugVisible(!debugVisible));
-
-  // Console resize handle
+  // Resize
   const editorsEl = document.querySelector('.editors');
-  const MIN_EDITORS = 200;
-  const MIN_CONSOLE = 200;
   resizeHandle.addEventListener('mousedown', (e) => {
     e.preventDefault();
     const startY = e.clientY;
-    const startEditorsH = editorsEl.offsetHeight;
-    const startConsoleH = consoleSection.offsetHeight;
-    const total = startEditorsH + startConsoleH;
+    const startEH = editorsEl.offsetHeight;
+    const startCH = consoleSection.offsetHeight;
+    const total = startEH + startCH;
     editorsEl.style.flex = 'none';
     consoleSection.style.flex = 'none';
-    editorsEl.style.height = startEditorsH + 'px';
-    consoleSection.style.height = startConsoleH + 'px';
+    editorsEl.style.height = startEH + 'px';
+    consoleSection.style.height = startCH + 'px';
     function onMove(ev) {
-      const delta = ev.clientY - startY;
-      const clampedEditors = Math.min(total - MIN_CONSOLE, Math.max(MIN_EDITORS, startEditorsH + delta));
-      editorsEl.style.height = clampedEditors + 'px';
-      consoleSection.style.height = (total - clampedEditors) + 'px';
+      const h = Math.min(total - 200, Math.max(200, startEH + ev.clientY - startY));
+      editorsEl.style.height = h + 'px';
+      consoleSection.style.height = (total - h) + 'px';
     }
     function onUp() {
       document.removeEventListener('mousemove', onMove);
@@ -173,210 +201,169 @@ async function onDOMContentLoaded() {
     document.addEventListener('mouseup', onUp);
   });
 
-  function updateSerialLog() {
-    vmOutput.textContent = rust2wasm.serialLog.join('');
-    vmOutput.scrollTop = vmOutput.scrollHeight;
-  }
-
-  // VM state indicator
-  rust2wasm.onStateChange((state, progress) => {
+  // VM state
+  compiler.onStateChange((state) => {
     vmStatusEl.dataset.state = state;
-    vmLabelEl.textContent = stateLabel(state, progress);
-
-    if (state === State.READY) {
-      vmSpinner.classList.add('ready');
-      vmOverlay.classList.remove('visible');
-      if (serialLogInterval) {
-        clearInterval(serialLogInterval);
-        serialLogInterval = null;
-      }
-    }
+    vmLabelEl.textContent = stateLabel(state);
   });
-
-  rust2wasm.start().catch(() => {
+  compiler.start().catch(() => {
     vmStatusEl.dataset.state = State.ERROR;
-    vmLabelEl.textContent = 'VM boot failed';
-    vmSpinner.classList.add('ready');
+    vmLabelEl.textContent = 'VM error';
   });
 
-  // VM terminal overlay
+  // VM popup
   vmStatusEl.addEventListener('click', () => {
-    updateSerialLog();
+    if (vmStatusEl.dataset.state !== 'ready') return;
     vmOverlay.classList.add('visible');
-    if (!serialLogInterval) {
-      serialLogInterval = setInterval(updateSerialLog, 200);
-    }
+    fitAddon.fit();
+    term.focus();
   });
-  vmCloseBtn.addEventListener('click', () => {
-    vmOverlay.classList.remove('visible');
-    if (serialLogInterval && rust2wasm.state === State.READY) {
-      clearInterval(serialLogInterval);
-      serialLogInterval = null;
-    }
+  const resizeObserver = new ResizeObserver(() => {
+    if (vmOverlay.classList.contains('visible')) fitAddon.fit();
   });
-  vmOverlay.addEventListener('click', (e) => {
-    if (e.target === vmOverlay) {
-      vmOverlay.classList.remove('visible');
-      if (serialLogInterval && rust2wasm.state === State.READY) {
-        clearInterval(serialLogInterval);
-        serialLogInterval = null;
-      }
-    }
+  resizeObserver.observe(vmOutputEl);
+  function closeVmOverlay() { vmOverlay.classList.remove('visible'); }
+  vmCloseBtn.addEventListener('click', closeVmOverlay);
+  vmOverlay.addEventListener('click', (e) => { if (e.target === vmOverlay) closeVmOverlay(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && vmOverlay.classList.contains('visible')) closeVmOverlay();
   });
 
-  // Editors
-  const editorOptions = {
-    cursorSurroundingLines: 5,
-    folding: false,
-    fontSize: 13,
-    glyphMargin: false,
-    lineDecorationsWidth: 0,
-    lineNumbers: 'on',
-    lineNumbersMinChars: 3,
-    minimap: { enabled: false },
-    occurrencesHighlight: 'off',
-    overviewRulerLanes: 0,
-    renderFinalNewline: 'off',
-    renderIndentGuides: false,
-    renderLineHighlight: 'none',
-    scrollBeyondLastLine: false,
-    selectionHighlight: false,
-    theme: 'vs-dark',
-    automaticLayout: true,
+  // Shared editor config — identical for both, except readOnly
+  const sharedOptions = {
+    cursorSurroundingLines: 5, folding: false, fontSize: 13,
+    glyphMargin: false, lineDecorationsWidth: 0, lineNumbers: 'on',
+    lineNumbersMinChars: 3, minimap: { enabled: false },
+    occurrencesHighlight: 'off', overviewRulerLanes: 0,
+    renderFinalNewline: 'off', renderIndentGuides: false,
+    renderLineHighlight: 'none', scrollBeyondLastLine: false,
+    selectionHighlight: false, theme: 'vs-dark', automaticLayout: true,
+    lightbulb: { enabled: 'off' }, quickSuggestions: false,
+    contextmenu: false, hover: { enabled: true, delay: 200 },
   };
-
-  const goEditor = monaco.editor.create(goEditorEl, { ...editorOptions, language: 'go' });
+  const goEditor = monaco.editor.create(goEditorEl, { ...sharedOptions, language: 'go' });
   const goModel = goEditor.getModel();
-
   const rustEditor = monaco.editor.create(rustEditorEl, {
-    ...editorOptions, language: 'rust', readOnly: true, contextmenu: false, matchBrackets: 'never',
+    ...sharedOptions, language: 'rust',
   });
   const rustModel = rustEditor.getModel();
-
-  const wasmEditor = monaco.editor.create(wasmEditorEl, {
-    ...editorOptions, language: 'wat', readOnly: true, contextmenu: false, matchBrackets: 'never',
-  });
-  const wasmModel = wasmEditor.getModel();
-
   const highlightManager = new HighlightManager(goEditor, rustEditor);
 
   setupCopyButton('copy-output', () => rustModel.getValue());
+  setupCopyButton('copy-console', () => con.text);
 
-  // The main reactive pipeline: Go change → Rust → WASM → Run
+  // Explicit hover provider for Rust markers (Monaco's built-in marker hover
+  // may be suppressed by the Rust language contribution from MonacoWebpackPlugin)
+  monaco.languages.registerHoverProvider('rust', {
+    provideHover(model, position) {
+      const markers = monaco.editor.getModelMarkers({ resource: model.uri });
+      for (const m of markers) {
+        if (position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
+            position.column >= m.startColumn && position.column <= m.endColumn) {
+          return {
+            range: new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn),
+            contents: [{ value: `**${m.source}(${m.code})**: ${m.message}` }],
+          };
+        }
+      }
+      return null;
+    },
+  });
+
+  // Pipeline
   function onGoChanged() {
     const gen = ++pipelineGeneration;
     const goCode = goModel.getValue();
 
+    // Reset
+    rustModel.setValue('');
     monaco.editor.setModelMarkers(goModel, 'gors', []);
+    monaco.editor.setModelMarkers(rustModel, 'rustc', []);
+    highlightManager.setResult(null);
+    con.clear();
 
-    // Step 1: Go → Rust
+    // Step 1: gors transpile
+    con.cmd('$ gors build -o main.rs main.go');
     const goResult = go2rust.compile(goCode);
 
     if (!goResult.success) {
       const err = goResult.error;
-      const loc = err.line > 0 ? `${err.line}:${err.column}` : '';
-      rustModel.setValue(`// ${err.kind}${loc ? ' at ' + loc : ''}: ${err.message}`);
-      statusEl.textContent = `${err.kind}: ${err.message}`;
-      statusEl.className = 'status error';
-      highlightManager.setResult(null);
-      showOutput(`${err.kind}: ${err.message}`, true);
+      const loc = err.line > 0 ? `:${err.line}:${err.column}` : '';
+      con.err(`main.go${loc}: ${err.kind}: ${err.message}`);
 
       if (err.line > 0) {
         const lines = goCode.split('\n');
         let endCol = err.endColumn || err.column + 1;
-        if (err.line <= lines.length) {
-          endCol = Math.min(endCol, lines[err.line - 1].length + 1);
-        }
+        if (err.line <= lines.length) endCol = Math.min(endCol, lines[err.line - 1].length + 1);
         monaco.editor.setModelMarkers(goModel, 'gors', [{
-          severity: monaco.MarkerSeverity.Error,
-          message: err.message,
-          startLineNumber: err.line,
-          startColumn: err.column,
-          endLineNumber: err.line,
-          endColumn: endCol,
-          source: 'gors',
-          code: err.kind,
+          severity: monaco.MarkerSeverity.Error, message: err.message,
+          startLineNumber: err.line, startColumn: err.column,
+          endLineNumber: err.line, endColumn: endCol,
+          source: 'gors', code: err.kind,
         }]);
       }
       return;
     }
 
-    // Step 2: Display Rust
-    rustModel.setValue(goResult.rustCode);
+    const rustCode = goResult.rustCode;
+    rustModel.setValue(rustCode);
     highlightManager.setResult(goResult.sourceMap);
-    statusEl.textContent = '';
-    statusEl.className = 'status ok';
 
-    // Step 3: Rust → WASM → Run (async, cancellable)
-    compileAndRun(gen, goResult.rustCode);
+    con.cmd('$ rustc --edition 2024 main.rs && ./main');
+    compileAndRun(gen, rustCode);
   }
 
   async function compileAndRun(gen, rustCode) {
-    if (rust2wasm.state !== State.READY && rust2wasm.state !== State.COMPILING) {
-      return;
+    if (compiler.state !== State.READY && compiler.state !== State.COMPILING) {
+      await new Promise((resolve) => {
+        const unsub = compiler.onStateChange((state) => {
+          if (state === State.READY) { unsub(); resolve(); }
+        });
+      });
     }
-
-    const compileResult = await rust2wasm.compile(rustCode);
-
     if (gen !== pipelineGeneration) return;
 
-    if (!compileResult.success) {
-      if (compileResult.errors === 'cancelled') return;
-      showOutput(compileResult.errors, true);
-      wasmModel.setValue(`;; compilation failed\n;; ${compileResult.errors}`);
+    const result = await compiler.compile(rustCode);
+    if (gen !== pipelineGeneration) return;
+    if (result.errors === 'cancelled') return;
+
+    monaco.editor.setModelMarkers(rustModel, 'rustc', []);
+    if (!result.success) {
+      con.err(result.errors);
+      monaco.editor.setModelMarkers(rustModel, 'rustc', parseRustcErrors(result.errors));
       return;
     }
-
-    // Show WASM info in debug editor
-    if (debugVisible) {
-      wasmModel.setValue(`;; WASM binary: ${compileResult.wasmBytes.length} bytes`);
-    }
-
-    // Step 4: Run WASM
-    const runResult = runner.run(compileResult.wasmBytes);
-
-    if (gen !== pipelineGeneration) return;
-
-    if (runResult.success) {
-      showOutput(runResult.output || '(no output)', false);
-    } else {
-      showOutput(runResult.error, true);
-    }
+    if (result.output) con.out(result.output);
+    if (result.errors) con.err(result.errors);
   }
 
   goModel.onDidChangeContent(() => onGoChanged());
 
-  // Source-map highlighting
   goEditor.onMouseMove((e) => {
-    if (e.target.position) {
-      highlightManager.highlightFromGo(e.target.position.lineNumber, e.target.position.column);
-    }
+    if (e.target.position) highlightManager.highlightFromGo(e.target.position.lineNumber, e.target.position.column);
   });
   rustEditor.onMouseMove((e) => {
-    if (e.target.position) {
-      highlightManager.highlightFromRust(e.target.position.lineNumber, e.target.position.column);
-    }
+    if (e.target.position) highlightManager.highlightFromRust(e.target.position.lineNumber, e.target.position.column);
   });
   goEditor.onMouseLeave(() => highlightManager.clearRustHighlight());
   rustEditor.onMouseLeave(() => highlightManager.clearGoHighlight());
-
-  rustEditor.onKeyDown((event) => {
-    if (!(event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      event.stopPropagation();
+  // Make rust editor effectively read-only without using readOnly (which suppresses marker rendering)
+  let rustExpectedValue = '';
+  const origSetValue = rustModel.setValue.bind(rustModel);
+  rustModel.setValue = (v) => { rustExpectedValue = v; origSetValue(v); };
+  rustModel.onDidChangeContent(() => {
+    const current = rustModel.getValue();
+    if (current !== rustExpectedValue) {
+      const markers = monaco.editor.getModelMarkers({ resource: rustModel.uri });
+      origSetValue(rustExpectedValue);
+      monaco.editor.setModelMarkers(rustModel, 'rustc', markers);
     }
   });
 
-  // Initial code
   goEditor.focus();
   goModel.setValue([
-    'package main',
-    '',
-    'import "fmt"',
-    '',
-    'func main() {',
-    '\tfmt.Println("Hello, World!")',
-    '}',
+    'package main', '', 'import "fmt"', '',
+    'func main() {', '\tfmt.Println("Hello, World!")', '}',
   ].join('\n'));
   goEditor.setPosition({ lineNumber: 6, column: 2 });
 }

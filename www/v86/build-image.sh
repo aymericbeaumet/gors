@@ -4,18 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="gors-v86-rustc"
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
+TOOLS_DIR="${SCRIPT_DIR}/tools"
 MANIFEST="${OUTPUT_DIR}/manifest.json"
-IMAGE_SIZE_MB=1200
 
 mkdir -p "${OUTPUT_DIR}"
 
-# Immutable: skip if any image + manifest already exist
-if [ -f "${MANIFEST}" ] && ls "${OUTPUT_DIR}"/ext2-*.img 1>/dev/null 2>&1; then
-    echo "==> ext2 image already exists (immutable), skipping build"
+# Immutable: skip if manifest and rootfs already exist
+if [ -f "${MANIFEST}" ] && [ -d "${OUTPUT_DIR}/rootfs-flat" ] && [ -f "${OUTPUT_DIR}/rootfs.json" ]; then
+    echo "==> 9p filesystem already exists (immutable), skipping build"
     exit 0
 fi
 
-echo "==> Building Docker image (i386/debian + rustc + wasm32 target)..."
+# Clean old artifacts
+rm -rf "${OUTPUT_DIR}/rootfs-flat" "${OUTPUT_DIR}/rootfs.json" "${MANIFEST}"
+rm -f "${OUTPUT_DIR}"/ext2-*.img.gz "${OUTPUT_DIR}"/vmlinuz-*.bin "${OUTPUT_DIR}"/initramfs-*.bin
+
+echo "==> Building Docker image (alpine + rustc native i686)..."
 docker build --platform linux/386 -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
 
 echo "==> Exporting container filesystem..."
@@ -23,35 +27,16 @@ CONTAINER_ID=$(docker create --platform linux/386 "${IMAGE_NAME}")
 docker export "${CONTAINER_ID}" > "${OUTPUT_DIR}/rootfs.tar"
 docker rm "${CONTAINER_ID}" > /dev/null
 
-TMP_IMAGE="${OUTPUT_DIR}/ext2-tmp.img"
-
-echo "==> Creating ext2 disk image (${IMAGE_SIZE_MB}MB)..."
-docker run --rm --privileged --platform linux/amd64 \
-    -v "${OUTPUT_DIR}:/output" \
-    alpine:3.20 sh -c "
-        apk add --no-cache e2fsprogs tar >/dev/null 2>&1 &&
-        dd if=/dev/zero of=/output/ext2-tmp.img bs=1M count=${IMAGE_SIZE_MB} 2>/dev/null &&
-        mkfs.ext4 -F -q /output/ext2-tmp.img &&
-        mkdir -p /mnt/img &&
-        mount -o loop /output/ext2-tmp.img /mnt/img &&
-        tar xf /output/rootfs.tar -C /mnt/img &&
-        echo '::sysinit:/bin/mount -t proc proc /proc' > /mnt/img/etc/inittab &&
-        echo '::sysinit:/bin/mount -t sysfs sysfs /sys' >> /mnt/img/etc/inittab &&
-        echo '::sysinit:/bin/mount -t devtmpfs devtmpfs /dev' >> /mnt/img/etc/inittab &&
-        echo 'ttyS0::respawn:/bin/sh' >> /mnt/img/etc/inittab &&
-        umount /mnt/img
-    "
+echo "==> Generating 9p filesystem (fs2json + copy-to-sha256)..."
+python3 "${TOOLS_DIR}/fs2json.py" --out "${OUTPUT_DIR}/rootfs.json" "${OUTPUT_DIR}/rootfs.tar"
+mkdir -p "${OUTPUT_DIR}/rootfs-flat"
+python3 "${TOOLS_DIR}/copy-to-sha256.py" "${OUTPUT_DIR}/rootfs.tar" "${OUTPUT_DIR}/rootfs-flat"
 
 rm -f "${OUTPUT_DIR}/rootfs.tar"
 
-# Content-hash the image for immutable caching
-HASH=$(shasum -a 256 "${TMP_IMAGE}" | cut -c1-16)
-FINAL_NAME="ext2-${HASH}.img"
-mv "${TMP_IMAGE}" "${OUTPUT_DIR}/${FINAL_NAME}"
+# Write manifest
+printf '{"type":"9p"}\n' > "${MANIFEST}"
 
-# Write manifest so the frontend knows the filename
-printf '{"image":"%s"}\n' "${FINAL_NAME}" > "${MANIFEST}"
-
-echo "==> Image created: ${OUTPUT_DIR}/${FINAL_NAME}"
-ls -lh "${OUTPUT_DIR}/${FINAL_NAME}"
 echo "==> Done!"
+echo "    rootfs.json: $(wc -c < "${OUTPUT_DIR}/rootfs.json" | tr -d ' ') bytes"
+echo "    rootfs-flat: $(find "${OUTPUT_DIR}/rootfs-flat" -type f | wc -l | tr -d ' ') files"
