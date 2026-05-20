@@ -45,6 +45,9 @@ pub fn module_items() -> Vec<syn::Item> {
             impl GoDisplay for String { fn go_fmt(&self) -> String { self.clone() } }
         },
         rust! {
+            impl GoDisplay for char { fn go_fmt(&self) -> String { (*self as u32).to_string() } }
+        },
+        rust! {
             impl GoDisplay for &str { fn go_fmt(&self) -> String { self.to_string() } }
         },
         rust! {

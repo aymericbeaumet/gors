@@ -710,6 +710,20 @@ impl<T> GoChan<T> {
     }
 }
 
+pub struct GoChanIter<T>(GoChan<T>);
+impl<T: Default> Iterator for GoChanIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        let (val, ok) = self.0.recv_with_ok();
+        if ok { Some(val) } else { None }
+    }
+}
+impl<T: Default> IntoIterator for GoChan<T> {
+    type Item = T;
+    type IntoIter = GoChanIter<T>;
+    fn into_iter(self) -> Self::IntoIter { GoChanIter(self) }
+}
+
 #[inline]
 pub fn close<T>(c: &GoChan<T>) {
     let (lock, rx_cv, tx_cv) = &*c.inner;

@@ -82,6 +82,20 @@ pub fn pass(file: &mut syn::File) {
                         val
                     }
 
+                    pub fn recv_with_ok(&self) -> (T, bool) where T: Default {
+                        let (ref mutex, ref recv_cvar, ref send_cvar) = *self.inner;
+                        let mut inner = mutex.lock().unwrap();
+                        while inner.buffer.is_empty() && !inner.closed {
+                            inner = recv_cvar.wait(inner).unwrap();
+                        }
+                        if let Some(val) = inner.buffer.pop_front() {
+                            send_cvar.notify_one();
+                            (val, true)
+                        } else {
+                            (T::default(), false)
+                        }
+                    }
+
                     pub fn try_recv(&self) -> Result<T, ()> {
                         let (ref mutex, _, ref send_cvar) = *self.inner;
                         let mut inner = mutex.lock().unwrap();
@@ -125,6 +139,20 @@ pub fn pass(file: &mut syn::File) {
                         recv_cvar.notify_all();
                         send_cvar.notify_all();
                     }
+                }
+
+                pub struct GoChanIter<T>(GoChan<T>);
+                impl<T: Default> Iterator for GoChanIter<T> {
+                    type Item = T;
+                    fn next(&mut self) -> Option<T> {
+                        let (val, ok) = self.0.recv_with_ok();
+                        if ok { Some(val) } else { None }
+                    }
+                }
+                impl<T: Default> IntoIterator for GoChan<T> {
+                    type Item = T;
+                    type IntoIter = GoChanIter<T>;
+                    fn into_iter(self) -> Self::IntoIter { GoChanIter(self) }
                 }
 
                 pub fn make_chan<T>(capacity: usize) -> GoChan<T> {

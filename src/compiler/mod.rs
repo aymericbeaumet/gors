@@ -30,6 +30,8 @@ use syn::Token;
 // Thread-local storage for source map tracker during compilation
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
+    static DEFER_COUNTER: RefCell<usize> = RefCell::new(0);
+    static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 /// Record a mapping if tracking is enabled.
@@ -775,6 +777,7 @@ impl std::error::Error for CompilerError {}
 /// let rust_ast = compiler::compile(go_ast).unwrap();
 /// ```
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
+    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
@@ -1069,7 +1072,7 @@ pub fn clear_source_map_tracker() {
     });
 }
 
-fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
+fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts.name.ok_or_else(|| {
         CompilerError::UnsupportedConstruct("type spec has no name".to_string())
     })?;
@@ -1079,6 +1082,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
     match ts.type_ {
         ast::Expr::StructType(struct_type) => {
             let mut fields = syn::punctuated::Punctuated::new();
+            let mut embedded_types: Vec<(syn::Ident, syn::Type)> = vec![];
             if let Some(field_list) = struct_type.fields {
                 for field in field_list.list {
                     let field_type = field.type_.ok_or_else(|| {
@@ -1086,9 +1090,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                             "struct field has no type".to_string(),
                         )
                     })?;
-                    let rust_type: syn::Type = field_type.into();
 
                     if let Some(names) = field.names {
+                        let rust_type: syn::Type = field_type.into();
                         for field_name in names {
                             let field_vis: syn::Visibility = (&field_name).into();
                             let field_ident: syn::Ident = field_name.into();
@@ -1101,6 +1105,27 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                                 ty: rust_type.clone(),
                             });
                         }
+                    } else {
+                        // Embedded field: type name becomes the field name
+                        let embedded_name = extract_type_name(&field_type);
+                        let rust_type: syn::Type = field_type.into();
+                        if let Some(name) = embedded_name {
+                            let field_ident = syn::Ident::new(&name, Span::mixed_site());
+                            let field_vis: syn::Visibility = if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                                syn::parse_quote! { pub }
+                            } else {
+                                syn::Visibility::Inherited
+                            };
+                            embedded_types.push((field_ident.clone(), rust_type.clone()));
+                            fields.push(syn::Field {
+                                attrs: vec![],
+                                vis: field_vis,
+                                mutability: syn::FieldMutability::None,
+                                ident: Some(field_ident),
+                                colon_token: Some(<Token![:]>::default()),
+                                ty: rust_type,
+                            });
+                        }
                     }
                 }
             }
@@ -1109,18 +1134,33 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 fields.push_punct(<Token![,]>::default());
             }
 
-            Ok(syn::Item::Struct(syn::ItemStruct {
+            let struct_item = syn::Item::Struct(syn::ItemStruct {
                 attrs: vec![],
-                vis,
+                vis: vis.clone(),
                 struct_token: <Token![struct]>::default(),
-                ident,
+                ident: ident.clone(),
                 generics: syn::Generics::default(),
                 fields: syn::Fields::Named(syn::FieldsNamed {
                     brace_token: syn::token::Brace::default(),
                     named: fields,
                 }),
                 semi_token: None,
-            }))
+            });
+
+            if embedded_types.len() == 1 {
+                let (ref emb_field, ref emb_ty) = embedded_types[0];
+                let deref_impl: syn::Item = syn::parse_quote! {
+                    impl std::ops::Deref for #ident {
+                        type Target = #emb_ty;
+                        fn deref(&self) -> &#emb_ty {
+                            &self.#emb_field
+                        }
+                    }
+                };
+                return Ok(vec![struct_item, deref_impl]);
+            }
+
+            Ok(vec![struct_item])
         }
         ast::Expr::InterfaceType(iface) => {
             // Generate trait with method signatures
@@ -1208,7 +1248,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 }
             }
 
-            Ok(syn::Item::Trait(syn::ItemTrait {
+            Ok(vec![syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
                 vis,
                 unsafety: None,
@@ -1221,11 +1261,11 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 supertraits: syn::punctuated::Punctuated::new(),
                 brace_token: syn::token::Brace::default(),
                 items: trait_items,
-            }))
+            })])
         }
         other => {
             let rust_type: syn::Type = other.into();
-            Ok(syn::Item::Type(syn::ItemType {
+            Ok(vec![syn::Item::Type(syn::ItemType {
                 attrs: vec![],
                 vis,
                 type_token: <Token![type]>::default(),
@@ -1234,7 +1274,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<syn::Item, CompilerError> {
                 eq_token: <Token![=]>::default(),
                 ty: Box::new(rust_type),
                 semi_token: <Token![;]>::default(),
-            }))
+            })])
         }
     }
 }
@@ -1419,6 +1459,54 @@ const BUILTINS: &[&str] = &[
     "println", "print", "max", "min", "complex", "real", "imag", "recover",
 ];
 
+fn extract_type_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(id) => Some(id.name.to_string()),
+        ast::Expr::StarExpr(star) => extract_type_name(&star.x),
+        ast::Expr::SelectorExpr(sel) => Some(sel.sel.name.to_string()),
+        _ => None,
+    }
+}
+
+fn detect_type_conversion(call_expr: &ast::CallExpr) -> Option<&'static str> {
+    let args = call_expr.args.as_ref()?;
+    if args.len() != 1 {
+        return None;
+    }
+    match &*call_expr.fun {
+        ast::Expr::Ident(id) if id.name == "string" => Some("string"),
+        ast::Expr::ArrayType(arr) if arr.len.is_none() => {
+            if let ast::Expr::Ident(elt_id) = &*arr.elt {
+                match elt_id.name {
+                    "byte" | "uint8" => Some("[]byte"),
+                    "rune" | "int32" => Some("[]rune"),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
+    let raw_arg = call_expr.args.unwrap().into_iter().next().unwrap();
+    let is_int_arg = matches!(&raw_arg, ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT);
+    let arg: syn::Expr = raw_arg.into();
+    match kind {
+        "string" if is_int_arg => {
+            syn::parse_quote! { char::from_u32(#arg as u32).map(String::from).unwrap_or_default() }
+        }
+        "string" => {
+            syn::parse_quote! { String::from_utf8(#arg).unwrap() }
+        }
+        "[]byte" => syn::parse_quote! { (#arg).as_bytes().to_vec() },
+        "[]rune" => syn::parse_quote! { (#arg).chars().collect::<Vec<char>>() },
+        _ => unreachable!(),
+    }
+}
+
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
     if let ast::Expr::Ident(ident) = &*call_expr.fun {
         BUILTINS.contains(&ident.name)
@@ -1478,25 +1566,50 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
             }) = format_str
             {
                 let go_fmt = lit_str.value();
-                let rust_fmt = go_fmt
-                    .replace("%s", "{}")
-                    .replace("%d", "{}")
-                    .replace("%v", "{}")
-                    .replace("%f", "{}")
-                    .replace("%t", "{}")
-                    .replace("%p", "{:p}")
-                    .replace("%x", "{:x}")
-                    .replace("%o", "{:o}")
-                    .replace("%b", "{:b}")
-                    .replace("%e", "{:e}")
-                    .replace("%q", "{:?}")
-                    .replace("%%", "%");
+
+                // Parse format string to detect %c verbs and wrap corresponding args
+                let mut rust_fmt = String::new();
+                let mut char_arg_indices = vec![];
+                let mut arg_idx = 0usize;
+                let mut chars = go_fmt.chars().peekable();
+                while let Some(c) = chars.next() {
+                    if c == '%' {
+                        if let Some(&next) = chars.peek() {
+                            match next {
+                                '%' => { rust_fmt.push('%'); chars.next(); }
+                                'c' => { rust_fmt.push_str("{}"); chars.next(); char_arg_indices.push(arg_idx); arg_idx += 1; }
+                                's' | 'd' | 'v' | 'f' | 't' => { rust_fmt.push_str("{}"); chars.next(); arg_idx += 1; }
+                                'p' => { rust_fmt.push_str("{:p}"); chars.next(); arg_idx += 1; }
+                                'x' => { rust_fmt.push_str("{:x}"); chars.next(); arg_idx += 1; }
+                                'o' => { rust_fmt.push_str("{:o}"); chars.next(); arg_idx += 1; }
+                                'b' => { rust_fmt.push_str("{:b}"); chars.next(); arg_idx += 1; }
+                                'e' => { rust_fmt.push_str("{:e}"); chars.next(); arg_idx += 1; }
+                                'q' => { rust_fmt.push_str("{:?}"); chars.next(); arg_idx += 1; }
+                                _ => { rust_fmt.push(c); }
+                            }
+                        } else {
+                            rust_fmt.push(c);
+                        }
+                    } else {
+                        rust_fmt.push(c);
+                    }
+                }
+
                 let fmt_lit = syn::LitStr::new(&rust_fmt, Span::mixed_site());
 
+                // Wrap %c args with char::from_u32
+                let wrapped_rest: Vec<syn::Expr> = rest.iter().enumerate().map(|(i, e)| {
+                    if char_arg_indices.contains(&i) {
+                        syn::parse_quote! { char::from_u32(#e as u32).unwrap_or_default() }
+                    } else {
+                        e.clone()
+                    }
+                }).collect();
+
                 return match method {
-                    "Printf" => syn::parse_quote! { ::std::print!(#fmt_lit, #(#rest),*) },
-                    "Sprintf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#rest),*) },
-                    "Errorf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#rest),*) },
+                    "Printf" => syn::parse_quote! { ::std::print!(#fmt_lit, #(#wrapped_rest),*) },
+                    "Sprintf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#wrapped_rest),*) },
+                    "Errorf" => syn::parse_quote! { ::std::format!(#fmt_lit, #(#wrapped_rest),*) },
                     _ => unreachable!(),
                 };
             }
@@ -1513,8 +1626,17 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
     }
 
     let arg_count = call_expr.args.as_ref().map_or(0, |a| a.len());
+
+    // fmt.Println() with no args → just print a newline
+    if method == "Println" && arg_count == 0 {
+        return syn::parse_quote! { ::std::println!() };
+    }
+    if method == "Print" && arg_count == 0 {
+        return syn::parse_quote! { ::std::print!("") };
+    }
+
     let suffix = match (method, arg_count) {
-        ("Println", 0) | ("Println", 1) => "Println",
+        ("Println", 1) => "Println",
         ("Println", 2) => "Println2",
         ("Println", 3) => "Println3",
         ("Println", 4) => "Println4",
@@ -2004,75 +2126,77 @@ fn compile_type_switch_stmt(
     }
 }
 
+fn is_string_literal(expr: &ast::Expr) -> bool {
+    matches!(expr, ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING)
+}
+
+fn is_integer_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::BasicLit(lit) => lit.kind == token::Token::INT,
+        ast::Expr::Ident(_) => false,
+        ast::Expr::CallExpr(_) => false,
+        _ => false,
+    }
+}
+
+fn is_chan_type_expr(expr: &ast::Expr) -> bool {
+    matches!(expr, ast::Expr::ChanType(_))
+}
+
+fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, body: syn::Block) -> Vec<syn::Stmt> {
+    vec![syn::Stmt::Expr(
+        syn::Expr::ForLoop(syn::ExprForLoop {
+            attrs: vec![],
+            label: None,
+            for_token: <Token![for]>::default(),
+            pat: Box::new(pat),
+            in_token: <Token![in]>::default(),
+            expr: Box::new(iter_expr),
+            body,
+        }),
+        None,
+    )]
+}
+
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let is_string = is_string_literal(&range_stmt.x);
+    let is_int = is_integer_expr(&range_stmt.x);
     let x: syn::Expr = range_stmt.x.into();
     let body: syn::Block = range_stmt.body.try_into()?;
 
-    let is_define = range_stmt.tok == Some(token::Token::DEFINE);
-
     match (range_stmt.key, range_stmt.value) {
+        // for i, v := range x
         (Some(key_expr), Some(val_expr)) => {
             let key_pat = expr_to_pat(&key_expr);
             let val_pat = expr_to_pat(&val_expr);
             let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
-            if is_define {
-                Ok(vec![syn::Stmt::Expr(
-                    syn::Expr::ForLoop(syn::ExprForLoop {
-                        attrs: vec![],
-                        label: None,
-                        for_token: <Token![for]>::default(),
-                        pat: Box::new(pat),
-                        in_token: <Token![in]>::default(),
-                        expr: Box::new(syn::parse_quote! { (#x).iter().enumerate() }),
-                        body,
-                    }),
-                    None,
-                )])
+            if is_string {
+                // range over string: iterate (byte_index, char)
+                Ok(make_for_loop(pat, syn::parse_quote! { (#x).char_indices() }, body))
             } else {
-                Ok(vec![syn::Stmt::Expr(
-                    syn::Expr::ForLoop(syn::ExprForLoop {
-                        attrs: vec![],
-                        label: None,
-                        for_token: <Token![for]>::default(),
-                        pat: Box::new(pat),
-                        in_token: <Token![in]>::default(),
-                        expr: Box::new(syn::parse_quote! { (#x).iter().enumerate() }),
-                        body,
-                    }),
-                    None,
-                )])
+                Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter().enumerate() }, body))
             }
         }
+        // for i := range x  OR  for v := range ch
         (Some(key_expr), None) => {
             let key_pat = expr_to_pat(&key_expr);
-            Ok(vec![syn::Stmt::Expr(
-                syn::Expr::ForLoop(syn::ExprForLoop {
-                    attrs: vec![],
-                    label: None,
-                    for_token: <Token![for]>::default(),
-                    pat: Box::new(key_pat),
-                    in_token: <Token![in]>::default(),
-                    expr: Box::new(syn::parse_quote! { 0..(#x).len() }),
-                    body,
-                }),
-                None,
-            )])
+            if is_int {
+                Ok(make_for_loop(key_pat, syn::parse_quote! { 0..((#x) as usize) }, body))
+            } else {
+                // Use into_iter() which works for channels (via IntoIterator) and
+                // for slices/vecs (gives values). For index-only iteration over
+                // slices, use `for i, _ := range s` instead.
+                Ok(make_for_loop(key_pat, syn::parse_quote! { (#x).into_iter() }, body))
+            }
         }
+        // for range x
         (None, None) => {
-            // for range x { ... } → for _ in x { ... }
             let pat: syn::Pat = syn::parse_quote! { _ };
-            Ok(vec![syn::Stmt::Expr(
-                syn::Expr::ForLoop(syn::ExprForLoop {
-                    attrs: vec![],
-                    label: None,
-                    for_token: <Token![for]>::default(),
-                    pat: Box::new(pat),
-                    in_token: <Token![in]>::default(),
-                    expr: Box::new(x),
-                    body,
-                }),
-                None,
-            )])
+            if is_int {
+                Ok(make_for_loop(pat, syn::parse_quote! { 0..((#x) as usize) }, body))
+            } else {
+                Ok(make_for_loop(pat, x, body))
+            }
         }
         _ => Err(CompilerError::UnsupportedConstruct(
             "range with value but no key".to_string(),
@@ -2259,11 +2383,42 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
             ast::Expr::BinaryExpr(binary_expr) => Self::Binary(binary_expr.into()),
             ast::Expr::CallExpr(call_expr) => {
+                if let Some(kind) = detect_type_conversion(&call_expr) {
+                    return compile_type_conversion(call_expr, kind);
+                }
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
                 if is_fmt_call(&call_expr) {
                     return compile_fmt_call(call_expr);
+                }
+                // Detect method call vs package function call
+                let is_method_call = matches!(&*call_expr.fun, ast::Expr::SelectorExpr(sel) if {
+                    match &*sel.x {
+                        ast::Expr::Ident(id) => !IMPORT_NAMES.with(|names| names.borrow().contains(id.name)),
+                        _ => true,
+                    }
+                });
+                if is_method_call {
+                    if let ast::Expr::SelectorExpr(sel) = *call_expr.fun {
+                        let receiver: syn::Expr = (*sel.x).into();
+                        let method: syn::Ident = sel.sel.into();
+                        let mut args = syn::punctuated::Punctuated::new();
+                        if let Some(cargs) = call_expr.args {
+                            for arg in cargs {
+                                args.push(syn::Expr::from(arg));
+                            }
+                        }
+                        return syn::Expr::MethodCall(syn::ExprMethodCall {
+                            attrs: vec![],
+                            receiver: Box::new(receiver),
+                            dot_token: <Token![.]>::default(),
+                            method,
+                            turbofish: None,
+                            paren_token: syn::token::Paren::default(),
+                            args,
+                        });
+                    }
                 }
                 Self::Call(call_expr.into())
             }
@@ -2271,7 +2426,26 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::Ident(ident) if ident.name == "true" => syn::parse_quote! { true },
             ast::Expr::Ident(ident) if ident.name == "false" => syn::parse_quote! { false },
             ast::Expr::Ident(ident) => Self::Path(ident.into()),
-            ast::Expr::SelectorExpr(selector_expr) => Self::Path(selector_expr.into()),
+            ast::Expr::SelectorExpr(selector_expr) => {
+                let is_package = match &*selector_expr.x {
+                    ast::Expr::Ident(id) => {
+                        IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
+                    }
+                    _ => false,
+                };
+                if is_package {
+                    Self::Path(selector_expr.into())
+                } else {
+                    let base: syn::Expr = (*selector_expr.x).into();
+                    let field: syn::Ident = selector_expr.sel.into();
+                    syn::Expr::Field(syn::ExprField {
+                        attrs: vec![],
+                        base: Box::new(base),
+                        dot_token: <Token![.]>::default(),
+                        member: syn::Member::Named(field),
+                    })
+                }
+            }
             ast::Expr::ParenExpr(paren_expr) => Self::Paren(syn::ExprParen {
                 attrs: vec![],
                 paren_token: syn::token::Paren::default(),
@@ -2306,9 +2480,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     })
                 }
                 token::Token::ARROW => {
-                    // <-ch → ch.recv() (channel receive)
+                    // <-ch → ch.recv().unwrap_or_default() (channel receive, Go semantics)
                     let receiver: syn::Expr = (*unary_expr.x).into();
-                    syn::parse_quote! { #receiver.recv() }
+                    syn::parse_quote! { #receiver.recv().unwrap_or_default() }
                 }
                 _ => Self::Unary(syn::ExprUnary {
                     attrs: vec![],
@@ -2469,6 +2643,18 @@ impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
+        // Track import names for selector expr disambiguation
+        IMPORT_NAMES.with(|names| {
+            let mut set = names.borrow_mut();
+            set.clear();
+            for import in file.imports() {
+                let path_str = import.path.value.trim_matches('"');
+                if let Some(pkg_name) = path_str.rsplit('/').next() {
+                    set.insert(pkg_name.to_string());
+                }
+            }
+        });
+
         let mut items = vec![];
         let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
         let mut init_bodies: Vec<syn::Block> = vec![];
@@ -2601,7 +2787,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                             .insert(trait_name, method_names);
                                     }
                                 }
-                                items.push(compile_type_spec(ts)?);
+                                items.extend(compile_type_spec(ts)?);
                             }
                         }
                     }
@@ -2660,7 +2846,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     if let Some(method_list) = methods.get(struct_name) {
                         for method in method_list {
                             if required_methods.contains(&method.sig.ident.to_string()) {
-                                impl_items.push(syn::ImplItem::Fn(method.clone()));
+                                let mut m = method.clone();
+                                m.vis = syn::Visibility::Inherited;
+                                impl_items.push(syn::ImplItem::Fn(m));
                             }
                         }
                     }
@@ -2684,7 +2872,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }
         }
 
-        // Stringer pattern: generate `impl std::fmt::Display` for structs with String() string
+        // Stringer pattern: generate `impl Display` and `impl GoDisplay` for structs with String() string
         for struct_name in &struct_has_string_method {
             let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
             items.push(syn::parse_quote! {
@@ -2692,6 +2880,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                         write!(f, "{}", self.String())
                     }
+                }
+            });
+            items.push(syn::parse_quote! {
+                impl fmt::GoDisplay for #struct_ident {
+                    fn go_fmt(&self) -> String { self.String() }
                 }
             });
         }
@@ -2940,16 +3133,40 @@ impl From<&ast::Ident<'_>> for syn::Visibility {
 
 impl From<ast::SelectorExpr<'_>> for syn::ExprPath {
     fn from(selector_expr: ast::SelectorExpr) -> Self {
-        let x = match *selector_expr.x {
-            ast::Expr::Ident(ident) => ident,
-            _ => unimplemented!(),
-        };
-
         let mut segments = syn::punctuated::Punctuated::new();
-        segments.push(syn::PathSegment {
-            ident: x.into(),
-            arguments: syn::PathArguments::None,
-        });
+
+        match *selector_expr.x {
+            ast::Expr::Ident(ident) => {
+                segments.push(syn::PathSegment {
+                    ident: ident.into(),
+                    arguments: syn::PathArguments::None,
+                });
+            }
+            ast::Expr::SelectorExpr(inner_sel) => {
+                let inner_path: syn::ExprPath = inner_sel.into();
+                for seg in inner_path.path.segments {
+                    segments.push(seg);
+                }
+            }
+            _other => {
+                return Self {
+                    attrs: vec![],
+                    path: syn::Path {
+                        leading_colon: None,
+                        segments: {
+                            let mut s = syn::punctuated::Punctuated::new();
+                            s.push(syn::PathSegment {
+                                ident: syn::Ident::new("__expr", Span::mixed_site()),
+                                arguments: syn::PathArguments::None,
+                            });
+                            s
+                        },
+                    },
+                    qself: None,
+                };
+            }
+        }
+
         segments.push(syn::PathSegment {
             ident: selector_expr.sel.into(),
             arguments: syn::PathArguments::None,
@@ -2988,12 +3205,16 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::BranchStmt(s) => Ok(s.into()),
             ast::Stmt::DeclStmt(s) => Ok(s.into()),
             ast::Stmt::DeferStmt(s) => {
-                // defer f() → scopeguard-style: let _defer = { let __f = move || { f(); }; ... };
-                // Simplified: just wrap the call in a closure assigned to a _defer binding.
-                // The deferred call will execute at scope exit via Drop.
-                let call: syn::Expr = syn::Expr::Call(s.call.into());
+                let call: syn::Expr = ast::Expr::CallExpr(s.call).into();
+                let n = DEFER_COUNTER.with(|c| {
+                    let mut val = c.borrow_mut();
+                    let n = *val;
+                    *val += 1;
+                    n
+                });
+                let defer_ident = quote::format_ident!("_defer_{}", n);
                 Ok(vec![syn::parse_quote! {
-                    let _defer = {
+                    let #defer_ident = {
                         struct __Defer<F: FnOnce()>(Option<F>);
                         impl<F: FnOnce()> Drop for __Defer<F> {
                             fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
@@ -3554,10 +3775,113 @@ fn go_zero_value_from_type(ty: Option<&syn::Type>) -> syn::Expr {
     syn::parse_quote! { 0 }
 }
 
+enum CommaOkKind {
+    MapIndex,
+    ChanRecv,
+    TypeAssert,
+}
+
+fn detect_comma_ok(rhs: &ast::Expr) -> Option<CommaOkKind> {
+    match rhs {
+        ast::Expr::IndexExpr(_) => Some(CommaOkKind::MapIndex),
+        ast::Expr::UnaryExpr(u) if u.op == token::Token::ARROW => Some(CommaOkKind::ChanRecv),
+        ast::Expr::TypeAssertExpr(ta) if ta.type_.is_some() => Some(CommaOkKind::TypeAssert),
+        _ => None,
+    }
+}
+
+fn compile_comma_ok(
+    lhs: Vec<ast::Expr>,
+    rhs: ast::Expr,
+    kind: CommaOkKind,
+    is_define: bool,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let lhs_idents: Vec<Option<syn::Ident>> = lhs
+        .iter()
+        .map(|e| match e {
+            ast::Expr::Ident(id) if id.name == "_" => Ok(None),
+            ast::Expr::Ident(id) => Ok(Some(syn::Ident::new(id.name, Span::mixed_site()))),
+            _ => Err(CompilerError::InvalidAssignment(
+                "expected identifier in comma-ok lhs".to_string(),
+            )),
+        })
+        .collect::<Result<_, _>>()?;
+
+    let val_pat: syn::Pat = match &lhs_idents[0] {
+        None => syn::parse_quote! { _ },
+        Some(id) => syn::parse_quote! { mut #id },
+    };
+    let ok_pat: syn::Pat = match &lhs_idents[1] {
+        None => syn::parse_quote! { _ },
+        Some(id) => syn::parse_quote! { mut #id },
+    };
+
+    let rhs_expr: syn::Expr = match kind {
+        CommaOkKind::MapIndex => {
+            if let ast::Expr::IndexExpr(ie) = rhs {
+                let map_e: syn::Expr = (*ie.x).into();
+                let key_e: syn::Expr = (*ie.index).into();
+                syn::parse_quote! {
+                    match (#map_e).get(&#key_e) {
+                        Some(__v) => (__v.clone(), true),
+                        None => (Default::default(), false),
+                    }
+                }
+            } else {
+                unreachable!()
+            }
+        }
+        CommaOkKind::ChanRecv => {
+            if let ast::Expr::UnaryExpr(u) = rhs {
+                let ch_e: syn::Expr = (*u.x).into();
+                syn::parse_quote! { (#ch_e).recv_with_ok() }
+            } else {
+                unreachable!()
+            }
+        }
+        CommaOkKind::TypeAssert => {
+            if let ast::Expr::TypeAssertExpr(ta) = rhs {
+                let x_e: syn::Expr = (*ta.x).into();
+                let ty: syn::Type = (*ta.type_.unwrap()).into();
+                syn::parse_quote! {
+                    match (&(#x_e) as &dyn std::any::Any).downcast_ref::<#ty>() {
+                        Some(__v) => (__v.clone(), true),
+                        None => (Default::default(), false),
+                    }
+                }
+            } else {
+                unreachable!()
+            }
+        }
+    };
+
+    if is_define {
+        Ok(vec![syn::parse_quote! {
+            let (#val_pat, #ok_pat) = #rhs_expr;
+        }])
+    } else {
+        let mut lhs_iter = lhs.into_iter();
+        let val_e: syn::Expr = lhs_iter.next().unwrap().into();
+        let ok_e: syn::Expr = lhs_iter.next().unwrap().into();
+        Ok(vec![syn::parse_quote! {
+            (#val_e, #ok_e) = #rhs_expr;
+        }])
+    }
+}
+
 impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
 
     fn try_from(assign_stmt: ast::AssignStmt) -> Result<Self, Self::Error> {
+        // Comma-ok patterns: v, ok := m[k] / v, ok := <-ch / v, ok := x.(T)
+        if assign_stmt.lhs.len() == 2 && assign_stmt.rhs.len() == 1 {
+            if let Some(kind) = detect_comma_ok(&assign_stmt.rhs[0]) {
+                let is_define = assign_stmt.tok == token::Token::DEFINE;
+                let rhs = assign_stmt.rhs.into_iter().next().unwrap();
+                return compile_comma_ok(assign_stmt.lhs, rhs, kind, is_define);
+            }
+        }
+
         // Multi-value return: x, y := f() or x, y = f()
         if assign_stmt.lhs.len() > 1 && assign_stmt.rhs.len() == 1 {
             let rhs_expr: syn::Expr = assign_stmt
@@ -4634,7 +4958,7 @@ func main() {
             rust! {
                 fn cleanup() {}
                 pub fn main() {
-                    let _defer = {
+                    let _defer_0 = {
                         struct __Defer<F: FnOnce()>(Option<F>);
                         impl<F: FnOnce()> Drop for __Defer<F> {
                             fn drop(&mut self) {

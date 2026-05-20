@@ -27,6 +27,23 @@ impl VisitMut for StringLit {
             wrap_string_lit(expr);
         }
     }
+
+    fn visit_field_value_mut(&mut self, fv: &mut syn::FieldValue) {
+        visit_mut::visit_field_value_mut(self, fv);
+        wrap_string_lit(&mut fv.expr);
+    }
+
+    fn visit_local_mut(&mut self, local: &mut syn::Local) {
+        visit_mut::visit_local_mut(self, local);
+        if let Some(ref mut init) = local.init {
+            wrap_string_lit_boxed(&mut init.expr);
+        }
+    }
+
+    fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
+        visit_mut::visit_expr_assign_mut(self, assign);
+        wrap_string_lit_boxed(&mut assign.right);
+    }
 }
 
 fn is_string_lit(expr: &syn::Expr) -> bool {

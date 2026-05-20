@@ -26,6 +26,7 @@ impl VisitMut for MapType {
             "uint32" => "u32",
             "uint64" => "u64",
             "uintptr" => "usize",
+            "error" => "String",
             _ => return,
         };
         *ident = quote::format_ident!("{}", name);
