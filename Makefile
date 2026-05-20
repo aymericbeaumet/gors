@@ -1,13 +1,12 @@
 # gors Makefile
-# Abstracts Rust/Cargo/Clippy/wasm-pack commands for development and CI
+# Abstracts Rust/Cargo/Clippy commands for development and CI
 
 .PHONY: all help
 .PHONY: setup install-tools
 .PHONY: fmt fmt-check lint clippy doc
-.PHONY: build build-release build-wasm build-wasm-dev
+.PHONY: build build-release
 .PHONY: test test-unit test-integrations test-lexer test-parser _test-lexer _test-parser
 .PHONY: fuzz fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-build fuzz-export
-.PHONY: www www-install www-lint www-build www-dev
 .PHONY: clean clean-all
 .PHONY: package
 
@@ -40,8 +39,6 @@ help:
 	@echo "Building:"
 	@echo "  build            Build all packages (debug)"
 	@echo "  build-release    Build all packages (release)"
-	@echo "  build-wasm       Build gors-wasm package (release)"
-	@echo "  build-wasm-dev   Build gors-wasm package (dev)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test-unit        Run unit tests (fast, no external dependencies)"
@@ -57,13 +54,6 @@ help:
 	@echo "  fuzz-roundtrip   Fuzz parse->print->reparse with AFL"
 	@echo "  fuzz-build       Build all AFL fuzz targets"
 	@echo "  fuzz-export      Export crash inputs as test files"
-	@echo ""
-	@echo "Website:"
-	@echo "  www              Build website (install deps + build wasm + build www)"
-	@echo "  www-install      Install www dependencies"
-	@echo "  www-lint         Lint www code"
-	@echo "  www-build        Build www code"
-	@echo "  www-dev          Start www development server"
 	@echo ""
 	@echo "Packaging:"
 	@echo "  package          Build release binary and create tarball"
@@ -84,9 +74,6 @@ setup:
 install-tools:
 	@echo "Installing development tools..."
 	rustup component add rustfmt clippy
-	@command -v wasm-pack >/dev/null 2>&1 || \
-		(echo "Installing wasm-pack..." && \
-		curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh)
 	@echo "Tools installed successfully"
 
 #------------------------------------------------------------------------------
@@ -116,12 +103,6 @@ build:
 
 build-release:
 	cargo build --workspace --exclude=gors-fuzz --release
-
-build-wasm:
-	cd www/wasm && wasm-pack build --release
-
-build-wasm-dev:
-	cd www/wasm && wasm-pack build --dev
 
 #------------------------------------------------------------------------------
 # Testing
@@ -186,24 +167,6 @@ fuzz-export:
 	./fuzz/scripts/export-crashes.sh
 
 #------------------------------------------------------------------------------
-# Website
-#------------------------------------------------------------------------------
-
-www: build-wasm www-install www-build
-
-www-install:
-	cd www && npm install
-
-www-lint:
-	cd www && npm run lint
-
-www-build:
-	cd www && npm run build
-
-www-dev: build-wasm-dev www-install
-	cd www && npm run dev
-
-#------------------------------------------------------------------------------
 # Packaging
 #------------------------------------------------------------------------------
 
@@ -245,11 +208,8 @@ endif
 
 clean:
 	cargo clean
-	rm -rf www/dist
-	rm -rf www/wasm/pkg
 	rm -f gors-*.tar.gz
 
 clean-all: clean
-	rm -rf www/node_modules
 	rm -rf target
 	rm -rf fuzz/out fuzz/sync

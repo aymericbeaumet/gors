@@ -67,11 +67,9 @@ sourcemap = "9"
 syn = { version = "2.0", features = ["full", "visit-mut"] }
 unicode-general-category = "1.1"
 
-# Toolchain management
-dirs = "6"
+# Stdlib archive decompression (used by embedded stdlib at runtime)
 flate2 = "1"
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
-sha2 = "0.10"
+sha2 = "0.11"
 tar = "0.4"
 
 # Binary dependencies
@@ -80,6 +78,13 @@ clap = { version = "4.6", features = ["derive"] }
 pretty_env_logger = "0.5"
 serde_json = "1.0"
 tempfile = "3.27"
+
+[build-dependencies]
+dirs = "6"
+flate2 = "1"
+reqwest = { version = "0.13", features = ["blocking", "rustls"] }
+sha2 = "0.11"
+tar = "0.4"
 
 [dev-dependencies]
 rayon = "1.12"

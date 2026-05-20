@@ -874,7 +874,8 @@ pub fn compute_content_hash(files: &[(String, String)]) -> String {
         hasher.update(content.as_bytes());
         hasher.update(b"\x00");
     }
-    format!("{:x}", hasher.finalize())
+    let hash = hasher.finalize();
+    hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub fn compile_program_multi(

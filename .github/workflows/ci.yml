@@ -14,7 +14,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
       - name: Run make lint
         run: make lint
@@ -31,7 +30,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
       - name: Run make build-release
         run: make build-release
@@ -45,7 +43,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
       - name: Install Go toolchain
         uses: actions/setup-go@v5
@@ -66,7 +63,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
       - name: Install Go toolchain
         uses: actions/setup-go@v5
@@ -92,14 +88,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install wasm-pack
-        run: make install-tools
+      - name: Install dependencies
+        run: cd www && npm install
 
       - name: Build www
-        run: make www
+        run: cd www && npm run build
 
       - name: Lint www
-        run: make www-lint
+        run: cd www && npm run lint
 
       - name: Upload the build artifacts
         uses: actions/upload-artifact@v4

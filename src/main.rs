@@ -105,8 +105,6 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
-    let _toolchain = gors::toolchain::ensure()?;
-
     let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
@@ -193,7 +191,8 @@ fn sha2_hash(content: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
+    let hash = hasher.finalize();
+    hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Split CLI arguments into source paths and program arguments.
@@ -214,8 +213,6 @@ fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
-    let _toolchain = gors::toolchain::ensure()?;
-
     let (source_paths, program_args) = split_run_args(&cmd.args);
 
     let program = match gors::parser::parse_program_files(&source_paths) {

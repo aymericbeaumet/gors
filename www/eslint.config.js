@@ -3,7 +3,7 @@ import js from "@eslint/js";
 export default [
   js.configs.recommended,
   {
-    ignores: ["dist/", "wasm/pkg/"],
+    ignores: ["dist/", "wasm/pkg/", "v86/"],
   },
   {
     files: ["webpack.config.js"],
@@ -42,6 +42,14 @@ export default [
         fetch: "readonly",
         AbortController: "readonly",
         navigator: "readonly",
+        WebAssembly: "readonly",
+        TextDecoder: "readonly",
+        atob: "readonly",
+        btoa: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        unescape: "readonly",
+        encodeURIComponent: "readonly",
       },
     },
     rules: {

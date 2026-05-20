@@ -93,8 +93,3 @@ pub mod stdlib;
 /// position tracking for source locations.
 pub mod token;
 
-/// Go toolchain download and management.
-///
-/// Downloads and caches a hermetic Go toolchain in the user's
-/// data directory, providing access to stdlib source files.
-pub mod toolchain;

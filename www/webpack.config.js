@@ -1,13 +1,62 @@
+const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
+const { sources, Compilation } = require('webpack');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 const FaviconsWebpackPlugin = require('favicons-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
 
+function contentHash(filePath) {
+  const data = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(data).digest('hex').slice(0, 16);
+}
+
+const v86BuildDir = path.resolve(__dirname, 'node_modules/v86/build');
+const biosDir = path.resolve(__dirname, 'v86/bios');
+
+const staticAssets = [
+  { src: path.join(v86BuildDir, 'libv86.js'), name: 'libv86', ext: '.js' },
+  { src: path.join(v86BuildDir, 'v86.wasm'), name: 'v86', ext: '.wasm' },
+  { src: path.join(biosDir, 'seabios.bin'), name: 'seabios', ext: '.bin' },
+  { src: path.join(biosDir, 'vgabios.bin'), name: 'vgabios', ext: '.bin' },
+];
+
+const assetManifest = {};
+const copyPatterns = [];
+
+for (const { src, name, ext } of staticAssets) {
+  const hash = contentHash(src);
+  const hashedName = `${name}-${hash}${ext}`;
+  assetManifest[`${name}${ext}`] = hashedName;
+  copyPatterns.push({ from: src, to: `assets/${hashedName}` });
+}
+
+copyPatterns.push(
+  { from: 'v86/dist/*.img', to: 'assets/[name][ext]' },
+  { from: 'v86/dist/manifest.json', to: 'assets/[name][ext]' },
+);
+
+class AssetManifestPlugin {
+  apply(compiler) {
+    compiler.hooks.thisCompilation.tap('AssetManifestPlugin', (compilation) => {
+      compilation.hooks.processAssets.tap(
+        { name: 'AssetManifestPlugin', stage: Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL },
+        () => {
+          const json = JSON.stringify(assetManifest);
+          compilation.emitAsset('assets/asset-manifest.json', new sources.RawSource(json));
+        },
+      );
+    });
+  }
+}
+
 module.exports = {
   entry: './main.js',
   output: {
-    filename: 'bundle.js',
+    filename: 'bundle-[contenthash:16].js',
     path: path.resolve(__dirname, 'dist'),
+    clean: true,
   },
   resolve: {
     fallback: {
@@ -28,6 +77,8 @@ module.exports = {
     ],
   },
   plugins: [
+    new CopyWebpackPlugin({ patterns: copyPatterns }),
+    new AssetManifestPlugin(),
     new FaviconsWebpackPlugin('./favicon.png'),
     new HtmlWebpackPlugin({ template: 'index.html' }),
     new MonacoWebpackPlugin(),
@@ -38,6 +89,10 @@ module.exports = {
     },
     compress: true,
     port: 8080,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   experiments: {
     asyncWebAssembly: true,

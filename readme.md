@@ -90,7 +90,6 @@ Hello, World!
 ```bash
 brew install rustup go binaryen watchexec
 rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
-curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 cargo install --force cargo-fuzz
 ```
 

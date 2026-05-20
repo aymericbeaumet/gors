@@ -4,10 +4,16 @@
     <meta charset="utf-8" />
     <title>gors: Go to Rust transpiler</title>
 
+    <script>
+      (function() {
+        var p = new URLSearchParams(window.location.search);
+        if (p.get('wasm') === '1') document.documentElement.classList.add('show-wasm');
+      })();
+    </script>
     <style>
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
+
+      html, body { height: 100%; }
 
       body {
         margin: 0;
@@ -15,12 +21,14 @@
         font-family: system-ui, -apple-system, sans-serif;
         background: #0d1117;
         color: #c9d1d9;
-        min-height: 100vh;
       }
 
       main {
         max-width: 1800px;
         margin: 0 auto;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
       }
 
       header {
@@ -30,32 +38,16 @@
         margin: 0 0 16px 0;
       }
 
-      header h1 {
-        margin: 0;
-        font-size: 16px;
-        font-weight: 600;
-      }
-
-      header h1 a {
-        color: #c9d1d9;
-        text-decoration: none;
-      }
-
-      header h1 a:hover {
-        color: #58a6ff;
-      }
-
-      header p {
-        margin: 0;
-        font-size: 13px;
-        color: #8b949e;
-      }
+      header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+      header h1 a { color: #c9d1d9; text-decoration: none; }
+      header h1 a:hover { color: #58a6ff; }
+      header p { margin: 0; font-size: 13px; color: #8b949e; }
 
       .editors {
         display: flex;
         gap: 16px;
-        height: calc(100vh - 120px);
-        min-height: 400px;
+        flex: 1.618;
+        min-height: 200px;
       }
 
       .editor-container {
@@ -64,6 +56,9 @@
         flex-direction: column;
         min-width: 0;
       }
+
+      .editor-container.hidden { display: none; }
+      html.show-wasm .editor-container.wasm.hidden { display: flex; }
 
       .editor-header {
         display: flex;
@@ -91,20 +86,15 @@
 
       .editor-container.go .dot { background: #00ADD8; }
       .editor-container.rust .dot { background: #FFC832; }
+      .editor-container.wasm .dot { background: #654FF0; }
 
       .editor-header .status {
         font-size: 11px;
         font-weight: 400;
         color: #8b949e;
       }
-
-      .editor-header .status.error {
-        color: #f85149;
-      }
-
-      .editor-header .status.ok {
-        color: #3fb950;
-      }
+      .editor-header .status.error { color: #f85149; }
+      .editor-header .status.ok { color: #3fb950; }
 
       .editor-wrapper {
         flex: 1;
@@ -117,17 +107,12 @@
 
       .editor-container.go .editor-wrapper { border-color: #00ADD8; }
       .editor-container.rust .editor-wrapper { border-color: #FFC832; }
+      .editor-container.wasm .editor-wrapper { border-color: #654FF0; }
 
-      .editor {
-        width: 100%;
-        height: 100%;
-      }
+      .editor { width: 100%; height: 100%; }
+      .monaco-editor .lines-content { padding-left: 5px; }
 
-      .monaco-editor .lines-content {
-        padding-left: 5px;
-      }
-
-      .copy-button {
+      .copy-button, .small-button {
         padding: 4px 8px;
         background: transparent;
         border: 1px solid #30363d;
@@ -142,7 +127,7 @@
         transition: all 0.15s ease;
       }
 
-      .copy-button:hover {
+      .copy-button:hover, .small-button:hover {
         background: #21262d;
         border-color: #8b949e;
         color: #c9d1d9;
@@ -154,15 +139,244 @@
         color: #ffffff;
       }
 
-      .copy-button svg {
-        width: 12px;
-        height: 12px;
-        fill: currentColor;
-      }
+      .copy-button svg { width: 12px; height: 12px; fill: currentColor; }
 
       .source-map-highlight {
         background-color: rgba(88, 166, 255, 0.2);
         border-radius: 2px;
+      }
+
+      /* Debug toggle (in editor header) */
+
+      .debug-toggle {
+        padding: 4px 10px;
+        background: transparent;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        color: #8b949e;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      .debug-toggle:hover { background: #21262d; border-color: #8b949e; color: #c9d1d9; }
+      .debug-toggle.active,
+      html.show-wasm .debug-toggle { background: #654FF0; border-color: #654FF0; color: #fff; }
+
+      /* Resize handle */
+
+      .resize-handle {
+        height: 6px;
+        margin: 5px 0;
+        cursor: row-resize;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        user-select: none;
+      }
+
+      .resize-handle::after {
+        content: '';
+        width: 40px;
+        height: 3px;
+        border-radius: 2px;
+        background: #30363d;
+        transition: background 0.15s;
+      }
+
+      .resize-handle:hover::after { background: #484f58; }
+
+      /* Console section */
+
+      .console-section {
+        border: 2px solid #30363d;
+        border-radius: 8px;
+        overflow: hidden;
+        flex: 1;
+        min-height: 200px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .console-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: #161b22;
+        font-size: 12px;
+        font-weight: 600;
+        height: 36px;
+        flex-shrink: 0;
+      }
+
+      .console-header .console-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .console-header .console-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .console-header .console-title .dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: #3fb950;
+      }
+
+      /* VM status indicator (inline in console header) */
+
+      .vm-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.15s ease;
+        border: 1px solid transparent;
+        font-weight: 400;
+      }
+
+      .vm-status:hover { background: #21262d; border-color: #30363d; }
+
+      .vm-status .vm-dot {
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .vm-status[data-state="initializing"] .vm-dot,
+      .vm-status[data-state="downloading"] .vm-dot { background: #d29922; }
+      .vm-status[data-state="booting"] .vm-dot { background: #d29922; animation: pulse 1.5s ease-in-out infinite; }
+      .vm-status[data-state="ready"] .vm-dot { background: #3fb950; }
+      .vm-status[data-state="compiling"] .vm-dot { background: #58a6ff; animation: pulse 0.8s ease-in-out infinite; }
+      .vm-status[data-state="error"] .vm-dot { background: #f85149; }
+
+      .vm-status[data-state="initializing"] .vm-label,
+      .vm-status[data-state="downloading"] .vm-label { color: #d29922; }
+      .vm-status[data-state="booting"] .vm-label { color: #d29922; }
+      .vm-status[data-state="ready"] .vm-label { color: #3fb950; }
+      .vm-status[data-state="compiling"] .vm-label { color: #58a6ff; }
+      .vm-status[data-state="error"] .vm-label { color: #f85149; }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+
+      .console-content {
+        flex: 1;
+        padding: 12px;
+        background: #0d1117;
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #c9d1d9;
+      }
+
+      .console-content.error { color: #f85149; }
+      .console-content.placeholder { color: #484f58; font-style: italic; }
+
+      /* VM terminal overlay */
+
+      .vm-terminal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 100;
+      }
+
+      .vm-terminal-overlay.visible {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 48px;
+      }
+
+      .vm-terminal-panel {
+        width: 800px; height: 600px;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .vm-terminal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: #161b22;
+        border-bottom: 1px solid #21262d;
+      }
+
+      .vm-terminal-header .vm-terminal-title {
+        font-size: 13px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .vm-terminal-header .vm-terminal-close {
+        padding: 4px 8px;
+        background: transparent;
+        border: none;
+        color: #8b949e;
+        font-size: 16px;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .vm-terminal-header .vm-terminal-close:hover { background: #21262d; color: #c9d1d9; }
+
+      .vm-spinner {
+        width: 14px; height: 14px;
+        border: 2px solid #30363d;
+        border-top-color: #d29922;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      .vm-spinner.ready { display: none; }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .vm-terminal-note {
+        padding: 8px 12px;
+        background: #161b22;
+        border-bottom: 1px solid #21262d;
+        font-size: 12px;
+        color: #8b949e;
+        line-height: 1.5;
+      }
+
+      .vm-terminal-output {
+        flex: 1;
+        padding: 12px;
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #8b949e;
       }
 
     </style>
@@ -175,26 +389,18 @@
       </header>
 
       <div class="editors">
-        <!-- Go Editor -->
         <div class="editor-container go">
           <div class="editor-header">
-            <div class="label">
-              <span class="dot"></span>
-              <span>Go</span>
-            </div>
+            <div class="label"><span class="dot"></span><span>Go</span></div>
           </div>
           <div class="editor-wrapper">
             <div id="go-editor" class="editor"></div>
           </div>
         </div>
 
-        <!-- Rust Output -->
         <div class="editor-container rust">
           <div class="editor-header">
-            <div class="label">
-              <span class="dot"></span>
-              <span>Rust</span>
-            </div>
+            <div class="label"><span class="dot"></span><span>Rust</span></div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <span id="status" class="status"></span>
               <button id="copy-output" class="copy-button" title="Copy Rust code">
@@ -203,13 +409,56 @@
                 </svg>
                 <span>Copy</span>
               </button>
+              <button id="debug-toggle" class="debug-toggle" title="Toggle WASM debug panel">WASM</button>
             </div>
           </div>
           <div class="editor-wrapper">
             <div id="rust-editor" class="editor"></div>
           </div>
         </div>
+
+        <div id="wasm-container" class="editor-container wasm hidden">
+          <div class="editor-header">
+            <div class="label"><span class="dot"></span><span>WASM (debug)</span></div>
+          </div>
+          <div class="editor-wrapper">
+            <div id="wasm-editor" class="editor"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="resize-handle" class="resize-handle"></div>
+
+      <div id="console-section" class="console-section">
+        <div class="console-header">
+          <div class="console-left">
+            <div class="console-title"><span class="dot"></span><span>Console</span></div>
+            <div id="vm-status" class="vm-status" data-state="initializing" title="Click to view VM details">
+              <span class="vm-dot"></span>
+              <span class="vm-label">Initializing...</span>
+            </div>
+          </div>
+        </div>
+        <pre id="console-content" class="console-content placeholder">Waiting for output...</pre>
       </div>
     </main>
+
+    <div id="vm-terminal-overlay" class="vm-terminal-overlay">
+      <div class="vm-terminal-panel">
+        <div class="vm-terminal-header">
+          <span class="vm-terminal-title">
+            <span id="vm-spinner" class="vm-spinner"></span>
+            Rust Compiler VM
+          </span>
+          <button id="vm-terminal-close" class="vm-terminal-close" title="Close">&times;</button>
+        </div>
+        <div class="vm-terminal-note">
+          The Go &rarr; Rust transpiler runs entirely in the browser. To run the produced code,
+          this VM boots a lightweight Linux with <code>rustc</code> to compile Rust &rarr; WASM.
+          The compiled WASM is then executed directly in the browser, not inside the VM.
+        </div>
+        <pre id="vm-terminal-output" class="vm-terminal-output"></pre>
+      </div>
+    </div>
   </body>
 </html>
