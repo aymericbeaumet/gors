@@ -21,6 +21,9 @@ members = [
   ".",
   "fuzz",
 ]
+exclude = [
+  "www/wasm",
+]
 
 [lints]
 workspace = true

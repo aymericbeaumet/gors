@@ -9,8 +9,10 @@ name = "gors"
 path = "lib.rs"
 crate-type = ["cdylib"]
 
-[lints]
-workspace = true
+[workspace]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
 
 [dependencies]
 console_error_panic_hook = "0.1"

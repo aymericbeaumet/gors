@@ -408,9 +408,7 @@ pub struct ParsedProgram {
 ///
 /// If the directory contains a go.mod, local imports are resolved recursively.
 /// Standard library imports (e.g., "fmt") are skipped.
-pub fn parse_program(
-    path: &str,
-) -> std::result::Result<ParsedProgram, PathParseError> {
+pub fn parse_program(path: &str) -> std::result::Result<ParsedProgram, PathParseError> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| PathParseError::IoError(format!("cannot access '{}': {}", path, e)))?;
 
@@ -579,7 +577,8 @@ fn parse_go_mod(module_root: &str) -> std::result::Result<String, PathParseError
 fn collect_stdlib_imports(file: &ast::File<'_>, stdlib_imports: &mut Vec<String>) {
     for import_spec in file.imports() {
         let import_path = import_spec.path.value.trim_matches('"');
-        if crate::stdlib::is_known(import_path) && !stdlib_imports.contains(&import_path.to_string())
+        if crate::stdlib::is_known(import_path)
+            && !stdlib_imports.contains(&import_path.to_string())
         {
             stdlib_imports.push(import_path.to_string());
         }

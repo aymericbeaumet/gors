@@ -30,7 +30,7 @@ use syn::Token;
 // Thread-local storage for source map tracker during compilation
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
-    static DEFER_COUNTER: RefCell<usize> = RefCell::new(0);
+    static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
@@ -74,10 +74,7 @@ fn interpret_go_string_escapes(s: &str) -> String {
             }
             Some('u') => {
                 let hex: String = chars.by_ref().take(4).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16)
-                    .ok()
-                    .and_then(char::from_u32)
-                {
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                     result.push(ch);
                 } else {
                     result.push('\\');
@@ -87,10 +84,7 @@ fn interpret_go_string_escapes(s: &str) -> String {
             }
             Some('U') => {
                 let hex: String = chars.by_ref().take(8).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16)
-                    .ok()
-                    .and_then(char::from_u32)
-                {
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                     result.push(ch);
                 } else {
                     result.push('\\');
@@ -422,12 +416,10 @@ fn extract_idents_for_clone(block: &syn::Block) -> Vec<syn::Stmt> {
                         self.visit_expr(arg);
                     }
                 }
-                syn::Expr::Path(path) => {
-                    if path.path.segments.len() == 1 {
-                        let name = path.path.segments[0].ident.to_string();
-                        if !self.locals.contains(&name) {
-                            self.idents.insert(name);
-                        }
+                syn::Expr::Path(path) if path.path.segments.len() == 1 => {
+                    let name = path.path.segments[0].ident.to_string();
+                    if !self.locals.contains(&name) {
+                        self.idents.insert(name);
                     }
                 }
                 syn::Expr::Binary(binary) => {
@@ -463,7 +455,13 @@ fn extract_idents_for_clone(block: &syn::Block) -> Vec<syn::Stmt> {
     }
 
     let skip = [
-        "println", "print", "eprintln", "make_chan", "spawn", "true", "false",
+        "println",
+        "print",
+        "eprintln",
+        "make_chan",
+        "spawn",
+        "true",
+        "false",
     ];
     collector
         .idents
@@ -477,9 +475,7 @@ fn extract_idents_for_clone(block: &syn::Block) -> Vec<syn::Stmt> {
 }
 
 /// Compile a Go select statement into Rust.
-fn compile_select_stmt(
-    select_stmt: ast::SelectStmt,
-) -> Result<Vec<syn::Stmt>, CompilerError> {
+fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let clauses: Vec<ast::CommClause> = select_stmt
         .body
         .list
@@ -517,9 +513,7 @@ fn compile_select_stmt(
     }
 
     // Helper: extract channel expression from a comm statement by consuming it
-    fn extract_channel_recv(
-        expr: ast::Expr,
-    ) -> Option<syn::Expr> {
+    fn extract_channel_recv(expr: ast::Expr) -> Option<syn::Expr> {
         if let ast::Expr::UnaryExpr(unary) = expr {
             if unary.op == token::Token::ARROW {
                 return Some((*unary.x).into());
@@ -531,7 +525,11 @@ fn compile_select_stmt(
     // Single case with optional default
     if cases.len() == 1 {
         let case = cases.remove(0);
-        let comm = *case.comm.unwrap();
+        let Some(comm) = case.comm.map(|c| *c) else {
+            return Err(CompilerError::UnsupportedConstruct(
+                "select case without comm".into(),
+            ));
+        };
 
         let mut case_body_stmts = vec![];
         for stmt in case.body {
@@ -561,25 +559,27 @@ fn compile_select_stmt(
                         )]);
                     }
                 }
-                ast::Stmt::AssignStmt(assign) => {
-                    // v := <-ch or v, ok := <-ch
-                    if assign.rhs.len() == 1 && assign.lhs.len() >= 1 {
-                        let lhs_pat = expr_to_pat(&assign.lhs[0]);
-                        let rhs_expr = assign.rhs.into_iter().next().unwrap();
-                        if let Some(ch) = extract_channel_recv(rhs_expr) {
-                            return Ok(vec![syn::Stmt::Expr(
-                                syn::parse_quote! {
-                                    if let Ok(#lhs_pat) = #ch.try_recv() {
-                                        #(#case_body_stmts)*
-                                    } else {
-                                        #(#default_stmts)*
-                                    }
-                                },
-                                None,
-                            )]);
-                        }
+                ast::Stmt::AssignStmt(assign)
+                    if assign.rhs.len() == 1 && !assign.lhs.is_empty() =>
+                {
+                    let lhs_pat = expr_to_pat(&assign.lhs[0]);
+                    let rhs_expr = assign
+                        .rhs
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| unreachable!());
+                    if let Some(ch) = extract_channel_recv(rhs_expr) {
+                        return Ok(vec![syn::Stmt::Expr(
+                            syn::parse_quote! {
+                                if let Ok(#lhs_pat) = #ch.try_recv() {
+                                    #(#case_body_stmts)*
+                                } else {
+                                    #(#default_stmts)*
+                                }
+                            },
+                            None,
+                        )]);
                     }
-                    // Fallback: just compile normally
                 }
                 ast::Stmt::SendStmt(send) => {
                     let ch: syn::Expr = send.chan.into();
@@ -609,7 +609,9 @@ fn compile_select_stmt(
     // Multiple cases: generate loop with try_recv checks
     let mut arms: Vec<proc_macro2::TokenStream> = Vec::new();
     for case in cases {
-        let comm = *case.comm.unwrap();
+        let Some(comm) = case.comm.map(|c| *c) else {
+            continue;
+        };
         let mut body_stmts = vec![];
         for stmt in case.body {
             body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
@@ -627,19 +629,21 @@ fn compile_select_stmt(
                     continue;
                 }
             }
-            ast::Stmt::AssignStmt(assign) => {
-                if assign.rhs.len() == 1 && assign.lhs.len() >= 1 {
-                    let pat = expr_to_pat(&assign.lhs[0]);
-                    let rhs_expr = assign.rhs.into_iter().next().unwrap();
-                    if let Some(ch) = extract_channel_recv(rhs_expr) {
-                        arms.push(quote::quote! {
-                            if let Ok(#pat) = #ch.try_recv() {
-                                #(#body_stmts)*
-                                break;
-                            }
-                        });
-                        continue;
-                    }
+            ast::Stmt::AssignStmt(assign) if assign.rhs.len() == 1 && !assign.lhs.is_empty() => {
+                let pat = expr_to_pat(&assign.lhs[0]);
+                let rhs_expr = assign
+                    .rhs
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| unreachable!());
+                if let Some(ch) = extract_channel_recv(rhs_expr) {
+                    arms.push(quote::quote! {
+                        if let Ok(#pat) = #ch.try_recv() {
+                            #(#body_stmts)*
+                            break;
+                        }
+                    });
+                    continue;
                 }
             }
             ast::Stmt::SendStmt(send) => {
@@ -786,9 +790,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
 /// Compile a parsed program (main package + imports) into a single Rust file.
 ///
 /// Imported packages are emitted as `mod` blocks before the main package items.
-pub fn compile_program(
-    program: crate::parser::ParsedProgram,
-) -> Result<syn::File, CompilerError> {
+pub fn compile_program(program: crate::parser::ParsedProgram) -> Result<syn::File, CompilerError> {
     let mut all_items: Vec<syn::Item> = Vec::new();
 
     for stdlib_path in &program.stdlib_imports {
@@ -801,9 +803,12 @@ pub fn compile_program(
         .imports
         .iter()
         .map(|p| p.name.clone())
-        .chain(program.stdlib_imports.iter().map(|path| {
-            path.rsplit('/').next().unwrap_or(path).to_string()
-        }))
+        .chain(
+            program
+                .stdlib_imports
+                .iter()
+                .map(|path| path.rsplit('/').next().unwrap_or(path).to_string()),
+        )
         .collect();
 
     for pkg in program.imports {
@@ -958,9 +963,12 @@ pub fn compile_program_multi(
     }
 
     let has_main_fn = program.main_package.name == "main"
-        && program.main_package.ast.decls.iter().any(|d| {
-            matches!(d, ast::Decl::FuncDecl(f) if f.name.name == "main")
-        });
+        && program
+            .main_package
+            .ast
+            .decls
+            .iter()
+            .any(|d| matches!(d, ast::Decl::FuncDecl(f) if f.name.name == "main"));
 
     let main_hash = compute_content_hash(&program.main_package.files);
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
@@ -1073,9 +1081,9 @@ pub fn clear_source_map_tracker() {
 }
 
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
-    let name = ts.name.ok_or_else(|| {
-        CompilerError::UnsupportedConstruct("type spec has no name".to_string())
-    })?;
+    let name = ts
+        .name
+        .ok_or_else(|| CompilerError::UnsupportedConstruct("type spec has no name".to_string()))?;
     let vis: syn::Visibility = (&name).into();
     let ident: syn::Ident = name.into();
 
@@ -1086,9 +1094,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if let Some(field_list) = struct_type.fields {
                 for field in field_list.list {
                     let field_type = field.type_.ok_or_else(|| {
-                        CompilerError::UnsupportedConstruct(
-                            "struct field has no type".to_string(),
-                        )
+                        CompilerError::UnsupportedConstruct("struct field has no type".to_string())
                     })?;
 
                     if let Some(names) = field.names {
@@ -1111,11 +1117,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type = field_type.into();
                         if let Some(name) = embedded_name {
                             let field_ident = syn::Ident::new(&name, Span::mixed_site());
-                            let field_vis: syn::Visibility = if name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                                syn::parse_quote! { pub }
-                            } else {
-                                syn::Visibility::Inherited
-                            };
+                            let field_vis: syn::Visibility =
+                                if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                                    syn::parse_quote! { pub }
+                                } else {
+                                    syn::Visibility::Inherited
+                                };
                             embedded_types.push((field_ident.clone(), rust_type.clone()));
                             fields.push(syn::Field {
                                 attrs: vec![],
@@ -1136,7 +1143,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let struct_item = syn::Item::Struct(syn::ItemStruct {
                 attrs: vec![],
-                vis: vis.clone(),
+                vis,
                 struct_token: <Token![struct]>::default(),
                 ident: ident.clone(),
                 generics: syn::Generics::default(),
@@ -1207,8 +1214,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             }));
 
                             for (pname, ty) in &param_types {
-                                let pident =
-                                    syn::Ident::new(pname, Span::mixed_site());
+                                let pident = syn::Ident::new(pname, Span::mixed_site());
                                 inputs.push(syn::FnArg::Typed(syn::PatType {
                                     attrs: vec![],
                                     pat: Box::new(syn::Pat::Ident(syn::PatIdent {
@@ -1279,9 +1285,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
     }
 }
 
-fn compile_return_type(
-    results: Option<ast::FieldList>,
-) -> Result<syn::ReturnType, CompilerError> {
+fn compile_return_type(results: Option<ast::FieldList>) -> Result<syn::ReturnType, CompilerError> {
     let Some(results) = results else {
         return Ok(syn::ReturnType::Default);
     };
@@ -1294,7 +1298,12 @@ fn compile_return_type(
         0 => Ok(syn::ReturnType::Default),
         1 => Ok(syn::ReturnType::Type(
             <Token![->]>::default(),
-            Box::new(result_types.into_iter().next().unwrap()),
+            Box::new(
+                result_types
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| unreachable!()),
+            ),
         )),
         _ => {
             let mut elems = syn::punctuated::Punctuated::new();
@@ -1377,13 +1386,14 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
 }
 
 fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn), CompilerError> {
-    let recv = func_decl.recv.ok_or_else(|| {
-        CompilerError::UnsupportedConstruct("method has no receiver".to_string())
-    })?;
+    let recv = func_decl
+        .recv
+        .ok_or_else(|| CompilerError::UnsupportedConstruct("method has no receiver".to_string()))?;
 
-    let recv_field = recv.list.into_iter().next().ok_or_else(|| {
-        CompilerError::UnsupportedConstruct("empty receiver list".to_string())
-    })?;
+    let recv_field =
+        recv.list.into_iter().next().ok_or_else(|| {
+            CompilerError::UnsupportedConstruct("empty receiver list".to_string())
+        })?;
 
     let recv_name = recv_field
         .names
@@ -1392,9 +1402,9 @@ fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn),
         .map(|n| n.name.to_string())
         .unwrap_or_default();
 
-    let recv_type = recv_field.type_.ok_or_else(|| {
-        CompilerError::UnsupportedConstruct("receiver has no type".to_string())
-    })?;
+    let recv_type = recv_field
+        .type_
+        .ok_or_else(|| CompilerError::UnsupportedConstruct("receiver has no type".to_string()))?;
 
     let (type_name, is_pointer) = extract_receiver_type(&recv_type)?;
 
@@ -1455,8 +1465,8 @@ fn compile_method(func_decl: ast::FuncDecl) -> Result<(String, syn::ImplItemFn),
 }
 
 const BUILTINS: &[&str] = &[
-    "len", "cap", "append", "make", "new", "copy", "delete", "clear", "close", "panic",
-    "println", "print", "max", "min", "complex", "real", "imag", "recover",
+    "len", "cap", "append", "make", "new", "copy", "delete", "clear", "close", "panic", "println",
+    "print", "max", "min", "complex", "real", "imag", "recover",
 ];
 
 fn extract_type_name(expr: &ast::Expr) -> Option<String> {
@@ -1491,7 +1501,12 @@ fn detect_type_conversion(call_expr: &ast::CallExpr) -> Option<&'static str> {
 }
 
 fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
-    let raw_arg = call_expr.args.unwrap().into_iter().next().unwrap();
+    let raw_arg = call_expr
+        .args
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| unreachable!());
     let is_int_arg = matches!(&raw_arg, ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT);
     let arg: syn::Expr = raw_arg.into();
     match kind {
@@ -1529,6 +1544,7 @@ fn is_fmt_call(call_expr: &ast::CallExpr) -> bool {
         )
 }
 
+#[allow(clippy::literal_string_with_formatting_args)]
 fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
     let method = if let ast::Expr::SelectorExpr(ref sel) = *call_expr.fun {
         sel.sel.name
@@ -1576,16 +1592,54 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
                     if c == '%' {
                         if let Some(&next) = chars.peek() {
                             match next {
-                                '%' => { rust_fmt.push('%'); chars.next(); }
-                                'c' => { rust_fmt.push_str("{}"); chars.next(); char_arg_indices.push(arg_idx); arg_idx += 1; }
-                                's' | 'd' | 'v' | 'f' | 't' => { rust_fmt.push_str("{}"); chars.next(); arg_idx += 1; }
-                                'p' => { rust_fmt.push_str("{:p}"); chars.next(); arg_idx += 1; }
-                                'x' => { rust_fmt.push_str("{:x}"); chars.next(); arg_idx += 1; }
-                                'o' => { rust_fmt.push_str("{:o}"); chars.next(); arg_idx += 1; }
-                                'b' => { rust_fmt.push_str("{:b}"); chars.next(); arg_idx += 1; }
-                                'e' => { rust_fmt.push_str("{:e}"); chars.next(); arg_idx += 1; }
-                                'q' => { rust_fmt.push_str("{:?}"); chars.next(); arg_idx += 1; }
-                                _ => { rust_fmt.push(c); }
+                                '%' => {
+                                    rust_fmt.push('%');
+                                    chars.next();
+                                }
+                                'c' => {
+                                    rust_fmt.push_str("{}");
+                                    chars.next();
+                                    char_arg_indices.push(arg_idx);
+                                    arg_idx += 1;
+                                }
+                                's' | 'd' | 'v' | 'f' | 't' => {
+                                    rust_fmt.push_str("{}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'p' => {
+                                    rust_fmt.push_str("{:p}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'x' => {
+                                    rust_fmt.push_str("{:x}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'o' => {
+                                    rust_fmt.push_str("{:o}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'b' => {
+                                    rust_fmt.push_str("{:b}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'e' => {
+                                    rust_fmt.push_str("{:e}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                'q' => {
+                                    rust_fmt.push_str("{:?}");
+                                    chars.next();
+                                    arg_idx += 1;
+                                }
+                                _ => {
+                                    rust_fmt.push(c);
+                                }
                             }
                         } else {
                             rust_fmt.push(c);
@@ -1598,13 +1652,17 @@ fn compile_fmt_call(call_expr: ast::CallExpr) -> syn::Expr {
                 let fmt_lit = syn::LitStr::new(&rust_fmt, Span::mixed_site());
 
                 // Wrap %c args with char::from_u32
-                let wrapped_rest: Vec<syn::Expr> = rest.iter().enumerate().map(|(i, e)| {
-                    if char_arg_indices.contains(&i) {
-                        syn::parse_quote! { char::from_u32(#e as u32).unwrap_or_default() }
-                    } else {
-                        e.clone()
-                    }
-                }).collect();
+                let wrapped_rest: Vec<syn::Expr> = rest
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        if char_arg_indices.contains(&i) {
+                            syn::parse_quote! { char::from_u32(#e as u32).unwrap_or_default() }
+                        } else {
+                            e.clone()
+                        }
+                    })
+                    .collect();
 
                 return match method {
                     "Printf" => syn::parse_quote! { ::std::print!(#fmt_lit, #(#wrapped_rest),*) },
@@ -1690,7 +1748,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
     match name.as_str() {
         "make" => {
             let mut it = raw_args.into_iter();
-            let type_arg = it.next().unwrap();
+            let type_arg = it.next().unwrap_or_else(|| unreachable!());
             let remaining: Vec<syn::Expr> = it.map(syn::Expr::from).collect();
             match type_arg {
                 ast::Expr::ArrayType(arr) => {
@@ -1730,7 +1788,11 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             }
         }
         "new" => {
-            let type_arg: syn::Type = raw_args.into_iter().next().unwrap().into();
+            let type_arg: syn::Type = raw_args
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!())
+                .into();
             syn::parse_quote! { Box::new(<#type_arg>::default()) }
         }
         _ => {
@@ -1768,34 +1830,22 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                     syn::parse_quote! { builtin::close(&#ch) }
                 }
                 "max" => {
-                    if args.len() == 2 {
-                        let a = &args[0];
-                        let b = &args[1];
-                        syn::parse_quote! { builtin::max(#a, #b) }
-                    } else if args.len() == 3 {
-                        let a = &args[0];
-                        let b = &args[1];
+                    let a = &args[0];
+                    let b = &args[1];
+                    if args.len() == 3 {
                         let c = &args[2];
                         syn::parse_quote! { builtin::max3(#a, #b, #c) }
                     } else {
-                        let a = &args[0];
-                        let b = &args[1];
                         syn::parse_quote! { builtin::max(#a, #b) }
                     }
                 }
                 "min" => {
-                    if args.len() == 2 {
-                        let a = &args[0];
-                        let b = &args[1];
-                        syn::parse_quote! { builtin::min(#a, #b) }
-                    } else if args.len() == 3 {
-                        let a = &args[0];
-                        let b = &args[1];
+                    let a = &args[0];
+                    let b = &args[1];
+                    if args.len() == 3 {
                         let c = &args[2];
                         syn::parse_quote! { builtin::min3(#a, #b, #c) }
                     } else {
-                        let a = &args[0];
-                        let b = &args[1];
                         syn::parse_quote! { builtin::min(#a, #b) }
                     }
                 }
@@ -1849,16 +1899,12 @@ fn elts_to_field_values(elts: Vec<syn::Expr>) -> Vec<syn::FieldValue> {
     elts.into_iter()
         .map(|e| {
             if let syn::Expr::Tuple(ref tuple) = e {
-                if tuple.elems.len() == 2 {
-                    let mut iter = tuple.elems.clone().into_iter();
-                    let key = iter.next().unwrap();
-                    let value = iter.next().unwrap();
-                    if let syn::Expr::Path(ref path) = key {
+                let mut iter = tuple.elems.clone().into_iter();
+                if let (Some(syn::Expr::Path(ref path)), Some(value)) = (iter.next(), iter.next()) {
+                    if let Some(last_seg) = path.path.segments.last() {
                         return syn::FieldValue {
                             attrs: vec![],
-                            member: syn::Member::Named(
-                                path.path.segments.last().unwrap().ident.clone(),
-                            ),
+                            member: syn::Member::Named(last_seg.ident.clone()),
                             colon_token: Some(<Token![:]>::default()),
                             expr: value,
                         };
@@ -2017,9 +2063,7 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     }
 }
 
-fn compile_type_switch_stmt(
-    ts: ast::TypeSwitchStmt,
-) -> Result<Vec<syn::Stmt>, CompilerError> {
+fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     // type switch: switch x := val.(type) { case T: ... }
     // Compile to if/else chain with downcast checks
     let assign_expr = match *ts.assign {
@@ -2090,15 +2134,12 @@ fn compile_type_switch_stmt(
             let val = &assign_expr;
             syn::parse_quote! { (#val as &dyn std::any::Any).is::<#ty>() }
         } else {
-            let checks: Vec<syn::Expr> = type_exprs
+            type_exprs
                 .iter()
                 .map(|ty| {
                     let val = &assign_expr;
                     syn::parse_quote! { (#val as &dyn std::any::Any).is::<#ty>() }
                 })
-                .collect();
-            checks
-                .into_iter()
                 .reduce(|acc, e| syn::parse_quote! { #acc || #e })
                 .unwrap_or_else(|| syn::parse_quote! { true })
         };
@@ -2172,28 +2213,48 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
             if is_string {
                 // range over string: iterate (byte_index, char)
-                Ok(make_for_loop(pat, syn::parse_quote! { (#x).char_indices() }, body))
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! { (#x).char_indices() },
+                    body,
+                ))
             } else {
-                Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter().enumerate() }, body))
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! { (#x).iter().enumerate() },
+                    body,
+                ))
             }
         }
         // for i := range x  OR  for v := range ch
         (Some(key_expr), None) => {
             let key_pat = expr_to_pat(&key_expr);
             if is_int {
-                Ok(make_for_loop(key_pat, syn::parse_quote! { 0..((#x) as usize) }, body))
+                Ok(make_for_loop(
+                    key_pat,
+                    syn::parse_quote! { 0..((#x) as usize) },
+                    body,
+                ))
             } else {
                 // Use into_iter() which works for channels (via IntoIterator) and
                 // for slices/vecs (gives values). For index-only iteration over
                 // slices, use `for i, _ := range s` instead.
-                Ok(make_for_loop(key_pat, syn::parse_quote! { (#x).into_iter() }, body))
+                Ok(make_for_loop(
+                    key_pat,
+                    syn::parse_quote! { (#x).into_iter() },
+                    body,
+                ))
             }
         }
         // for range x
         (None, None) => {
             let pat: syn::Pat = syn::parse_quote! { _ };
             if is_int {
-                Ok(make_for_loop(pat, syn::parse_quote! { 0..((#x) as usize) }, body))
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! { 0..((#x) as usize) },
+                    body,
+                ))
             } else {
                 Ok(make_for_loop(pat, x, body))
             }
@@ -2267,12 +2328,10 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
             INT => Self::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
             STRING => {
                 let raw = basic_lit.value;
+                let inner = &raw[1..raw.len() - 1];
                 if raw.starts_with('`') {
-                    // Raw string literal — no escape processing
-                    let inner = &raw[1..raw.len() - 1];
                     Self::Str(syn::LitStr::new(inner, Span::mixed_site()))
                 } else {
-                    let inner = &raw[1..raw.len() - 1];
                     let interpreted = interpret_go_string_escapes(inner);
                     Self::Str(syn::LitStr::new(&interpreted, Span::mixed_site()))
                 }
@@ -2506,15 +2565,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 op: syn::UnOp::Deref(<Token![*]>::default()),
                 expr: Box::new((*star_expr.x).into()),
             }),
-            ast::Expr::CompositeLit(comp_lit) => {
-                compile_composite_lit(comp_lit)
-            }
-            ast::Expr::FuncLit(func_lit) => {
-                compile_func_lit(func_lit)
-            }
-            ast::Expr::SliceExpr(slice_expr) => {
-                compile_slice_expr(slice_expr)
-            }
+            ast::Expr::CompositeLit(comp_lit) => compile_composite_lit(comp_lit),
+            ast::Expr::FuncLit(func_lit) => compile_func_lit(func_lit),
+            ast::Expr::SliceExpr(slice_expr) => compile_slice_expr(slice_expr),
             ast::Expr::TypeAssertExpr(ta) => {
                 // x.(T) → downcast or type check
                 let x: syn::Expr = (*ta.x).into();
@@ -2561,9 +2614,8 @@ impl From<ast::Expr<'_>> for syn::Type {
             }
             ast::Expr::ArrayType(array_type) => {
                 let elem: syn::Type = (*array_type.elt).into();
-                if array_type.len.is_some() {
-                    // Fixed-size array: [N]T → [T; N]
-                    let len_expr: syn::Expr = (*array_type.len.unwrap()).into();
+                if let Some(len) = array_type.len {
+                    let len_expr: syn::Expr = (*len).into();
                     syn::parse_quote! { [#elem; #len_expr] }
                 } else {
                     // Slice: []T → Vec<T>
@@ -2602,9 +2654,9 @@ impl From<ast::Expr<'_>> for syn::Type {
                             .list
                             .into_iter()
                             .next()
-                            .unwrap()
+                            .unwrap_or_else(|| unreachable!())
                             .type_
-                            .unwrap()
+                            .unwrap_or_else(|| unreachable!())
                             .into();
                         syn::parse_quote! { fn(#param_types) -> #ret_type }
                     } else {
@@ -2713,8 +2765,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                             })
                                     });
                                 if returns_string {
-                                    struct_has_string_method
-                                        .insert(type_name.clone());
+                                    struct_has_string_method.insert(type_name.clone());
                                 }
                             }
                             struct_methods
@@ -2738,8 +2789,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 let names = vs.names;
                                 let has_type = vs.type_.is_some();
                                 let type_expr = vs.type_;
-                                let mut values_iter =
-                                    vs.values.unwrap_or_default().into_iter();
+                                let mut values_iter = vs.values.unwrap_or_default().into_iter();
 
                                 for name in names {
                                     let ident: syn::Ident = name.into();
@@ -2777,14 +2827,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                             for field in &methods_list.list {
                                                 if let Some(ref names) = field.names {
                                                     for n in names {
-                                                        method_names
-                                                            .push(n.name.to_string());
+                                                        method_names.push(n.name.to_string());
                                                     }
                                                 }
                                             }
                                         }
-                                        trait_methods
-                                            .insert(trait_name, method_names);
+                                        trait_methods.insert(trait_name, method_names);
                                     }
                                 }
                                 items.extend(compile_type_spec(ts)?);
@@ -3192,7 +3240,6 @@ impl From<ast::Ident<'_>> for syn::Ident {
     }
 }
 
-
 impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
 
@@ -3292,7 +3339,8 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                         <Token![else]>::default(),
                         Box::new(match else_ {
                             ast::Stmt::IfStmt(if_stmt) => {
-                                let inner_stmts = Vec::<syn::Stmt>::try_from(ast::Stmt::IfStmt(if_stmt))?;
+                                let inner_stmts =
+                                    Vec::<syn::Stmt>::try_from(ast::Stmt::IfStmt(if_stmt))?;
                                 syn::Expr::Block(syn::ExprBlock {
                                     attrs: vec![],
                                     label: None,
@@ -3358,9 +3406,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     #chan.send(#value);
                 }])
             }
-            ast::Stmt::SelectStmt(select_stmt) => {
-                compile_select_stmt(select_stmt)
-            }
+            ast::Stmt::SelectStmt(select_stmt) => compile_select_stmt(select_stmt),
             ast::Stmt::CommClause(_) | ast::Stmt::CaseClause(_) => {
                 // These are handled inline by their parent (SwitchStmt/SelectStmt)
                 Ok(vec![])
@@ -3602,8 +3648,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
                     brace_token: syn::token::Brace::default(),
                     stmts: body_stmts,
                 },
-                else_branch: result
-                    .map(|e| (<Token![else]>::default(), Box::new(e))),
+                else_branch: result.map(|e| (<Token![else]>::default(), Box::new(e))),
             }));
         }
 
@@ -3613,10 +3658,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
     }
 }
 
-fn build_case_condition(
-    list: Option<Vec<ast::Expr>>,
-    tag: Option<&syn::Expr>,
-) -> syn::Expr {
+fn build_case_condition(list: Option<Vec<ast::Expr>>, tag: Option<&syn::Expr>) -> syn::Expr {
     let exprs = list.unwrap_or_default();
 
     if let Some(tag) = tag {
@@ -3640,11 +3682,15 @@ fn build_case_condition(
     } else {
         // Tagless switch: `switch { case cond: ... }` → conditions are already booleans
         if exprs.len() == 1 {
-            exprs.into_iter().next().unwrap().into()
-        } else {
-            let conditions: Vec<syn::Expr> = exprs.into_iter().map(Into::into).collect();
-            conditions
+            exprs
                 .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!())
+                .into()
+        } else {
+            exprs
+                .into_iter()
+                .map(Into::into)
                 .reduce(|acc, e| syn::parse_quote! { #acc || #e })
                 .unwrap_or_else(|| syn::parse_quote! { true })
         }
@@ -3677,7 +3723,7 @@ fn has_unlabeled_continue_in_expr(expr: &syn::Expr) -> bool {
 /// Rewrite unlabeled `continue;` to `break 'body;` in a statement list.
 /// Recurses into if/else and blocks but stops at nested loops (which have
 /// their own continue targets).
-fn rewrite_continue_as_break_body(stmts: &mut Vec<syn::Stmt>) {
+fn rewrite_continue_as_break_body(stmts: &mut [syn::Stmt]) {
     for stmt in stmts.iter_mut() {
         match stmt {
             syn::Stmt::Expr(syn::Expr::Continue(cont), semi) if cont.label.is_none() => {
@@ -3729,8 +3775,8 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                     let ident: syn::Ident = name.into();
                     let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
 
-                    let init = init_expr
-                        .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
+                    let init =
+                        init_expr.unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
                     if let Some(ref ty) = rust_type {
                         stmts.push(syn::parse_quote! {
                             let mut #ident: #ty = #init;
@@ -3842,7 +3888,7 @@ fn compile_comma_ok(
         CommaOkKind::TypeAssert => {
             if let ast::Expr::TypeAssertExpr(ta) = rhs {
                 let x_e: syn::Expr = (*ta.x).into();
-                let ty: syn::Type = (*ta.type_.unwrap()).into();
+                let ty: syn::Type = (*ta.type_.unwrap_or_else(|| unreachable!())).into();
                 syn::parse_quote! {
                     match (&(#x_e) as &dyn std::any::Any).downcast_ref::<#ty>() {
                         Some(__v) => (__v.clone(), true),
@@ -3861,8 +3907,8 @@ fn compile_comma_ok(
         }])
     } else {
         let mut lhs_iter = lhs.into_iter();
-        let val_e: syn::Expr = lhs_iter.next().unwrap().into();
-        let ok_e: syn::Expr = lhs_iter.next().unwrap().into();
+        let val_e: syn::Expr = lhs_iter.next().unwrap_or_else(|| unreachable!()).into();
+        let ok_e: syn::Expr = lhs_iter.next().unwrap_or_else(|| unreachable!()).into();
         Ok(vec![syn::parse_quote! {
             (#val_e, #ok_e) = #rhs_expr;
         }])
@@ -3877,7 +3923,11 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         if assign_stmt.lhs.len() == 2 && assign_stmt.rhs.len() == 1 {
             if let Some(kind) = detect_comma_ok(&assign_stmt.rhs[0]) {
                 let is_define = assign_stmt.tok == token::Token::DEFINE;
-                let rhs = assign_stmt.rhs.into_iter().next().unwrap();
+                let rhs = assign_stmt
+                    .rhs
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| unreachable!());
                 return compile_comma_ok(assign_stmt.lhs, rhs, kind, is_define);
             }
         }
@@ -3888,7 +3938,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 .rhs
                 .into_iter()
                 .next()
-                .unwrap()
+                .unwrap_or_else(|| unreachable!())
                 .into();
 
             if assign_stmt.tok == token::Token::DEFINE {
@@ -4151,7 +4201,11 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
         let expr = match return_stmt.results.len() {
             0 => None,
             1 => Some(syn::Expr::from(
-                return_stmt.results.into_iter().next().unwrap(),
+                return_stmt
+                    .results
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| unreachable!()),
             )),
             _ => {
                 let mut elems = syn::punctuated::Punctuated::new();
@@ -4284,14 +4338,9 @@ func main() {
 
         // The stdlib_call pass rewrites fmt::Println to a macro invocation, which
         // creates new idents without original spans. Verify the string literal is mapped.
-        let has_hello =
-            (0..parsed_sm.get_name_count()).any(|i| {
-                parsed_sm.get_name(i).is_some_and(|n| n.contains("Hello"))
-            });
-        assert!(
-            has_hello,
-            "Expected string literal mapping in source map"
-        );
+        let has_hello = (0..parsed_sm.get_name_count())
+            .any(|i| parsed_sm.get_name(i).is_some_and(|n| n.contains("Hello")));
+        assert!(has_hello, "Expected string literal mapping in source map");
     }
 
     #[test]
@@ -4366,7 +4415,10 @@ func main() {
     #[test]
     fn import_path_to_filename_no_collisions() {
         let paths = ["example/foo", "example/bar", "other/foo", "example/foo/bar"];
-        let filenames: Vec<String> = paths.iter().map(|p| super::import_path_to_filename(p)).collect();
+        let filenames: Vec<String> = paths
+            .iter()
+            .map(|p| super::import_path_to_filename(p))
+            .collect();
         let unique: std::collections::HashSet<_> = filenames.iter().collect();
         assert_eq!(filenames.len(), unique.len(), "filenames must be unique");
     }
@@ -4399,7 +4451,8 @@ func main() {
 
     #[test]
     fn compile_program_multi_hello_world() {
-        let go_source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n";
+        let go_source =
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n";
         let ast = parse_file("main.go", go_source).unwrap();
         let program = crate::parser::ParsedProgram {
             main_package: crate::parser::ParsedPackage {
@@ -4423,7 +4476,8 @@ func main() {
 
     #[test]
     fn compile_program_multi_generates_valid_rust() {
-        let go_source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"test\")\n}\n";
+        let go_source =
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"test\")\n}\n";
         let ast = parse_file("main.go", go_source).unwrap();
         let program = crate::parser::ParsedProgram {
             main_package: crate::parser::ParsedPackage {

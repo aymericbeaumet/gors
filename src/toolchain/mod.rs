@@ -125,6 +125,7 @@ fn extract_tar_gz(data: &[u8], dest: &Path) -> Result<(), ToolchainError> {
 
 fn install(version: &str) -> Result<GoToolchain, ToolchainError> {
     let dest = toolchain_dir(version)?;
+    let tmp_dest = dest.with_file_name(format!("go{version}.{}", std::process::id()));
 
     eprintln!("Downloading Go {version}...");
     let url = download_url(version)?;
@@ -133,14 +134,26 @@ fn install(version: &str) -> Result<GoToolchain, ToolchainError> {
     eprintln!("Verifying checksum...");
     let checksum_url = checksum_url(version)?;
     let checksum_bytes = download_bytes(&checksum_url)?;
-    let expected_checksum = String::from_utf8_lossy(&checksum_bytes)
-        .trim()
-        .to_string();
+    let expected_checksum = String::from_utf8_lossy(&checksum_bytes).trim().to_string();
     verify_checksum(&tarball, &expected_checksum)?;
 
     eprintln!("Extracting to {}...", dest.display());
-    std::fs::create_dir_all(&dest)?;
-    extract_tar_gz(&tarball, &dest)?;
+    let _ = std::fs::remove_dir_all(&tmp_dest);
+    std::fs::create_dir_all(&tmp_dest)?;
+    extract_tar_gz(&tarball, &tmp_dest)?;
+
+    // Atomically move into place; if another process already installed this
+    // version the rename will fail and we reuse the existing installation.
+    match std::fs::rename(&tmp_dest, &dest) {
+        Ok(()) => {}
+        Err(_) if dest.join("go").join("src").is_dir() => {
+            let _ = std::fs::remove_dir_all(&tmp_dest);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp_dest);
+            return Err(ToolchainError::Io(e));
+        }
+    }
 
     eprintln!("Go {version} installed successfully.");
     Ok(GoToolchain {
@@ -188,11 +201,9 @@ impl GoToolchain {
         // Check that it contains at least one .go file
         std::fs::read_dir(&src_dir)
             .map(|entries| {
-                entries.flatten().any(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|ext| ext == "go")
-                })
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension().is_some_and(|ext| ext == "go"))
             })
             .unwrap_or(false)
     }

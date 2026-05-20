@@ -37,7 +37,10 @@ fn discover_program_dirs() -> Vec<PathBuf> {
 fn test_programs_rust_backend() {
     let gors = gors_bin();
     let dirs = discover_program_dirs();
-    assert!(!dirs.is_empty(), "No programs found in fixtures/go_programs");
+    assert!(
+        !dirs.is_empty(),
+        "No programs found in fixtures/go_programs"
+    );
 
     let mut passed = 0;
     let mut failed: Vec<(String, String)> = Vec::new();
@@ -100,7 +103,10 @@ fn test_programs_go_runner() {
 
     let go_bin = go_runner_bin();
     let dirs = discover_program_dirs();
-    assert!(!dirs.is_empty(), "No programs found in fixtures/go_programs");
+    assert!(
+        !dirs.is_empty(),
+        "No programs found in fixtures/go_programs"
+    );
 
     for dir in &dirs {
         let name = dir.file_name().unwrap().to_str().unwrap();
@@ -121,7 +127,11 @@ fn test_programs_go_runner() {
 
         if runner_out.status.success() {
             let actual = String::from_utf8_lossy(&runner_out.stdout);
-            assert_eq!(actual.as_ref(), go_stdout.as_str(), "Output mismatch for {name}");
+            assert_eq!(
+                actual.as_ref(),
+                go_stdout.as_str(),
+                "Output mismatch for {name}"
+            );
         }
     }
 }
@@ -330,9 +340,18 @@ fn test_multi_file_output_with_imports() {
 
     assert!(compiled.has_main);
     assert!(compiled.modules.values().any(|m| m.mod_name == "greet"));
-    assert!(compiled.modules.values().any(|m| m.mod_name == "fmt" && m.is_stdlib));
+    assert!(
+        compiled
+            .modules
+            .values()
+            .any(|m| m.mod_name == "fmt" && m.is_stdlib)
+    );
 
-    let greet = compiled.modules.values().find(|m| m.mod_name == "greet").unwrap();
+    let greet = compiled
+        .modules
+        .values()
+        .find(|m| m.mod_name == "greet")
+        .unwrap();
     assert_eq!(greet.filename, "example__greet.rs");
     assert!(!greet.content_hash.is_empty());
 }
@@ -378,7 +397,11 @@ fn test_multi_file_no_filename_collisions() {
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
 
-    let filenames: Vec<&str> = compiled.modules.values().map(|m| m.filename.as_str()).collect();
+    let filenames: Vec<&str> = compiled
+        .modules
+        .values()
+        .map(|m| m.filename.as_str())
+        .collect();
     let unique: std::collections::HashSet<&str> = filenames.iter().copied().collect();
     assert_eq!(filenames.len(), unique.len(), "filenames must be unique");
 }
@@ -401,7 +424,10 @@ fn test_multi_file_content_hash_stability() {
             continue;
         }
         let m2 = compiled2.modules.get(key).unwrap();
-        assert_eq!(m1.content_hash, m2.content_hash, "hash for {key} should be stable");
+        assert_eq!(
+            m1.content_hash, m2.content_hash,
+            "hash for {key} should be stable"
+        );
     }
 }
 
@@ -459,7 +485,13 @@ fn test_multi_file_lib_rs_is_consumable() {
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
     let output = gors::backend_rust::generate_multi(compiled).unwrap();
 
-    assert!(output.files.contains_key("lib.rs"), "lib.rs should exist for library consumption");
+    assert!(
+        output.files.contains_key("lib.rs"),
+        "lib.rs should exist for library consumption"
+    );
     let lib_rs = &output.files["lib.rs"];
-    assert!(lib_rs.contains("pub mod"), "lib.rs should have pub mod declarations");
+    assert!(
+        lib_rs.contains("pub mod"),
+        "lib.rs should have pub mod declarations"
+    );
 }

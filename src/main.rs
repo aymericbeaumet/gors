@@ -268,16 +268,16 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let src_path = tmp_dir.path().join("main.rs");
     let bin_path = tmp_dir.path().join("main");
 
+    let src_str = src_path.to_string_lossy();
+    let bin_str = bin_path.to_string_lossy();
     let rustc_args = RustcArgs {
-        src: src_path.to_str().unwrap(),
-        out: Some(bin_path.to_str().unwrap()),
+        src: &src_str,
+        out: Some(&bin_str),
         emit: None,
         release: cmd.release,
     };
 
-    let rustc_status = Command::new("rustc")
-        .args(Vec::from(rustc_args))
-        .status()?;
+    let rustc_status = Command::new("rustc").args(Vec::from(rustc_args)).status()?;
 
     if !rustc_status.success() {
         std::process::exit(rustc_status.code().unwrap_or(1));

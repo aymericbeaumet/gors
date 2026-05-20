@@ -53,13 +53,10 @@ impl VisitMut for CollectUses {
         // Skip type method paths like Box::new — those are type-associated, not modules
         let is_type_method_path = path.segments.len() == 2
             && path.leading_colon.is_none()
-            && path
-                .segments
-                .first()
-                .is_some_and(|s| {
-                    let name = s.ident.to_string();
-                    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                });
+            && path.segments.first().is_some_and(|s| {
+                let name = s.ident.to_string();
+                name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            });
 
         if path.segments.len() > 1
             && !has_generics

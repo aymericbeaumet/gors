@@ -98,4 +98,3 @@ pub mod token;
 /// Downloads and caches a hermetic Go toolchain in the user's
 /// data directory, providing access to stdlib source files.
 pub mod toolchain;
-
