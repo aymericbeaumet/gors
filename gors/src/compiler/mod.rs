@@ -3922,14 +3922,67 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
 
 fn array_len_expr(expr: &ast::Expr) -> syn::Expr {
     let values = BTreeMap::new();
-    let Some(value) = const_eval_expr(expr, 0, &values) else {
-        return syn::parse_quote! { 0 };
-    };
-    let Some(value) = value.as_u128() else {
-        return syn::parse_quote! { 0 };
-    };
-    let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
-    syn::parse_quote! { #lit }
+    if let Some(value) = const_eval_expr(expr, 0, &values).and_then(|value| value.as_u128()) {
+        let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
+        return syn::parse_quote! { #lit };
+    }
+    if let Some(expr) = array_len_const_expr(expr) {
+        return syn::parse_quote! { ((#expr) as usize) };
+    }
+    syn::parse_quote! { 0 }
+}
+
+fn array_len_const_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
+            let lit = syn::LitInt::new(lit.value, Span::mixed_site());
+            Some(syn::parse_quote! { #lit })
+        }
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::CHAR => {
+            let value = const_eval_expr(expr, 0, &BTreeMap::new())?.as_u128()?;
+            let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
+            Some(syn::parse_quote! { #lit })
+        }
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&import_rust_name(ident.name), Span::mixed_site());
+            Some(syn::parse_quote! { #ident })
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(base) = &*selector.x else {
+                return None;
+            };
+            let base = syn::Ident::new(&import_rust_name(base.name), Span::mixed_site());
+            let sel = syn::Ident::new(&import_rust_name(selector.sel.name), Span::mixed_site());
+            Some(syn::parse_quote! { #base::#sel })
+        }
+        ast::Expr::ParenExpr(paren) => {
+            let inner = array_len_const_expr(&paren.x)?;
+            Some(syn::parse_quote! { (#inner) })
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            let inner = array_len_const_expr(&unary.x)?;
+            match unary.op {
+                token::Token::ADD => Some(inner),
+                token::Token::SUB => Some(syn::parse_quote! { -#inner }),
+                token::Token::XOR => Some(syn::parse_quote! { !#inner }),
+                _ => None,
+            }
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let left = array_len_const_expr(&binary.x)?;
+            let right = array_len_const_expr(&binary.y)?;
+            let op: syn::BinOp = binary.op.into();
+            Some(syn::parse_quote! { (#left #op #right) })
+        }
+        ast::Expr::CallExpr(call) => {
+            let args = call.args.as_deref()?;
+            let [arg] = args else {
+                return None;
+            };
+            array_len_const_expr(arg)
+        }
+        _ => None,
+    }
 }
 
 fn array_literal_len_expr(len: &ast::Expr, elts: &[ast::Expr]) -> syn::Expr {
@@ -4543,8 +4596,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
         other => {
             let is_byte_slice = is_byte_slice_type(&other);
             let underlying_go_type = typeinfer::GoType::from_expr(&other);
-            let is_copy_alias = underlying_go_type.is_numeric()
-                || matches!(underlying_go_type, typeinfer::GoType::Bool);
+            let is_copy_alias = go_type_is_copy(&underlying_go_type);
             let rust_type: syn::Type = other.into();
             let struct_item: syn::Item = if is_copy_alias {
                 syn::parse_quote! {
@@ -5831,7 +5883,21 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 let type_name = type_ident.to_string();
                 let type_kind =
                     TYPE_ENV.with(|env| env.borrow().get_type_kind(&type_name).cloned());
-                if matches!(type_kind, Some(typeinfer::TypeKind::Alias(_))) {
+                if let Some(typeinfer::TypeKind::Alias(alias_type)) = type_kind {
+                    if let typeinfer::GoType::Array(elem_type) = alias_type {
+                        let elts = raw_elts
+                            .into_iter()
+                            .map(|elt| compile_expr_with_expected(elt, Some(&elem_type)))
+                            .collect::<Vec<_>>();
+                        return syn::parse_quote! { #type_ident([#(#elts),*]) };
+                    }
+                    if let typeinfer::GoType::Slice(elem_type) = alias_type {
+                        let elts = raw_elts
+                            .into_iter()
+                            .map(|elt| compile_expr_with_expected(elt, Some(&elem_type)))
+                            .collect::<Vec<_>>();
+                        return syn::parse_quote! { #type_ident(Vec::from([#(#elts),*])) };
+                    }
                     let elts = compile_raw_elts(raw_elts);
                     if elts.is_empty() || elts.iter().any(|elt| matches!(elt, syn::Expr::Tuple(_)))
                     {

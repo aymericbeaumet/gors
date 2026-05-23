@@ -218,8 +218,9 @@ Go stdlib is embedded in the `gors` crate binary data via `gors/build.rs`, which
 downloads Go 1.24.3 SDK and packs `go/src/**/*.go` (excluding tests, vendor,
 cmd) into `go_stdlib.tar.gz`.
 All stdlib/internal packages in the archive are available through the generic
-resolver; build tags and GOOS/GOARCH filename suffixes are filtered for the host
-target before parsing.
+resolver. GOOS filtering follows the host target, but GOARCH filtering uses a
+synthetic non-native `gors` architecture so assembly-backed native stdlib files
+fall back to pure Go generic implementations before parsing.
 
 The resolver caches parsed package selection, type environments, transitive
 imports, and root-specific resolved module token streams. Per-file stdlib

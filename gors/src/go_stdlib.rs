@@ -1314,12 +1314,7 @@ fn go_os() -> &'static str {
 }
 
 fn go_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        "x86" => "386",
-        other => other,
-    }
+    "gors"
 }
 
 fn is_go_os(value: &str) -> bool {
