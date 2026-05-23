@@ -4526,12 +4526,36 @@ enum LoweredStdlibCall {
     FmtFprintf,
     FmtFprintln,
     FmtErrorf,
+    SortFind,
     SortInts,
     SortStrings,
     SortFloat64s,
     SortIntsAreSorted,
     SortStringsAreSorted,
     SortFloat64sAreSorted,
+    SortIsSorted,
+    SortSearch,
+    SortSearchFloat64s,
+    SortSearchInts,
+    SortSearchStrings,
+    SortSlice,
+    SortSliceIsSorted,
+    SortSliceStable,
+    SortSort,
+    SortStable,
+}
+
+#[derive(Clone, Copy)]
+enum SortSliceKind {
+    Int,
+    String,
+    Float64,
+}
+
+#[derive(Clone, Copy)]
+enum SortInterfaceMode {
+    Normal,
+    Reverse,
 }
 
 fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
@@ -4559,12 +4583,23 @@ fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
         ("fmt", "Fprintf") => Some(LoweredStdlibCall::FmtFprintf),
         ("fmt", "Fprintln") => Some(LoweredStdlibCall::FmtFprintln),
         ("fmt", "Errorf") => Some(LoweredStdlibCall::FmtErrorf),
+        ("sort", "Find") => Some(LoweredStdlibCall::SortFind),
         ("sort", "Ints") => Some(LoweredStdlibCall::SortInts),
         ("sort", "Strings") => Some(LoweredStdlibCall::SortStrings),
         ("sort", "Float64s") => Some(LoweredStdlibCall::SortFloat64s),
         ("sort", "IntsAreSorted") => Some(LoweredStdlibCall::SortIntsAreSorted),
         ("sort", "StringsAreSorted") => Some(LoweredStdlibCall::SortStringsAreSorted),
         ("sort", "Float64sAreSorted") => Some(LoweredStdlibCall::SortFloat64sAreSorted),
+        ("sort", "IsSorted") => Some(LoweredStdlibCall::SortIsSorted),
+        ("sort", "Search") => Some(LoweredStdlibCall::SortSearch),
+        ("sort", "SearchFloat64s") => Some(LoweredStdlibCall::SortSearchFloat64s),
+        ("sort", "SearchInts") => Some(LoweredStdlibCall::SortSearchInts),
+        ("sort", "SearchStrings") => Some(LoweredStdlibCall::SortSearchStrings),
+        ("sort", "Slice") => Some(LoweredStdlibCall::SortSlice),
+        ("sort", "SliceIsSorted") => Some(LoweredStdlibCall::SortSliceIsSorted),
+        ("sort", "SliceStable") => Some(LoweredStdlibCall::SortSliceStable),
+        ("sort", "Sort") => Some(LoweredStdlibCall::SortSort),
+        ("sort", "Stable") => Some(LoweredStdlibCall::SortStable),
         _ => None,
     }
 }
@@ -4658,6 +4693,125 @@ fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibC
         return compile_fmt_format_call(raw_args, 1, lowered);
     }
 
+    if matches!(lowered, LoweredStdlibCall::SortSearch) {
+        let mut args = raw_args.into_iter();
+        let Some(n) = args.next() else {
+            return compile_error_expr("sort.Search requires a length argument");
+        };
+        let Some(predicate) = args.next() else {
+            return compile_error_expr("sort.Search requires a predicate argument");
+        };
+        if args.next().is_some() {
+            return compile_error_expr("sort.Search requires two arguments");
+        }
+        let n: syn::Expr = n.into();
+        let predicate: syn::Expr = predicate.into();
+        return syn::parse_quote! { crate::builtin::go_sort_search(#n, #predicate) };
+    }
+
+    if matches!(lowered, LoweredStdlibCall::SortFind) {
+        let mut args = raw_args.into_iter();
+        let Some(n) = args.next() else {
+            return compile_error_expr("sort.Find requires a length argument");
+        };
+        let Some(cmp) = args.next() else {
+            return compile_error_expr("sort.Find requires a comparison argument");
+        };
+        if args.next().is_some() {
+            return compile_error_expr("sort.Find requires two arguments");
+        }
+        let n: syn::Expr = n.into();
+        let cmp: syn::Expr = cmp.into();
+        return syn::parse_quote! { crate::builtin::go_sort_find(#n, #cmp) };
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::SortSearchFloat64s
+            | LoweredStdlibCall::SortSearchInts
+            | LoweredStdlibCall::SortSearchStrings
+    ) {
+        let mut args = raw_args.into_iter();
+        let Some(values) = args.next() else {
+            return compile_error_expr("sort search helper requires a slice argument");
+        };
+        let Some(target) = args.next() else {
+            return compile_error_expr("sort search helper requires a target argument");
+        };
+        if args.next().is_some() {
+            return compile_error_expr("sort search helper requires two arguments");
+        }
+        let values: syn::Expr = values.into();
+        let target = match lowered {
+            LoweredStdlibCall::SortSearchStrings => {
+                compile_expr_with_expected(target, Some(&typeinfer::GoType::String))
+            }
+            _ => target.into(),
+        };
+        return match lowered {
+            LoweredStdlibCall::SortSearchFloat64s => {
+                syn::parse_quote! { crate::builtin::go_sort_search_float64s(&#values, #target) }
+            }
+            LoweredStdlibCall::SortSearchInts => {
+                syn::parse_quote! { crate::builtin::go_sort_search_ints(&#values, #target) }
+            }
+            LoweredStdlibCall::SortSearchStrings => {
+                syn::parse_quote! { crate::builtin::go_sort_search_strings(&#values, #target) }
+            }
+            _ => compile_error_expr("unsupported sort search lowering"),
+        };
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::SortSlice
+            | LoweredStdlibCall::SortSliceStable
+            | LoweredStdlibCall::SortSliceIsSorted
+    ) {
+        let mut args = raw_args.into_iter();
+        let Some(values) = args.next() else {
+            return compile_error_expr("sort.Slice requires a slice argument");
+        };
+        let Some(less) = args.next() else {
+            return compile_error_expr("sort.Slice requires a less function argument");
+        };
+        if args.next().is_some() {
+            return compile_error_expr("sort.Slice requires two arguments");
+        }
+        let values: syn::Expr = values.into();
+        let less: syn::Expr = less.into();
+        return match lowered {
+            LoweredStdlibCall::SortSlice | LoweredStdlibCall::SortSliceStable => {
+                syn::parse_quote! { crate::builtin::go_sort_slice(&mut #values, #less) }
+            }
+            LoweredStdlibCall::SortSliceIsSorted => {
+                syn::parse_quote! {
+                    crate::builtin::go_sort_slice_is_sorted(crate::builtin::len(&#values) as isize, #less)
+                }
+            }
+            _ => compile_error_expr("unsupported sort slice lowering"),
+        };
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::SortSort
+            | LoweredStdlibCall::SortStable
+            | LoweredStdlibCall::SortIsSorted
+    ) {
+        let mut args = raw_args.into_iter();
+        let Some(arg) = args.next() else {
+            return compile_error_expr("sort interface call requires one argument");
+        };
+        if args.next().is_some() {
+            return compile_error_expr("sort interface call requires one argument");
+        }
+        if let Some((mode, kind, values)) = into_sort_interface_arg(arg) {
+            return compile_sort_interface_arg(mode, kind, values, lowered);
+        }
+        return compile_error_expr("unsupported sort interface argument");
+    }
+
     let mut args = raw_args.into_iter();
     let Some(arg) = args.next() else {
         return compile_error_expr("sort call requires one argument");
@@ -4684,12 +4838,250 @@ fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibC
     }
 }
 
+fn is_lowered_stdlib_method_call(call_expr: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
+        return false;
+    };
+    if !matches!(
+        selector.sel.name,
+        "Len" | "Less" | "Search" | "Sort" | "Swap"
+    ) {
+        return false;
+    }
+    let ast::Expr::CallExpr(receiver_call) = &*selector.x else {
+        return false;
+    };
+    sort_slice_kind_from_fun(&receiver_call.fun).is_some()
+}
+
+fn compile_lowered_stdlib_method_call(call_expr: ast::CallExpr) -> syn::Expr {
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return compile_error_expr("unsupported stdlib method call");
+    };
+    let ast::Expr::CallExpr(receiver_call) = *selector.x else {
+        return compile_error_expr("unsupported stdlib method receiver");
+    };
+    let Some((kind, receiver)) = into_sort_slice_conversion_call(receiver_call) else {
+        return compile_error_expr("unsupported sort slice method receiver");
+    };
+    let method = selector.sel.name;
+    let raw_args = call_expr.args.unwrap_or_default();
+
+    match method {
+        "Len" => {
+            if !raw_args.is_empty() {
+                return compile_error_expr("sort slice Len method requires no arguments");
+            }
+            let receiver: syn::Expr = receiver.into();
+            syn::parse_quote! { crate::builtin::len(&#receiver) as isize }
+        }
+        "Less" => {
+            let mut args = raw_args.into_iter();
+            let Some(i) = args.next() else {
+                return compile_error_expr("sort slice Less method requires two arguments");
+            };
+            let Some(j) = args.next() else {
+                return compile_error_expr("sort slice Less method requires two arguments");
+            };
+            if args.next().is_some() {
+                return compile_error_expr("sort slice Less method requires two arguments");
+            }
+            let receiver: syn::Expr = receiver.into();
+            let i: syn::Expr = i.into();
+            let j: syn::Expr = j.into();
+            match kind {
+                SortSliceKind::Float64 => {
+                    syn::parse_quote! { crate::builtin::go_sort_float64s_less(&#receiver, #i, #j) }
+                }
+                SortSliceKind::Int | SortSliceKind::String => {
+                    syn::parse_quote! { crate::builtin::go_sort_slice_less(&#receiver, #i, #j) }
+                }
+            }
+        }
+        "Search" => {
+            let mut args = raw_args.into_iter();
+            let Some(target) = args.next() else {
+                return compile_error_expr("sort slice Search method requires one argument");
+            };
+            if args.next().is_some() {
+                return compile_error_expr("sort slice Search method requires one argument");
+            }
+            let receiver: syn::Expr = receiver.into();
+            compile_sort_slice_search(kind, receiver, target)
+        }
+        "Sort" => {
+            if !raw_args.is_empty() {
+                return compile_error_expr("sort slice Sort method requires no arguments");
+            }
+            let receiver: syn::Expr = receiver.into();
+            compile_sort_slice_sort(kind, receiver, SortInterfaceMode::Normal)
+        }
+        "Swap" => {
+            let mut args = raw_args.into_iter();
+            let Some(i) = args.next() else {
+                return compile_error_expr("sort slice Swap method requires two arguments");
+            };
+            let Some(j) = args.next() else {
+                return compile_error_expr("sort slice Swap method requires two arguments");
+            };
+            if args.next().is_some() {
+                return compile_error_expr("sort slice Swap method requires two arguments");
+            }
+            let receiver: syn::Expr = receiver.into();
+            let i: syn::Expr = i.into();
+            let j: syn::Expr = j.into();
+            syn::parse_quote! { crate::builtin::go_sort_swap(&mut #receiver, #i, #j) }
+        }
+        _ => compile_error_expr("unsupported sort slice method"),
+    }
+}
+
+fn into_sort_interface_arg(
+    arg: ast::Expr,
+) -> Option<(SortInterfaceMode, SortSliceKind, ast::Expr)> {
+    if let ast::Expr::CallExpr(call) = arg {
+        if is_sort_package_selector(&call.fun, "Reverse") {
+            let mut args = call.args.unwrap_or_default().into_iter();
+            let receiver = args.next()?;
+            if args.next().is_some() {
+                return None;
+            }
+            let (kind, values) = into_sort_slice_conversion(receiver)?;
+            return Some((SortInterfaceMode::Reverse, kind, values));
+        }
+        let (kind, values) = into_sort_slice_conversion_call(call)?;
+        return Some((SortInterfaceMode::Normal, kind, values));
+    }
+    None
+}
+
+fn into_sort_slice_conversion(arg: ast::Expr) -> Option<(SortSliceKind, ast::Expr)> {
+    let ast::Expr::CallExpr(call) = arg else {
+        return None;
+    };
+    into_sort_slice_conversion_call(call)
+}
+
+fn into_sort_slice_conversion_call(call: ast::CallExpr) -> Option<(SortSliceKind, ast::Expr)> {
+    let kind = sort_slice_kind_from_fun(&call.fun)?;
+    let mut args = call.args.unwrap_or_default().into_iter();
+    let values = args.next()?;
+    if args.next().is_some() {
+        return None;
+    }
+    Some((kind, values))
+}
+
+fn sort_slice_kind_from_fun(fun: &ast::Expr) -> Option<SortSliceKind> {
+    let ast::Expr::SelectorExpr(selector) = fun else {
+        return None;
+    };
+    let ast::Expr::Ident(pkg) = &*selector.x else {
+        return None;
+    };
+    if pkg.name != "sort" || !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
+        return None;
+    }
+    match selector.sel.name {
+        "IntSlice" => Some(SortSliceKind::Int),
+        "StringSlice" => Some(SortSliceKind::String),
+        "Float64Slice" => Some(SortSliceKind::Float64),
+        _ => None,
+    }
+}
+
+fn is_sort_package_selector(fun: &ast::Expr, name: &str) -> bool {
+    let ast::Expr::SelectorExpr(selector) = fun else {
+        return false;
+    };
+    let ast::Expr::Ident(pkg) = &*selector.x else {
+        return false;
+    };
+    pkg.name == "sort"
+        && selector.sel.name == name
+        && IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name))
+}
+
+fn compile_sort_interface_arg(
+    mode: SortInterfaceMode,
+    kind: SortSliceKind,
+    values: ast::Expr,
+    lowered: LoweredStdlibCall,
+) -> syn::Expr {
+    let values: syn::Expr = values.into();
+    match lowered {
+        LoweredStdlibCall::SortSort | LoweredStdlibCall::SortStable => {
+            compile_sort_slice_sort(kind, values, mode)
+        }
+        LoweredStdlibCall::SortIsSorted => match mode {
+            SortInterfaceMode::Normal => compile_sort_slice_is_sorted(kind, values),
+            SortInterfaceMode::Reverse => {
+                compile_error_expr("sort.IsSorted does not lower Reverse")
+            }
+        },
+        _ => compile_error_expr("unsupported sort interface lowering"),
+    }
+}
+
+fn compile_sort_slice_sort(
+    kind: SortSliceKind,
+    values: syn::Expr,
+    mode: SortInterfaceMode,
+) -> syn::Expr {
+    match (kind, mode) {
+        (SortSliceKind::Float64, SortInterfaceMode::Normal) => {
+            syn::parse_quote! { crate::builtin::go_sort_float64s(&mut #values) }
+        }
+        (SortSliceKind::Float64, SortInterfaceMode::Reverse) => {
+            syn::parse_quote! { crate::builtin::go_sort_float64s_reverse(&mut #values) }
+        }
+        (SortSliceKind::Int | SortSliceKind::String, SortInterfaceMode::Normal) => {
+            syn::parse_quote! { crate::builtin::go_sort(&mut #values) }
+        }
+        (SortSliceKind::Int | SortSliceKind::String, SortInterfaceMode::Reverse) => {
+            syn::parse_quote! { crate::builtin::go_sort_reverse(&mut #values) }
+        }
+    }
+}
+
+fn compile_sort_slice_is_sorted(kind: SortSliceKind, values: syn::Expr) -> syn::Expr {
+    match kind {
+        SortSliceKind::Float64 => {
+            syn::parse_quote! { crate::builtin::go_float64s_are_sorted(&#values) }
+        }
+        SortSliceKind::Int | SortSliceKind::String => {
+            syn::parse_quote! { crate::builtin::go_is_sorted(&#values) }
+        }
+    }
+}
+
+fn compile_sort_slice_search(
+    kind: SortSliceKind,
+    receiver: syn::Expr,
+    target: ast::Expr,
+) -> syn::Expr {
+    match kind {
+        SortSliceKind::Float64 => {
+            let target: syn::Expr = target.into();
+            syn::parse_quote! { crate::builtin::go_sort_search_float64s(&#receiver, #target) }
+        }
+        SortSliceKind::Int => {
+            let target: syn::Expr = target.into();
+            syn::parse_quote! { crate::builtin::go_sort_search_ints(&#receiver, #target) }
+        }
+        SortSliceKind::String => {
+            let target = compile_expr_with_expected(target, Some(&typeinfer::GoType::String));
+            syn::parse_quote! { crate::builtin::go_sort_search_strings(&#receiver, #target) }
+        }
+    }
+}
+
 fn compile_fmt_any_vec(raw_args: Vec<ast::Expr>) -> syn::Expr {
     let args: Vec<syn::Expr> = raw_args
         .into_iter()
         .map(|arg| {
             let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
-            syn::parse_quote! { Box::new(#arg.clone()) as Box<dyn std::any::Any> }
+            syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> }
         })
         .collect();
 
@@ -6162,6 +6554,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 }
                 if let Some(lowered) = lowered_stdlib_call(&call_expr) {
                     return compile_lowered_stdlib_call(call_expr, lowered);
+                }
+                if is_lowered_stdlib_method_call(&call_expr) {
+                    return compile_lowered_stdlib_method_call(call_expr);
                 }
                 if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
                     return compile_variadic_any_call(call_expr, variadic_start);

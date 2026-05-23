@@ -869,6 +869,108 @@ pub fn go_float64s_are_sorted(values: &[f64]) -> bool {
         .all(|pair| go_cmp_float64(pair[0], pair[1]) != std::cmp::Ordering::Greater)
 }
 
+#[inline]
+pub fn go_sort_reverse<T: Ord>(values: &mut [T]) {
+    values.sort_by(|left, right| right.cmp(left));
+}
+
+#[inline]
+pub fn go_sort_float64s_reverse(values: &mut [f64]) {
+    values.sort_by(|left, right| go_cmp_float64(*right, *left));
+}
+
+#[inline]
+pub fn go_sort_search<F>(n: isize, f: F) -> isize
+where
+    F: Fn(isize) -> bool,
+{
+    let mut i = 0;
+    let mut j = n;
+    while i < j {
+        let h = (((i + j) as usize) >> 1) as isize;
+        if !f(h) {
+            i = h + 1;
+        } else {
+            j = h;
+        }
+    }
+    i
+}
+
+#[inline]
+pub fn go_sort_find<F>(n: isize, cmp: F) -> (isize, bool)
+where
+    F: Fn(isize) -> isize,
+{
+    let i = go_sort_search(n, |idx| cmp(idx) <= 0);
+    let found = i < n && cmp(i) == 0;
+    (i, found)
+}
+
+#[inline]
+pub fn go_sort_search_ints(values: &[isize], target: isize) -> isize {
+    go_sort_search(values.len() as isize, |idx| values[idx as usize] >= target)
+}
+
+#[inline]
+pub fn go_sort_search_strings<T: AsRef<str>>(values: &[T], target: String) -> isize {
+    go_sort_search(values.len() as isize, |idx| {
+        values[idx as usize].as_ref() >= target.as_str()
+    })
+}
+
+#[inline]
+pub fn go_sort_search_float64s(values: &[f64], target: f64) -> isize {
+    go_sort_search(values.len() as isize, |idx| {
+        go_cmp_float64(values[idx as usize], target) != std::cmp::Ordering::Less
+    })
+}
+
+#[inline]
+pub fn go_sort_slice<T, F>(values: &mut [T], less: F)
+where
+    F: Fn(isize, isize) -> bool,
+{
+    let len = values.len();
+    for idx in 1..len {
+        let mut j = idx;
+        while j > 0 && less(j as isize, (j - 1) as isize) {
+            values.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+}
+
+#[inline]
+pub fn go_sort_slice_is_sorted<F>(len: isize, less: F) -> bool
+where
+    F: Fn(isize, isize) -> bool,
+{
+    let mut idx = 1;
+    while idx < len {
+        if less(idx, idx - 1) {
+            return false;
+        }
+        idx += 1;
+    }
+    true
+}
+
+#[inline]
+pub fn go_sort_slice_less<T: Ord>(values: &[T], i: isize, j: isize) -> bool {
+    values[i as usize] < values[j as usize]
+}
+
+#[inline]
+pub fn go_sort_float64s_less(values: &[f64], i: isize, j: isize) -> bool {
+    go_cmp_float64(values[i as usize], values[j as usize]) == std::cmp::Ordering::Less
+}
+
+#[inline]
+pub fn go_sort_swap<T>(values: &mut [T], i: isize, j: isize) {
+    values.swap(i as usize, j as usize);
+}
+
 // ---------------------------------------------------------------------------
 // fmt helpers
 // ---------------------------------------------------------------------------
@@ -936,6 +1038,15 @@ fn go_fmt_default(value: &dyn std::any::Any) -> String {
         return value.to_string();
     }
     if let Some(value) = value.downcast_ref::<Vec<isize>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<i32>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<i64>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<usize>>() {
         return go_fmt_slice_display(value);
     }
     if let Some(value) = value.downcast_ref::<Vec<String>>() {
