@@ -10,34 +10,37 @@ gors is a Go-to-Rust transpiler written in Rust. It parses Go source code into
 an AST, compiles it to a Rust `syn` AST, applies transformation passes, and
 generates formatted Rust source code.
 
-Pipeline: Go source → scanner → parser → Go AST → compiler → Rust AST → passes → backend → Rust source
+Pipeline: Go source → scanner → parser → Go AST → compiler → Rust AST → passes → printer → Rust source
 
 ## Repository layout
 
 ```
-src/
-  scanner/       # Go lexer (token stream)
-  parser/        # Go parser (Go AST), import resolution, go.mod support
-  ast/           # Go AST data structures
-  compiler/      # Go AST → Rust syn AST conversion + transformation passes
-    passes/      # Post-compilation Rust→Rust AST transforms
-    manifest.rs  # Build manifest for incremental compilation
-  backend_rust/  # syn AST → formatted Rust source via prettyplease
-  stdlib/        # Reserved for runtime support; do not add handwritten stdlib packages
-  toolchain/     # Hermetic Go toolchain download and management
-  mapping/       # Source map tracking (Go ↔ Rust position mapping)
-  token/         # Go token types
-  error.rs       # Diagnostic formatting
-  main.rs        # CLI: ast, build, run, tokens subcommands
-  lib.rs         # Library entrypoint
-
-tests/
-  programs.rs    # Program execution tests (compile Go → run Rust, compare output)
-  lexer_parser.rs # Lexer/parser conformance vs Go reference
-  common.rs      # Shared test infrastructure
-  fixtures/
-    go_programs/ # Test programs (auto-discovered, each dir = one test)
-    go_sources/  # Go source files for lexer/parser conformance
+gors/
+  src/
+    scanner/       # Go lexer (token stream)
+    parser/        # Go parser (Go AST), import resolution, go.mod support
+    ast/           # Go AST data structures
+    compiler/      # Go AST → Rust syn AST conversion + transformation passes
+      passes/      # Post-compilation Rust→Rust AST transforms
+      manifest.rs  # Build manifest for incremental compilation
+    printer/      # syn AST → formatted Rust source via prettyplease
+    toolchain/     # Hermetic Go toolchain download and management
+    mapping/       # Source map tracking (Go ↔ Rust position mapping)
+    token/         # Go token types
+    error.rs       # Diagnostic formatting
+    lib.rs         # Library entrypoint
+  tests/
+    run.rs         # Program execution tests (compile Go → run Rust, compare output)
+    lexer.rs       # Lexer conformance vs Go reference
+    parser.rs      # Parser conformance vs Go reference
+    common.rs      # Shared test infrastructure
+    fixtures/
+      go_programs/ # Test programs (auto-discovered, each dir = one test)
+      go_sources/  # Go source files for lexer/parser conformance
+gors-cli/
+  src/main.rs      # CLI: ast, build, run, tokens subcommands
+gors-builtin/
+  src/lib.rs       # Go builtin helpers embedded as generated builtin.rs
 ```
 
 ## Compilation model
@@ -69,7 +72,7 @@ tests/
   `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
   `main()` as startup locals.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
-  (`GoLen`, `GoCap`, `GoString`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `GoAppend`
+  (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
 
 ### Incremental builds
@@ -84,9 +87,14 @@ tests/
 ## Stdlib system
 
 Go stdlib imports are resolved from the embedded Go SDK archive through
-`src/go_stdlib.rs`; the old `src/stdlib/` handwritten modules have been removed.
+`gors/src/go_stdlib.rs`; the old handwritten stdlib modules have been removed.
 Import-path-to-module naming is generic (`unicode/utf8` → `unicode__utf8`, Rust
 keywords get a trailing `_`).
+
+`gors-builtin/src/lib.rs` implements Go predeclared builtin support and is copied
+into every generated Rust program as `builtin.rs`. It must not contain
+handwritten implementations of specific Go stdlib packages such as `fmt`,
+`strings`, or `sort`.
 
 Stdlib coverage tests are generic compiler tests. The Go stdlib is used because
 it is broad, real Go code; any fix needed for `fmt`, `strings`, `sort`, or
@@ -111,7 +119,7 @@ imports with no surviving references should not force module generation.
 
 gors downloads its own Go toolchain to `~/.local/share/gors/toolchains/` (or
 platform equivalent via `dirs` crate). Pinned version in
-`src/toolchain/mod.rs::DEFAULT_GO_VERSION`. Called via `toolchain::ensure()` at
+`gors/src/toolchain/mod.rs::DEFAULT_GO_VERSION`. Called via `toolchain::ensure()` at
 the start of `build` and `run` commands.
 
 ## Testing
@@ -128,13 +136,13 @@ cargo test              # Runs unit tests + program execution tests
 cargo test --features integration  # Also runs lexer/parser conformance against Go reference
 ```
 
-Conformance tests in `tests/lexer_parser.rs` are gated behind the `integration` Cargo
-feature flag. Without `--features integration` they are `#[ignore]`d. CI runs them
-via `make test-integrations`.
+Conformance tests in `gors/tests/lexer.rs` and `gors/tests/parser.rs` are gated
+behind the `integration` Cargo feature flag. Without `--features integration`
+they are `#[ignore]`d. CI runs them via `make test-integrations`.
 
 ### Adding a test program
 
-1. Create a directory in `tests/fixtures/go_programs/` (e.g., `my_feature/`)
+1. Create a directory in `gors/tests/fixtures/go_programs/` (e.g., `my_feature/`)
 2. Add `main.go` (and optionally `go.mod` for multi-package programs)
 3. The test framework auto-discovers it and compares output with `go run`
 
@@ -163,12 +171,12 @@ source files. Otherwise, the first argument is a directory/package path.
 
 Key differences from `go run`:
 - Uses `GORSPATH` (`~/.local/share/gors/toolchains/`) instead of `GOPATH`
-- The Go toolchain is hermetically downloaded (pinned version in `src/toolchain/mod.rs`)
+- The Go toolchain is hermetically downloaded (pinned version in `gors/src/toolchain/mod.rs`)
 - Transpiles Go → Rust and compiles with `rustc`, not `go build`
 
 ## Type inference
 
-`src/compiler/typeinfer.rs` provides a `TypeEnv` that pre-scans Go AST files
+`gors/src/compiler/typeinfer.rs` provides a `TypeEnv` that pre-scans Go AST files
 before compilation to collect variable types, function signatures, struct fields,
 and interface declarations. The `GoType` enum represents Go types. Used during
 code generation for type-aware decisions (string indexing, numeric casts,
@@ -206,8 +214,9 @@ simplify_return, flatten_block.
 
 ## Stdlib system — embedded Go source
 
-Go stdlib is embedded in the binary via `build.rs`, which downloads Go 1.24.3 SDK
-and packs `go/src/**/*.go` (excluding tests, vendor, cmd) into `go_stdlib.tar.gz`.
+Go stdlib is embedded in the `gors` crate binary data via `gors/build.rs`, which
+downloads Go 1.24.3 SDK and packs `go/src/**/*.go` (excluding tests, vendor,
+cmd) into `go_stdlib.tar.gz`.
 All stdlib/internal packages in the archive are available through the generic
 resolver; build tags and GOOS/GOARCH filename suffixes are filtered for the host
 target before parsing.
@@ -223,7 +232,7 @@ preserved solely because the Go import existed, but pruning must not be used as
 a substitute for compiling reachable stdlib code generically.
 
 Generated Rust files start with a `//! Generated by gors. Do not edit.`
-rustdoc header, immediately followed by the backend-level lint prelude that
+rustdoc header, immediately followed by the printer-level lint prelude that
 denies `dead_code`, `unused_imports`, `unused_macros`, and `unsafe_code`, while
 still allowing Go naming via `nonstandard_style`; one blank line separates the
 prelude from generated code. Dependency modules are emitted alphabetically by

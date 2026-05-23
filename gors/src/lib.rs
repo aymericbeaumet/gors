@@ -1,7 +1,7 @@
 //! # Gors
 //!
 //! A Go toolchain written in Rust, featuring a scanner, parser, compiler, and
-//! code generator that transpiles Go source code to Rust.
+//! Rust source printer for transpiled Go programs.
 //!
 //! ## Overview
 //!
@@ -11,14 +11,14 @@
 //! - [`parser`] - Parsing tokens into a Go Abstract Syntax Tree (AST)
 //! - [`ast`] - Go AST data structures based on the Go language specification
 //! - [`compiler`] - Transforms Go AST into Rust `syn` AST
-//! - [`backend_rust`] - Formats the Rust AST into source code
+//! - [`printer`] - Formats the Rust AST into source code
 //! - [`error`] - Error types and diagnostic formatting
 //! - [`token`] - Token types and source position tracking
 //!
 //! ## Example
 //!
 //! ```
-//! use gors::{parser, compiler, backend_rust};
+//! use gors::{parser, compiler, printer};
 //!
 //! let go_source = r#"
 //!     package main
@@ -35,7 +35,7 @@
 //! let rust_ast = compiler::compile(ast).unwrap();
 //!
 //! // Generate Rust source code
-//! let rust_source = backend_rust::generate(rust_ast).unwrap();
+//! let rust_source = printer::generate(rust_ast).unwrap();
 //! ```
 
 // Lints are configured at workspace level in the root Cargo.toml.
@@ -46,10 +46,10 @@
 /// [Go language specification](https://go.dev/ref/spec).
 pub mod ast;
 
-/// Rust code generation from syn AST.
+/// Rust source printing from syn AST.
 ///
 /// Provides formatting of `syn::File` into pretty-printed Rust source code.
-pub mod backend_rust;
+pub mod printer;
 
 /// Go to Rust compiler.
 ///

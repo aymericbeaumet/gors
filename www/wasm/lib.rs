@@ -395,7 +395,7 @@ pub fn build_rust(input: String) -> BuildResult {
             }
         };
 
-    let rust_code = match gors::backend_rust::generate_single(compiled) {
+    let rust_code = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
         Err(err) => {
             let diagnostic =
@@ -709,7 +709,7 @@ mod tests {
             gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
                 .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        let rust_code = gors::backend_rust::generate_single(compiled)
+        let rust_code = gors::printer::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let source_map = gors::compiler::build_source_map(&rust_code);
@@ -1021,7 +1021,7 @@ func bar() {
             gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
                 .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        let rust_code = gors::backend_rust::generate_single(compiled)
+        let rust_code = gors::printer::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let initial_source_map = gors::compiler::build_source_map(&rust_code);

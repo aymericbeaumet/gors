@@ -1587,10 +1587,9 @@ fn compile_program_impl(
     }
     let mut stdlib_type_envs: BTreeMap<String, (String, typeinfer::TypeEnv)> = BTreeMap::new();
 
-    let builtins_file: syn::File =
-        syn::parse_str(crate::backend_rust::GORS_BUILTINS).map_err(|e| {
-            CompilerError::UnsupportedConstruct(format!("failed to parse builtin: {e}"))
-        })?;
+    let builtins_file: syn::File = syn::parse_str(crate::printer::GORS_BUILTINS).map_err(|e| {
+        CompilerError::UnsupportedConstruct(format!("failed to parse builtin: {e}"))
+    })?;
     modules.insert(
         "builtin".to_string(),
         CompiledModule {
@@ -1971,30 +1970,30 @@ fn expand_builtin_roots(
     let needs_channel_methods = roots.iter().any(|root| {
         matches!(
             root.as_str(),
-            "GoChan"
-                | "GoChanIter"
+            "Chan"
+                | "ChanIter"
                 | "ChanInner"
                 | "make_chan"
                 | "close"
                 | "send"
                 | "recv"
                 | "recv_with_ok"
-                | "GoChan::send"
-                | "GoChan::recv"
-                | "GoChan::recv_with_ok"
-                | "GoChan::len"
-                | "GoChan::cap"
+                | "Chan::send"
+                | "Chan::recv"
+                | "Chan::recv_with_ok"
+                | "Chan::len"
+                | "Chan::cap"
         )
     });
     if needs_channel_methods {
         for root in [
-            "GoChan",
-            "GoChanIter",
+            "Chan",
+            "ChanIter",
             "ChanInner",
-            "GoChan::new",
-            "GoChan::send",
-            "GoChan::recv",
-            "GoChan::recv_with_ok",
+            "Chan::new",
+            "Chan::send",
+            "Chan::recv",
+            "Chan::recv_with_ok",
             "new",
             "send",
             "recv",
@@ -2072,27 +2071,27 @@ fn prune_builtin_channel_helpers(
     if roots.iter().any(|root| {
         matches!(
             root.as_str(),
-            "GoChan"
-                | "GoChanIter"
+            "Chan"
+                | "ChanIter"
                 | "ChanInner"
                 | "make_chan"
                 | "close"
                 | "send"
                 | "recv"
                 | "recv_with_ok"
-                | "GoChan::send"
-                | "GoChan::recv"
-                | "GoChan::recv_with_ok"
-                | "GoChan::len"
-                | "GoChan::cap"
+                | "Chan::send"
+                | "Chan::recv"
+                | "Chan::recv_with_ok"
+                | "Chan::len"
+                | "Chan::cap"
         )
     }) {
         return;
     }
 
     let channel_names = std::collections::HashSet::from([
-        "GoChan".to_string(),
-        "GoChanIter".to_string(),
+        "Chan".to_string(),
+        "ChanIter".to_string(),
         "ChanInner".to_string(),
         "lock_chan".to_string(),
         "wait_chan".to_string(),
@@ -2123,7 +2122,7 @@ fn prune_builtin_complex_helpers(
     let needs_complex_conversions = roots.iter().any(|root| {
         matches!(
             root.as_str(),
-            "to_complex64" | "to_complex128" | "GoComplex64" | "GoComplex128"
+            "to_complex64" | "to_complex128" | "Complex64Value" | "Complex128Value"
         )
     });
 
@@ -2141,7 +2140,7 @@ fn prune_builtin_complex_helpers(
         if let syn::Item::Trait(item_trait) = item
             && matches!(
                 item_trait.ident.to_string().as_str(),
-                "GoComplex64" | "GoComplex128"
+                "Complex64Value" | "Complex128Value"
             )
         {
             return needs_complex_conversions;
@@ -2156,7 +2155,7 @@ fn prune_builtin_complex_helpers(
             && path.segments.last().is_some_and(|seg| {
                 matches!(
                     seg.ident.to_string().as_str(),
-                    "GoComplex64" | "GoComplex128"
+                    "Complex64Value" | "Complex128Value"
                 )
             })
         {
@@ -2170,13 +2169,13 @@ fn prune_builtin_bitcast_helpers(
     items: &mut Vec<syn::Item>,
     roots: &std::collections::HashSet<String>,
 ) {
-    if roots.contains("go_bitcast_ref") {
+    if roots.contains("bitcast_ref") {
         return;
     }
 
     items.retain(|item| {
         if let syn::Item::Trait(item_trait) = item
-            && item_trait.ident == "GoBitcastFrom"
+            && item_trait.ident == "BitcastFrom"
         {
             return false;
         }
@@ -2187,7 +2186,7 @@ fn prune_builtin_bitcast_helpers(
             .trait_
             .as_ref()
             .and_then(|(_, path, _)| path.segments.last())
-            .is_none_or(|seg| seg.ident != "GoBitcastFrom")
+            .is_none_or(|seg| seg.ident != "BitcastFrom")
     });
 }
 
@@ -2199,8 +2198,7 @@ fn prune_unneeded_builtin_traits(
         if let syn::Item::Trait(item_trait) = item
             && let Some(needed_root) = builtin_trait_required_root(&item_trait.ident.to_string())
         {
-            return builtin_roots.contains(needed_root)
-                || builtin_roots.contains(&item_trait.ident.to_string());
+            return builtin_roots.contains(needed_root);
         }
 
         let syn::Item::Impl(item_impl) = item else {
@@ -2220,16 +2218,16 @@ fn prune_unneeded_builtin_traits(
         let Some(needed_root) = needed_root else {
             return true;
         };
-        builtin_roots.contains(needed_root) || builtin_roots.contains(&trait_name)
+        builtin_roots.contains(needed_root)
     });
 }
 
 fn builtin_trait_required_root(trait_name: &str) -> Option<&'static str> {
     match trait_name {
-        "GoAppend" => Some("append"),
-        "GoCap" => Some("cap"),
-        "GoLen" => Some("len"),
-        "GoString" => Some("go_string"),
+        "Append" => Some("append"),
+        "Cap" => Some("cap"),
+        "Len" => Some("len"),
+        "StringValue" => Some("string"),
         _ => None,
     }
 }
@@ -3617,10 +3615,10 @@ fn is_ambient_trait_name(name: &str) -> bool {
             | "DerefMut"
             | "Display"
             | "From"
-            | "GoAppend"
-            | "GoCap"
-            | "GoLen"
-            | "GoString"
+            | "Append"
+            | "Cap"
+            | "Len"
+            | "StringValue"
             | "Into"
             | "ToString"
     )
@@ -3949,7 +3947,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         }
         ast::Expr::ChanType(chan_type) => {
             let inner = type_from_expr_ref(&chan_type.value);
-            syn::parse_quote! { crate::builtin::GoChan<#inner> }
+            syn::parse_quote! { crate::builtin::Chan<#inner> }
         }
         ast::Expr::SelectorExpr(selector_expr) => {
             if matches!(&*selector_expr.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
@@ -4291,25 +4289,25 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
             if is_byte_slice {
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoLen for #ident {
-                        fn go_len(&self) -> usize { self.0.len() }
+                    impl crate::builtin::Len for #ident {
+                        fn len_value(&self) -> usize { self.0.len() }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoCap for #ident {
-                        fn go_cap(&self) -> usize { self.0.capacity() }
+                    impl crate::builtin::Cap for #ident {
+                        fn cap_value(&self) -> usize { self.0.capacity() }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoString for #ident {
-                        fn go_string(self) -> String {
+                    impl crate::builtin::StringValue for #ident {
+                        fn string_value(self) -> String {
                             String::from_utf8(self.0).unwrap_or_default()
                         }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoString for &#ident {
-                        fn go_string(self) -> String {
+                    impl crate::builtin::StringValue for &#ident {
+                        fn string_value(self) -> String {
                             String::from_utf8(self.0.clone()).unwrap_or_default()
                         }
                     }
@@ -4335,32 +4333,32 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoAppend<u8> for #ident {
-                        fn go_append(mut self, elem: u8) -> Self {
+                    impl crate::builtin::Append<u8> for #ident {
+                        fn append_value(mut self, elem: u8) -> Self {
                             self.0.push(elem);
                             self
                         }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoAppend<Vec<u8>> for #ident {
-                        fn go_append(mut self, elem: Vec<u8>) -> Self {
+                    impl crate::builtin::Append<Vec<u8>> for #ident {
+                        fn append_value(mut self, elem: Vec<u8>) -> Self {
                             self.0.extend(elem);
                             self
                         }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoAppend<#ident> for Vec<u8> {
-                        fn go_append(mut self, elem: #ident) -> Self {
+                    impl crate::builtin::Append<#ident> for Vec<u8> {
+                        fn append_value(mut self, elem: #ident) -> Self {
                             self.extend(elem.0);
                             self
                         }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::GoAppend<String> for #ident {
-                        fn go_append(mut self, elem: String) -> Self {
+                    impl crate::builtin::Append<String> for #ident {
+                        fn append_value(mut self, elem: String) -> Self {
                             self.0.extend(elem.into_bytes());
                             self
                         }
@@ -4951,7 +4949,7 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
             syn::parse_quote! { char::from_u32(#arg as u32).map(String::from).unwrap_or_default() }
         }
         "string" => {
-            syn::parse_quote! { crate::builtin::go_string(&#arg) }
+            syn::parse_quote! { crate::builtin::string(&#arg) }
         }
         "complex64" => syn::parse_quote! { crate::builtin::to_complex64(#arg) },
         "complex128" => syn::parse_quote! { crate::builtin::to_complex128(#arg) },
@@ -4997,7 +4995,7 @@ fn compile_unsafe_pointer_bitcast(expr: ast::Expr) -> Option<syn::Expr> {
     let source: syn::Expr = (*source.x).into();
     let target_ty = type_from_expr_ref(&target);
     Some(syn::parse_quote! {
-        crate::builtin::go_bitcast_ref::<_, #target_ty>(&#source)
+        crate::builtin::bitcast_ref::<_, #target_ty>(&#source)
     })
 }
 
@@ -5069,997 +5067,6 @@ fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
         BUILTINS.contains(&ident.name)
     } else {
         false
-    }
-}
-
-#[derive(Clone, Copy)]
-enum LoweredStdlibCall {
-    FmtAppend,
-    FmtAppendf,
-    FmtAppendln,
-    FmtPrint,
-    FmtPrintf,
-    FmtPrintln,
-    FmtSprint,
-    FmtSprintf,
-    FmtSprintln,
-    FmtFprint,
-    FmtFprintf,
-    FmtFprintln,
-    FmtErrorf,
-    Strings(StringFunc),
-    SortFind,
-    SortInts,
-    SortStrings,
-    SortFloat64s,
-    SortIntsAreSorted,
-    SortStringsAreSorted,
-    SortFloat64sAreSorted,
-    SortIsSorted,
-    SortSearch,
-    SortSearchFloat64s,
-    SortSearchInts,
-    SortSearchStrings,
-    SortSlice,
-    SortSliceIsSorted,
-    SortSliceStable,
-    SortSort,
-    SortStable,
-}
-
-#[derive(Clone, Copy)]
-enum SortSliceKind {
-    Int,
-    String,
-    Float64,
-}
-
-#[derive(Clone, Copy)]
-enum SortInterfaceMode {
-    Normal,
-    Reverse,
-}
-
-#[derive(Clone, Copy)]
-enum StringFunc {
-    Clone,
-    Compare,
-    Contains,
-    ContainsAny,
-    ContainsFunc,
-    ContainsRune,
-    Count,
-    Cut,
-    CutPrefix,
-    CutSuffix,
-    EqualFold,
-    Fields,
-    FieldsFunc,
-    HasPrefix,
-    HasSuffix,
-    Index,
-    IndexAny,
-    IndexByte,
-    IndexFunc,
-    IndexRune,
-    Join,
-    LastIndex,
-    LastIndexAny,
-    LastIndexByte,
-    LastIndexFunc,
-    Map,
-    Repeat,
-    Replace,
-    ReplaceAll,
-    Split,
-    SplitAfter,
-    SplitAfterN,
-    SplitN,
-    Title,
-    ToLower,
-    ToTitle,
-    ToUpper,
-    ToValidUTF8,
-    Trim,
-    TrimFunc,
-    TrimLeft,
-    TrimLeftFunc,
-    TrimPrefix,
-    TrimRight,
-    TrimRightFunc,
-    TrimSpace,
-    TrimSuffix,
-}
-
-fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
-    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
-        return None;
-    };
-    let ast::Expr::Ident(pkg) = &*selector.x else {
-        return None;
-    };
-    if !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
-        return None;
-    }
-
-    if pkg.name == "strings"
-        && let Some(func) = string_func_lowering(selector.sel.name)
-    {
-        return Some(LoweredStdlibCall::Strings(func));
-    }
-
-    match (pkg.name, selector.sel.name) {
-        ("fmt", "Append") => Some(LoweredStdlibCall::FmtAppend),
-        ("fmt", "Appendf") => Some(LoweredStdlibCall::FmtAppendf),
-        ("fmt", "Appendln") => Some(LoweredStdlibCall::FmtAppendln),
-        ("fmt", "Print") => Some(LoweredStdlibCall::FmtPrint),
-        ("fmt", "Printf") => Some(LoweredStdlibCall::FmtPrintf),
-        ("fmt", "Println") => Some(LoweredStdlibCall::FmtPrintln),
-        ("fmt", "Sprint") => Some(LoweredStdlibCall::FmtSprint),
-        ("fmt", "Sprintf") => Some(LoweredStdlibCall::FmtSprintf),
-        ("fmt", "Sprintln") => Some(LoweredStdlibCall::FmtSprintln),
-        ("fmt", "Fprint") => Some(LoweredStdlibCall::FmtFprint),
-        ("fmt", "Fprintf") => Some(LoweredStdlibCall::FmtFprintf),
-        ("fmt", "Fprintln") => Some(LoweredStdlibCall::FmtFprintln),
-        ("fmt", "Errorf") => Some(LoweredStdlibCall::FmtErrorf),
-        ("sort", "Find") => Some(LoweredStdlibCall::SortFind),
-        ("sort", "Ints") => Some(LoweredStdlibCall::SortInts),
-        ("sort", "Strings") => Some(LoweredStdlibCall::SortStrings),
-        ("sort", "Float64s") => Some(LoweredStdlibCall::SortFloat64s),
-        ("sort", "IntsAreSorted") => Some(LoweredStdlibCall::SortIntsAreSorted),
-        ("sort", "StringsAreSorted") => Some(LoweredStdlibCall::SortStringsAreSorted),
-        ("sort", "Float64sAreSorted") => Some(LoweredStdlibCall::SortFloat64sAreSorted),
-        ("sort", "IsSorted") => Some(LoweredStdlibCall::SortIsSorted),
-        ("sort", "Search") => Some(LoweredStdlibCall::SortSearch),
-        ("sort", "SearchFloat64s") => Some(LoweredStdlibCall::SortSearchFloat64s),
-        ("sort", "SearchInts") => Some(LoweredStdlibCall::SortSearchInts),
-        ("sort", "SearchStrings") => Some(LoweredStdlibCall::SortSearchStrings),
-        ("sort", "Slice") => Some(LoweredStdlibCall::SortSlice),
-        ("sort", "SliceIsSorted") => Some(LoweredStdlibCall::SortSliceIsSorted),
-        ("sort", "SliceStable") => Some(LoweredStdlibCall::SortSliceStable),
-        ("sort", "Sort") => Some(LoweredStdlibCall::SortSort),
-        ("sort", "Stable") => Some(LoweredStdlibCall::SortStable),
-        _ => None,
-    }
-}
-
-fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibCall) -> syn::Expr {
-    let raw_args = call_expr.args.unwrap_or_default();
-    if let LoweredStdlibCall::Strings(func) = lowered {
-        return compile_lowered_strings_call(raw_args, func);
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::FmtPrint
-            | LoweredStdlibCall::FmtPrintln
-            | LoweredStdlibCall::FmtSprint
-            | LoweredStdlibCall::FmtSprintln
-    ) {
-        let args = compile_fmt_any_vec(raw_args);
-        return match lowered {
-            LoweredStdlibCall::FmtPrint => {
-                syn::parse_quote! { crate::builtin::go_fmt_print(#args) }
-            }
-            LoweredStdlibCall::FmtPrintln => {
-                syn::parse_quote! { crate::builtin::go_fmt_println(#args) }
-            }
-            LoweredStdlibCall::FmtSprint => {
-                syn::parse_quote! { crate::builtin::go_fmt_sprint(#args) }
-            }
-            LoweredStdlibCall::FmtSprintln => {
-                syn::parse_quote! { crate::builtin::go_fmt_sprintln(#args) }
-            }
-            _ => compile_error_expr("unsupported fmt print lowering"),
-        };
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::FmtAppend | LoweredStdlibCall::FmtAppendln
-    ) {
-        let mut raw_args = raw_args.into_iter();
-        let Some(buffer) = raw_args.next() else {
-            return compile_error_expr("fmt append call requires a buffer argument");
-        };
-        let buffer: syn::Expr = buffer.into();
-        let args = compile_fmt_any_vec(raw_args.collect());
-        return match lowered {
-            LoweredStdlibCall::FmtAppend => {
-                syn::parse_quote! { crate::builtin::go_fmt_append(#buffer, #args) }
-            }
-            LoweredStdlibCall::FmtAppendln => {
-                syn::parse_quote! { crate::builtin::go_fmt_appendln(#buffer, #args) }
-            }
-            _ => compile_error_expr("unsupported fmt append lowering"),
-        };
-    }
-
-    if matches!(lowered, LoweredStdlibCall::FmtAppendf) {
-        let mut raw_args = raw_args.into_iter();
-        let Some(buffer) = raw_args.next() else {
-            return compile_error_expr("fmt appendf call requires a buffer argument");
-        };
-        let Some(format_arg) = raw_args.next() else {
-            return compile_error_expr("fmt appendf call requires a format argument");
-        };
-        let buffer: syn::Expr = buffer.into();
-        let format = compile_expr_with_expected(format_arg, Some(&typeinfer::GoType::String));
-        let args = compile_fmt_any_vec(raw_args.collect());
-        return syn::parse_quote! { crate::builtin::go_fmt_appendf(#buffer, &#format, #args) };
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::FmtPrintf | LoweredStdlibCall::FmtSprintf | LoweredStdlibCall::FmtErrorf
-    ) {
-        return compile_fmt_format_call(raw_args, 0, lowered);
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::FmtFprint | LoweredStdlibCall::FmtFprintln
-    ) {
-        let args = compile_fmt_any_vec(raw_args.into_iter().skip(1).collect());
-        return match lowered {
-            LoweredStdlibCall::FmtFprint => {
-                syn::parse_quote! { crate::builtin::go_fmt_print(#args) }
-            }
-            LoweredStdlibCall::FmtFprintln => {
-                syn::parse_quote! { crate::builtin::go_fmt_println(#args) }
-            }
-            _ => compile_error_expr("unsupported fmt writer lowering"),
-        };
-    }
-
-    if matches!(lowered, LoweredStdlibCall::FmtFprintf) {
-        return compile_fmt_format_call(raw_args, 1, lowered);
-    }
-
-    if matches!(lowered, LoweredStdlibCall::SortSearch) {
-        let mut args = raw_args.into_iter();
-        let Some(n) = args.next() else {
-            return compile_error_expr("sort.Search requires a length argument");
-        };
-        let Some(predicate) = args.next() else {
-            return compile_error_expr("sort.Search requires a predicate argument");
-        };
-        if args.next().is_some() {
-            return compile_error_expr("sort.Search requires two arguments");
-        }
-        let n: syn::Expr = n.into();
-        let predicate: syn::Expr = predicate.into();
-        return syn::parse_quote! { crate::builtin::go_sort_search(#n, #predicate) };
-    }
-
-    if matches!(lowered, LoweredStdlibCall::SortFind) {
-        let mut args = raw_args.into_iter();
-        let Some(n) = args.next() else {
-            return compile_error_expr("sort.Find requires a length argument");
-        };
-        let Some(cmp) = args.next() else {
-            return compile_error_expr("sort.Find requires a comparison argument");
-        };
-        if args.next().is_some() {
-            return compile_error_expr("sort.Find requires two arguments");
-        }
-        let n: syn::Expr = n.into();
-        let cmp: syn::Expr = cmp.into();
-        return syn::parse_quote! { crate::builtin::go_sort_find(#n, #cmp) };
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::SortSearchFloat64s
-            | LoweredStdlibCall::SortSearchInts
-            | LoweredStdlibCall::SortSearchStrings
-    ) {
-        let mut args = raw_args.into_iter();
-        let Some(values) = args.next() else {
-            return compile_error_expr("sort search helper requires a slice argument");
-        };
-        let Some(target) = args.next() else {
-            return compile_error_expr("sort search helper requires a target argument");
-        };
-        if args.next().is_some() {
-            return compile_error_expr("sort search helper requires two arguments");
-        }
-        let values: syn::Expr = values.into();
-        let target = match lowered {
-            LoweredStdlibCall::SortSearchStrings => {
-                compile_expr_with_expected(target, Some(&typeinfer::GoType::String))
-            }
-            _ => target.into(),
-        };
-        return match lowered {
-            LoweredStdlibCall::SortSearchFloat64s => {
-                syn::parse_quote! { crate::builtin::go_sort_search_float64s(&#values, #target) }
-            }
-            LoweredStdlibCall::SortSearchInts => {
-                syn::parse_quote! { crate::builtin::go_sort_search_ints(&#values, #target) }
-            }
-            LoweredStdlibCall::SortSearchStrings => {
-                syn::parse_quote! { crate::builtin::go_sort_search_strings(&#values, #target) }
-            }
-            _ => compile_error_expr("unsupported sort search lowering"),
-        };
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::SortSlice
-            | LoweredStdlibCall::SortSliceStable
-            | LoweredStdlibCall::SortSliceIsSorted
-    ) {
-        let mut args = raw_args.into_iter();
-        let Some(values) = args.next() else {
-            return compile_error_expr("sort.Slice requires a slice argument");
-        };
-        let Some(less) = args.next() else {
-            return compile_error_expr("sort.Slice requires a less function argument");
-        };
-        if args.next().is_some() {
-            return compile_error_expr("sort.Slice requires two arguments");
-        }
-        let values: syn::Expr = values.into();
-        let less: syn::Expr = less.into();
-        return match lowered {
-            LoweredStdlibCall::SortSlice | LoweredStdlibCall::SortSliceStable => {
-                syn::parse_quote! { crate::builtin::go_sort_slice(&mut #values, #less) }
-            }
-            LoweredStdlibCall::SortSliceIsSorted => {
-                syn::parse_quote! {
-                    crate::builtin::go_sort_slice_is_sorted(crate::builtin::len(&#values) as isize, #less)
-                }
-            }
-            _ => compile_error_expr("unsupported sort slice lowering"),
-        };
-    }
-
-    if matches!(
-        lowered,
-        LoweredStdlibCall::SortSort
-            | LoweredStdlibCall::SortStable
-            | LoweredStdlibCall::SortIsSorted
-    ) {
-        let mut args = raw_args.into_iter();
-        let Some(arg) = args.next() else {
-            return compile_error_expr("sort interface call requires one argument");
-        };
-        if args.next().is_some() {
-            return compile_error_expr("sort interface call requires one argument");
-        }
-        if let Some((mode, kind, values)) = into_sort_interface_arg(arg) {
-            return compile_sort_interface_arg(mode, kind, values, lowered);
-        }
-        return compile_error_expr("unsupported sort interface argument");
-    }
-
-    let mut args = raw_args.into_iter();
-    let Some(arg) = args.next() else {
-        return compile_error_expr("sort call requires one argument");
-    };
-    if args.next().is_some() {
-        return compile_error_expr("sort call requires one argument");
-    }
-    let arg: syn::Expr = arg.into();
-
-    match lowered {
-        LoweredStdlibCall::SortInts | LoweredStdlibCall::SortStrings => {
-            syn::parse_quote! { crate::builtin::go_sort(&mut #arg) }
-        }
-        LoweredStdlibCall::SortFloat64s => {
-            syn::parse_quote! { crate::builtin::go_sort_float64s(&mut #arg) }
-        }
-        LoweredStdlibCall::SortIntsAreSorted | LoweredStdlibCall::SortStringsAreSorted => {
-            syn::parse_quote! { crate::builtin::go_is_sorted(&#arg) }
-        }
-        LoweredStdlibCall::SortFloat64sAreSorted => {
-            syn::parse_quote! { crate::builtin::go_float64s_are_sorted(&#arg) }
-        }
-        _ => compile_error_expr("unsupported sort lowering"),
-    }
-}
-
-fn is_lowered_stdlib_method_call(call_expr: &ast::CallExpr) -> bool {
-    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
-        return false;
-    };
-    if !matches!(
-        selector.sel.name,
-        "Len" | "Less" | "Search" | "Sort" | "Swap"
-    ) {
-        return false;
-    }
-    let ast::Expr::CallExpr(receiver_call) = &*selector.x else {
-        return false;
-    };
-    sort_slice_kind_from_fun(&receiver_call.fun).is_some()
-}
-
-fn compile_lowered_stdlib_method_call(call_expr: ast::CallExpr) -> syn::Expr {
-    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
-        return compile_error_expr("unsupported stdlib method call");
-    };
-    let ast::Expr::CallExpr(receiver_call) = *selector.x else {
-        return compile_error_expr("unsupported stdlib method receiver");
-    };
-    let Some((kind, receiver)) = into_sort_slice_conversion_call(receiver_call) else {
-        return compile_error_expr("unsupported sort slice method receiver");
-    };
-    let method = selector.sel.name;
-    let raw_args = call_expr.args.unwrap_or_default();
-
-    match method {
-        "Len" => {
-            if !raw_args.is_empty() {
-                return compile_error_expr("sort slice Len method requires no arguments");
-            }
-            let receiver: syn::Expr = receiver.into();
-            syn::parse_quote! { crate::builtin::len(&#receiver) as isize }
-        }
-        "Less" => {
-            let mut args = raw_args.into_iter();
-            let Some(i) = args.next() else {
-                return compile_error_expr("sort slice Less method requires two arguments");
-            };
-            let Some(j) = args.next() else {
-                return compile_error_expr("sort slice Less method requires two arguments");
-            };
-            if args.next().is_some() {
-                return compile_error_expr("sort slice Less method requires two arguments");
-            }
-            let receiver: syn::Expr = receiver.into();
-            let i: syn::Expr = i.into();
-            let j: syn::Expr = j.into();
-            match kind {
-                SortSliceKind::Float64 => {
-                    syn::parse_quote! { crate::builtin::go_sort_float64s_less(&#receiver, #i, #j) }
-                }
-                SortSliceKind::Int | SortSliceKind::String => {
-                    syn::parse_quote! { crate::builtin::go_sort_slice_less(&#receiver, #i, #j) }
-                }
-            }
-        }
-        "Search" => {
-            let mut args = raw_args.into_iter();
-            let Some(target) = args.next() else {
-                return compile_error_expr("sort slice Search method requires one argument");
-            };
-            if args.next().is_some() {
-                return compile_error_expr("sort slice Search method requires one argument");
-            }
-            let receiver: syn::Expr = receiver.into();
-            compile_sort_slice_search(kind, receiver, target)
-        }
-        "Sort" => {
-            if !raw_args.is_empty() {
-                return compile_error_expr("sort slice Sort method requires no arguments");
-            }
-            let receiver: syn::Expr = receiver.into();
-            compile_sort_slice_sort(kind, receiver, SortInterfaceMode::Normal)
-        }
-        "Swap" => {
-            let mut args = raw_args.into_iter();
-            let Some(i) = args.next() else {
-                return compile_error_expr("sort slice Swap method requires two arguments");
-            };
-            let Some(j) = args.next() else {
-                return compile_error_expr("sort slice Swap method requires two arguments");
-            };
-            if args.next().is_some() {
-                return compile_error_expr("sort slice Swap method requires two arguments");
-            }
-            let receiver: syn::Expr = receiver.into();
-            let i: syn::Expr = i.into();
-            let j: syn::Expr = j.into();
-            syn::parse_quote! { crate::builtin::go_sort_swap(&mut #receiver, #i, #j) }
-        }
-        _ => compile_error_expr("unsupported sort slice method"),
-    }
-}
-
-fn into_sort_interface_arg(
-    arg: ast::Expr,
-) -> Option<(SortInterfaceMode, SortSliceKind, ast::Expr)> {
-    if let ast::Expr::CallExpr(call) = arg {
-        if is_sort_package_selector(&call.fun, "Reverse") {
-            let mut args = call.args.unwrap_or_default().into_iter();
-            let receiver = args.next()?;
-            if args.next().is_some() {
-                return None;
-            }
-            let (kind, values) = into_sort_slice_conversion(receiver)?;
-            return Some((SortInterfaceMode::Reverse, kind, values));
-        }
-        let (kind, values) = into_sort_slice_conversion_call(call)?;
-        return Some((SortInterfaceMode::Normal, kind, values));
-    }
-    None
-}
-
-fn into_sort_slice_conversion(arg: ast::Expr) -> Option<(SortSliceKind, ast::Expr)> {
-    let ast::Expr::CallExpr(call) = arg else {
-        return None;
-    };
-    into_sort_slice_conversion_call(call)
-}
-
-fn into_sort_slice_conversion_call(call: ast::CallExpr) -> Option<(SortSliceKind, ast::Expr)> {
-    let kind = sort_slice_kind_from_fun(&call.fun)?;
-    let mut args = call.args.unwrap_or_default().into_iter();
-    let values = args.next()?;
-    if args.next().is_some() {
-        return None;
-    }
-    Some((kind, values))
-}
-
-fn sort_slice_kind_from_fun(fun: &ast::Expr) -> Option<SortSliceKind> {
-    let ast::Expr::SelectorExpr(selector) = fun else {
-        return None;
-    };
-    let ast::Expr::Ident(pkg) = &*selector.x else {
-        return None;
-    };
-    if pkg.name != "sort" || !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
-        return None;
-    }
-    match selector.sel.name {
-        "IntSlice" => Some(SortSliceKind::Int),
-        "StringSlice" => Some(SortSliceKind::String),
-        "Float64Slice" => Some(SortSliceKind::Float64),
-        _ => None,
-    }
-}
-
-fn is_sort_package_selector(fun: &ast::Expr, name: &str) -> bool {
-    let ast::Expr::SelectorExpr(selector) = fun else {
-        return false;
-    };
-    let ast::Expr::Ident(pkg) = &*selector.x else {
-        return false;
-    };
-    pkg.name == "sort"
-        && selector.sel.name == name
-        && IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name))
-}
-
-fn compile_sort_interface_arg(
-    mode: SortInterfaceMode,
-    kind: SortSliceKind,
-    values: ast::Expr,
-    lowered: LoweredStdlibCall,
-) -> syn::Expr {
-    let values: syn::Expr = values.into();
-    match lowered {
-        LoweredStdlibCall::SortSort | LoweredStdlibCall::SortStable => {
-            compile_sort_slice_sort(kind, values, mode)
-        }
-        LoweredStdlibCall::SortIsSorted => match mode {
-            SortInterfaceMode::Normal => compile_sort_slice_is_sorted(kind, values),
-            SortInterfaceMode::Reverse => {
-                compile_error_expr("sort.IsSorted does not lower Reverse")
-            }
-        },
-        _ => compile_error_expr("unsupported sort interface lowering"),
-    }
-}
-
-fn compile_sort_slice_sort(
-    kind: SortSliceKind,
-    values: syn::Expr,
-    mode: SortInterfaceMode,
-) -> syn::Expr {
-    match (kind, mode) {
-        (SortSliceKind::Float64, SortInterfaceMode::Normal) => {
-            syn::parse_quote! { crate::builtin::go_sort_float64s(&mut #values) }
-        }
-        (SortSliceKind::Float64, SortInterfaceMode::Reverse) => {
-            syn::parse_quote! { crate::builtin::go_sort_float64s_reverse(&mut #values) }
-        }
-        (SortSliceKind::Int | SortSliceKind::String, SortInterfaceMode::Normal) => {
-            syn::parse_quote! { crate::builtin::go_sort(&mut #values) }
-        }
-        (SortSliceKind::Int | SortSliceKind::String, SortInterfaceMode::Reverse) => {
-            syn::parse_quote! { crate::builtin::go_sort_reverse(&mut #values) }
-        }
-    }
-}
-
-fn compile_sort_slice_is_sorted(kind: SortSliceKind, values: syn::Expr) -> syn::Expr {
-    match kind {
-        SortSliceKind::Float64 => {
-            syn::parse_quote! { crate::builtin::go_float64s_are_sorted(&#values) }
-        }
-        SortSliceKind::Int | SortSliceKind::String => {
-            syn::parse_quote! { crate::builtin::go_is_sorted(&#values) }
-        }
-    }
-}
-
-fn compile_sort_slice_search(
-    kind: SortSliceKind,
-    receiver: syn::Expr,
-    target: ast::Expr,
-) -> syn::Expr {
-    match kind {
-        SortSliceKind::Float64 => {
-            let target: syn::Expr = target.into();
-            syn::parse_quote! { crate::builtin::go_sort_search_float64s(&#receiver, #target) }
-        }
-        SortSliceKind::Int => {
-            let target: syn::Expr = target.into();
-            syn::parse_quote! { crate::builtin::go_sort_search_ints(&#receiver, #target) }
-        }
-        SortSliceKind::String => {
-            let target = compile_expr_with_expected(target, Some(&typeinfer::GoType::String));
-            syn::parse_quote! { crate::builtin::go_sort_search_strings(&#receiver, #target) }
-        }
-    }
-}
-
-fn string_func_lowering(name: &str) -> Option<StringFunc> {
-    match name {
-        "Clone" => Some(StringFunc::Clone),
-        "Compare" => Some(StringFunc::Compare),
-        "Contains" => Some(StringFunc::Contains),
-        "ContainsAny" => Some(StringFunc::ContainsAny),
-        "ContainsFunc" => Some(StringFunc::ContainsFunc),
-        "ContainsRune" => Some(StringFunc::ContainsRune),
-        "Count" => Some(StringFunc::Count),
-        "Cut" => Some(StringFunc::Cut),
-        "CutPrefix" => Some(StringFunc::CutPrefix),
-        "CutSuffix" => Some(StringFunc::CutSuffix),
-        "EqualFold" => Some(StringFunc::EqualFold),
-        "Fields" => Some(StringFunc::Fields),
-        "FieldsFunc" => Some(StringFunc::FieldsFunc),
-        "HasPrefix" => Some(StringFunc::HasPrefix),
-        "HasSuffix" => Some(StringFunc::HasSuffix),
-        "Index" => Some(StringFunc::Index),
-        "IndexAny" => Some(StringFunc::IndexAny),
-        "IndexByte" => Some(StringFunc::IndexByte),
-        "IndexFunc" => Some(StringFunc::IndexFunc),
-        "IndexRune" => Some(StringFunc::IndexRune),
-        "Join" => Some(StringFunc::Join),
-        "LastIndex" => Some(StringFunc::LastIndex),
-        "LastIndexAny" => Some(StringFunc::LastIndexAny),
-        "LastIndexByte" => Some(StringFunc::LastIndexByte),
-        "LastIndexFunc" => Some(StringFunc::LastIndexFunc),
-        "Map" => Some(StringFunc::Map),
-        "Repeat" => Some(StringFunc::Repeat),
-        "Replace" => Some(StringFunc::Replace),
-        "ReplaceAll" => Some(StringFunc::ReplaceAll),
-        "Split" => Some(StringFunc::Split),
-        "SplitAfter" => Some(StringFunc::SplitAfter),
-        "SplitAfterN" => Some(StringFunc::SplitAfterN),
-        "SplitN" => Some(StringFunc::SplitN),
-        "Title" => Some(StringFunc::Title),
-        "ToLower" => Some(StringFunc::ToLower),
-        "ToTitle" => Some(StringFunc::ToTitle),
-        "ToUpper" => Some(StringFunc::ToUpper),
-        "ToValidUTF8" => Some(StringFunc::ToValidUTF8),
-        "Trim" => Some(StringFunc::Trim),
-        "TrimFunc" => Some(StringFunc::TrimFunc),
-        "TrimLeft" => Some(StringFunc::TrimLeft),
-        "TrimLeftFunc" => Some(StringFunc::TrimLeftFunc),
-        "TrimPrefix" => Some(StringFunc::TrimPrefix),
-        "TrimRight" => Some(StringFunc::TrimRight),
-        "TrimRightFunc" => Some(StringFunc::TrimRightFunc),
-        "TrimSpace" => Some(StringFunc::TrimSpace),
-        "TrimSuffix" => Some(StringFunc::TrimSuffix),
-        _ => None,
-    }
-}
-
-fn compile_lowered_strings_call(raw_args: Vec<ast::Expr>, func: StringFunc) -> syn::Expr {
-    let mut args = raw_args.into_iter();
-    macro_rules! need_arg {
-        ($msg:expr) => {
-            match args.next() {
-                Some(arg) => arg,
-                None => return compile_error_expr($msg),
-            }
-        };
-    }
-    macro_rules! no_more_args {
-        ($msg:expr) => {
-            if args.next().is_some() {
-                return compile_error_expr($msg);
-            }
-        };
-    }
-    macro_rules! string_expr {
-        ($arg:expr) => {
-            compile_expr_with_expected($arg, Some(&typeinfer::GoType::String))
-        };
-    }
-
-    match func {
-        StringFunc::Clone
-        | StringFunc::Fields
-        | StringFunc::Title
-        | StringFunc::ToLower
-        | StringFunc::ToTitle
-        | StringFunc::ToUpper
-        | StringFunc::TrimSpace => {
-            let s = string_expr!(need_arg!("strings call requires one string argument"));
-            no_more_args!("strings call requires one string argument");
-            match func {
-                StringFunc::Clone => syn::parse_quote! { crate::builtin::go_strings_clone(&#s) },
-                StringFunc::Fields => syn::parse_quote! { crate::builtin::go_strings_fields(&#s) },
-                StringFunc::Title => syn::parse_quote! { crate::builtin::go_strings_title(&#s) },
-                StringFunc::ToLower => {
-                    syn::parse_quote! { crate::builtin::go_strings_to_lower(&#s) }
-                }
-                StringFunc::ToTitle => {
-                    syn::parse_quote! { crate::builtin::go_strings_to_title(&#s) }
-                }
-                StringFunc::ToUpper => {
-                    syn::parse_quote! { crate::builtin::go_strings_to_upper(&#s) }
-                }
-                StringFunc::TrimSpace => {
-                    syn::parse_quote! { crate::builtin::go_strings_trim_space(&#s) }
-                }
-                _ => compile_error_expr("unsupported one-argument strings lowering"),
-            }
-        }
-        StringFunc::Compare
-        | StringFunc::Contains
-        | StringFunc::ContainsAny
-        | StringFunc::Count
-        | StringFunc::Cut
-        | StringFunc::CutPrefix
-        | StringFunc::CutSuffix
-        | StringFunc::EqualFold
-        | StringFunc::HasPrefix
-        | StringFunc::HasSuffix
-        | StringFunc::Index
-        | StringFunc::IndexAny
-        | StringFunc::Join
-        | StringFunc::LastIndex
-        | StringFunc::LastIndexAny
-        | StringFunc::Repeat
-        | StringFunc::Split
-        | StringFunc::SplitAfter
-        | StringFunc::SplitN
-        | StringFunc::SplitAfterN
-        | StringFunc::ToValidUTF8
-        | StringFunc::Trim
-        | StringFunc::TrimLeft
-        | StringFunc::TrimPrefix
-        | StringFunc::TrimRight
-        | StringFunc::TrimSuffix => {
-            let first = need_arg!("strings call requires arguments");
-            let second = need_arg!("strings call requires arguments");
-            match func {
-                StringFunc::Join => {
-                    no_more_args!("strings.Join requires two arguments");
-                    let elems: syn::Expr = first.into();
-                    let sep = string_expr!(second);
-                    syn::parse_quote! { crate::builtin::go_strings_join(&#elems, &#sep) }
-                }
-                StringFunc::Repeat => {
-                    no_more_args!("strings.Repeat requires two arguments");
-                    let s = string_expr!(first);
-                    let count: syn::Expr = second.into();
-                    syn::parse_quote! { crate::builtin::go_strings_repeat(&#s, #count) }
-                }
-                StringFunc::SplitN | StringFunc::SplitAfterN => {
-                    let n = need_arg!("strings split-n call requires three arguments");
-                    no_more_args!("strings split-n call requires three arguments");
-                    let s = string_expr!(first);
-                    let sep = string_expr!(second);
-                    let n: syn::Expr = n.into();
-                    match func {
-                        StringFunc::SplitN => {
-                            syn::parse_quote! { crate::builtin::go_strings_split_n(&#s, &#sep, #n) }
-                        }
-                        StringFunc::SplitAfterN => {
-                            syn::parse_quote! { crate::builtin::go_strings_split_after_n(&#s, &#sep, #n) }
-                        }
-                        _ => compile_error_expr("unsupported split-n strings lowering"),
-                    }
-                }
-                _ => {
-                    no_more_args!("strings call has too many arguments");
-                    let first = string_expr!(first);
-                    let second = string_expr!(second);
-                    match func {
-                        StringFunc::Compare => {
-                            syn::parse_quote! { crate::builtin::go_strings_compare(&#first, &#second) }
-                        }
-                        StringFunc::Contains => {
-                            syn::parse_quote! { crate::builtin::go_strings_contains(&#first, &#second) }
-                        }
-                        StringFunc::ContainsAny => {
-                            syn::parse_quote! { crate::builtin::go_strings_contains_any(&#first, &#second) }
-                        }
-                        StringFunc::Count => {
-                            syn::parse_quote! { crate::builtin::go_strings_count(&#first, &#second) }
-                        }
-                        StringFunc::Cut => {
-                            syn::parse_quote! { crate::builtin::go_strings_cut(&#first, &#second) }
-                        }
-                        StringFunc::CutPrefix => {
-                            syn::parse_quote! { crate::builtin::go_strings_cut_prefix(&#first, &#second) }
-                        }
-                        StringFunc::CutSuffix => {
-                            syn::parse_quote! { crate::builtin::go_strings_cut_suffix(&#first, &#second) }
-                        }
-                        StringFunc::EqualFold => {
-                            syn::parse_quote! { crate::builtin::go_strings_equal_fold(&#first, &#second) }
-                        }
-                        StringFunc::HasPrefix => {
-                            syn::parse_quote! { crate::builtin::go_strings_has_prefix(&#first, &#second) }
-                        }
-                        StringFunc::HasSuffix => {
-                            syn::parse_quote! { crate::builtin::go_strings_has_suffix(&#first, &#second) }
-                        }
-                        StringFunc::Index => {
-                            syn::parse_quote! { crate::builtin::go_strings_index(&#first, &#second) }
-                        }
-                        StringFunc::IndexAny => {
-                            syn::parse_quote! { crate::builtin::go_strings_index_any(&#first, &#second) }
-                        }
-                        StringFunc::LastIndex => {
-                            syn::parse_quote! { crate::builtin::go_strings_last_index(&#first, &#second) }
-                        }
-                        StringFunc::LastIndexAny => {
-                            syn::parse_quote! { crate::builtin::go_strings_last_index_any(&#first, &#second) }
-                        }
-                        StringFunc::Split => {
-                            syn::parse_quote! { crate::builtin::go_strings_split(&#first, &#second) }
-                        }
-                        StringFunc::SplitAfter => {
-                            syn::parse_quote! { crate::builtin::go_strings_split_after(&#first, &#second) }
-                        }
-                        StringFunc::ToValidUTF8 => {
-                            syn::parse_quote! { crate::builtin::go_strings_to_valid_utf8(&#first, &#second) }
-                        }
-                        StringFunc::Trim => {
-                            syn::parse_quote! { crate::builtin::go_strings_trim(&#first, &#second) }
-                        }
-                        StringFunc::TrimLeft => {
-                            syn::parse_quote! { crate::builtin::go_strings_trim_left(&#first, &#second) }
-                        }
-                        StringFunc::TrimPrefix => {
-                            syn::parse_quote! { crate::builtin::go_strings_trim_prefix(&#first, &#second) }
-                        }
-                        StringFunc::TrimRight => {
-                            syn::parse_quote! { crate::builtin::go_strings_trim_right(&#first, &#second) }
-                        }
-                        StringFunc::TrimSuffix => {
-                            syn::parse_quote! { crate::builtin::go_strings_trim_suffix(&#first, &#second) }
-                        }
-                        _ => compile_error_expr("unsupported two-argument strings lowering"),
-                    }
-                }
-            }
-        }
-        StringFunc::ContainsRune
-        | StringFunc::IndexByte
-        | StringFunc::IndexRune
-        | StringFunc::LastIndexByte => {
-            let s = string_expr!(need_arg!("strings call requires a string argument"));
-            let value: syn::Expr =
-                need_arg!("strings call requires a rune or byte argument").into();
-            no_more_args!("strings rune/byte call requires two arguments");
-            match func {
-                StringFunc::ContainsRune => {
-                    syn::parse_quote! { crate::builtin::go_strings_contains_rune(&#s, #value) }
-                }
-                StringFunc::IndexByte => {
-                    syn::parse_quote! { crate::builtin::go_strings_index_byte(&#s, #value) }
-                }
-                StringFunc::IndexRune => {
-                    syn::parse_quote! { crate::builtin::go_strings_index_rune(&#s, #value) }
-                }
-                StringFunc::LastIndexByte => {
-                    syn::parse_quote! { crate::builtin::go_strings_last_index_byte(&#s, #value) }
-                }
-                _ => compile_error_expr("unsupported rune/byte strings lowering"),
-            }
-        }
-        StringFunc::ContainsFunc
-        | StringFunc::FieldsFunc
-        | StringFunc::IndexFunc
-        | StringFunc::LastIndexFunc
-        | StringFunc::TrimFunc
-        | StringFunc::TrimLeftFunc
-        | StringFunc::TrimRightFunc => {
-            let s = string_expr!(need_arg!(
-                "strings callback call requires a string argument"
-            ));
-            let callback: syn::Expr =
-                need_arg!("strings callback call requires a function argument").into();
-            no_more_args!("strings callback call requires two arguments");
-            match func {
-                StringFunc::ContainsFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_contains_func(&#s, #callback) }
-                }
-                StringFunc::FieldsFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_fields_func(&#s, #callback) }
-                }
-                StringFunc::IndexFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_index_func(&#s, #callback) }
-                }
-                StringFunc::LastIndexFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_last_index_func(&#s, #callback) }
-                }
-                StringFunc::TrimFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_trim_func(&#s, #callback) }
-                }
-                StringFunc::TrimLeftFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_trim_left_func(&#s, #callback) }
-                }
-                StringFunc::TrimRightFunc => {
-                    syn::parse_quote! { crate::builtin::go_strings_trim_right_func(&#s, #callback) }
-                }
-                _ => compile_error_expr("unsupported callback strings lowering"),
-            }
-        }
-        StringFunc::Map => {
-            let mapping: syn::Expr = need_arg!("strings.Map requires a mapping function").into();
-            let s = string_expr!(need_arg!("strings.Map requires a string argument"));
-            no_more_args!("strings.Map requires two arguments");
-            syn::parse_quote! { crate::builtin::go_strings_map(#mapping, &#s) }
-        }
-        StringFunc::Replace => {
-            let s = string_expr!(need_arg!("strings.Replace requires a string argument"));
-            let old = string_expr!(need_arg!("strings.Replace requires an old argument"));
-            let new = string_expr!(need_arg!("strings.Replace requires a new argument"));
-            let n: syn::Expr = need_arg!("strings.Replace requires a count argument").into();
-            no_more_args!("strings.Replace requires four arguments");
-            syn::parse_quote! { crate::builtin::go_strings_replace(&#s, &#old, &#new, #n) }
-        }
-        StringFunc::ReplaceAll => {
-            let s = string_expr!(need_arg!("strings.ReplaceAll requires a string argument"));
-            let old = string_expr!(need_arg!("strings.ReplaceAll requires an old argument"));
-            let new = string_expr!(need_arg!("strings.ReplaceAll requires a new argument"));
-            no_more_args!("strings.ReplaceAll requires three arguments");
-            syn::parse_quote! { crate::builtin::go_strings_replace_all(&#s, &#old, &#new) }
-        }
-    }
-}
-
-fn compile_fmt_any_vec(raw_args: Vec<ast::Expr>) -> syn::Expr {
-    let args: Vec<syn::Expr> = raw_args
-        .into_iter()
-        .map(|arg| {
-            let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
-            syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> }
-        })
-        .collect();
-
-    if args.is_empty() {
-        syn::parse_quote! { Vec::<Box<dyn std::any::Any>>::new() }
-    } else {
-        syn::parse_quote! { Vec::from([#(#args),*]) }
-    }
-}
-
-fn compile_fmt_format_call(
-    raw_args: Vec<ast::Expr>,
-    format_index: usize,
-    lowered: LoweredStdlibCall,
-) -> syn::Expr {
-    let mut raw_args = raw_args.into_iter();
-    let format_arg = raw_args.nth(format_index);
-    let Some(format_arg) = format_arg else {
-        return compile_error_expr("fmt format call requires a format argument");
-    };
-    let format = compile_expr_with_expected(format_arg, Some(&typeinfer::GoType::String));
-    let args = compile_fmt_any_vec(raw_args.collect());
-
-    match lowered {
-        LoweredStdlibCall::FmtPrintf | LoweredStdlibCall::FmtFprintf => {
-            syn::parse_quote! { crate::builtin::go_fmt_printf(&#format, #args) }
-        }
-        LoweredStdlibCall::FmtSprintf | LoweredStdlibCall::FmtErrorf => {
-            syn::parse_quote! { crate::builtin::go_fmt_sprintf(&#format, #args) }
-        }
-        _ => compile_error_expr("unsupported fmt format lowering"),
     }
 }
 
@@ -6312,12 +5319,12 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                     syn::parse_quote! { String::new() }
                 }
                 "println" => match args.first() {
-                    Some(first) => syn::parse_quote! { crate::builtin::go_println_value(#first) },
-                    None => syn::parse_quote! { crate::builtin::go_println_empty() },
+                    Some(first) => syn::parse_quote! { crate::builtin::println_value(#first) },
+                    None => syn::parse_quote! { crate::builtin::println_empty() },
                 },
                 "print" => match args.first() {
-                    Some(first) => syn::parse_quote! { crate::builtin::go_print_value(#first) },
-                    None => syn::parse_quote! { crate::builtin::go_print_empty() },
+                    Some(first) => syn::parse_quote! { crate::builtin::print_value(#first) },
+                    None => syn::parse_quote! { crate::builtin::print_empty() },
                 },
                 _ => compile_error_expr(format!("invalid builtin call: {name}")),
             }
@@ -7610,12 +6617,6 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
-                if let Some(lowered) = lowered_stdlib_call(&call_expr) {
-                    return compile_lowered_stdlib_call(call_expr, lowered);
-                }
-                if is_lowered_stdlib_method_call(&call_expr) {
-                    return compile_lowered_stdlib_method_call(call_expr);
-                }
                 if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
                     return compile_variadic_any_call(call_expr, variadic_start);
                 }
@@ -7978,9 +6979,9 @@ impl From<ast::Expr<'_>> for syn::Type {
                 }
             }
             ast::Expr::ChanType(chan_type) => {
-                // chan T → crate::builtin::GoChan<T>
+                // chan T → crate::builtin::Chan<T>
                 let inner: syn::Type = (*chan_type.value).into();
-                syn::parse_quote! { crate::builtin::GoChan<#inner> }
+                syn::parse_quote! { crate::builtin::Chan<#inner> }
             }
             ast::Expr::Ellipsis(ellipsis) => {
                 if let Some(elt) = ellipsis.elt {
@@ -9908,8 +8909,8 @@ mod tests {
     //! compiler passes).
 
     use super::{build_source_map, clear_source_map_tracker, compile, compile_with_source_map};
-    use crate::backend_rust;
     use crate::parser::parse_file;
+    use crate::printer;
     use quote::quote;
     use syn::parse_quote as rust;
 
@@ -9955,7 +8956,7 @@ func main() {
         let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
         // Generate the Rust code
-        let rust_source = backend_rust::generate(compiled).unwrap();
+        let rust_source = printer::generate(compiled).unwrap();
 
         // Build the source map
         let sm = build_source_map(&rust_source);
@@ -9988,7 +8989,7 @@ func main() {
         let compiled = compile_with_source_map(parsed, "test.go", go_source).unwrap();
 
         // Generate the Rust code
-        let rust_source = backend_rust::generate(compiled).unwrap();
+        let rust_source = printer::generate(compiled).unwrap();
 
         // The generated Rust code should contain "fn main"
         assert!(
@@ -10084,9 +9085,8 @@ func main() {
     }
 
     #[test]
-    fn compile_program_multi_hello_world() {
-        let go_source =
-            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n";
+    fn compile_program_multi_builtin_println() {
+        let go_source = "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n";
         let ast = parse_file("main.go", go_source).unwrap();
         let program = crate::parser::ParsedProgram {
             main_package: crate::parser::ParsedPackage {
@@ -10096,7 +9096,7 @@ func main() {
                 files: vec![("main.go".to_string(), go_source.to_string())],
             },
             imports: vec![],
-            stdlib_imports: vec!["fmt".to_string()],
+            stdlib_imports: vec![],
         };
         let compiled = super::compile_program_multi(program).unwrap();
         assert!(compiled.has_main);
@@ -10110,15 +9110,14 @@ func main() {
             .iter()
             .filter_map(super::item_name)
             .collect();
-        assert!(builtin_item_names.contains("go_fmt_println"));
-        assert!(builtin_item_names.contains("go_fmt_sprintln"));
+        assert!(builtin_item_names.contains("println_value"));
+        assert!(!builtin_item_names.contains("println_empty"));
         assert!(!builtin_item_names.contains("append"));
     }
 
     #[test]
     fn compile_program_multi_generates_valid_rust() {
-        let go_source =
-            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"test\")\n}\n";
+        let go_source = "package main\n\nfunc main() {\n\tprintln(\"test\")\n}\n";
         let ast = parse_file("main.go", go_source).unwrap();
         let program = crate::parser::ParsedProgram {
             main_package: crate::parser::ParsedPackage {
@@ -10128,10 +9127,10 @@ func main() {
                 files: vec![("main.go".to_string(), go_source.to_string())],
             },
             imports: vec![],
-            stdlib_imports: vec!["fmt".to_string()],
+            stdlib_imports: vec![],
         };
         let compiled = super::compile_program_multi(program).unwrap();
-        let output = backend_rust::generate_multi(compiled).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
         assert!(output.files.contains_key("main.rs"));
         assert!(output.files.contains_key("lib.rs"));
         assert!(output.files.contains_key("builtin.rs"));
@@ -10140,7 +9139,7 @@ func main() {
         assert!(main_rs.contains("mod lib"));
         assert!(main_rs.contains("use lib::{"));
         assert!(main_rs.contains("builtin"));
-        assert!(main_rs.contains("go_fmt_println"));
+        assert!(main_rs.contains("println_value"));
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod builtin"));
         assert!(!lib_rs.contains("pub mod fmt"));
@@ -10228,19 +9227,19 @@ func main() {
                 impl std::ops::DerefMut for buffer {
                     fn deref_mut(&mut self) -> &mut Vec<u8> { &mut self.0 }
                 }
-                impl crate::builtin::GoLen for buffer {
-                    fn go_len(&self) -> usize { self.0.len() }
+                impl crate::builtin::Len for buffer {
+                    fn len_value(&self) -> usize { self.0.len() }
                 }
-                impl crate::builtin::GoCap for buffer {
-                    fn go_cap(&self) -> usize { self.0.capacity() }
+                impl crate::builtin::Cap for buffer {
+                    fn cap_value(&self) -> usize { self.0.capacity() }
                 }
-                impl crate::builtin::GoString for buffer {
-                    fn go_string(self) -> String {
+                impl crate::builtin::StringValue for buffer {
+                    fn string_value(self) -> String {
                         String::from_utf8(self.0).unwrap_or_default()
                     }
                 }
-                impl crate::builtin::GoString for &buffer {
-                    fn go_string(self) -> String {
+                impl crate::builtin::StringValue for &buffer {
+                    fn string_value(self) -> String {
                         String::from_utf8(self.0.clone()).unwrap_or_default()
                     }
                 }
@@ -10256,26 +9255,26 @@ func main() {
                 impl From<buffer> for Vec<u8> {
                     fn from(value: buffer) -> Self { value.0 }
                 }
-                impl crate::builtin::GoAppend<u8> for buffer {
-                    fn go_append(mut self, elem: u8) -> Self {
+                impl crate::builtin::Append<u8> for buffer {
+                    fn append_value(mut self, elem: u8) -> Self {
                         self.0.push(elem);
                         self
                     }
                 }
-                impl crate::builtin::GoAppend<Vec<u8>> for buffer {
-                    fn go_append(mut self, elem: Vec<u8>) -> Self {
+                impl crate::builtin::Append<Vec<u8>> for buffer {
+                    fn append_value(mut self, elem: Vec<u8>) -> Self {
                         self.0.extend(elem);
                         self
                     }
                 }
-                impl crate::builtin::GoAppend<buffer> for Vec<u8> {
-                    fn go_append(mut self, elem: buffer) -> Self {
+                impl crate::builtin::Append<buffer> for Vec<u8> {
+                    fn append_value(mut self, elem: buffer) -> Self {
                         self.extend(elem.0);
                         self
                     }
                 }
-                impl crate::builtin::GoAppend<String> for buffer {
-                    fn go_append(mut self, elem: String) -> Self {
+                impl crate::builtin::Append<String> for buffer {
+                    fn append_value(mut self, elem: String) -> Self {
                         self.0.extend(elem.into_bytes());
                         self
                     }
@@ -10739,7 +9738,7 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    crate::builtin::go_println_value("hello");
+                    crate::builtin::println_value("hello");
                 }
             },
         );
@@ -10841,7 +9840,7 @@ func main() {
     }
 
     #[test]
-    fn compile_program_multi_prunes_lowered_stdlib_imports() {
+    fn compile_program_multi_retains_referenced_stdlib_imports() {
         let go_source = r#"package main
 
 import "fmt"
@@ -10874,20 +9873,20 @@ func main() {
             ],
         };
         let compiled = super::compile_program_multi(program).unwrap();
-        assert!(!compiled.modules.contains_key("fmt"));
+        assert!(compiled.modules.contains_key("fmt"));
         assert!(compiled.modules.contains_key("strconv"));
+        assert!(compiled.modules.contains_key("sort"));
         assert!(!compiled.modules.contains_key("errors"));
-        assert!(!compiled.modules.contains_key("sort"));
-        let output = backend_rust::generate_multi(compiled).unwrap();
-        assert!(!output.files.contains_key("fmt.rs"));
+        let output = printer::generate_multi(compiled).unwrap();
+        assert!(output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("strconv.rs"));
+        assert!(output.files.contains_key("sort.rs"));
         assert!(!output.files.contains_key("errors.rs"));
-        assert!(!output.files.contains_key("sort.rs"));
         let lib_rs = output.files.get("lib.rs").unwrap();
-        assert!(!lib_rs.contains("pub mod fmt"));
+        assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod strconv"));
+        assert!(lib_rs.contains("pub mod sort"));
         assert!(!lib_rs.contains("pub mod errors"));
-        assert!(!lib_rs.contains("pub mod sort"));
     }
 
     // --- Iota + Const tests (Agent 2) ---
@@ -10984,7 +9983,7 @@ func main() {
     fn go_to_rust(go_input: &str) -> String {
         let parsed = parse_file("test.go", go_input).unwrap();
         let compiled = compile(parsed).unwrap();
-        backend_rust::generate(compiled).unwrap()
+        printer::generate(compiled).unwrap()
     }
 
     #[test]

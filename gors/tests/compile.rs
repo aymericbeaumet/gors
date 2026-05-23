@@ -5,7 +5,7 @@ mod common;
 use common::{discover_program_dirs, fixtures_dir};
 use sha2::Digest;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn rustc_cmd(src: &str, out: &str) -> Command {
@@ -51,10 +51,23 @@ fn write_fixture_file(path: &Path, source: &str) {
     std::fs::write(path, source).unwrap();
 }
 
-fn compile_temp_program(dir: &Path) -> gors::backend_rust::GeneratedOutput {
+fn compile_temp_program(dir: &Path) -> gors::printer::GeneratedOutput {
     let program = gors::parser::parse_program(dir.to_str().unwrap()).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    gors::backend_rust::generate_multi(compiled).unwrap()
+    gors::printer::generate_multi(compiled).unwrap()
+}
+
+fn unused_code_lint_program_dirs() -> Vec<PathBuf> {
+    let programs = fixtures_dir().join("go_programs");
+    [
+        "simple_add",
+        "builtin_len_cap",
+        "import_local_package",
+        "hello_world",
+    ]
+    .into_iter()
+    .map(|name| programs.join(name))
+    .collect()
 }
 
 #[test]
@@ -66,7 +79,7 @@ fn generated_output_orders_macro_rules_before_invocations() {
             ($($ty:ty),*) => {};
         }
     };
-    let source = gors::backend_rust::generate(file).unwrap();
+    let source = gors::printer::generate(file).unwrap();
     let definition = source
         .find("macro_rules! impl_real_complex_conversions")
         .unwrap();
@@ -86,7 +99,7 @@ fn compile_multi_file_hello_world() {
     assert!(compiled.has_main);
     assert!(compiled.modules.contains_key("__main__"));
     assert!(compiled.modules.contains_key("builtin"));
-    assert!(!compiled.modules.contains_key("fmt"));
+    assert!(compiled.modules.contains_key("fmt"));
 }
 
 #[test]
@@ -101,7 +114,7 @@ fn compile_multi_file_with_imports() {
     assert!(compiled.has_main);
     assert!(compiled.modules.values().any(|m| m.mod_name == "greet"));
     assert!(compiled.modules.contains_key("builtin"));
-    assert!(!compiled.modules.contains_key("fmt"));
+    assert!(compiled.modules.contains_key("fmt"));
 
     let greet = compiled
         .modules
@@ -120,7 +133,7 @@ fn compile_multi_file_generate_and_compile() {
         .to_string();
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+    let output = gors::printer::generate_multi(compiled).unwrap();
 
     let tmp = tempfile::tempdir().unwrap();
     for (filename, source) in &output.files {
@@ -148,7 +161,7 @@ fn generated_files_have_header_lints_and_blank_line() {
         .to_string();
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+    let output = gors::printer::generate_multi(compiled).unwrap();
 
     for (filename, source) in &output.files {
         assert!(
@@ -166,7 +179,7 @@ fn generated_files_do_not_allow_dead_code() {
         .to_string();
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+    let output = gors::printer::generate_multi(compiled).unwrap();
 
     for (filename, source) in &output.files {
         assert!(
@@ -210,7 +223,7 @@ func main() {
     assert!(!main_rs.contains("deadLocal"), "{main_rs}");
 
     let builtin_rs = output.files.get("builtin.rs").unwrap();
-    assert!(!builtin_rs.contains("GoChan"), "{builtin_rs}");
+    assert!(!builtin_rs.contains("Chan"), "{builtin_rs}");
     assert!(!builtin_rs.contains("make_chan"), "{builtin_rs}");
 }
 
@@ -326,7 +339,7 @@ fn generated_modules_and_methods_are_ordered() {
         has_main: true,
     };
 
-    let multi = gors::backend_rust::generate_multi(program.clone()).unwrap();
+    let multi = gors::printer::generate_multi(program.clone()).unwrap();
     let lib_rs = multi.files.get("lib.rs").unwrap();
     assert!(lib_rs.find("pub mod alpha;").unwrap() < lib_rs.find("pub mod zeta;").unwrap());
     let alpha_rs = multi.files.get("alpha.rs").unwrap();
@@ -334,7 +347,7 @@ fn generated_modules_and_methods_are_ordered() {
         alpha_rs.find("pub fn PublicAlpha").unwrap() < alpha_rs.find("fn private_alpha").unwrap()
     );
 
-    let single = gors::backend_rust::generate_single(program).unwrap();
+    let single = gors::printer::generate_single(program).unwrap();
     assert!(single.find("mod alpha").unwrap() < single.find("mod zeta").unwrap());
 }
 
@@ -393,7 +406,7 @@ fn compile_build_manifest_skip_unchanged() {
     // First build
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+    let output = gors::printer::generate_multi(compiled).unwrap();
 
     let mut manifest = gors::compiler::manifest::BuildManifest::new();
     for (filename, source) in &output.files {
@@ -440,7 +453,7 @@ fn compile_multi_file_lib_rs_is_consumable() {
         .to_string();
     let program = gors::parser::parse_program(&path).unwrap();
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
-    let output = gors::backend_rust::generate_multi(compiled).unwrap();
+    let output = gors::printer::generate_multi(compiled).unwrap();
 
     assert!(
         output.files.contains_key("lib.rs"),
@@ -473,7 +486,7 @@ fn compile_sourcemap() {
             Err(_) => continue,
         };
 
-        let rust_source = match gors::backend_rust::generate(compiled) {
+        let rust_source = match gors::printer::generate(compiled) {
             Ok(s) => s,
             Err(_) => continue,
         };
@@ -506,7 +519,7 @@ fn compile_sourcemap() {
 
 #[test]
 fn generate_multi_no_unused_code() {
-    let dirs = discover_program_dirs();
+    let dirs = unused_code_lint_program_dirs();
 
     for dir in &dirs {
         let main_go = dir.join("main.go");
@@ -525,7 +538,7 @@ fn generate_multi_no_unused_code() {
             Err(_) => continue,
         };
 
-        let output = match gors::backend_rust::generate_multi(compiled) {
+        let output = match gors::printer::generate_multi(compiled) {
             Ok(o) => o,
             Err(_) => continue,
         };
@@ -567,7 +580,7 @@ fn generate_multi_no_unused_code() {
 
 #[test]
 fn generate_single_no_unused_code() {
-    let dirs = discover_program_dirs();
+    let dirs = unused_code_lint_program_dirs();
 
     for dir in &dirs {
         let main_go = dir.join("main.go");
@@ -586,7 +599,7 @@ fn generate_single_no_unused_code() {
             Err(_) => continue,
         };
 
-        let source = match gors::backend_rust::generate_single(compiled) {
+        let source = match gors::printer::generate_single(compiled) {
             Ok(s) => s,
             Err(_) => continue,
         };

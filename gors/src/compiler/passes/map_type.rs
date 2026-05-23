@@ -7,8 +7,18 @@ pub fn pass(file: &mut syn::File) {
 struct MapType;
 
 impl VisitMut for MapType {
-    fn visit_ident_mut(&mut self, ident: &mut syn::Ident) {
-        let name = match ident.to_string().as_str() {
+    fn visit_type_path_mut(&mut self, type_path: &mut syn::TypePath) {
+        visit_mut::visit_type_path_mut(self, type_path);
+        if type_path.qself.is_some() || type_path.path.leading_colon.is_some() {
+            return;
+        }
+        if type_path.path.segments.len() != 1 {
+            return;
+        }
+        let Some(segment) = type_path.path.segments.first_mut() else {
+            return;
+        };
+        let name = match segment.ident.to_string().as_str() {
             "bool" => "bool",
             "byte" => "u8",
             "rune" => "u32",
@@ -29,8 +39,6 @@ impl VisitMut for MapType {
             "error" => "String",
             _ => return,
         };
-        *ident = quote::format_ident!("{}", name);
-
-        visit_mut::visit_ident_mut(self, ident);
+        segment.ident = quote::format_ident!("{}", name);
     }
 }

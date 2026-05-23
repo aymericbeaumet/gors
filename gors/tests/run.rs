@@ -199,7 +199,7 @@ func main() {}
 }
 
 #[test]
-fn run_programs_rust_backend() {
+fn run_programs_generated_rust() {
     let gors = gors_bin();
     let dirs = discover_program_dirs();
     assert!(

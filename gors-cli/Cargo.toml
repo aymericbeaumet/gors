@@ -13,7 +13,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-gors = { path = ".." }
+gors = { path = "../gors" }
 atty = "0.2"
 clap = { version = "4.6", features = ["derive"] }
 pretty_env_logger = "0.5"

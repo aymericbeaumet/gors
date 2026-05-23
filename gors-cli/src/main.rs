@@ -178,7 +178,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let output = gors::backend_rust::generate_multi(compiled)?;
+    let output = gors::printer::generate_multi(compiled)?;
     let output_dir = cmd.output.as_deref().unwrap_or("gors_output");
     let stats = write_generated_output(&output, Path::new(output_dir))?;
     if stats.removed == 0 {
@@ -203,7 +203,7 @@ struct FileWriteStats {
 }
 
 fn write_generated_output(
-    output: &gors::backend_rust::GeneratedOutput,
+    output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let timer = ProfileTimer::start("cli.file_writes");
@@ -377,7 +377,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let output = gors::backend_rust::generate_multi(compiled)?;
+    let output = gors::printer::generate_multi(compiled)?;
 
     let cache_dir = run_cache_dir(&source_paths, cmd.release)?;
     write_generated_output(&output, &cache_dir)?;

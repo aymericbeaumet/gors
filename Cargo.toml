@@ -1,29 +1,14 @@
-[package]
-name = "gors"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-description = "Experimental go toolchain written in rust (parser, compiler) "
-homepage = "https://aymericbeaumet.github.io/gors/"
-repository = "https://github.com/aymericbeaumet/gors/"
-
-[lib]
-name = "gors"
-path = "src/lib.rs"
-
 [workspace]
 resolver = "3"
 members = [
-  ".",
-  "cli",
+  "gors",
+  "gors-cli",
+  "gors-builtin",
   "fuzz",
 ]
 exclude = [
   "www/wasm",
 ]
-
-[lints]
-workspace = true
 
 # Workspace-level lints configuration
 [workspace.lints.rust]
@@ -55,39 +40,6 @@ unnecessary_struct_initialization = "allow"  # Sometimes explicit initialization
 needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
 large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
 fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
-
-[features]
-integration = []
-
-[dependencies]
-# Library dependencies
-log = { version = "0.4", features = ["release_max_level_warn"] }
-phf = { version = "0.13", features = ["macros"] }
-prettyplease = "0.2"
-proc-macro2 = "1.0"
-quote = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-sourcemap = "9"
-syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
-unicode-general-category = "1.1"
-
-# Stdlib archive decompression (used by embedded stdlib at runtime)
-flate2 = "1"
-sha2 = "0.11"
-tar = "0.4"
-
-serde_json = "1.0"
-
-[build-dependencies]
-dirs = "6"
-flate2 = "1"
-reqwest = { version = "0.13", features = ["blocking", "rustls"] }
-sha2 = "0.11"
-tar = "0.4"
-
-[dev-dependencies]
-rayon = "1.12"
-tempfile = "3.27"
 
 [profile.dev]
 opt-level = 0

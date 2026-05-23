@@ -19,24 +19,24 @@ pub fn pass(file: &mut syn::File) {
                     senders: usize,
                 }
 
-                pub struct GoChan<T> {
+                pub struct Chan<T> {
                     inner: Arc<(Mutex<Inner<T>>, Condvar, Condvar)>,
                 }
 
-                impl<T> Clone for GoChan<T> {
+                impl<T> Clone for Chan<T> {
                     fn clone(&self) -> Self {
                         let mut lock = self.inner.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         lock.senders += 1;
                         drop(lock);
-                        GoChan {
+                        Chan {
                             inner: Arc::clone(&self.inner),
                         }
                     }
                 }
 
-                impl<T> GoChan<T> {
+                impl<T> Chan<T> {
                     pub fn new(capacity: usize) -> Self {
-                        GoChan {
+                        Chan {
                             inner: Arc::new((
                                 Mutex::new(Inner {
                                     buffer: VecDeque::new(),
@@ -143,22 +143,22 @@ pub fn pass(file: &mut syn::File) {
                     }
                 }
 
-                pub struct GoChanIter<T>(GoChan<T>);
-                impl<T: Default> Iterator for GoChanIter<T> {
+                pub struct ChanIter<T>(Chan<T>);
+                impl<T: Default> Iterator for ChanIter<T> {
                     type Item = T;
                     fn next(&mut self) -> Option<T> {
                         let (val, ok) = self.0.recv_with_ok();
                         if ok { Some(val) } else { None }
                     }
                 }
-                impl<T: Default> IntoIterator for GoChan<T> {
+                impl<T: Default> IntoIterator for Chan<T> {
                     type Item = T;
-                    type IntoIter = GoChanIter<T>;
-                    fn into_iter(self) -> Self::IntoIter { GoChanIter(self) }
+                    type IntoIter = ChanIter<T>;
+                    fn into_iter(self) -> Self::IntoIter { ChanIter(self) }
                 }
 
-                pub fn make_chan<T>(capacity: usize) -> GoChan<T> {
-                    GoChan::new(capacity)
+                pub fn make_chan<T>(capacity: usize) -> Chan<T> {
+                    Chan::new(capacity)
                 }
             }
         };

@@ -141,6 +141,13 @@ pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("gors crate should live under workspace root")
+        .to_path_buf()
+}
+
 /// Get the path to the Go runner binary, building it if needed.
 pub fn go_runner_bin() -> &'static PathBuf {
     static GO_RUNNER: OnceLock<PathBuf> = OnceLock::new();
@@ -176,7 +183,7 @@ pub fn gors_bin() -> &'static PathBuf {
         // Build in release mode for accurate timing comparisons
         let status = std::process::Command::new("cargo")
             .args(["build", "--release", "-p", "gors-cli", "--bin", "gors"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .current_dir(workspace_root())
             .status()
             .expect("Failed to build gors");
 
@@ -184,7 +191,7 @@ pub fn gors_bin() -> &'static PathBuf {
             panic!("Failed to build gors");
         }
 
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/gors")
+        workspace_root().join("target/release/gors")
     })
 }
 
