@@ -972,6 +972,519 @@ pub fn go_sort_swap<T>(values: &mut [T], i: isize, j: isize) {
 }
 
 // ---------------------------------------------------------------------------
+// strings helpers
+// ---------------------------------------------------------------------------
+
+#[inline]
+pub fn go_strings_clone<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    s.as_ref().to_string()
+}
+
+#[inline]
+pub fn go_strings_compare<A: AsRef<str> + ?Sized, B: AsRef<str> + ?Sized>(a: &A, b: &B) -> isize {
+    match a.as_ref().cmp(b.as_ref()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+#[inline]
+pub fn go_strings_contains<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    substr: &P,
+) -> bool {
+    s.as_ref().contains(substr.as_ref())
+}
+
+#[inline]
+pub fn go_strings_contains_any<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    chars: &C,
+) -> bool {
+    s.as_ref().chars().any(|ch| chars.as_ref().contains(ch))
+}
+
+#[inline]
+pub fn go_strings_contains_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> bool
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref().chars().any(|ch| f(ch as u32))
+}
+
+#[inline]
+pub fn go_strings_contains_rune<S: AsRef<str> + ?Sized>(s: &S, r: u32) -> bool {
+    char::from_u32(r).is_some_and(|ch| s.as_ref().contains(ch))
+}
+
+#[inline]
+pub fn go_strings_count<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    substr: &P,
+) -> isize {
+    let s = s.as_ref();
+    let substr = substr.as_ref();
+    if substr.is_empty() {
+        return s.chars().count() as isize + 1;
+    }
+    s.matches(substr).count() as isize
+}
+
+#[inline]
+pub fn go_strings_cut<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    sep: &P,
+) -> (String, String, bool) {
+    match s.as_ref().split_once(sep.as_ref()) {
+        Some((before, after)) => (before.to_string(), after.to_string(), true),
+        None => (s.as_ref().to_string(), String::new(), false),
+    }
+}
+
+#[inline]
+pub fn go_strings_cut_prefix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    prefix: &P,
+) -> (String, bool) {
+    match s.as_ref().strip_prefix(prefix.as_ref()) {
+        Some(after) => (after.to_string(), true),
+        None => (s.as_ref().to_string(), false),
+    }
+}
+
+#[inline]
+pub fn go_strings_cut_suffix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    suffix: &P,
+) -> (String, bool) {
+    match s.as_ref().strip_suffix(suffix.as_ref()) {
+        Some(before) => (before.to_string(), true),
+        None => (s.as_ref().to_string(), false),
+    }
+}
+
+#[inline]
+pub fn go_strings_equal_fold<A: AsRef<str> + ?Sized, B: AsRef<str> + ?Sized>(
+    a: &A,
+    b: &B,
+) -> bool {
+    a.as_ref().to_lowercase() == b.as_ref().to_lowercase()
+}
+
+#[inline]
+pub fn go_strings_fields<S: AsRef<str> + ?Sized>(s: &S) -> Vec<String> {
+    s.as_ref()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+#[inline]
+pub fn go_strings_fields_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> Vec<String>
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref()
+        .split(|ch| f(ch as u32))
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[inline]
+pub fn go_strings_has_prefix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    prefix: &P,
+) -> bool {
+    s.as_ref().starts_with(prefix.as_ref())
+}
+
+#[inline]
+pub fn go_strings_has_suffix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    suffix: &P,
+) -> bool {
+    s.as_ref().ends_with(suffix.as_ref())
+}
+
+#[inline]
+pub fn go_strings_index<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(s: &S, substr: &P) -> isize {
+    s.as_ref()
+        .find(substr.as_ref())
+        .map_or(-1, |idx| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_index_any<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    chars: &C,
+) -> isize {
+    s.as_ref()
+        .char_indices()
+        .find(|(_, ch)| chars.as_ref().contains(*ch))
+        .map_or(-1, |(idx, _)| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_index_byte<S: AsRef<str> + ?Sized>(s: &S, c: u32) -> isize {
+    if c > u8::MAX as u32 {
+        return -1;
+    }
+    s.as_ref()
+        .as_bytes()
+        .iter()
+        .position(|byte| *byte == c as u8)
+        .map_or(-1, |idx| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_index_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> isize
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref()
+        .char_indices()
+        .find(|(_, ch)| f(*ch as u32))
+        .map_or(-1, |(idx, _)| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_index_rune<S: AsRef<str> + ?Sized>(s: &S, r: u32) -> isize {
+    char::from_u32(r).map_or(-1, |ch| {
+        s.as_ref().find(ch).map_or(-1, |idx| idx as isize)
+    })
+}
+
+#[inline]
+pub fn go_strings_join<T: AsRef<str>, S: AsRef<str> + ?Sized>(elems: &[T], sep: &S) -> String {
+    let mut out = String::new();
+    for (idx, elem) in elems.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(sep.as_ref());
+        }
+        out.push_str(elem.as_ref());
+    }
+    out
+}
+
+#[inline]
+pub fn go_strings_last_index<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    substr: &P,
+) -> isize {
+    s.as_ref()
+        .rfind(substr.as_ref())
+        .map_or(-1, |idx| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_last_index_any<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    chars: &C,
+) -> isize {
+    s.as_ref()
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| chars.as_ref().contains(*ch))
+        .map_or(-1, |(idx, _)| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_last_index_byte<S: AsRef<str> + ?Sized>(s: &S, c: u32) -> isize {
+    if c > u8::MAX as u32 {
+        return -1;
+    }
+    s.as_ref()
+        .as_bytes()
+        .iter()
+        .rposition(|byte| *byte == c as u8)
+        .map_or(-1, |idx| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_last_index_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> isize
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref()
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| f(*ch as u32))
+        .map_or(-1, |(idx, _)| idx as isize)
+}
+
+#[inline]
+pub fn go_strings_map<S: AsRef<str> + ?Sized, F>(mapping: F, s: &S) -> String
+where
+    F: Fn(u32) -> u32,
+{
+    s.as_ref()
+        .chars()
+        .filter_map(|ch| char::from_u32(mapping(ch as u32)))
+        .collect()
+}
+
+#[inline]
+pub fn go_strings_repeat<S: AsRef<str> + ?Sized>(s: &S, count: isize) -> String {
+    if count <= 0 {
+        return String::new();
+    }
+    s.as_ref().repeat(count as usize)
+}
+
+#[inline]
+pub fn go_strings_replace<
+    S: AsRef<str> + ?Sized,
+    O: AsRef<str> + ?Sized,
+    N: AsRef<str> + ?Sized,
+>(
+    s: &S,
+    old: &O,
+    new: &N,
+    n: isize,
+) -> String {
+    let s = s.as_ref();
+    let old = old.as_ref();
+    let new = new.as_ref();
+    if old.is_empty() {
+        let limit = if n < 0 { usize::MAX } else { n as usize };
+        let mut out = String::new();
+        let mut used = 0usize;
+        for ch in s.chars() {
+            if used < limit {
+                out.push_str(new);
+                used += 1;
+            }
+            out.push(ch);
+        }
+        if used < limit {
+            out.push_str(new);
+        }
+        return out;
+    }
+    if n < 0 {
+        s.replace(old, new)
+    } else {
+        s.replacen(old, new, n as usize)
+    }
+}
+
+#[inline]
+pub fn go_strings_replace_all<
+    S: AsRef<str> + ?Sized,
+    O: AsRef<str> + ?Sized,
+    N: AsRef<str> + ?Sized,
+>(
+    s: &S,
+    old: &O,
+    new: &N,
+) -> String {
+    go_strings_replace(s, old, new, -1)
+}
+
+#[inline]
+pub fn go_strings_split<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    sep: &P,
+) -> Vec<String> {
+    go_strings_split_n(s, sep, -1)
+}
+
+#[inline]
+pub fn go_strings_split_after<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    sep: &P,
+) -> Vec<String> {
+    go_strings_split_after_n(s, sep, -1)
+}
+
+#[inline]
+pub fn go_strings_split_n<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    sep: &P,
+    n: isize,
+) -> Vec<String> {
+    let s = s.as_ref();
+    let sep = sep.as_ref();
+    if n == 0 {
+        return Vec::new();
+    }
+    if sep.is_empty() {
+        let mut parts: Vec<String> = s.chars().map(|ch| ch.to_string()).collect();
+        if n > 0 && parts.len() > n as usize {
+            let rest = parts.split_off(n as usize - 1).join("");
+            parts.push(rest);
+        }
+        return parts;
+    }
+    if n < 0 {
+        s.split(sep).map(str::to_string).collect()
+    } else {
+        s.splitn(n as usize, sep).map(str::to_string).collect()
+    }
+}
+
+#[inline]
+pub fn go_strings_split_after_n<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    sep: &P,
+    n: isize,
+) -> Vec<String> {
+    let s = s.as_ref();
+    let sep = sep.as_ref();
+    if n == 0 {
+        return Vec::new();
+    }
+    if sep.is_empty() {
+        return go_strings_split_n(s, sep, n);
+    }
+    if n < 0 {
+        return s.split_inclusive(sep).map(str::to_string).collect();
+    }
+    let mut out = Vec::new();
+    let mut rest = s;
+    while out.len() + 1 < n as usize {
+        let Some(idx) = rest.find(sep) else {
+            break;
+        };
+        let end = idx + sep.len();
+        out.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    out.push(rest.to_string());
+    out
+}
+
+#[inline]
+pub fn go_strings_title<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    let mut out = String::new();
+    let mut new_word = true;
+    for ch in s.as_ref().chars() {
+        if ch.is_alphanumeric() {
+            if new_word {
+                out.extend(ch.to_uppercase());
+            } else {
+                out.push(ch);
+            }
+            new_word = false;
+        } else {
+            out.push(ch);
+            new_word = true;
+        }
+    }
+    out
+}
+
+#[inline]
+pub fn go_strings_to_lower<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    s.as_ref().to_lowercase()
+}
+
+#[inline]
+pub fn go_strings_to_title<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    s.as_ref().to_uppercase()
+}
+
+#[inline]
+pub fn go_strings_to_upper<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    s.as_ref().to_uppercase()
+}
+
+#[inline]
+pub fn go_strings_to_valid_utf8<S: AsRef<str> + ?Sized, R: AsRef<str> + ?Sized>(
+    s: &S,
+    _replacement: &R,
+) -> String {
+    s.as_ref().to_string()
+}
+
+#[inline]
+pub fn go_strings_trim<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    cutset: &C,
+) -> String {
+    s.as_ref()
+        .trim_matches(|ch| cutset.as_ref().contains(ch))
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> String
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref().trim_matches(|ch| f(ch as u32)).to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_left<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    cutset: &C,
+) -> String {
+    s.as_ref()
+        .trim_start_matches(|ch| cutset.as_ref().contains(ch))
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_left_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> String
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref()
+        .trim_start_matches(|ch| f(ch as u32))
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_prefix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    prefix: &P,
+) -> String {
+    s.as_ref()
+        .strip_prefix(prefix.as_ref())
+        .unwrap_or_else(|| s.as_ref())
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_right<S: AsRef<str> + ?Sized, C: AsRef<str> + ?Sized>(
+    s: &S,
+    cutset: &C,
+) -> String {
+    s.as_ref()
+        .trim_end_matches(|ch| cutset.as_ref().contains(ch))
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_right_func<S: AsRef<str> + ?Sized, F>(s: &S, f: F) -> String
+where
+    F: Fn(u32) -> bool,
+{
+    s.as_ref()
+        .trim_end_matches(|ch| f(ch as u32))
+        .to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_space<S: AsRef<str> + ?Sized>(s: &S) -> String {
+    s.as_ref().trim().to_string()
+}
+
+#[inline]
+pub fn go_strings_trim_suffix<S: AsRef<str> + ?Sized, P: AsRef<str> + ?Sized>(
+    s: &S,
+    suffix: &P,
+) -> String {
+    s.as_ref()
+        .strip_suffix(suffix.as_ref())
+        .unwrap_or_else(|| s.as_ref())
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
 // fmt helpers
 // ---------------------------------------------------------------------------
 

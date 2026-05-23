@@ -30,3 +30,20 @@ Covered methods: `Float64Slice.Len`, `Float64Slice.Less`,
 Remaining: broader `Interface` implementations beyond `IntSlice`,
 `Float64Slice`, and `StringSlice`, plus closure-backed `Slice` comparators once
 function literals are supported by the parser/compiler.
+
+## strings
+
+Covered direct functions: `Clone`, `Compare`, `Contains`, `ContainsAny`,
+`ContainsFunc`, `ContainsRune`, `Count`, `Cut`, `CutPrefix`, `CutSuffix`,
+`EqualFold`, `Fields`, `FieldsFunc`, `HasPrefix`, `HasSuffix`, `Index`,
+`IndexAny`, `IndexByte`, `IndexFunc`, `IndexRune`, `Join`, `LastIndex`,
+`LastIndexAny`, `LastIndexByte`, `LastIndexFunc`, `Map`, `Repeat`, `Replace`,
+`ReplaceAll`, `Split`, `SplitAfter`, `SplitAfterN`, `SplitN`, `Title`,
+`ToLower`, `ToTitle`, `ToUpper`, `ToValidUTF8`, `Trim`, `TrimFunc`,
+`TrimLeft`, `TrimLeftFunc`, `TrimPrefix`, `TrimRight`, `TrimRightFunc`,
+`TrimSpace`, and `TrimSuffix`.
+
+Remaining: iterator-returning functions (`FieldsSeq`, `FieldsFuncSeq`,
+`Lines`, `SplitSeq`, `SplitAfterSeq`), `unicode.SpecialCase` variants
+(`ToLowerSpecial`, `ToTitleSpecial`, `ToUpperSpecial`), `Builder` methods,
+`Reader` methods, `Replacer` methods, `NewReader`, and `NewReplacer`.

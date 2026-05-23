@@ -4526,6 +4526,7 @@ enum LoweredStdlibCall {
     FmtFprintf,
     FmtFprintln,
     FmtErrorf,
+    Strings(StringFunc),
     SortFind,
     SortInts,
     SortStrings,
@@ -4558,6 +4559,57 @@ enum SortInterfaceMode {
     Reverse,
 }
 
+#[derive(Clone, Copy)]
+enum StringFunc {
+    Clone,
+    Compare,
+    Contains,
+    ContainsAny,
+    ContainsFunc,
+    ContainsRune,
+    Count,
+    Cut,
+    CutPrefix,
+    CutSuffix,
+    EqualFold,
+    Fields,
+    FieldsFunc,
+    HasPrefix,
+    HasSuffix,
+    Index,
+    IndexAny,
+    IndexByte,
+    IndexFunc,
+    IndexRune,
+    Join,
+    LastIndex,
+    LastIndexAny,
+    LastIndexByte,
+    LastIndexFunc,
+    Map,
+    Repeat,
+    Replace,
+    ReplaceAll,
+    Split,
+    SplitAfter,
+    SplitAfterN,
+    SplitN,
+    Title,
+    ToLower,
+    ToTitle,
+    ToUpper,
+    ToValidUTF8,
+    Trim,
+    TrimFunc,
+    TrimLeft,
+    TrimLeftFunc,
+    TrimPrefix,
+    TrimRight,
+    TrimRightFunc,
+    TrimSpace,
+    TrimSuffix,
+}
+
 fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
     let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
         return None;
@@ -4567,6 +4619,12 @@ fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
     };
     if !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
         return None;
+    }
+
+    if pkg.name == "strings"
+        && let Some(func) = string_func_lowering(selector.sel.name)
+    {
+        return Some(LoweredStdlibCall::Strings(func));
     }
 
     match (pkg.name, selector.sel.name) {
@@ -4606,6 +4664,10 @@ fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
 
 fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibCall) -> syn::Expr {
     let raw_args = call_expr.args.unwrap_or_default();
+    if let LoweredStdlibCall::Strings(func) = lowered {
+        return compile_lowered_strings_call(raw_args, func);
+    }
+
     if matches!(
         lowered,
         LoweredStdlibCall::FmtPrint
@@ -5072,6 +5134,330 @@ fn compile_sort_slice_search(
         SortSliceKind::String => {
             let target = compile_expr_with_expected(target, Some(&typeinfer::GoType::String));
             syn::parse_quote! { crate::builtin::go_sort_search_strings(&#receiver, #target) }
+        }
+    }
+}
+
+fn string_func_lowering(name: &str) -> Option<StringFunc> {
+    match name {
+        "Clone" => Some(StringFunc::Clone),
+        "Compare" => Some(StringFunc::Compare),
+        "Contains" => Some(StringFunc::Contains),
+        "ContainsAny" => Some(StringFunc::ContainsAny),
+        "ContainsFunc" => Some(StringFunc::ContainsFunc),
+        "ContainsRune" => Some(StringFunc::ContainsRune),
+        "Count" => Some(StringFunc::Count),
+        "Cut" => Some(StringFunc::Cut),
+        "CutPrefix" => Some(StringFunc::CutPrefix),
+        "CutSuffix" => Some(StringFunc::CutSuffix),
+        "EqualFold" => Some(StringFunc::EqualFold),
+        "Fields" => Some(StringFunc::Fields),
+        "FieldsFunc" => Some(StringFunc::FieldsFunc),
+        "HasPrefix" => Some(StringFunc::HasPrefix),
+        "HasSuffix" => Some(StringFunc::HasSuffix),
+        "Index" => Some(StringFunc::Index),
+        "IndexAny" => Some(StringFunc::IndexAny),
+        "IndexByte" => Some(StringFunc::IndexByte),
+        "IndexFunc" => Some(StringFunc::IndexFunc),
+        "IndexRune" => Some(StringFunc::IndexRune),
+        "Join" => Some(StringFunc::Join),
+        "LastIndex" => Some(StringFunc::LastIndex),
+        "LastIndexAny" => Some(StringFunc::LastIndexAny),
+        "LastIndexByte" => Some(StringFunc::LastIndexByte),
+        "LastIndexFunc" => Some(StringFunc::LastIndexFunc),
+        "Map" => Some(StringFunc::Map),
+        "Repeat" => Some(StringFunc::Repeat),
+        "Replace" => Some(StringFunc::Replace),
+        "ReplaceAll" => Some(StringFunc::ReplaceAll),
+        "Split" => Some(StringFunc::Split),
+        "SplitAfter" => Some(StringFunc::SplitAfter),
+        "SplitAfterN" => Some(StringFunc::SplitAfterN),
+        "SplitN" => Some(StringFunc::SplitN),
+        "Title" => Some(StringFunc::Title),
+        "ToLower" => Some(StringFunc::ToLower),
+        "ToTitle" => Some(StringFunc::ToTitle),
+        "ToUpper" => Some(StringFunc::ToUpper),
+        "ToValidUTF8" => Some(StringFunc::ToValidUTF8),
+        "Trim" => Some(StringFunc::Trim),
+        "TrimFunc" => Some(StringFunc::TrimFunc),
+        "TrimLeft" => Some(StringFunc::TrimLeft),
+        "TrimLeftFunc" => Some(StringFunc::TrimLeftFunc),
+        "TrimPrefix" => Some(StringFunc::TrimPrefix),
+        "TrimRight" => Some(StringFunc::TrimRight),
+        "TrimRightFunc" => Some(StringFunc::TrimRightFunc),
+        "TrimSpace" => Some(StringFunc::TrimSpace),
+        "TrimSuffix" => Some(StringFunc::TrimSuffix),
+        _ => None,
+    }
+}
+
+fn compile_lowered_strings_call(raw_args: Vec<ast::Expr>, func: StringFunc) -> syn::Expr {
+    let mut args = raw_args.into_iter();
+    macro_rules! need_arg {
+        ($msg:expr) => {
+            match args.next() {
+                Some(arg) => arg,
+                None => return compile_error_expr($msg),
+            }
+        };
+    }
+    macro_rules! no_more_args {
+        ($msg:expr) => {
+            if args.next().is_some() {
+                return compile_error_expr($msg);
+            }
+        };
+    }
+    macro_rules! string_expr {
+        ($arg:expr) => {
+            compile_expr_with_expected($arg, Some(&typeinfer::GoType::String))
+        };
+    }
+
+    match func {
+        StringFunc::Clone
+        | StringFunc::Fields
+        | StringFunc::Title
+        | StringFunc::ToLower
+        | StringFunc::ToTitle
+        | StringFunc::ToUpper
+        | StringFunc::TrimSpace => {
+            let s = string_expr!(need_arg!("strings call requires one string argument"));
+            no_more_args!("strings call requires one string argument");
+            match func {
+                StringFunc::Clone => syn::parse_quote! { crate::builtin::go_strings_clone(&#s) },
+                StringFunc::Fields => syn::parse_quote! { crate::builtin::go_strings_fields(&#s) },
+                StringFunc::Title => syn::parse_quote! { crate::builtin::go_strings_title(&#s) },
+                StringFunc::ToLower => {
+                    syn::parse_quote! { crate::builtin::go_strings_to_lower(&#s) }
+                }
+                StringFunc::ToTitle => {
+                    syn::parse_quote! { crate::builtin::go_strings_to_title(&#s) }
+                }
+                StringFunc::ToUpper => {
+                    syn::parse_quote! { crate::builtin::go_strings_to_upper(&#s) }
+                }
+                StringFunc::TrimSpace => {
+                    syn::parse_quote! { crate::builtin::go_strings_trim_space(&#s) }
+                }
+                _ => compile_error_expr("unsupported one-argument strings lowering"),
+            }
+        }
+        StringFunc::Compare
+        | StringFunc::Contains
+        | StringFunc::ContainsAny
+        | StringFunc::Count
+        | StringFunc::Cut
+        | StringFunc::CutPrefix
+        | StringFunc::CutSuffix
+        | StringFunc::EqualFold
+        | StringFunc::HasPrefix
+        | StringFunc::HasSuffix
+        | StringFunc::Index
+        | StringFunc::IndexAny
+        | StringFunc::Join
+        | StringFunc::LastIndex
+        | StringFunc::LastIndexAny
+        | StringFunc::Repeat
+        | StringFunc::Split
+        | StringFunc::SplitAfter
+        | StringFunc::SplitN
+        | StringFunc::SplitAfterN
+        | StringFunc::ToValidUTF8
+        | StringFunc::Trim
+        | StringFunc::TrimLeft
+        | StringFunc::TrimPrefix
+        | StringFunc::TrimRight
+        | StringFunc::TrimSuffix => {
+            let first = need_arg!("strings call requires arguments");
+            let second = need_arg!("strings call requires arguments");
+            match func {
+                StringFunc::Join => {
+                    no_more_args!("strings.Join requires two arguments");
+                    let elems: syn::Expr = first.into();
+                    let sep = string_expr!(second);
+                    syn::parse_quote! { crate::builtin::go_strings_join(&#elems, &#sep) }
+                }
+                StringFunc::Repeat => {
+                    no_more_args!("strings.Repeat requires two arguments");
+                    let s = string_expr!(first);
+                    let count: syn::Expr = second.into();
+                    syn::parse_quote! { crate::builtin::go_strings_repeat(&#s, #count) }
+                }
+                StringFunc::SplitN | StringFunc::SplitAfterN => {
+                    let n = need_arg!("strings split-n call requires three arguments");
+                    no_more_args!("strings split-n call requires three arguments");
+                    let s = string_expr!(first);
+                    let sep = string_expr!(second);
+                    let n: syn::Expr = n.into();
+                    match func {
+                        StringFunc::SplitN => {
+                            syn::parse_quote! { crate::builtin::go_strings_split_n(&#s, &#sep, #n) }
+                        }
+                        StringFunc::SplitAfterN => {
+                            syn::parse_quote! { crate::builtin::go_strings_split_after_n(&#s, &#sep, #n) }
+                        }
+                        _ => compile_error_expr("unsupported split-n strings lowering"),
+                    }
+                }
+                _ => {
+                    no_more_args!("strings call has too many arguments");
+                    let first = string_expr!(first);
+                    let second = string_expr!(second);
+                    match func {
+                        StringFunc::Compare => {
+                            syn::parse_quote! { crate::builtin::go_strings_compare(&#first, &#second) }
+                        }
+                        StringFunc::Contains => {
+                            syn::parse_quote! { crate::builtin::go_strings_contains(&#first, &#second) }
+                        }
+                        StringFunc::ContainsAny => {
+                            syn::parse_quote! { crate::builtin::go_strings_contains_any(&#first, &#second) }
+                        }
+                        StringFunc::Count => {
+                            syn::parse_quote! { crate::builtin::go_strings_count(&#first, &#second) }
+                        }
+                        StringFunc::Cut => {
+                            syn::parse_quote! { crate::builtin::go_strings_cut(&#first, &#second) }
+                        }
+                        StringFunc::CutPrefix => {
+                            syn::parse_quote! { crate::builtin::go_strings_cut_prefix(&#first, &#second) }
+                        }
+                        StringFunc::CutSuffix => {
+                            syn::parse_quote! { crate::builtin::go_strings_cut_suffix(&#first, &#second) }
+                        }
+                        StringFunc::EqualFold => {
+                            syn::parse_quote! { crate::builtin::go_strings_equal_fold(&#first, &#second) }
+                        }
+                        StringFunc::HasPrefix => {
+                            syn::parse_quote! { crate::builtin::go_strings_has_prefix(&#first, &#second) }
+                        }
+                        StringFunc::HasSuffix => {
+                            syn::parse_quote! { crate::builtin::go_strings_has_suffix(&#first, &#second) }
+                        }
+                        StringFunc::Index => {
+                            syn::parse_quote! { crate::builtin::go_strings_index(&#first, &#second) }
+                        }
+                        StringFunc::IndexAny => {
+                            syn::parse_quote! { crate::builtin::go_strings_index_any(&#first, &#second) }
+                        }
+                        StringFunc::LastIndex => {
+                            syn::parse_quote! { crate::builtin::go_strings_last_index(&#first, &#second) }
+                        }
+                        StringFunc::LastIndexAny => {
+                            syn::parse_quote! { crate::builtin::go_strings_last_index_any(&#first, &#second) }
+                        }
+                        StringFunc::Split => {
+                            syn::parse_quote! { crate::builtin::go_strings_split(&#first, &#second) }
+                        }
+                        StringFunc::SplitAfter => {
+                            syn::parse_quote! { crate::builtin::go_strings_split_after(&#first, &#second) }
+                        }
+                        StringFunc::ToValidUTF8 => {
+                            syn::parse_quote! { crate::builtin::go_strings_to_valid_utf8(&#first, &#second) }
+                        }
+                        StringFunc::Trim => {
+                            syn::parse_quote! { crate::builtin::go_strings_trim(&#first, &#second) }
+                        }
+                        StringFunc::TrimLeft => {
+                            syn::parse_quote! { crate::builtin::go_strings_trim_left(&#first, &#second) }
+                        }
+                        StringFunc::TrimPrefix => {
+                            syn::parse_quote! { crate::builtin::go_strings_trim_prefix(&#first, &#second) }
+                        }
+                        StringFunc::TrimRight => {
+                            syn::parse_quote! { crate::builtin::go_strings_trim_right(&#first, &#second) }
+                        }
+                        StringFunc::TrimSuffix => {
+                            syn::parse_quote! { crate::builtin::go_strings_trim_suffix(&#first, &#second) }
+                        }
+                        _ => compile_error_expr("unsupported two-argument strings lowering"),
+                    }
+                }
+            }
+        }
+        StringFunc::ContainsRune
+        | StringFunc::IndexByte
+        | StringFunc::IndexRune
+        | StringFunc::LastIndexByte => {
+            let s = string_expr!(need_arg!("strings call requires a string argument"));
+            let value: syn::Expr =
+                need_arg!("strings call requires a rune or byte argument").into();
+            no_more_args!("strings rune/byte call requires two arguments");
+            match func {
+                StringFunc::ContainsRune => {
+                    syn::parse_quote! { crate::builtin::go_strings_contains_rune(&#s, #value) }
+                }
+                StringFunc::IndexByte => {
+                    syn::parse_quote! { crate::builtin::go_strings_index_byte(&#s, #value) }
+                }
+                StringFunc::IndexRune => {
+                    syn::parse_quote! { crate::builtin::go_strings_index_rune(&#s, #value) }
+                }
+                StringFunc::LastIndexByte => {
+                    syn::parse_quote! { crate::builtin::go_strings_last_index_byte(&#s, #value) }
+                }
+                _ => compile_error_expr("unsupported rune/byte strings lowering"),
+            }
+        }
+        StringFunc::ContainsFunc
+        | StringFunc::FieldsFunc
+        | StringFunc::IndexFunc
+        | StringFunc::LastIndexFunc
+        | StringFunc::TrimFunc
+        | StringFunc::TrimLeftFunc
+        | StringFunc::TrimRightFunc => {
+            let s = string_expr!(need_arg!(
+                "strings callback call requires a string argument"
+            ));
+            let callback: syn::Expr =
+                need_arg!("strings callback call requires a function argument").into();
+            no_more_args!("strings callback call requires two arguments");
+            match func {
+                StringFunc::ContainsFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_contains_func(&#s, #callback) }
+                }
+                StringFunc::FieldsFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_fields_func(&#s, #callback) }
+                }
+                StringFunc::IndexFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_index_func(&#s, #callback) }
+                }
+                StringFunc::LastIndexFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_last_index_func(&#s, #callback) }
+                }
+                StringFunc::TrimFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_trim_func(&#s, #callback) }
+                }
+                StringFunc::TrimLeftFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_trim_left_func(&#s, #callback) }
+                }
+                StringFunc::TrimRightFunc => {
+                    syn::parse_quote! { crate::builtin::go_strings_trim_right_func(&#s, #callback) }
+                }
+                _ => compile_error_expr("unsupported callback strings lowering"),
+            }
+        }
+        StringFunc::Map => {
+            let mapping: syn::Expr = need_arg!("strings.Map requires a mapping function").into();
+            let s = string_expr!(need_arg!("strings.Map requires a string argument"));
+            no_more_args!("strings.Map requires two arguments");
+            syn::parse_quote! { crate::builtin::go_strings_map(#mapping, &#s) }
+        }
+        StringFunc::Replace => {
+            let s = string_expr!(need_arg!("strings.Replace requires a string argument"));
+            let old = string_expr!(need_arg!("strings.Replace requires an old argument"));
+            let new = string_expr!(need_arg!("strings.Replace requires a new argument"));
+            let n: syn::Expr = need_arg!("strings.Replace requires a count argument").into();
+            no_more_args!("strings.Replace requires four arguments");
+            syn::parse_quote! { crate::builtin::go_strings_replace(&#s, &#old, &#new, #n) }
+        }
+        StringFunc::ReplaceAll => {
+            let s = string_expr!(need_arg!("strings.ReplaceAll requires a string argument"));
+            let old = string_expr!(need_arg!("strings.ReplaceAll requires an old argument"));
+            let new = string_expr!(need_arg!("strings.ReplaceAll requires a new argument"));
+            no_more_args!("strings.ReplaceAll requires three arguments");
+            syn::parse_quote! { crate::builtin::go_strings_replace_all(&#s, &#old, &#new) }
         }
     }
 }
