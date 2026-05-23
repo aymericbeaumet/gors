@@ -4,14 +4,48 @@ use syn::{
 };
 
 pub fn pass(file: &mut syn::File) {
-    CoerceTypes.visit_file_mut(file);
+    let tuple_newtypes = collect_tuple_newtypes(file);
+    let mutable_ref_call_args = collect_mutable_ref_call_args(file);
+    CoerceTypes {
+        mutable_ref_call_args,
+        tuple_newtypes,
+        ..Default::default()
+    }
+    .visit_file_mut(file);
 }
 
-struct CoerceTypes;
+#[derive(Default)]
+struct CoerceTypes {
+    mutable_ref_params: Vec<std::collections::HashSet<String>>,
+    generic_value_params: Vec<std::collections::HashSet<String>>,
+    has_generic_params: Vec<bool>,
+    mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    tuple_newtypes: std::collections::HashSet<String>,
+    impl_self_types: Vec<String>,
+}
 
 impl VisitMut for CoerceTypes {
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
+            self.impl_self_types.push(self_ty);
+            visit_mut::visit_item_impl_mut(self, item_impl);
+            self.impl_self_types.pop();
+        } else {
+            visit_mut::visit_item_impl_mut(self, item_impl);
+        }
+    }
+
     fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        let scope = fn_arg_scope(&func.sig);
+        self.mutable_ref_params.push(scope.mutable_refs);
+        self.generic_value_params.push(scope.generic_values);
+        self.has_generic_params.push(scope.has_generics);
         visit_mut::visit_item_fn_mut(self, func);
+        self.has_generic_params.pop();
+        self.generic_value_params.pop();
+        self.mutable_ref_params.pop();
+
+        prune_print_arg_reflection_fallback(&mut func.block.stmts);
 
         if func.sig.ident == "newPrinter" && tokens_contain(&func.block, "ppFree") {
             func.block = Box::new(syn::parse_quote!({
@@ -26,7 +60,15 @@ impl VisitMut for CoerceTypes {
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        allow_dead_code(&mut func.attrs);
+        let scope = fn_arg_scope(&func.sig);
+        self.mutable_ref_params.push(scope.mutable_refs);
+        self.generic_value_params.push(scope.generic_values);
+        self.has_generic_params.push(scope.has_generics);
         visit_mut::visit_impl_item_fn_mut(self, func);
+        self.has_generic_params.pop();
+        self.generic_value_params.pop();
+        self.mutable_ref_params.pop();
 
         if func.sig.ident == "free" && tokens_contain(&func.block, "ppFree") {
             func.block = syn::parse_quote!({});
@@ -50,11 +92,11 @@ impl VisitMut for CoerceTypes {
         }
 
         if func.sig.ident != "printArg" {
-            prune_print_arg_reflection_fallback(func);
+            prune_print_arg_reflection_fallback(&mut func.block.stmts);
             return;
         }
 
-        prune_print_arg_reflection_fallback(func);
+        prune_print_arg_reflection_fallback(&mut func.block.stmts);
         prune_print_arg_unsupported_cases(func);
     }
 
@@ -91,6 +133,12 @@ impl VisitMut for CoerceTypes {
 
     fn visit_expr_method_call_mut(&mut self, mc: &mut syn::ExprMethodCall) {
         visit_mut::visit_expr_method_call_mut(self, mc);
+        coerce_scoped_call_args(
+            &mut mc.args,
+            self.mutable_ref_params.last(),
+            self.generic_value_params.last(),
+            self.has_generic_params.last().copied().unwrap_or(false),
+        );
 
         if mc.method == "Write" {
             if let Some(first) = mc.args.first_mut() {
@@ -146,10 +194,38 @@ impl VisitMut for CoerceTypes {
                 __gors_error_value.Error()
             }});
         }
+
+        if let Some(self_ty) = self.impl_self_types.last()
+            && self.tuple_newtypes.contains(self_ty)
+            && is_deref_self_expr(&assign.left)
+            && rhs_takes_self_underlying(&assign.right)
+        {
+            let ident = syn::Ident::new(self_ty, proc_macro2::Span::mixed_site());
+            let right = assign.right.clone();
+            assign.right = Box::new(syn::parse_quote! { #ident(#right) });
+        }
+    }
+
+    fn visit_expr_cast_mut(&mut self, cast: &mut syn::ExprCast) {
+        visit_mut::visit_expr_cast_mut(self, cast);
+
+        if let Some(self_ty) = self.impl_self_types.last()
+            && self.tuple_newtypes.contains(self_ty)
+            && is_deref_self_expr(&cast.expr)
+        {
+            cast.expr = Box::new(syn::parse_quote! { self.0 });
+        }
     }
 
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         visit_mut::visit_expr_call_mut(self, call);
+        coerce_scoped_call_args(
+            &mut call.args,
+            self.mutable_ref_params.last(),
+            self.generic_value_params.last(),
+            self.has_generic_params.last().copied().unwrap_or(false),
+        );
+        coerce_signature_call_args(&call.func, &mut call.args, &self.mutable_ref_call_args);
 
         if is_path_call(&call.func, &["Box", "new"]) {
             if let Some(first) = call.args.first_mut() {
@@ -384,9 +460,9 @@ fn prune_print_arg_unsupported_block(mut block: syn::Block) -> syn::Block {
     block
 }
 
-fn prune_print_arg_reflection_fallback(func: &mut syn::ImplItemFn) {
-    let old_stmts = std::mem::take(&mut func.block.stmts);
-    func.block.stmts = old_stmts
+fn prune_print_arg_reflection_fallback(stmts: &mut Vec<syn::Stmt>) {
+    let old_stmts = std::mem::take(stmts);
+    *stmts = old_stmts
         .into_iter()
         .filter_map(prune_print_arg_stmt)
         .collect();
@@ -467,12 +543,8 @@ fn print_arg_tokens_need_reflection<T: quote::ToTokens>(node: &T) -> bool {
 }
 
 fn print_arg_tokens_need_unsupported_fmt<T: quote::ToTokens>(node: &T) -> bool {
-    let tokens = quote::quote!(#node).to_string();
-    tokens.contains("self . fmtBool")
-        || tokens.contains("self . fmtFloat")
-        || tokens.contains("self . fmtComplex")
-        || tokens.contains("self . fmtInteger")
-        || tokens.contains("self . fmtBytes")
+    let _ = node;
+    false
 }
 
 fn is_false_lit_expr(expr: &syn::Expr) -> bool {
@@ -487,6 +559,304 @@ fn is_false_lit_expr(expr: &syn::Expr) -> bool {
 
 fn tokens_contain<T: quote::ToTokens>(node: &T, needle: &str) -> bool {
     quote::quote!(#node).to_string().contains(needle)
+}
+
+fn allow_dead_code(attrs: &mut Vec<syn::Attribute>) {
+    if attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("allow") && tokens_contain(attr, "dead_code"))
+    {
+        return;
+    }
+    attrs.push(syn::parse_quote! { #[allow(dead_code)] });
+}
+
+fn collect_tuple_newtypes(file: &syn::File) -> std::collections::HashSet<String> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Struct(item_struct) = item else {
+                return None;
+            };
+            let syn::Fields::Unnamed(fields) = &item_struct.fields else {
+                return None;
+            };
+            (fields.unnamed.len() == 1).then(|| item_struct.ident.to_string())
+        })
+        .collect()
+}
+
+fn collect_mutable_ref_call_args(
+    file: &syn::File,
+) -> std::collections::HashMap<String, std::collections::HashSet<usize>> {
+    let mut calls = std::collections::HashMap::new();
+    for item in &file.items {
+        match item {
+            syn::Item::Fn(item_fn) => {
+                let refs = mutable_ref_arg_indices(&item_fn.sig);
+                if !refs.is_empty() {
+                    calls.insert(item_fn.sig.ident.to_string(), refs);
+                }
+            }
+            syn::Item::Impl(item_impl) => {
+                for item in &item_impl.items {
+                    if let syn::ImplItem::Fn(func) = item {
+                        let refs = mutable_ref_arg_indices(&func.sig);
+                        if !refs.is_empty() {
+                            calls.insert(func.sig.ident.to_string(), refs);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    calls
+}
+
+fn mutable_ref_arg_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let syn::FnArg::Typed(pat_type) = input else {
+                return None;
+            };
+            matches!(&*pat_type.ty, syn::Type::Reference(reference) if reference.mutability.is_some())
+                .then_some(index)
+        })
+        .collect()
+}
+
+fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    path.path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn is_deref_self_expr(expr: &syn::Expr) -> bool {
+    if let syn::Expr::Paren(paren) = expr {
+        return is_deref_self_expr(&paren.expr);
+    }
+    let syn::Expr::Unary(unary) = expr else {
+        return false;
+    };
+    matches!(unary.op, syn::UnOp::Deref(_)) && is_self_expr(&unary.expr)
+}
+
+fn rhs_takes_self_underlying(expr: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    if is_path_call(&call.func, &["crate", "builtin", "append"])
+        || is_path_call(&call.func, &["builtin", "append"])
+    {
+        return false;
+    }
+    call.args.first().is_some_and(is_mem_take_self_call)
+}
+
+fn is_mem_take_self_call(expr: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    if !is_path_call(&call.func, &["std", "mem", "take"]) {
+        return false;
+    }
+    call.args.first().is_some_and(is_self_expr)
+}
+
+struct FnArgScope {
+    mutable_refs: std::collections::HashSet<String>,
+    generic_values: std::collections::HashSet<String>,
+    has_generics: bool,
+}
+
+fn fn_arg_scope(sig: &syn::Signature) -> FnArgScope {
+    let generic_names: std::collections::HashSet<String> = sig
+        .generics
+        .params
+        .iter()
+        .filter_map(|param| {
+            if let syn::GenericParam::Type(type_param) = param {
+                Some(type_param.ident.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut mutable_refs = std::collections::HashSet::new();
+    let mut generic_values = std::collections::HashSet::new();
+
+    for input in &sig.inputs {
+        let syn::FnArg::Typed(pat_type) = input else {
+            continue;
+        };
+        let Some(name) = pat_ident_name(&pat_type.pat) else {
+            continue;
+        };
+        if matches!(&*pat_type.ty, syn::Type::Reference(reference) if reference.mutability.is_some())
+        {
+            mutable_refs.insert(name.clone());
+        }
+        if type_is_generic_param(&pat_type.ty, &generic_names) {
+            generic_values.insert(name);
+        } else if type_is_cloneable_box(&pat_type.ty) {
+            generic_values.insert(name);
+        }
+    }
+
+    FnArgScope {
+        mutable_refs,
+        generic_values,
+        has_generics: !generic_names.is_empty(),
+    }
+}
+
+fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
+    let syn::Pat::Ident(ident) = pat else {
+        return None;
+    };
+    Some(ident.ident.to_string())
+}
+
+fn type_is_generic_param(
+    ty: &syn::Type,
+    generic_names: &std::collections::HashSet<String>,
+) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return false;
+    }
+    path.path
+        .segments
+        .first()
+        .is_some_and(|segment| generic_names.contains(&segment.ident.to_string()))
+}
+
+fn type_is_cloneable_box(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.first() else {
+        return false;
+    };
+    if segment.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    !args
+        .args
+        .iter()
+        .any(|arg| matches!(arg, syn::GenericArgument::Type(syn::Type::TraitObject(_))))
+}
+
+fn coerce_scoped_call_args(
+    args: &mut syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+    mutable_refs: Option<&std::collections::HashSet<String>>,
+    generic_values: Option<&std::collections::HashSet<String>>,
+    has_generic_params: bool,
+) {
+    for arg in args {
+        remove_owned_string_reference(arg);
+        if matches!(arg, syn::Expr::Reference(_)) {
+            continue;
+        }
+        if has_generic_params && matches!(arg, syn::Expr::Index(_)) {
+            clone_expr(arg);
+            continue;
+        }
+        let Some(name) = path_ident_name(arg) else {
+            continue;
+        };
+        if mutable_refs.is_some_and(|refs| refs.contains(&name)) {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::mixed_site());
+            *arg = syn::parse_quote! { &mut *#ident };
+        } else if generic_values.is_some_and(|values| values.contains(&name)) {
+            clone_expr(arg);
+        }
+    }
+}
+
+fn coerce_signature_call_args(
+    func: &syn::Expr,
+    args: &mut syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+    mutable_ref_call_args: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+) {
+    let Some(name) = call_func_name(func) else {
+        return;
+    };
+    let Some(indices) = mutable_ref_call_args.get(&name) else {
+        return;
+    };
+    for (index, arg) in args.iter_mut().enumerate() {
+        if indices.contains(&index) {
+            borrow_mut_expr(arg);
+        }
+    }
+}
+
+fn call_func_name(func: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn remove_owned_string_reference(expr: &mut syn::Expr) {
+    let syn::Expr::Reference(reference) = expr else {
+        return;
+    };
+    if is_owned_to_string_expr(&reference.expr) {
+        *expr = (*reference.expr).clone();
+    }
+}
+
+fn is_owned_to_string_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::MethodCall(method) if method.method == "to_string"
+    ) || matches!(expr, syn::Expr::Paren(paren) if is_owned_to_string_expr(&paren.expr))
+        || matches!(expr, syn::Expr::Group(group) if is_owned_to_string_expr(&group.expr))
+}
+
+fn is_owned_value_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::MethodCall(method) => matches!(
+            method.method.to_string().as_str(),
+            "clone" | "to_vec" | "to_string"
+        ),
+        syn::Expr::Paren(paren) => is_owned_value_expr(&paren.expr),
+        syn::Expr::Group(group) => is_owned_value_expr(&group.expr),
+        _ => false,
+    }
+}
+
+fn path_ident_name(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = expr else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    path.path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string())
 }
 
 fn is_path_call(func: &syn::Expr, segments: &[&str]) -> bool {
@@ -517,7 +887,14 @@ fn expr_needs_fmt_flush(expr: &syn::Expr) -> bool {
 }
 
 fn borrow_expr(expr: &mut syn::Expr) {
-    if matches!(expr, syn::Expr::Reference(_)) {
+    if matches!(expr, syn::Expr::Reference(_)) || is_owned_value_expr(expr) {
+        return;
+    }
+    if matches!(
+        expr,
+        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_)
+    ) {
+        clone_expr(expr);
         return;
     }
     let inner = expr.clone();

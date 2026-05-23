@@ -1,4 +1,4 @@
-#![allow(non_camel_case_types, non_upper_case_globals)]
+#![allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
@@ -88,6 +88,18 @@ impl<T: Len + ?Sized> Len for &T {
     }
 }
 
+impl<T: Len + ?Sized> Len for &mut T {
+    fn len_value(&self) -> usize {
+        (**self).len_value()
+    }
+}
+
+impl<T: Len> Len for std::sync::LazyLock<T> {
+    fn len_value(&self) -> usize {
+        (**self).len_value()
+    }
+}
+
 #[inline]
 pub fn len<T: Len + ?Sized>(v: &T) -> usize {
     v.len_value()
@@ -127,6 +139,12 @@ impl<T: Cap + ?Sized> Cap for &mut T {
     }
 }
 
+impl<T: Cap> Cap for std::sync::LazyLock<T> {
+    fn cap_value(&self) -> usize {
+        (**self).cap_value()
+    }
+}
+
 #[inline]
 pub fn cap<T: Cap + ?Sized>(v: &T) -> usize {
     v.cap_value()
@@ -153,6 +171,13 @@ impl<T> Append<Vec<T>> for Vec<T> {
 impl Append<std::string::String> for Vec<u8> {
     fn append_value(mut self, elem: std::string::String) -> Self {
         self.extend(elem.into_bytes());
+        self
+    }
+}
+
+impl Append<&str> for Vec<u8> {
+    fn append_value(mut self, elem: &str) -> Self {
+        self.extend(elem.as_bytes());
         self
     }
 }

@@ -174,7 +174,8 @@ impl GoType {
             "int" => GoType::Int,
             "int8" => GoType::Int8,
             "int16" => GoType::Int16,
-            "int32" | "rune" => GoType::Int32,
+            "int32" => GoType::Int32,
+            "rune" => GoType::Uint32,
             "int64" => GoType::Int64,
             "uint" => GoType::Uint,
             "uint8" | "byte" => GoType::Uint8,
@@ -200,7 +201,7 @@ impl GoType {
                 token::Token::INT => GoType::Int,
                 token::Token::FLOAT => GoType::Float64,
                 token::Token::STRING => GoType::String,
-                token::Token::CHAR => GoType::Int32,
+                token::Token::CHAR => GoType::Uint32,
                 _ => GoType::Unknown,
             },
             ast::Expr::Ident(id) => match id.name {
@@ -272,15 +273,22 @@ impl GoType {
                     _ => GoType::Unknown,
                 }
             }
-            ast::Expr::IndexExpr(_) => {
-                // Indexing: the result type depends on the container type
-                // For now, return Unknown (could be refined)
-                GoType::Unknown
+            ast::Expr::IndexExpr(index) => {
+                let container = GoType::infer_expr(&index.x, env);
+                match env.resolve_alias(&container) {
+                    GoType::String => GoType::Uint8,
+                    GoType::Slice(elem) | GoType::Array(elem) => *elem,
+                    _ => GoType::Unknown,
+                }
             }
             ast::Expr::SelectorExpr(sel) => {
                 // Field access: would need struct type info
                 // For reflect.Value method calls, we know the return types
                 if let ast::Expr::Ident(id) = &*sel.x {
+                    let package_key = format!("{}.{}", id.name, sel.sel.name);
+                    if let Some(ty) = env.get_var(&package_key) {
+                        return ty;
+                    }
                     let var_type = env.get_var(id.name);
                     match var_type {
                         Some(GoType::Named(ref name)) => env.get_field_type(name, sel.sel.name),
@@ -352,7 +360,10 @@ pub struct TypeEnv {
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
     /// Package-level string constants emitted as owned-String functions.
     string_consts: HashSet<std::string::String>,
+    top_level_vars: HashSet<std::string::String>,
+    top_level_var_types: HashMap<std::string::String, GoType>,
     consts: HashSet<std::string::String>,
+    const_types: HashMap<std::string::String, GoType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,6 +380,19 @@ impl TypeEnv {
 
     pub fn set_var(&mut self, name: &str, ty: GoType) {
         self.vars.insert(name.to_string(), ty);
+    }
+
+    pub fn set_top_level_var(&mut self, name: &str, ty: GoType) {
+        self.top_level_vars.insert(name.to_string());
+        self.top_level_var_types.insert(name.to_string(), ty);
+    }
+
+    pub fn is_top_level_var(&self, name: &str) -> bool {
+        self.top_level_vars.contains(name)
+    }
+
+    pub fn get_top_level_var(&self, name: &str) -> Option<GoType> {
+        self.top_level_var_types.get(name).cloned()
     }
 
     pub fn get_var(&self, name: &str) -> Option<GoType> {
@@ -425,6 +449,13 @@ impl TypeEnv {
                 _ => ty.clone(),
             },
             GoType::Pointer(inner) => GoType::Pointer(Box::new(self.resolve_alias(inner))),
+            GoType::Slice(inner) => GoType::Slice(Box::new(self.resolve_alias(inner))),
+            GoType::Array(inner) => GoType::Array(Box::new(self.resolve_alias(inner))),
+            GoType::Map(key, value) => GoType::Map(
+                Box::new(self.resolve_alias(key)),
+                Box::new(self.resolve_alias(value)),
+            ),
+            GoType::Chan(inner) => GoType::Chan(Box::new(self.resolve_alias(inner))),
             _ => ty.clone(),
         }
     }
@@ -460,8 +491,17 @@ impl TypeEnv {
         self.consts.insert(name.to_string());
     }
 
+    pub fn set_const_type(&mut self, name: &str, ty: GoType) {
+        self.set_const(name);
+        self.const_types.insert(name.to_string(), ty);
+    }
+
     pub fn is_const(&self, name: &str) -> bool {
         self.consts.contains(name)
+            && self
+                .const_types
+                .get(name)
+                .is_none_or(|const_ty| self.vars.get(name).is_none_or(|var_ty| var_ty == const_ty))
     }
 
     pub fn is_string_const(&self, name: &str) -> bool {
@@ -488,6 +528,23 @@ impl TypeEnv {
         for (name, fields) in &package_env.struct_fields {
             self.set_struct_fields(&format!("{package_name}.{name}"), fields.clone());
         }
+        for (name, ty) in &package_env.vars {
+            self.set_var(&format!("{package_name}.{name}"), ty.clone());
+        }
+        for name in &package_env.top_level_vars {
+            if let Some(ty) = package_env.top_level_var_types.get(name) {
+                self.set_top_level_var(&format!("{package_name}.{name}"), ty.clone());
+            }
+        }
+        for name in &package_env.consts {
+            self.set_const(&format!("{package_name}.{name}"));
+        }
+        for (name, ty) in &package_env.const_types {
+            self.set_const_type(&format!("{package_name}.{name}"), ty.clone());
+        }
+        for name in &package_env.string_consts {
+            self.set_string_const(&format!("{package_name}.{name}"));
+        }
     }
 
     /// Pre-scan a Go AST file to populate type declarations and function signatures.
@@ -502,6 +559,11 @@ impl TypeEnv {
                             }
                             ast::Spec::ValueSpec(vs) => {
                                 self.scan_value_spec(vs, gd.tok);
+                                for name in &vs.names {
+                                    if let Some(ty) = self.get_var(name.name) {
+                                        self.set_top_level_var(name.name, ty);
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -555,20 +617,23 @@ impl TypeEnv {
         let values = vs.values.as_ref();
 
         for (i, name) in vs.names.iter().enumerate() {
-            if tok == token::Token::CONST {
-                self.set_const(name.name);
-            }
             let ty = if let Some(ref et) = explicit_type {
                 et.clone()
-            } else if tok == token::Token::CONST {
-                // Infer from value
+            } else {
                 values
                     .and_then(|v| v.get(i))
                     .map(|e| GoType::infer_expr(e, self))
-                    .unwrap_or(GoType::Int)
-            } else {
-                GoType::Unknown
+                    .unwrap_or_else(|| {
+                        if tok == token::Token::CONST {
+                            GoType::Int
+                        } else {
+                            GoType::Unknown
+                        }
+                    })
             };
+            if tok == token::Token::CONST {
+                self.set_const_type(name.name, ty.clone());
+            }
             if tok == token::Token::CONST && matches!(ty, GoType::String) {
                 self.set_string_const(name.name);
             }

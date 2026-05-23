@@ -177,6 +177,10 @@ fn is_string_const_fn(name: &str) -> bool {
     STRING_CONST_NAMES.with(|names| names.borrow().contains(name))
 }
 
+fn is_active_string_const_fn(name: &str) -> bool {
+    is_string_const_fn(name) && TYPE_ENV.with(|env| env.borrow().is_const(name))
+}
+
 /// Record a mapping if tracking is enabled.
 fn record_mapping(pos: &token::Position, name: Option<&str>) {
     TRACKER.with(|t| {
@@ -285,6 +289,13 @@ fn go_constraint_to_rust_bounds(
                 }
                 "comparable" => {
                     bounds.push(syn::parse_quote! { PartialEq });
+                    bounds.push(syn::parse_quote! { Clone });
+                }
+                "bool" | "string" | "int" | "int8" | "int16" | "int32" | "int64" | "uint"
+                | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr" | "float32" | "float64" => {
+                    bounds.push(syn::parse_quote! { PartialEq });
+                    bounds.push(syn::parse_quote! { PartialOrd });
+                    bounds.push(syn::parse_quote! { Clone });
                 }
                 _ => {
                     // Named constraint: use as-is
@@ -297,18 +308,161 @@ fn go_constraint_to_rust_bounds(
         ast::Expr::InterfaceType(_) => {
             // interface{} → no bounds (same as `any`)
         }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = &*selector.x {
+                let base = syn::Ident::new(&rust_safe_ident_name(base.name), Span::mixed_site());
+                let sel =
+                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+                bounds.push(syn::parse_quote! { #base::#sel });
+            }
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
+            bounds.extend(go_constraint_to_rust_bounds(&unary.x));
+        }
         ast::Expr::BinaryExpr(bin) if bin.op == token::Token::OR => {
             // Union type like `int | float64` → approximate with common traits
+            append_type_param_bounds(&mut bounds, go_constraint_to_rust_bounds(&bin.x));
+            append_type_param_bounds(&mut bounds, go_constraint_to_rust_bounds(&bin.y));
+            if bounds.is_empty() {
+                bounds.push(syn::parse_quote! { PartialEq });
+                bounds.push(syn::parse_quote! { PartialOrd });
+                bounds.push(syn::parse_quote! { Clone });
+            }
             bounds.push(syn::parse_quote! { PartialOrd });
-            bounds.push(syn::parse_quote! { Copy });
-            bounds.push(syn::parse_quote! { std::fmt::Display });
+            bounds.push(syn::parse_quote! { Clone });
         }
         _ => {
             // Fallback: no bounds
         }
     }
 
-    bounds
+    dedupe_type_param_bounds(bounds)
+}
+
+fn dedupe_type_param_bounds(
+    bounds: syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
+) -> syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = syn::punctuated::Punctuated::new();
+    for bound in bounds {
+        if seen.insert(bound.to_token_stream().to_string()) {
+            deduped.push(bound);
+        }
+    }
+    deduped
+}
+
+fn append_type_param_bounds(
+    target: &mut syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
+    source: syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
+) {
+    for bound in source {
+        if !target.iter().any(|existing| {
+            existing.to_token_stream().to_string() == bound.to_token_stream().to_string()
+        }) {
+            target.push(bound);
+        }
+    }
+}
+
+#[derive(Default)]
+struct TypeParamInfo {
+    names: std::collections::HashSet<String>,
+    slice_aliases: BTreeMap<String, syn::Type>,
+}
+
+impl TypeParamInfo {
+    fn skipped_names(&self) -> std::collections::HashSet<&str> {
+        self.slice_aliases.keys().map(String::as_str).collect()
+    }
+}
+
+fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInfo {
+    let Some(type_params) = type_params else {
+        return TypeParamInfo::default();
+    };
+
+    let mut info = TypeParamInfo::default();
+    for field in &type_params.list {
+        if let Some(names) = &field.names {
+            for name in names {
+                info.names.insert(name.name.to_string());
+            }
+        }
+    }
+    for field in &type_params.list {
+        let Some(elem) = field.type_.as_ref().and_then(slice_alias_element_type) else {
+            continue;
+        };
+        if let Some(names) = &field.names {
+            for name in names {
+                info.slice_aliases
+                    .insert(name.name.to_string(), elem.clone());
+            }
+        }
+    }
+    info
+}
+
+fn slice_alias_element_type(expr: &ast::Expr) -> Option<syn::Type> {
+    match expr {
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
+            slice_alias_element_type(&unary.x)
+        }
+        ast::Expr::ArrayType(array) if array.len.is_none() => rust_type_from_type_expr(&array.elt),
+        _ => None,
+    }
+}
+
+fn generic_slice_param_element_type(expr: &ast::Expr, info: &TypeParamInfo) -> Option<syn::Type> {
+    match expr {
+        ast::Expr::Ident(ident) => info.slice_aliases.get(ident.name).cloned(),
+        ast::Expr::ArrayType(array)
+            if array.len.is_none() && type_expr_mentions_type_param(&array.elt, info) =>
+        {
+            rust_type_from_type_expr(&array.elt)
+        }
+        _ => None,
+    }
+}
+
+fn type_expr_mentions_type_param(expr: &ast::Expr, info: &TypeParamInfo) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => info.names.contains(ident.name),
+        ast::Expr::ArrayType(array) => type_expr_mentions_type_param(&array.elt, info),
+        ast::Expr::StarExpr(star) => type_expr_mentions_type_param(&star.x, info),
+        ast::Expr::UnaryExpr(unary) => type_expr_mentions_type_param(&unary.x, info),
+        ast::Expr::SelectorExpr(_) => false,
+        _ => false,
+    }
+}
+
+fn rust_type_from_type_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            Some(syn::parse_quote! { #ident })
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = &*selector.x {
+                let base = syn::Ident::new(&rust_safe_ident_name(base.name), Span::mixed_site());
+                let sel =
+                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+                Some(syn::parse_quote! { #base::#sel })
+            } else {
+                None
+            }
+        }
+        ast::Expr::ArrayType(array) if array.len.is_none() => {
+            let elem = rust_type_from_type_expr(&array.elt)?;
+            Some(syn::parse_quote! { Vec<#elem> })
+        }
+        ast::Expr::StarExpr(star) => {
+            let elem = rust_type_from_type_expr(&star.x)?;
+            Some(syn::parse_quote! { Box<#elem> })
+        }
+        _ => None,
+    }
 }
 
 fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics {
@@ -316,6 +470,8 @@ fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics 
         return syn::Generics::default();
     };
 
+    let info = collect_type_param_info(Some(&type_params));
+    let skipped = info.skipped_names();
     let mut params = syn::punctuated::Punctuated::new();
     for field in type_params.list {
         let bounds = field
@@ -325,6 +481,9 @@ fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics 
             .unwrap_or_default();
         if let Some(names) = field.names {
             for name in names {
+                if skipped.contains(name.name) {
+                    continue;
+                }
                 let ident: syn::Ident = name.into();
                 params.push(syn::GenericParam::Type(syn::TypeParam {
                     attrs: vec![],
@@ -391,6 +550,9 @@ impl ConstValue {
         match self {
             ConstValue::Int(value) => Some(*value),
             ConstValue::Uint(value, _) => i128::try_from(*value).ok(),
+            ConstValue::Float(value) if value.is_finite() && value.fract() == 0.0 => {
+                Some(*value as i128)
+            }
             ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
         }
     }
@@ -399,6 +561,11 @@ impl ConstValue {
         match self {
             ConstValue::Int(value) => u128::try_from(*value).ok(),
             ConstValue::Uint(value, _) => Some(*value),
+            ConstValue::Float(value)
+                if *value >= 0.0 && value.is_finite() && value.fract() == 0.0 =>
+            {
+                Some(*value as u128)
+            }
             ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
         }
     }
@@ -426,7 +593,9 @@ impl ConstValue {
             }
             ConstValue::Int(value) if *value < isize::MIN as i128 => syn::parse_quote! { i128 },
             ConstValue::Int(_) => syn::parse_quote! { isize },
-            ConstValue::Uint(_, bits) if *bits <= usize::BITS => syn::parse_quote! { usize },
+            ConstValue::Uint(_, bits) if *bits <= 8 => syn::parse_quote! { u8 },
+            ConstValue::Uint(_, bits) if *bits <= 16 => syn::parse_quote! { u16 },
+            ConstValue::Uint(_, bits) if *bits <= 32 => syn::parse_quote! { u32 },
             ConstValue::Uint(_, bits) if *bits <= 64 => syn::parse_quote! { u64 },
             ConstValue::Uint(_, _) => syn::parse_quote! { u128 },
         }
@@ -532,7 +701,8 @@ fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstVal
         "int" => Some(ConstValue::Int(value.as_i128()? as isize as i128)),
         "int8" => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
         "int16" => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
-        "int32" | "rune" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
+        "int32" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
+        "rune" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(32), 32)),
         "int64" => Some(ConstValue::Int(value.as_i128()? as i64 as i128)),
         "uint" | "uintptr" => Some(ConstValue::Uint(
             value.as_u128()? & mask_for_bits(usize::BITS),
@@ -727,6 +897,13 @@ fn const_eval_expr(
                 };
                 Some(ConstValue::Str(value))
             }
+            token::Token::CHAR => {
+                let raw = lit.value;
+                let inner = &raw[1..raw.len() - 1];
+                let interpreted = interpret_go_string_escapes(inner);
+                let value = interpreted.chars().next()? as u128;
+                Some(ConstValue::Uint(value, 32))
+            }
             _ => None,
         },
         ast::Expr::Ident(ident) if ident.name == "iota" => Some(ConstValue::Int(iota_value.into())),
@@ -861,7 +1038,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 syn::parse_quote! { isize }
             };
 
-            let value: syn::Expr = if let Some(expr) = value_expr {
+            let mut value: syn::Expr = if let Some(expr) = value_expr {
                 if let Some(evaluated) = &evaluated {
                     evaluated.to_expr()
                 } else if let ast::Expr::BasicLit(lit) = expr {
@@ -894,7 +1071,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                         _ => {
                             let id_ident =
                                 syn::Ident::new(&import_rust_name(id.name), Span::mixed_site());
-                            if is_string_const_fn(id.name) {
+                            if is_active_string_const_fn(id.name) {
                                 syn::parse_quote! { #id_ident() }
                             } else {
                                 syn::parse_quote! { #id_ident }
@@ -907,6 +1084,12 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             } else {
                 syn::parse_quote! { 0 }
             };
+            if let Some(type_name) = type_name_str
+                && is_named_numeric_alias(type_name)
+            {
+                let type_ident = syn::Ident::new(&import_rust_name(type_name), Span::mixed_site());
+                value = syn::parse_quote! { #type_ident(#value) };
+            }
 
             // String constants: emit as inline functions returning String
             // since Rust const can't hold String and we need owned values
@@ -1603,7 +1786,15 @@ fn compile_program_impl(
         },
     );
 
+    let mut stdlib_type_env_paths = stdlib_imports.clone();
     for stdlib_path in &stdlib_imports {
+        for transitive_import in crate::go_stdlib::collect_transitive_imports(stdlib_path) {
+            if !stdlib_type_env_paths.contains(&transitive_import) {
+                stdlib_type_env_paths.push(transitive_import);
+            }
+        }
+    }
+    for stdlib_path in &stdlib_type_env_paths {
         if let Some((package_name, env)) = crate::go_stdlib::scan_type_env(stdlib_path) {
             stdlib_type_envs.insert(stdlib_path.clone(), (package_name, env));
         }
@@ -1709,6 +1900,9 @@ fn compile_program_impl(
         &local_type_envs,
         &stdlib_type_envs,
     );
+    for (package_name, env) in stdlib_type_envs.values() {
+        main_type_env.merge_package(package_name, env);
+    }
     let main_import_rewrites = import_module_rewrites(
         &program.main_package.ast,
         &local_type_envs,
@@ -2391,7 +2585,7 @@ fn prune_use_tree(tree: &mut syn::UseTree, used: &std::collections::HashSet<Stri
     }
 }
 
-fn merge_import_type_envs(
+pub(crate) fn merge_import_type_envs(
     type_env: &mut typeinfer::TypeEnv,
     file: &ast::File,
     local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
@@ -3733,6 +3927,30 @@ fn array_len_expr(expr: &ast::Expr) -> syn::Expr {
     syn::parse_quote! { #lit }
 }
 
+fn array_literal_len_expr(len: &ast::Expr, elts: &[ast::Expr]) -> syn::Expr {
+    if !matches!(len, ast::Expr::Ellipsis(_)) {
+        return array_len_expr(len);
+    }
+
+    let mut next_index = 0usize;
+    let mut max_len = 0usize;
+    for elt in elts {
+        let index = if let ast::Expr::KeyValueExpr(kv) = elt {
+            const_eval_expr(&kv.key, 0, &BTreeMap::new())
+                .and_then(|value| value.as_u128())
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(next_index)
+        } else {
+            next_index
+        };
+        next_index = index.saturating_add(1);
+        max_len = max_len.max(next_index);
+    }
+
+    let lit = syn::LitInt::new(&max_len.to_string(), Span::mixed_site());
+    syn::parse_quote! { #lit }
+}
+
 fn next_unnamed_arg_ident() -> syn::Ident {
     UNNAMED_ARG_COUNTER.with(|counter| {
         let mut counter = counter.borrow_mut();
@@ -3995,6 +4213,41 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
     }
 }
 
+fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item> {
+    vec![
+        syn::parse_quote! {
+            impl std::ops::BitXorAssign for #ident {
+                fn bitxor_assign(&mut self, rhs: Self) {
+                    self.0 ^= rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Shl<i32> for #ident {
+                type Output = Self;
+                fn shl(self, rhs: i32) -> Self {
+                    Self(self.0 << rhs)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Shr<i32> for #ident {
+                type Output = Self;
+                fn shr(self, rhs: i32) -> Self {
+                    Self(self.0 >> rhs)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl From<#ident> for #inner {
+                fn from(value: #ident) -> #inner {
+                    value.0
+                }
+            }
+        },
+    ]
+}
+
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts
         .name
@@ -4010,6 +4263,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
             let mut needs_manual_default = false;
             let mut cannot_derive_clone = false;
+            let mut can_derive_copy = true;
             let mut blank_field_index = 0usize;
             if let Some(field_list) = struct_type.fields {
                 for field in field_list.list {
@@ -4019,7 +4273,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     let field_needs_manual_default =
                         contains_array_type(&field_type) || contains_func_type(&field_type);
                     let field_cannot_derive_clone = contains_any_type(&field_type);
+                    let field_can_derive_copy =
+                        go_type_is_copy(&typeinfer::GoType::from_expr(&field_type));
                     let field_default = default_expr_for_type(&field_type);
+                    can_derive_copy &= field_can_derive_copy;
 
                     if let Some(names) = field.names {
                         let rust_type: syn::Type = field_type.into();
@@ -4087,7 +4344,13 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 attrs: if cannot_derive_clone {
                     vec![]
                 } else if needs_manual_default {
-                    vec![syn::parse_quote! { #[derive(Clone)] }]
+                    if can_derive_copy {
+                        vec![syn::parse_quote! { #[derive(Clone, Copy)] }]
+                    } else {
+                        vec![syn::parse_quote! { #[derive(Clone)] }]
+                    }
+                } else if can_derive_copy {
+                    vec![syn::parse_quote! { #[derive(Clone, Copy, Default)] }]
                 } else {
                     vec![syn::parse_quote! { #[derive(Clone, Default)] }]
                 },
@@ -4118,7 +4381,6 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 None
             };
-
             if let Some((emb_field, emb_ty)) =
                 embedded_types.first().filter(|_| embedded_types.len() == 1)
             {
@@ -4158,6 +4420,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             });
             // Generate trait with method signatures
             let mut trait_items: Vec<syn::TraitItem> = vec![];
+            let mut supertraits = syn::punctuated::Punctuated::new();
 
             if let Some(methods_list) = iface.methods {
                 for field in methods_list.list {
@@ -4239,24 +4502,38 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                                 semi_token: Some(<Token![;]>::default()),
                             }));
                         }
+                    } else if let Some(type_expr) = field.type_ {
+                        append_type_param_bounds(
+                            &mut supertraits,
+                            go_constraint_to_rust_bounds(&type_expr),
+                        );
                     }
                 }
             }
 
-            Ok(vec![syn::Item::Trait(syn::ItemTrait {
+            let has_methods = !trait_items.is_empty();
+            let has_supertraits = !supertraits.is_empty();
+            let trait_item = syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
                 vis,
                 unsafety: None,
                 auto_token: None,
                 restriction: None,
                 trait_token: <Token![trait]>::default(),
-                ident,
+                ident: ident.clone(),
                 generics: syn::Generics::default(),
-                colon_token: None,
-                supertraits: syn::punctuated::Punctuated::new(),
+                colon_token: has_supertraits.then(<Token![:]>::default),
+                supertraits: supertraits.clone(),
                 brace_token: syn::token::Brace::default(),
                 items: trait_items,
-            })])
+            });
+            let mut items = vec![trait_item];
+            if has_supertraits && !has_methods {
+                items.push(syn::parse_quote! {
+                    impl<T> #ident for T where T: #supertraits {}
+                });
+            }
+            Ok(items)
         }
         other => {
             let is_byte_slice = is_byte_slice_type(&other);
@@ -4287,6 +4564,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 }
             };
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
+            if is_copy_alias {
+                items.extend(numeric_newtype_impls(&ident, &rust_type));
+            }
             if is_byte_slice {
                 items.push(syn::parse_quote! {
                     impl crate::builtin::Len for #ident {
@@ -4691,22 +4971,27 @@ fn compile_method(
             .iter()
             .any(|f| f.names.as_ref().is_some_and(|names| !names.is_empty()));
         if has_named_returns {
-            let mut named_return_info: Vec<(syn::Ident, syn::Expr)> = vec![];
+            let mut named_return_info: Vec<(syn::Ident, Option<syn::Type>, syn::Expr)> = vec![];
             for field in &results.list {
                 if let Some(ref names) = field.names {
                     for name in names {
                         let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
+                        let rust_type = field.type_.as_ref().map(type_from_expr_ref);
                         let zero = zero_value_for_type(type_name);
                         let ident =
                             syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
-                        named_return_info.push((ident.clone(), zero));
+                        named_return_info.push((ident.clone(), rust_type, zero));
                         named_return_idents.push(ident);
                     }
                 }
             }
             let mut prepend: Vec<syn::Stmt> = vec![];
-            for (ident, zero) in &named_return_info {
-                prepend.push(syn::parse_quote! { let mut #ident = #zero; });
+            for (ident, rust_type, zero) in &named_return_info {
+                if let Some(rust_type) = rust_type {
+                    prepend.push(syn::parse_quote! { let mut #ident: #rust_type = #zero; });
+                } else {
+                    prepend.push(syn::parse_quote! { let mut #ident = #zero; });
+                }
             }
             let existing = std::mem::take(&mut block.stmts);
             block.stmts = prepend;
@@ -5385,35 +5670,48 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
     syn::parse_quote! { std::panic::panic_any(#arg) }
 }
 
-fn elts_to_field_values(type_name: Option<&str>, elts: Vec<syn::Expr>) -> Vec<syn::FieldValue> {
+fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Vec<syn::FieldValue> {
     let struct_fields = type_name
         .map(|name| TYPE_ENV.with(|env| env.borrow().get_struct_fields(name)))
         .unwrap_or_default();
     let mut positional_index = 0usize;
 
     elts.into_iter()
-        .map(|e| {
-            if let syn::Expr::Tuple(ref tuple) = e {
-                let mut iter = tuple.elems.clone().into_iter();
-                if let (Some(syn::Expr::Path(ref path)), Some(value)) = (iter.next(), iter.next()) {
-                    if let Some(last_seg) = path.path.segments.last() {
-                        return syn::FieldValue {
-                            attrs: vec![],
-                            member: syn::Member::Named(last_seg.ident.clone()),
-                            colon_token: Some(<Token![:]>::default()),
-                            expr: value,
-                        };
-                    }
+        .map(|elt| {
+            let elt = if let ast::Expr::KeyValueExpr(kv) = elt {
+                let field_name = match &*kv.key {
+                    ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+                    _ => None,
+                };
+                if let Some(field_name) = field_name {
+                    let expected = struct_fields
+                        .iter()
+                        .find(|(name, _)| name == &field_name)
+                        .map(|(_, ty)| ty.clone());
+                    let expr = compile_expr_with_expected(*kv.value, expected.as_ref());
+                    return syn::FieldValue {
+                        attrs: vec![],
+                        member: syn::Member::Named(syn::Ident::new(
+                            &rust_safe_ident_name(&field_name),
+                            Span::mixed_site(),
+                        )),
+                        colon_token: Some(<Token![:]>::default()),
+                        expr,
+                    };
                 }
-            }
-            if let Some((field_name, _)) = struct_fields.get(positional_index) {
+                ast::Expr::KeyValueExpr(kv)
+            } else {
+                elt
+            };
+
+            if let Some((field_name, field_ty)) = struct_fields.get(positional_index) {
                 positional_index += 1;
                 let field_name = rust_safe_ident_name(field_name);
                 return syn::FieldValue {
                     attrs: vec![],
                     member: syn::Member::Named(syn::Ident::new(&field_name, Span::mixed_site())),
                     colon_token: Some(<Token![:]>::default()),
-                    expr: e,
+                    expr: compile_expr_with_expected(elt, Some(field_ty)),
                 };
             }
             let index = positional_index as u32;
@@ -5425,10 +5723,14 @@ fn elts_to_field_values(type_name: Option<&str>, elts: Vec<syn::Expr>) -> Vec<sy
                     span: Span::mixed_site(),
                 }),
                 colon_token: None,
-                expr: e,
+                expr: elt.into(),
             }
         })
         .collect()
+}
+
+fn compile_raw_elts(elts: Vec<ast::Expr>) -> Vec<syn::Expr> {
+    elts.into_iter().map(syn::Expr::from).collect()
 }
 
 fn has_unnamed_field_values(field_values: &[syn::FieldValue]) -> bool {
@@ -5437,13 +5739,71 @@ fn has_unnamed_field_values(field_values: &[syn::FieldValue]) -> bool {
         .any(|fv| matches!(fv.member, syn::Member::Unnamed(_)))
 }
 
+fn compile_array_literal_element(
+    elt: ast::Expr,
+    elem_type_expr: &ast::Expr,
+    elem_go_type: &typeinfer::GoType,
+) -> syn::Expr {
+    match (elt, elem_type_expr) {
+        (ast::Expr::CompositeLit(nested), ast::Expr::ArrayType(nested_array))
+            if nested.type_.is_none() =>
+        {
+            compile_array_literal(nested_array, nested.elts.unwrap_or_default())
+        }
+        (elt, _) => compile_expr_with_expected(elt, Some(elem_go_type)),
+    }
+}
+
+fn compile_array_literal(array_type: &ast::ArrayType, raw_elts: Vec<ast::Expr>) -> syn::Expr {
+    let elem_go_type = typeinfer::GoType::from_expr(&array_type.elt);
+    let fixed_len = array_type
+        .len
+        .as_ref()
+        .map(|array_len| array_literal_len_expr(array_len, &raw_elts));
+    let mut indexed_elts: Vec<(proc_macro2::TokenStream, syn::Expr)> = vec![];
+    for (default_index, elt) in raw_elts.into_iter().enumerate() {
+        if let ast::Expr::KeyValueExpr(kv) = elt {
+            let key: syn::Expr = (*kv.key).into();
+            let value = compile_array_literal_element(*kv.value, &array_type.elt, &elem_go_type);
+            indexed_elts.push((quote::quote! { (#key) as usize }, value));
+        } else {
+            let index = syn::Index::from(default_index);
+            let value = compile_array_literal_element(elt, &array_type.elt, &elem_go_type);
+            indexed_elts.push((quote::quote! { #index }, value));
+        }
+    }
+    if array_type.len.is_none() {
+        if indexed_elts.is_empty() {
+            syn::parse_quote! { Vec::new() }
+        } else {
+            let elts = indexed_elts.into_iter().map(|(_, elt)| elt);
+            syn::parse_quote! { Vec::from([#(#elts),*]) }
+        }
+    } else if indexed_elts.is_empty() {
+        let Some(len) = fixed_len else {
+            return syn::parse_quote! { Default::default() };
+        };
+        syn::parse_quote! {{
+            let __gors_array: [_; #len] = std::array::from_fn(|_| Default::default());
+            __gors_array
+        }}
+    } else {
+        let Some(len) = fixed_len else {
+            return syn::parse_quote! { Default::default() };
+        };
+        let (indices, elts): (Vec<_>, Vec<_>) = indexed_elts.into_iter().unzip();
+        syn::parse_quote! {{
+            let mut __gors_array: [_; #len] = std::array::from_fn(|_| Default::default());
+            #(
+                __gors_array[#indices] = #elts;
+            )*
+            __gors_array
+        }}
+    }
+}
+
 fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
-    let elts: Vec<syn::Expr> = comp_lit
-        .elts
-        .unwrap_or_default()
-        .into_iter()
-        .map(syn::Expr::from)
-        .collect();
+    let raw_elts = comp_lit.elts.unwrap_or_default();
 
     if let Some(type_expr) = comp_lit.type_ {
         match *type_expr {
@@ -5453,13 +5813,14 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 let type_kind =
                     TYPE_ENV.with(|env| env.borrow().get_type_kind(&type_name).cloned());
                 if matches!(type_kind, Some(typeinfer::TypeKind::Alias(_))) {
+                    let elts = compile_raw_elts(raw_elts);
                     if elts.is_empty() || elts.iter().any(|elt| matches!(elt, syn::Expr::Tuple(_)))
                     {
                         return syn::parse_quote! { #type_ident::default() };
                     }
                     return syn::parse_quote! { #type_ident(#(#elts),*) };
                 }
-                let field_values = elts_to_field_values(Some(&type_name), elts);
+                let field_values = raw_elts_to_field_values(Some(&type_name), raw_elts);
                 if field_values.is_empty() {
                     syn::parse_quote! { #type_ident::default() }
                 } else if has_unnamed_field_values(&field_values) {
@@ -5486,7 +5847,7 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
             ast::Expr::SelectorExpr(sel) => {
                 let path: syn::ExprPath = sel.into();
                 let type_name = path.path.segments.last().map(|seg| seg.ident.to_string());
-                let field_values = elts_to_field_values(type_name.as_deref(), elts);
+                let field_values = raw_elts_to_field_values(type_name.as_deref(), raw_elts);
                 if field_values.is_empty() {
                     let p = &path.path;
                     syn::parse_quote! { #p::default() }
@@ -5514,31 +5875,19 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
             }
             ast::Expr::ArrayType(array_type) => {
                 // Slice/array literal: []T{e1, e2, ...} → vec![e1, e2, ...]
-                if array_type.len.is_none() {
-                    if elts.is_empty() {
-                        syn::parse_quote! { Vec::new() }
-                    } else {
-                        syn::parse_quote! { Vec::from([#(#elts),*]) }
-                    }
-                } else if elts.is_empty() {
-                    let Some(array_len) = array_type.len.as_ref() else {
-                        return syn::parse_quote! { Default::default() };
-                    };
-                    let len = array_len_expr(array_len);
-                    syn::parse_quote! { [Default::default(); #len] }
-                } else {
-                    syn::parse_quote! { [#(#elts),*] }
-                }
+                compile_array_literal(&array_type, raw_elts)
             }
             ast::Expr::MapType(_) => {
                 // Map literal: map[K]V{k1: v1, ...}
                 // elts are already (key, value) tuples from KeyValueExpr
+                let elts = compile_raw_elts(raw_elts);
                 syn::parse_quote! {
                     std::collections::HashMap::from([#(#elts),*])
                 }
             }
             _ => {
                 // Fallback: treat as array/vec
+                let elts = compile_raw_elts(raw_elts);
                 if elts.is_empty() {
                     syn::parse_quote! { Vec::new() }
                 } else {
@@ -5548,6 +5897,7 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
         }
     } else {
         // No type — nested composite lit in an array/slice context
+        let elts = compile_raw_elts(raw_elts);
         if elts.iter().any(|elt| matches!(elt, syn::Expr::Tuple(_))) {
             return syn::parse_quote! { Default::default() };
         }
@@ -5717,6 +6067,53 @@ fn coerce_assignment_expr(
     rhs_expr
 }
 
+fn is_named_numeric_alias(type_name: &str) -> bool {
+    if !matches!(
+        typeinfer::GoType::from_name(type_name),
+        typeinfer::GoType::Named(_)
+    ) {
+        return false;
+    }
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .resolve_alias(&typeinfer::GoType::Named(type_name.to_string()))
+            .is_numeric()
+    })
+}
+
+fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
+    match go_type {
+        typeinfer::GoType::Bool
+        | typeinfer::GoType::Int
+        | typeinfer::GoType::Int8
+        | typeinfer::GoType::Int16
+        | typeinfer::GoType::Int32
+        | typeinfer::GoType::Int64
+        | typeinfer::GoType::Uint
+        | typeinfer::GoType::Uint8
+        | typeinfer::GoType::Uint16
+        | typeinfer::GoType::Uint32
+        | typeinfer::GoType::Uint64
+        | typeinfer::GoType::Uintptr
+        | typeinfer::GoType::Float32
+        | typeinfer::GoType::Float64
+        | typeinfer::GoType::Complex64
+        | typeinfer::GoType::Complex128
+        | typeinfer::GoType::Pointer(_)
+        | typeinfer::GoType::Func { .. } => true,
+        typeinfer::GoType::Array(elem) => go_type_is_copy(elem),
+        typeinfer::GoType::Named(name) => TYPE_ENV.with(|env| {
+            let resolved = env.borrow().resolve_alias(go_type);
+            if matches!(resolved, typeinfer::GoType::Named(_)) {
+                is_named_numeric_alias(name)
+            } else {
+                go_type_is_copy(&resolved)
+            }
+        }),
+        _ => false,
+    }
+}
+
 fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
     TYPE_ENV.with(|env| env.borrow().resolve_alias(ty))
 }
@@ -5748,6 +6145,42 @@ fn coerce_numeric_expr(
     syn::parse_quote! { (#expr as #target_ty) }
 }
 
+fn expr_should_clone_for_value_param(
+    expr: &ast::Expr,
+    expected: &typeinfer::GoType,
+    actual: &typeinfer::GoType,
+) -> bool {
+    if !matches!(
+        expr,
+        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) | ast::Expr::IndexExpr(_)
+    ) {
+        return false;
+    }
+    let expected = resolved_go_type(expected);
+    let actual = resolved_go_type(actual);
+    if matches!(
+        expected,
+        typeinfer::GoType::Any
+            | typeinfer::GoType::Interface(_)
+            | typeinfer::GoType::Slice(_)
+            | typeinfer::GoType::Array(_)
+            | typeinfer::GoType::Unknown
+    ) || matches!(
+        actual,
+        typeinfer::GoType::Any
+            | typeinfer::GoType::Interface(_)
+            | typeinfer::GoType::Slice(_)
+            | typeinfer::GoType::Array(_)
+            | typeinfer::GoType::Unknown
+    ) {
+        return false;
+    }
+    if expected != actual {
+        return false;
+    }
+    !go_type_is_copy(&expected) && !go_type_is_copy(&actual)
+}
+
 fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
         return match expected {
@@ -5759,20 +6192,43 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
         };
     }
 
+    if let ast::Expr::CompositeLit(mut comp_lit) = expr {
+        if comp_lit.type_.is_none()
+            && let Some(typeinfer::GoType::Named(name)) = expected
+            && !name.contains('.')
+        {
+            let leaked_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            comp_lit.type_ = Some(Box::new(ast::Expr::Ident(ast::Ident {
+                name_pos: token::Position::default(),
+                name: leaked_name,
+                obj: None,
+            })));
+        }
+        return compile_composite_lit(comp_lit);
+    }
+
     if matches!(expected, Some(typeinfer::GoType::String)) && is_string_literal(&expr) {
         let expr: syn::Expr = expr.into();
         return syn::parse_quote! { #expr.to_string() };
     }
 
     if let Some(typeinfer::GoType::Named(name)) = expected {
-        if is_type_interface(name) {
+        if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
+            let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
+            if needs_owned_temp {
+                return syn::parse_quote! { &mut (#expr).clone() };
+            }
             return syn::parse_quote! { &mut #expr };
         }
     }
 
     if let Some(expected) = expected {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        if expr_should_clone_for_value_param(&expr, expected, &actual) {
+            let compiled: syn::Expr = expr.into();
+            return syn::parse_quote! { (#compiled).clone() };
+        }
         let compiled = if numeric_cast_type(expected).is_some() && is_const_like_expr(&expr) {
             const_eval_expr(&expr, 0, &BTreeMap::new())
                 .map_or_else(|| expr.into(), |value| value.to_expr())
@@ -6109,6 +6565,8 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     syn::parse_quote! { 0..((#x) as usize) },
                     body,
                 ))
+            } else if is_string {
+                Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
             } else {
                 Ok(make_for_loop(pat, x, body))
             }
@@ -6155,10 +6613,13 @@ fn expr_to_pat(expr: &ast::Expr) -> syn::Pat {
 
 fn infer_static_type_from_init(expr: &ast::Expr) -> Option<syn::Type> {
     match expr {
-        ast::Expr::CompositeLit(comp_lit) => comp_lit
-            .type_
-            .as_ref()
-            .map(|type_expr| type_from_expr_ref(type_expr)),
+        ast::Expr::CompositeLit(comp_lit) => comp_lit.type_.as_ref().map(|type_expr| {
+            if let ast::Expr::ArrayType(array_type) = &**type_expr {
+                type_from_array_lit_ref(array_type, comp_lit.elts.as_deref().unwrap_or(&[]))
+            } else {
+                type_from_expr_ref(type_expr)
+            }
+        }),
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => {
             Some(syn::parse_quote! { String })
         }
@@ -6172,6 +6633,19 @@ fn infer_static_type_from_init(expr: &ast::Expr) -> Option<syn::Type> {
             Some(syn::parse_quote! { bool })
         }
         _ => None,
+    }
+}
+
+fn type_from_array_lit_ref(array_type: &ast::ArrayType, elts: &[ast::Expr]) -> syn::Type {
+    let elem = match &*array_type.elt {
+        ast::Expr::ArrayType(nested) => type_from_array_lit_ref(nested, &[]),
+        other => type_from_expr_ref(other),
+    };
+    if let Some(len) = &array_type.len {
+        let len_expr = array_literal_len_expr(len, elts);
+        syn::parse_quote! { [#elem; #len_expr] }
+    } else {
+        syn::parse_quote! { Vec<#elem> }
     }
 }
 
@@ -6398,6 +6872,14 @@ fn is_const_like_expr(expr: &ast::Expr) -> bool {
         ast::Expr::BasicLit(_) => true,
         ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
         ast::Expr::Ident(ident) => TYPE_ENV.with(|env| env.borrow().is_const(ident.name)),
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = &*selector.x {
+                let key = format!("{}.{}", base.name, selector.sel.name);
+                TYPE_ENV.with(|env| env.borrow().is_const(&key))
+            } else {
+                false
+            }
+        }
         ast::Expr::ParenExpr(paren) => is_const_like_expr(&paren.x),
         ast::Expr::UnaryExpr(unary) => is_const_like_expr(&unary.x),
         ast::Expr::BinaryExpr(binary) => {
@@ -6473,7 +6955,12 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
     let original_op = binary_expr.op;
     let op: syn::BinOp = original_op.into();
-    let left = compile_binary_side(*binary_expr.x, &left_ty, &right_ty);
+    let is_shift = matches!(original_op, token::Token::SHL | token::Token::SHR);
+    let left = if is_shift {
+        (*binary_expr.x).into()
+    } else {
+        compile_binary_side(*binary_expr.x, &left_ty, &right_ty)
+    };
     let right = compile_binary_side(*binary_expr.y, &right_ty, &left_ty);
     if original_op == token::Token::AND_NOT {
         let not_right = syn::Expr::Unary(syn::ExprUnary {
@@ -6654,11 +7141,39 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::Ident(ident) if ident.name == "nil" => syn::parse_quote! { None },
             ast::Expr::Ident(ident) if ident.name == "true" => syn::parse_quote! { true },
             ast::Expr::Ident(ident) if ident.name == "false" => syn::parse_quote! { false },
-            ast::Expr::Ident(ident) if is_string_const_fn(ident.name) => {
+            ast::Expr::Ident(ident) if is_active_string_const_fn(ident.name) => {
                 let ident: syn::Ident = ident.into();
                 syn::parse_quote! { #ident() }
             }
-            ast::Expr::Ident(ident) => Self::Path(ident.into()),
+            ast::Expr::Ident(ident) => {
+                let ident_name = ident.name;
+                let is_top_level_var = TYPE_ENV.with(|env| {
+                    let env = env.borrow();
+                    env.is_top_level_var(ident_name)
+                        && !env.is_const(ident_name)
+                        && env
+                            .get_top_level_var(ident_name)
+                            .is_some_and(|top_level_ty| {
+                                env.get_var(ident_name)
+                                    .is_some_and(|current_ty| current_ty == top_level_ty)
+                            })
+                });
+                let path = Self::Path(ident.into());
+                if is_top_level_var {
+                    let go_type = TYPE_ENV.with(|env| {
+                        env.borrow()
+                            .get_var(ident_name)
+                            .unwrap_or(typeinfer::GoType::Unknown)
+                    });
+                    if go_type_is_copy(&go_type) {
+                        syn::parse_quote! { *#path }
+                    } else {
+                        syn::parse_quote! { (*#path).clone() }
+                    }
+                } else {
+                    path
+                }
+            }
             ast::Expr::SelectorExpr(selector_expr) => {
                 if is_type_method_expression_receiver(&selector_expr.x) {
                     return syn::parse_quote! { |_| {} };
@@ -7272,11 +7787,23 @@ impl TryFrom<ast::File<'_>> for syn::File {
 }
 
 fn compile_field_to_fn_args(field: ast::Field) -> Result<Vec<syn::FnArg>, CompilerError> {
+    compile_field_to_fn_args_with_type_params(field, &TypeParamInfo::default())
+}
+
+fn compile_field_to_fn_args_with_type_params(
+    field: ast::Field,
+    type_param_info: &TypeParamInfo,
+) -> Result<Vec<syn::FnArg>, CompilerError> {
     let type_expr = field
         .type_
         .ok_or_else(|| CompilerError::InvalidFunctionSignature("field has no type".to_string()))?;
     let go_type = typeinfer::GoType::from_expr(&type_expr);
-    let mut rust_type: syn::Type = type_expr.into();
+    let mut rust_type: syn::Type =
+        if let Some(elem) = generic_slice_param_element_type(&type_expr, type_param_info) {
+            syn::parse_quote! { &mut Vec<#elem> }
+        } else {
+            type_expr.into()
+        };
     let names = field.names.unwrap_or_else(|| {
         vec![ast::Ident {
             name_pos: token::Position::default(),
@@ -7349,9 +7876,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         });
 
+        let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
-            for arg in compile_field_to_fn_args(param)? {
+            for arg in compile_field_to_fn_args_with_type_params(param, &type_param_info)? {
                 inputs.push(arg);
             }
         }
@@ -7359,7 +7887,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let vis = (&func_decl.name).into();
 
         // Analyze return values for named returns
-        let mut named_return_info: Vec<(syn::Ident, syn::Expr)> = vec![];
+        let mut named_return_info: Vec<(syn::Ident, Option<syn::Type>, syn::Expr)> = vec![];
         let mut named_return_idents: Vec<syn::Ident> = vec![];
 
         if let Some(ref results) = func_decl.type_.results {
@@ -7372,12 +7900,13 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                     if let Some(ref names) = field.names {
                         for name in names {
                             let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
+                            let rust_type = field.type_.as_ref().map(type_from_expr_ref);
                             let zero = zero_value_for_type(type_name);
                             let ident = syn::Ident::new(
                                 &rust_safe_ident_name(name.name),
                                 Span::mixed_site(),
                             );
-                            named_return_info.push((ident.clone(), zero));
+                            named_return_info.push((ident.clone(), rust_type, zero));
                             named_return_idents.push(ident);
                         }
                     }
@@ -7399,10 +7928,16 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         // For named returns: prepend variable declarations and rewrite bare returns
         if !named_return_info.is_empty() {
             let mut prepend: Vec<syn::Stmt> = vec![];
-            for (ident, zero) in &named_return_info {
-                prepend.push(syn::parse_quote! {
-                    let mut #ident = #zero;
-                });
+            for (ident, rust_type, zero) in &named_return_info {
+                if let Some(rust_type) = rust_type {
+                    prepend.push(syn::parse_quote! {
+                        let mut #ident: #rust_type = #zero;
+                    });
+                } else {
+                    prepend.push(syn::parse_quote! {
+                        let mut #ident = #zero;
+                    });
+                }
             }
             let existing = std::mem::take(&mut block.stmts);
             block.stmts = prepend;
@@ -8184,13 +8719,20 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
 
                     for name in names {
                         let ident: syn::Ident = name.into();
+                        let init_ast = values_iter.next();
                         if let Some(ref go_type) = go_type {
                             TYPE_ENV.with(|env| {
                                 env.borrow_mut()
                                     .set_var(&ident.to_string(), go_type.clone());
                             });
+                        } else if let Some(ref init_ast) = init_ast {
+                            let inferred = TYPE_ENV
+                                .with(|env| typeinfer::GoType::infer_expr(init_ast, &env.borrow()));
+                            TYPE_ENV.with(|env| {
+                                env.borrow_mut().set_var(&ident.to_string(), inferred);
+                            });
                         }
-                        let init_expr: Option<syn::Expr> = values_iter.next().map(|v| v.into());
+                        let init_expr: Option<syn::Expr> = init_ast.map(Into::into);
 
                         let init = init_expr
                             .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
@@ -8496,6 +9038,115 @@ fn type_assert_interface_name(rhs: &ast::Expr) -> Option<String> {
     }
 }
 
+fn compile_index_swap_assignment(assign_stmt: &ast::AssignStmt) -> Option<Vec<syn::Stmt>> {
+    if assign_stmt.lhs.len() != 2 || assign_stmt.rhs.len() != 2 {
+        return None;
+    }
+    let (lhs_base_a, lhs_index_a) = index_expr_parts(assign_stmt.lhs.first()?)?;
+    let (lhs_base_b, lhs_index_b) = index_expr_parts(assign_stmt.lhs.get(1)?)?;
+    let (rhs_base_a, rhs_index_a) = index_expr_parts(assign_stmt.rhs.first()?)?;
+    let (rhs_base_b, rhs_index_b) = index_expr_parts(assign_stmt.rhs.get(1)?)?;
+
+    let lhs_base_key = expr_shape_key(lhs_base_a)?;
+    if lhs_base_key != expr_shape_key(lhs_base_b)?
+        || lhs_base_key != expr_shape_key(rhs_base_a)?
+        || lhs_base_key != expr_shape_key(rhs_base_b)?
+        || expr_shape_key(lhs_index_a)? != expr_shape_key(rhs_index_b)?
+        || expr_shape_key(lhs_index_b)? != expr_shape_key(rhs_index_a)?
+    {
+        return None;
+    }
+
+    let base = syn_expr_from_type_expr_like(lhs_base_a)?;
+    let left_index = syn_expr_from_type_expr_like(lhs_index_a)?;
+    let right_index = syn_expr_from_type_expr_like(lhs_index_b)?;
+    Some(vec![syn::parse_quote! {
+        #base.swap((#left_index) as usize, (#right_index) as usize);
+    }])
+}
+
+fn index_expr_parts<'a, 'src>(
+    expr: &'a ast::Expr<'src>,
+) -> Option<(&'a ast::Expr<'src>, &'a ast::Expr<'src>)> {
+    let ast::Expr::IndexExpr(index) = expr else {
+        return None;
+    };
+    Some((&index.x, &index.index))
+}
+
+fn expr_shape_key(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(format!("id:{}", ident.name)),
+        ast::Expr::BasicLit(lit) => Some(format!("lit:{:?}:{}", lit.kind, lit.value)),
+        ast::Expr::SelectorExpr(selector) => Some(format!(
+            "sel:{}:{}",
+            expr_shape_key(&selector.x)?,
+            selector.sel.name
+        )),
+        ast::Expr::BinaryExpr(binary) => Some(format!(
+            "bin:{:?}:{}:{}",
+            binary.op,
+            expr_shape_key(&binary.x)?,
+            expr_shape_key(&binary.y)?
+        )),
+        ast::Expr::ParenExpr(paren) => expr_shape_key(&paren.x),
+        ast::Expr::UnaryExpr(unary) => Some(format!(
+            "unary:{:?}:{}",
+            unary.op,
+            expr_shape_key(&unary.x)?
+        )),
+        ast::Expr::IndexExpr(index) => Some(format!(
+            "index:{}:{}",
+            expr_shape_key(&index.x)?,
+            expr_shape_key(&index.index)?
+        )),
+        _ => None,
+    }
+}
+
+fn syn_expr_from_type_expr_like(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            Some(syn::parse_quote! { #ident })
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = &*selector.x {
+                let base = syn::Ident::new(&rust_safe_ident_name(base.name), Span::mixed_site());
+                let sel =
+                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+                Some(syn::parse_quote! { #base::#sel })
+            } else {
+                let base = syn_expr_from_type_expr_like(&selector.x)?;
+                let sel =
+                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+                Some(syn::parse_quote! { #base.#sel })
+            }
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let left = syn_expr_from_type_expr_like(&binary.x)?;
+            let right = syn_expr_from_type_expr_like(&binary.y)?;
+            let op: syn::BinOp = binary.op.into();
+            Some(syn::parse_quote! { #left #op #right })
+        }
+        ast::Expr::ParenExpr(paren) => {
+            let inner = syn_expr_from_type_expr_like(&paren.x)?;
+            Some(syn::parse_quote! { (#inner) })
+        }
+        ast::Expr::BasicLit(lit) => {
+            let lit: syn::Expr = ast::Expr::BasicLit(ast::BasicLit {
+                value_pos: lit.value_pos,
+                value_end: lit.value_end,
+                kind: lit.kind,
+                value: lit.value,
+            })
+            .into();
+            Some(lit)
+        }
+        _ => None,
+    }
+}
+
 impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
 
@@ -8728,6 +9379,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // a = 1
         // b, c = 2, 3
         if assign_stmt.tok == token::Token::ASSIGN {
+            if let Some(stmts) = compile_index_swap_assignment(&assign_stmt) {
+                return Ok(stmts);
+            }
+
             if assign_stmt.lhs.len() == 1 {
                 let lhs_ast = assign_stmt
                     .lhs

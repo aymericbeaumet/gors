@@ -221,16 +221,35 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     for (_, ast) in &parsed_files {
         package_type_env.scan_file(ast);
     }
+    let mut imported_type_envs: BTreeMap<String, (String, TypeEnv)> = BTreeMap::new();
+    for (_, ast) in &parsed_files {
+        for import in ast.imports() {
+            let imported_path = import.path.value.trim_matches('"');
+            if imported_path == import_path {
+                continue;
+            }
+            if let Some((package_name, env)) = scan_type_env(imported_path) {
+                imported_type_envs.insert(imported_path.to_string(), (package_name, env));
+            }
+        }
+    }
 
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
     let mut all_items: Vec<syn::Item> = Vec::new();
 
     for (filename, ast) in parsed_files {
+        let mut type_env = package_type_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut type_env,
+            &ast,
+            &BTreeMap::new(),
+            &imported_type_envs,
+        );
         let compiled = match catch_unwind_quiet(std::panic::AssertUnwindSafe(|| {
             crate::compiler::compile_with_type_env_and_import_renames(
                 ast,
-                package_type_env.clone(),
+                type_env,
                 import_renames.clone(),
             )
         })) {
