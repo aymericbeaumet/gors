@@ -49,31 +49,54 @@ tests/
 - Naming: `import_path.replace('/', "__")` + `.rs` (e.g., `example/math` → `example__math.rs`)
 - `lib.rs` declares all modules with `#[path]` attributes
 - `main.rs` includes `lib.rs` and contains main function items
-- Stdlib modules (e.g., `fmt`) are hand-written Rust, not transpiled from Go
+- Stdlib modules are resolved lazily from the embedded Go SDK archive and
+  filtered to reachable root symbols before being compiled to Rust. Avoid
+  package-level synthetic replacements; prefer fixing the generic transpilation
+  path. Runtime boundary lowerings may still be needed for host-backed values
+  such as standard streams.
 
 ### Cross-module references
 
 - `prefix_sibling_paths` rewrites references to sibling packages as `crate::pkg::Symbol`
 - `hoist_use` lifts multi-segment paths to `use` statements (only for main package)
 - `hoist_use` detects name collisions and keeps paths qualified when ambiguous
+- Local package names that collide with any known stdlib module use an
+  import-path-derived Rust module name (`example/math` → `example__math`) and
+  import rewrites preserve the original Go selector name in source lowering.
+- Package-level vars in imported/transpiled packages are emitted as concrete
+  `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
+  `main()` as startup locals.
+- Named `[]byte` types are newtypes, but the compiler also emits helper impls
+  (`GoLen`, `GoCap`, `GoString`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `GoAppend`
+  variants) so stdlib code can use them like Go byte slices.
 
 ### Incremental builds
 
 - `.gors_manifest.json` tracks content hashes per module
 - `compute_content_hash()` concatenates sorted Go source files → SHA-256
 - Unchanged modules are skipped during `build`
+- Files tracked by the previous manifest but absent from the new generated
+  output are removed, so DCE/module-pruning changes do not leave stale `.rs`
+  files in the output directory.
 
 ## Stdlib system
 
-Go stdlib imports are resolved via hand-written Rust modules in `src/stdlib/`.
-Currently supported: `fmt` (Println, Print as generic functions).
+Go stdlib imports are resolved from the embedded Go SDK archive through
+`src/go_stdlib.rs`; the old `src/stdlib/` handwritten modules have been removed.
+Import-path-to-module naming is generic (`unicode/utf8` → `unicode__utf8`, Rust
+keywords get a trailing `_`).
 
 The `ParsedProgram.stdlib_imports` field tracks which stdlib packages a program
-uses. `compile_program_multi()` emits these as individual `.rs` files alongside
-user code.
+uses directly. `compile_program_multi()` scans those packages for type
+information, compiles user/local code first, then resolves embedded stdlib
+packages on demand from the actual cross-module symbols that remain after
+reachability pruning.
 
-To add a new stdlib package: add a file in `src/stdlib/`, return items from
-`module_items()`, register in `src/stdlib/mod.rs` `resolve_stdlib()`.
+Stdlib resolution is root-specific and cached by import path plus reachable
+symbol set. The resolver parses selected Go files only when the package is
+needed, filters unused top-level AST declarations before compiling, and caches
+type environments, transitive imports, and resolved token streams. Direct
+imports with no surviving references should not force module generation.
 
 ## Go toolchain
 
@@ -134,24 +157,81 @@ Key differences from `go run`:
 - The Go toolchain is hermetically downloaded (pinned version in `src/toolchain/mod.rs`)
 - Transpiles Go → Rust and compiles with `rustc`, not `go build`
 
+## Type inference
+
+`src/compiler/typeinfer.rs` provides a `TypeEnv` that pre-scans Go AST files
+before compilation to collect variable types, function signatures, struct fields,
+and interface declarations. The `GoType` enum represents Go types. Used during
+code generation for type-aware decisions (string indexing, numeric casts,
+interface detection).
+
+Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
+`get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.
+Package-level string constants are also tracked in `TypeEnv` so generated
+owned-`String` constant functions are scoped per package; do not use a global
+cross-package string-constant set for identifier lowering.
+
+Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
+not `vec![..]` macros, so dependency discovery and later AST passes can see
+module references inside variadic arguments.
+
 ## Compiler passes (in order)
 
+Main package (`pass()`):
 1. `map_type` — Go types → Rust types (int→isize, string→String, etc.)
 2. `type_conversion` — type calls to casts (`int(x)` → `x as isize`)
-3. `hoist_use` — extract multi-segment paths to `use` declarations
-4. `simplify_return` — remove trailing `return` (Rust style)
-5. `flatten_block` — flatten single-expression nested blocks
+3. `inject_channel` — channel send/receive
+4. `inline_errors` — error value handling
+5. `nil_check` — nil comparisons → Default::default() / is_empty()
+6. `string_lit` — string literal `.to_string()` in assignments/returns/method args
+7. `trait_param` — generic trait parameter handling
+8. `hoist_use` — extract multi-segment paths to `use` declarations
+9. `simplify_return` — remove trailing `return` (Rust style)
+10. `flatten_block` — flatten single-expression nested blocks
+11. `index_cast` — array/slice index expressions cast to usize
+12. `interface_param` — (placeholder) interface type parameter handling
+13. `coerce_types` — len()/cap() → isize cast, float-to-int typed locals
 
-Imported packages skip `hoist_use`.
+Imported packages (`pass_for_imported_package()`): only map_type, type_conversion,
+simplify_return, flatten_block.
+
+## Stdlib system — embedded Go source
+
+Go stdlib is embedded in the binary via `build.rs`, which downloads Go 1.24.3 SDK
+and packs `go/src/**/*.go` (excluding tests, vendor, cmd) into `go_stdlib.tar.gz`.
+All stdlib/internal packages in the archive are available through the generic
+resolver; build tags and GOOS/GOARCH filename suffixes are filtered for the host
+target before parsing.
+
+The resolver caches parsed package selection, type environments, transitive
+imports, and root-specific resolved module token streams. Per-file stdlib
+parser/compiler skips are quiet by default; set `GORS_STDLIB_TRACE=1` to see
+resolver decisions and skipped files.
+
+Stdlib output is pruned at item level from roots such as `crate::fmt::Println`.
+Direct imports that are fully lowered away, such as `errors.New(...)` after the
+error-inlining pass, should be pruned rather than preserved solely because the
+Go import existed.
+
+Generated Rust files start with a `//! Generated by gors. Do not edit.`
+rustdoc header, immediately followed by the backend-level lint prelude that
+denies `dead_code`, `unused_imports`, `unused_macros`, and `unsafe_code`, while
+still allowing Go naming via `nonstandard_style`; one blank line separates the
+prelude from generated code. Dependency modules are emitted alphabetically by
+Rust module name, and generated items/methods are ordered with public functions
+before private functions.
 
 ## Known limitations
 
-- `fmt.Println` and `fmt.Print` support up to 4 arguments (via Println2/Println3/Println4)
 - No closures or variadic function definitions
 - No string concatenation with `+` (needs type inference)
 - No `for range` over strings (uses `.iter()` instead of `.chars()`)
-- `reflect` package is infeasible to transpile — stdlib packages using it must be hand-written
+- `any` type maps to `Box<dyn Any>` but auto-boxing at assignment sites requires manual wrapping
+- `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
+- `complex128`/`complex64` types conflict with builtin function names in map_type pass
+- Interface types as function parameters need `impl Trait` or `&dyn Trait` wrapping
+- Trait downcasting (`x.(InterfaceName)`) only works for concrete types, not trait objects
 
 ## Conventions
 

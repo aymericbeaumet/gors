@@ -3,7 +3,9 @@
 use clap::Parser;
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
@@ -22,6 +24,35 @@ fn print_error(diagnostic: &Diagnostic) {
     // Check if stdout supports colors
     let use_colors = atty::is(atty::Stream::Stderr);
     eprint!("{}", diagnostic.format_terminal(use_colors));
+}
+
+struct ProfileTimer {
+    label: &'static str,
+    start: Option<Instant>,
+}
+
+impl ProfileTimer {
+    fn start(label: &'static str) -> Self {
+        let enabled = std::env::var("GORS_PROFILE")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        Self {
+            label,
+            start: enabled.then(Instant::now),
+        }
+    }
+}
+
+impl Drop for ProfileTimer {
+    fn drop(&mut self) {
+        let Some(start) = self.start else {
+            return;
+        };
+        eprintln!(
+            "[gors-profile] {}: {:.2}ms",
+            self.label,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 }
 
 #[derive(Parser)]
@@ -105,6 +136,7 @@ fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+    let parse_timer = ProfileTimer::start("cli.parse");
     let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
@@ -122,6 +154,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    drop(parse_timer);
 
     let primary_file = program
         .main_package
@@ -147,29 +180,55 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
 
     let output = gors::backend_rust::generate_multi(compiled)?;
     let output_dir = cmd.output.as_deref().unwrap_or("gors_output");
+    let stats = write_generated_output(&output, Path::new(output_dir))?;
+    if stats.removed == 0 {
+        println!(
+            "Wrote {} files to {output_dir} ({} unchanged)",
+            stats.written, stats.skipped
+        );
+    } else {
+        println!(
+            "Wrote {} files to {output_dir} ({} unchanged, {} removed)",
+            stats.written, stats.skipped, stats.removed
+        );
+    }
+
+    Ok(())
+}
+
+struct FileWriteStats {
+    written: usize,
+    skipped: usize,
+    removed: usize,
+}
+
+fn write_generated_output(
+    output: &gors::backend_rust::GeneratedOutput,
+    output_dir: &Path,
+) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
+    let timer = ProfileTimer::start("cli.file_writes");
     std::fs::create_dir_all(output_dir)?;
 
-    let prev_manifest =
-        gors::compiler::manifest::BuildManifest::load(std::path::Path::new(output_dir));
-
+    let prev_manifest = gors::compiler::manifest::BuildManifest::load(output_dir);
     let mut new_manifest = gors::compiler::manifest::BuildManifest::new();
-    let mut written = 0;
-    let mut skipped = 0;
+    let mut stats = FileWriteStats {
+        written: 0,
+        skipped: 0,
+        removed: 0,
+    };
 
     for (filename, source) in &output.files {
-        let file_path = std::path::Path::new(output_dir).join(filename);
+        let file_path = output_dir.join(filename);
         let current_hash = sha2_hash(source);
-
         let unchanged = prev_manifest
             .as_ref()
-            .and_then(|m| m.modules.get(filename))
-            .is_some_and(|entry| entry.content_hash == current_hash);
+            .is_some_and(|manifest| !manifest.needs_recompile(filename, &current_hash));
 
         if unchanged && file_path.exists() {
-            skipped += 1;
+            stats.skipped += 1;
         } else {
             std::fs::write(&file_path, source)?;
-            written += 1;
+            stats.written += 1;
         }
 
         new_manifest.modules.insert(
@@ -181,10 +240,22 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    new_manifest.save(std::path::Path::new(output_dir))?;
-    println!("Wrote {written} files to {output_dir} ({skipped} unchanged)");
+    if let Some(prev_manifest) = &prev_manifest {
+        for (filename, entry) in &prev_manifest.modules {
+            if output.files.contains_key(filename) {
+                continue;
+            }
+            let file_path = output_dir.join(&entry.output_file);
+            if file_path.is_file() {
+                std::fs::remove_file(&file_path)?;
+                stats.removed += 1;
+            }
+        }
+    }
 
-    Ok(())
+    new_manifest.save(output_dir)?;
+    drop(timer);
+    Ok(stats)
 }
 
 fn sha2_hash(content: &str) -> String {
@@ -195,33 +266,83 @@ fn sha2_hash(content: &str) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn run_cache_dir(
+    source_paths: &[String],
+    release: bool,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(if release {
+        b"release".as_slice()
+    } else {
+        b"debug".as_slice()
+    });
+    hasher.update(b"\0");
+    if let Ok(cwd) = std::env::current_dir() {
+        hasher.update(cwd.to_string_lossy().as_bytes());
+    }
+    for path in source_paths {
+        hasher.update(b"\0");
+        hasher.update(path.as_bytes());
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            hasher.update(b"\0");
+            hasher.update(canonical.to_string_lossy().as_bytes());
+        }
+    }
+    let digest = hasher.finalize();
+    let key: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(gors_cache_base()?.join("run").join(key))
+}
+
+fn gors_cache_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+        return Ok(PathBuf::from(path).join("gors"));
+    }
+    if let Some(path) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(path).join(".cache").join("gors"));
+    }
+    Ok(std::env::temp_dir().join("gors-cache"))
+}
+
 /// Split CLI arguments into source paths and program arguments.
 ///
 /// If the first argument ends with `.go`, all leading `.go` arguments are source
 /// files. Otherwise, the first argument is a directory/package path. Everything
 /// after the source paths is passed through to the compiled program.
 fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
+    if args.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
     if args.first().is_some_and(|a| a.ends_with(".go")) {
         let split = args
             .iter()
             .position(|a| !a.ends_with(".go"))
             .unwrap_or(args.len());
-        (args[..split].to_vec(), args[split..].to_vec())
+        (
+            args.get(..split).unwrap_or_default().to_vec(),
+            args.get(split..).unwrap_or_default().to_vec(),
+        )
     } else {
-        (vec![args[0].clone()], args[1..].to_vec())
+        (
+            args.first().cloned().into_iter().collect(),
+            args.get(1..).unwrap_or_default().to_vec(),
+        )
     }
 }
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let (source_paths, program_args) = split_run_args(&cmd.args);
 
+    let parse_timer = ProfileTimer::start("cli.parse");
     let program = match gors::parser::parse_program_files(&source_paths) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
-            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&source_paths[0]) {
+            let source_path = source_paths.first().cloned().unwrap_or_default();
+            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&source_path) {
                 (f, b)
             } else {
-                (source_paths[0].clone(), String::new())
+                (source_path, String::new())
             };
             let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
             print_error(&diagnostic);
@@ -232,13 +353,14 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    drop(parse_timer);
 
     let primary_file = program
         .main_package
         .files
         .first()
         .map(|(f, _)| f.clone())
-        .unwrap_or_else(|| source_paths[0].clone());
+        .unwrap_or_else(|| source_paths.first().cloned().unwrap_or_default());
 
     let compiled = match gors::compiler::compile_program_multi(program) {
         Ok(compiled) => compiled,
@@ -257,24 +379,28 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
 
     let output = gors::backend_rust::generate_multi(compiled)?;
 
-    let tmp_dir = tempfile::tempdir()?;
-    for (filename, source) in &output.files {
-        std::fs::write(tmp_dir.path().join(filename), source)?;
-    }
+    let cache_dir = run_cache_dir(&source_paths, cmd.release)?;
+    write_generated_output(&output, &cache_dir)?;
 
-    let src_path = tmp_dir.path().join("main.rs");
-    let bin_path = tmp_dir.path().join("main");
+    let src_path = cache_dir.join("main.rs");
+    let bin_path = cache_dir.join("main");
+    let incremental_path = cache_dir.join("rustc-incremental");
+    std::fs::create_dir_all(&incremental_path)?;
 
     let src_str = src_path.to_string_lossy();
     let bin_str = bin_path.to_string_lossy();
+    let incremental_str = incremental_path.to_string_lossy();
     let rustc_args = RustcArgs {
         src: &src_str,
         out: Some(&bin_str),
         emit: None,
         release: cmd.release,
+        incremental: Some(&incremental_str),
     };
 
+    let rustc_timer = ProfileTimer::start("cli.rustc");
     let rustc_status = Command::new("rustc").args(Vec::from(rustc_args)).status()?;
+    drop(rustc_timer);
 
     if !rustc_status.success() {
         std::process::exit(rustc_status.code().unwrap_or(1));
@@ -337,26 +463,38 @@ struct RustcArgs<'a> {
     out: Option<&'a str>,
     emit: Option<&'a str>,
     release: bool,
+    incremental: Option<&'a str>,
 }
 
-impl<'a> From<RustcArgs<'a>> for Vec<&'a str> {
+impl<'a> From<RustcArgs<'a>> for Vec<String> {
     fn from(args: RustcArgs<'a>) -> Self {
-        let mut flags = vec![args.src, "--edition=2021"];
+        let mut flags = vec![
+            args.src.to_string(),
+            "--edition=2024".to_string(),
+            "-D".to_string(),
+            "unused_imports".to_string(),
+            "-D".to_string(),
+            "unused_macros".to_string(),
+        ];
 
         if let Some(emit) = args.emit {
-            flags.extend(["--emit", emit]);
+            flags.extend(["--emit".to_string(), emit.to_string()]);
         }
 
         if let Some(out) = args.out {
-            flags.extend(["-o", out]);
+            flags.extend(["-o".to_string(), out.to_string()]);
+        }
+
+        if let Some(incremental) = args.incremental {
+            flags.extend(["-C".to_string(), format!("incremental={incremental}")]);
         }
 
         if args.release {
             flags.extend([
-                "-Ccodegen-units=1",
-                "-Clto=fat",
-                "-Copt-level=3",
-                "-Ctarget-cpu=native",
+                "-Ccodegen-units=1".to_string(),
+                "-Clto=fat".to_string(),
+                "-Copt-level=3".to_string(),
+                "-Ctarget-cpu=native".to_string(),
             ]);
         }
 
@@ -365,8 +503,8 @@ impl<'a> From<RustcArgs<'a>> for Vec<&'a str> {
 }
 
 impl<'a> IntoIterator for RustcArgs<'a> {
-    type Item = &'a str;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
 
     fn into_iter(self) -> Self::IntoIter {
         Vec::from(self).into_iter()

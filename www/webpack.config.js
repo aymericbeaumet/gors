@@ -51,50 +51,72 @@ class AssetManifestPlugin {
   }
 }
 
-module.exports = {
-  entry: './main.js',
-  output: {
-    filename: 'bundle-[contenthash:16].js',
-    path: path.resolve(__dirname, 'dist'),
-    clean: true,
-  },
-  resolve: {
-    fallback: {
-      fs: false,
-      path: false,
+module.exports = (_, argv) => {
+  const isDev = argv.mode === 'development';
+
+  return {
+    entry: './src/main.js',
+    output: {
+      filename: 'bundle-[contenthash:16].js',
+      path: path.resolve(__dirname, 'dist'),
+      clean: true,
     },
-  },
-  module: {
-    rules: [
-      {
-        test: /\.css$/i,
-        use: ['style-loader', 'css-loader'],
+    resolve: {
+      extensions: ['.mjs', '.js', '.svelte'],
+      mainFields: ['svelte', 'browser', 'module', 'main'],
+      conditionNames: ['svelte', 'browser', 'import'],
+      fallback: {
+        fs: false,
+        path: false,
       },
-      {
-        test: /\.ttf$/,
-        use: ['file-loader'],
-      },
+    },
+    module: {
+      rules: [
+        {
+          test: /\.svelte$/,
+          use: {
+            loader: 'svelte-loader',
+            options: {
+              emitCss: false,
+              hotReload: isDev,
+            },
+          },
+        },
+        {
+          test: /\.css$/i,
+          use: ['style-loader', 'css-loader'],
+        },
+        {
+          test: /\.(ttf|woff2?)$/,
+          type: 'asset/resource',
+        },
+        {
+          test: /node_modules\/svelte\/.*\.mjs$/,
+          resolve: { fullySpecified: false },
+        },
+      ],
+    },
+    plugins: [
+      new CopyWebpackPlugin({ patterns: copyPatterns }),
+      new AssetManifestPlugin(),
+      new FaviconsWebpackPlugin('./favicon.png'),
+      new HtmlWebpackPlugin({ template: 'index.html' }),
+      new MonacoWebpackPlugin(),
     ],
-  },
-  plugins: [
-    new CopyWebpackPlugin({ patterns: copyPatterns }),
-    new AssetManifestPlugin(),
-    new FaviconsWebpackPlugin('./favicon.png'),
-    new HtmlWebpackPlugin({ template: 'index.html' }),
-    new MonacoWebpackPlugin(),
-  ],
-  devServer: {
-    static: {
-      directory: path.resolve(__dirname, 'dist'),
+    devServer: {
+      static: {
+        directory: path.resolve(__dirname, 'dist'),
+      },
+      compress: true,
+      port: 8080,
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+      hot: true,
     },
-    compress: true,
-    port: 8080,
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
+    experiments: {
+      asyncWebAssembly: true,
     },
-  },
-  experiments: {
-    asyncWebAssembly: true,
-  },
+  };
 };

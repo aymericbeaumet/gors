@@ -100,8 +100,7 @@ impl SourceMapTracker {
 
                 if let Some(matching_tokens) = name_to_tokens.get(rust_name) {
                     let idx = name_indices.entry(rust_name.to_string()).or_insert(0);
-                    if *idx < matching_tokens.len() {
-                        let token = matching_tokens[*idx];
+                    if let Some(token) = matching_tokens.get(*idx) {
                         // Store the Go name in the source map (not the Rust name)
                         let name_idx = builder.add_name(go_name);
                         builder.add_raw(
@@ -157,9 +156,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
     let chars: Vec<char> = rust_source.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        let ch = chars[i];
-
+    while let Some(ch) = chars.get(i).copied() {
         // Skip whitespace (but track position)
         if ch.is_whitespace() {
             if ch == '\n' {
@@ -173,18 +170,24 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
         }
 
         // Skip comments
-        if ch == '/' && i + 1 < chars.len() {
-            if chars[i + 1] == '/' {
-                while i < chars.len() && chars[i] != '\n' {
+        if ch == '/' {
+            if chars.get(i + 1).is_some_and(|next| *next == '/') {
+                while chars.get(i).is_some_and(|current| *current != '\n') {
                     i += 1;
                     column += 1;
                 }
                 continue;
-            } else if chars[i + 1] == '*' {
+            } else if chars.get(i + 1).is_some_and(|next| *next == '*') {
                 i += 2;
                 column += 2;
-                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    if chars[i] == '\n' {
+                while let Some(current) = chars.get(i).copied() {
+                    if chars
+                        .get(i + 1)
+                        .is_some_and(|next| current == '*' && *next == '/')
+                    {
+                        break;
+                    }
+                    if current == '\n' {
                         line += 1;
                         column = 1;
                     } else {
@@ -192,7 +195,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                     }
                     i += 1;
                 }
-                if i + 1 < chars.len() {
+                if chars.get(i + 1).is_some() {
                     i += 2;
                     column += 2;
                 }
@@ -206,8 +209,11 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
         // Identifier or keyword
         if ch.is_alphabetic() || ch == '_' {
             let mut text = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                text.push(chars[i]);
+            while let Some(current) = chars.get(i).copied() {
+                if !(current.is_alphanumeric() || current == '_') {
+                    break;
+                }
+                text.push(current);
                 column += 1;
                 i += 1;
             }
@@ -222,27 +228,32 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
         // Number literal
         if ch.is_ascii_digit() {
             let mut text = String::new();
-            while i < chars.len()
-                && (chars[i].is_ascii_digit()
-                    || chars[i] == '.'
-                    || chars[i] == 'x'
-                    || chars[i] == 'X'
-                    || chars[i] == 'b'
-                    || chars[i] == 'B'
-                    || chars[i] == 'o'
-                    || chars[i] == 'O'
-                    || chars[i] == 'e'
-                    || chars[i] == 'E'
-                    || chars[i] == '_'
-                    || chars[i].is_ascii_hexdigit())
-            {
-                text.push(chars[i]);
+            while let Some(current) = chars.get(i).copied() {
+                if !(current.is_ascii_digit()
+                    || current == '.'
+                    || current == 'x'
+                    || current == 'X'
+                    || current == 'b'
+                    || current == 'B'
+                    || current == 'o'
+                    || current == 'O'
+                    || current == 'e'
+                    || current == 'E'
+                    || current == '_'
+                    || current.is_ascii_hexdigit())
+                {
+                    break;
+                }
+                text.push(current);
                 column += 1;
                 i += 1;
             }
             // Handle type suffixes
-            while i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
-                text.push(chars[i]);
+            while let Some(current) = chars.get(i).copied() {
+                if !(current.is_alphabetic() || current == '_') {
+                    break;
+                }
+                text.push(current);
                 column += 1;
                 i += 1;
             }
@@ -260,23 +271,29 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
             text.push(ch);
             column += 1;
             i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' && i + 1 < chars.len() {
-                    text.push(chars[i]);
+            while chars.get(i).is_some_and(|current| *current != '"') {
+                let Some(current) = chars.get(i).copied() else {
+                    break;
+                };
+                if current == '\\' && chars.get(i + 1).is_some() {
+                    text.push(current);
                     column += 1;
                     i += 1;
                 }
-                if chars[i] == '\n' {
+                let Some(current) = chars.get(i).copied() else {
+                    break;
+                };
+                if current == '\n' {
                     line += 1;
                     column = 1;
                 } else {
                     column += 1;
                 }
-                text.push(chars[i]);
+                text.push(current);
                 i += 1;
             }
-            if i < chars.len() {
-                text.push(chars[i]);
+            if let Some(current) = chars.get(i).copied() {
+                text.push(current);
                 column += 1;
                 i += 1;
             }
@@ -294,18 +311,24 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
             text.push(ch);
             column += 1;
             i += 1;
-            while i < chars.len() && chars[i] != '\'' {
-                if chars[i] == '\\' && i + 1 < chars.len() {
-                    text.push(chars[i]);
+            while chars.get(i).is_some_and(|current| *current != '\'') {
+                let Some(current) = chars.get(i).copied() else {
+                    break;
+                };
+                if current == '\\' && chars.get(i + 1).is_some() {
+                    text.push(current);
                     column += 1;
                     i += 1;
                 }
-                text.push(chars[i]);
+                let Some(current) = chars.get(i).copied() else {
+                    break;
+                };
+                text.push(current);
                 column += 1;
                 i += 1;
             }
-            if i < chars.len() {
-                text.push(chars[i]);
+            if let Some(current) = chars.get(i).copied() {
+                text.push(current);
                 column += 1;
                 i += 1;
             }
@@ -326,6 +349,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -383,12 +407,12 @@ mod tests {
         let source = "fn main() {}";
         let tokens = extract_tokens(source);
 
-        let fn_token = &tokens[0];
+        let fn_token = tokens.get(0).unwrap();
         assert_eq!(fn_token.text, "fn");
         assert_eq!(fn_token.start_line, 1);
         assert_eq!(fn_token.start_column, 1);
 
-        let main_token = &tokens[1];
+        let main_token = tokens.get(1).unwrap();
         assert_eq!(main_token.text, "main");
         assert_eq!(main_token.start_line, 1);
         assert_eq!(main_token.start_column, 4);

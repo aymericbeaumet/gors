@@ -16,11 +16,28 @@ impl SimplifyReturn {
 
             if let syn::Expr::Return(ret) = expr {
                 if let Some(expr) = ret.expr.take() {
-                    *last = syn::Stmt::Expr(*expr, None);
+                    let mut expr = *expr;
+                    clone_owned_field_return(&mut expr);
+                    *last = syn::Stmt::Expr(expr, None);
                 }
             }
         }
     }
+}
+
+fn clone_owned_field_return(expr: &mut syn::Expr) {
+    let syn::Expr::Field(field) = expr else {
+        return;
+    };
+    let syn::Member::Named(member) = &field.member else {
+        return;
+    };
+    if !matches!(member.to_string().as_str(), "msg" | "err" | "errs") {
+        return;
+    }
+
+    let inner = expr.clone();
+    *expr = syn::parse_quote! { (#inner).clone() };
 }
 
 impl VisitMut for SimplifyReturn {

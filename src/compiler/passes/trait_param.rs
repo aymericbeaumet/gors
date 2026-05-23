@@ -30,25 +30,13 @@ impl VisitMut for TraitParam {
     fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
         if let syn::FnArg::Typed(pat_type) = arg {
             if let syn::Type::Path(type_path) = &*pat_type.ty {
-                if type_path.path.segments.len() == 1 {
-                    let seg = &type_path.path.segments[0];
+                if let Some(seg) = type_path.path.segments.first()
+                    && type_path.path.segments.len() == 1
+                {
                     let name = seg.ident.to_string();
                     if self.trait_names.contains(&name) {
-                        // Replace `Shape` with `impl Shape`
                         let trait_path = type_path.path.clone();
-                        *pat_type.ty = syn::Type::ImplTrait(syn::TypeImplTrait {
-                            impl_token: <syn::Token![impl]>::default(),
-                            bounds: {
-                                let mut bounds = syn::punctuated::Punctuated::new();
-                                bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
-                                    paren_token: None,
-                                    modifier: syn::TraitBoundModifier::None,
-                                    lifetimes: None,
-                                    path: trait_path,
-                                }));
-                                bounds
-                            },
-                        });
+                        *pat_type.ty = syn::parse_quote! { &mut dyn #trait_path };
                     }
                 }
             }

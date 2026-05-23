@@ -38,8 +38,7 @@
 //! let rust_source = backend_rust::generate(rust_ast).unwrap();
 //! ```
 
-// Clippy lints are configured at workspace level in the root Cargo.toml
-#![allow(dead_code)] // Some code is intentionally unused for future features
+// Lints are configured at workspace level in the root Cargo.toml.
 
 /// Go Abstract Syntax Tree data structures.
 ///
@@ -81,15 +80,14 @@ pub mod scanner;
 /// positions in Go source code and generated Rust output.
 pub mod mapping;
 
-/// Hand-written Rust implementations of Go standard library packages.
+/// Embedded Go standard library source packages.
 ///
-/// Provides pre-built Rust modules for Go stdlib packages like `fmt`
-/// that are injected into the output during compilation.
-pub mod stdlib;
+/// Provides Go SDK source files that are transpiled into Rust modules on demand
+/// during compilation.
+pub mod go_stdlib;
 
 /// Go token definitions and source positions.
 ///
 /// Contains token types matching the Go specification and
 /// position tracking for source locations.
 pub mod token;
-

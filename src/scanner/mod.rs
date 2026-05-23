@@ -785,17 +785,16 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    const fn find_line_end(&self) -> bool {
+    fn find_line_end(&self) -> bool {
         let buffer = self.buffer.as_bytes();
         let mut in_comment = true;
 
         let mut i = self.offset;
-        let max = self.buffer.len();
-        while i < max {
-            let c = buffer[i] as char;
+        while let Some(byte) = buffer.get(i) {
+            let c = *byte as char;
 
-            if i < max - 1 {
-                let n = buffer[i + 1] as char;
+            if let Some(next) = buffer.get(i + 1) {
+                let n = *next as char;
 
                 if !in_comment && c == '/' && n == '/' {
                     return true;
@@ -1141,12 +1140,12 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1, column 13), IDENT "y", SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
-        assert_eq!(tokens[1].2, Token::COMMENT);
-        assert_eq!(tokens[2], (1, 13, Token::SEMICOLON, "\n")); // Position at first newline
-        assert_eq!(tokens[3].2, Token::IDENT);
-        assert_eq!(tokens[4].2, Token::SEMICOLON); // Semicolon after y at EOF
-        assert_eq!(tokens[5].2, Token::EOF);
+        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
+        assert_eq!(*tokens.get(2).unwrap(), (1, 13, Token::SEMICOLON, "\n")); // Position at first newline
+        assert_eq!(tokens.get(3).unwrap().2, Token::IDENT);
+        assert_eq!(tokens.get(4).unwrap().2, Token::SEMICOLON); // Semicolon after y at EOF
+        assert_eq!(tokens.get(5).unwrap().2, Token::EOF);
     }
 
     #[test]
@@ -1161,11 +1160,11 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1), RPAREN, SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
-        assert_eq!(tokens[1].2, Token::COMMENT);
-        assert_eq!(tokens[2].0, 1); // Semicolon at line 1
-        assert_eq!(tokens[2].2, Token::SEMICOLON);
-        assert_eq!(tokens[3].2, Token::RPAREN);
+        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
+        assert_eq!(tokens.get(2).unwrap().0, 1); // Semicolon at line 1
+        assert_eq!(tokens.get(2).unwrap().2, Token::SEMICOLON);
+        assert_eq!(tokens.get(3).unwrap().2, Token::RPAREN);
     }
 
     #[test]
@@ -1181,11 +1180,11 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON, IDENT "y", SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(tokens[0], (1, 1, Token::IDENT, "x"));
-        assert_eq!(tokens[1].2, Token::COMMENT);
-        assert_eq!(tokens[2].2, Token::SEMICOLON);
-        assert_eq!(tokens[3].2, Token::IDENT);
-        assert_eq!(tokens[4].2, Token::SEMICOLON); // Semicolon after y at EOF
-        assert_eq!(tokens[5].2, Token::EOF);
+        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
+        assert_eq!(tokens.get(2).unwrap().2, Token::SEMICOLON);
+        assert_eq!(tokens.get(3).unwrap().2, Token::IDENT);
+        assert_eq!(tokens.get(4).unwrap().2, Token::SEMICOLON); // Semicolon after y at EOF
+        assert_eq!(tokens.get(5).unwrap().2, Token::EOF);
     }
 }

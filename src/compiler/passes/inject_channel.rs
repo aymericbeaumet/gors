@@ -8,7 +8,6 @@ pub fn pass(file: &mut syn::File) {
     if detector.found {
         // Inject the gors_channel module at the top of the file
         let channel_mod: syn::Item = syn::parse_quote! {
-            #[allow(dead_code)]
             mod gors_channel {
                 use std::sync::{Arc, Mutex, Condvar};
                 use std::collections::VecDeque;
@@ -26,7 +25,7 @@ pub fn pass(file: &mut syn::File) {
 
                 impl<T> Clone for GoChan<T> {
                     fn clone(&self) -> Self {
-                        let mut lock = self.inner.0.lock().unwrap();
+                        let mut lock = self.inner.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         lock.senders += 1;
                         drop(lock);
                         GoChan {
@@ -53,16 +52,16 @@ pub fn pass(file: &mut syn::File) {
 
                     pub fn send(&self, value: T) {
                         let (ref mutex, ref recv_cvar, ref send_cvar) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         if inner.capacity > 0 {
                             // Buffered: wait until there's room
                             while inner.buffer.len() >= inner.capacity && !inner.closed {
-                                inner = send_cvar.wait(inner).unwrap();
+                                inner = send_cvar.wait(inner).unwrap_or_else(|poisoned| poisoned.into_inner());
                             }
                         } else {
                             // Unbuffered: wait until buffer is empty (previous value consumed)
                             while !inner.buffer.is_empty() && !inner.closed {
-                                inner = send_cvar.wait(inner).unwrap();
+                                inner = send_cvar.wait(inner).unwrap_or_else(|poisoned| poisoned.into_inner());
                             }
                         }
                         if !inner.closed {
@@ -71,22 +70,25 @@ pub fn pass(file: &mut syn::File) {
                         }
                     }
 
-                    pub fn recv(&self) -> T {
+                    pub fn recv(&self) -> T where T: Default {
                         let (ref mutex, ref recv_cvar, ref send_cvar) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         while inner.buffer.is_empty() && !inner.closed {
-                            inner = recv_cvar.wait(inner).unwrap();
+                            inner = recv_cvar.wait(inner).unwrap_or_else(|poisoned| poisoned.into_inner());
                         }
-                        let val = inner.buffer.pop_front().expect("channel recv on closed empty channel");
-                        send_cvar.notify_one();
-                        val
+                        if let Some(val) = inner.buffer.pop_front() {
+                            send_cvar.notify_one();
+                            val
+                        } else {
+                            T::default()
+                        }
                     }
 
                     pub fn recv_with_ok(&self) -> (T, bool) where T: Default {
                         let (ref mutex, ref recv_cvar, ref send_cvar) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         while inner.buffer.is_empty() && !inner.closed {
-                            inner = recv_cvar.wait(inner).unwrap();
+                            inner = recv_cvar.wait(inner).unwrap_or_else(|poisoned| poisoned.into_inner());
                         }
                         if let Some(val) = inner.buffer.pop_front() {
                             send_cvar.notify_one();
@@ -98,7 +100,7 @@ pub fn pass(file: &mut syn::File) {
 
                     pub fn try_recv(&self) -> Result<T, ()> {
                         let (ref mutex, _, ref send_cvar) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         if let Some(val) = inner.buffer.pop_front() {
                             send_cvar.notify_one();
                             Ok(val)
@@ -109,7 +111,7 @@ pub fn pass(file: &mut syn::File) {
 
                     pub fn try_send(&self, value: T) -> Result<(), T> {
                         let (ref mutex, ref recv_cvar, _) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         if inner.closed {
                             return Err(value);
                         }
@@ -134,7 +136,7 @@ pub fn pass(file: &mut syn::File) {
 
                     pub fn close(&self) {
                         let (ref mutex, ref recv_cvar, ref send_cvar) = *self.inner;
-                        let mut inner = mutex.lock().unwrap();
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         inner.closed = true;
                         recv_cvar.notify_all();
                         send_cvar.notify_all();

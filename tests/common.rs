@@ -9,7 +9,7 @@
 //! - `GORS_TEST_FILTER`: Only test files matching this substring
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -175,7 +175,7 @@ pub fn gors_bin() -> &'static PathBuf {
     GORS_BIN.get_or_init(|| {
         // Build in release mode for accurate timing comparisons
         let status = std::process::Command::new("cargo")
-            .args(["build", "--release", "-p", "gors", "--bin", "gors"])
+            .args(["build", "--release", "-p", "gors-cli", "--bin", "gors"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
             .expect("Failed to build gors");
@@ -186,6 +186,30 @@ pub fn gors_bin() -> &'static PathBuf {
 
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/gors")
     })
+}
+
+/// Discover all program directories in fixtures/go_programs that have main.go.
+pub fn discover_program_dirs() -> Vec<PathBuf> {
+    let config = TestConfig::from_env();
+    let programs_dir = fixtures_dir().join("go_programs");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&programs_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {}", programs_dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("main.go").exists())
+        .filter(|p| {
+            config.filter.as_ref().is_none_or(|filter| {
+                p.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(filter))
+            })
+        })
+        .collect();
+    dirs.sort();
+    if let Some(limit) = config.limit {
+        dirs.truncate(limit);
+    }
+    dirs
 }
 
 /// Collect all `.go` files from a directory recursively.
@@ -217,7 +241,7 @@ fn collect_go_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 
         if path.is_dir() {
             collect_go_files_recursive(&path, files);
-        } else if path.extension().map_or(false, |ext| ext == "go") {
+        } else if path.extension().is_some_and(|ext| ext == "go") {
             files.push(path);
         }
     }
@@ -510,7 +534,7 @@ pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig
         .iter()
         .filter(|f| {
             if let Some(ref filter) = config.filter {
-                f.to_str().map_or(false, |s| s.contains(filter))
+                f.to_str().is_some_and(|s| s.contains(filter))
             } else {
                 true
             }
@@ -544,7 +568,7 @@ pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig
             let result = test_single_file(command, file, go_bin, gors);
             if config.verbose {
                 let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                if count % 100 == 0 {
+                if count.is_multiple_of(100) {
                     eprintln!("  Progress: {}/{}", count, total_files);
                 }
             }
@@ -560,7 +584,7 @@ pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig
                 let result = test_must_error_file(file, go_bin, gors);
                 if config.verbose {
                     let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if count % 100 == 0 {
+                    if count.is_multiple_of(100) {
                         eprintln!("  Progress: {}/{}", count, total_files);
                     }
                 }

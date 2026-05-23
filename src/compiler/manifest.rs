@@ -3,10 +3,16 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 const MANIFEST_FILENAME: &str = ".gors_manifest.json";
+const MANIFEST_VERSION: u32 = 2;
+const STDLIB_VERSION: &str = "go1.24.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BuildManifest {
     pub version: u32,
+    #[serde(default)]
+    pub compiler_version: String,
+    #[serde(default)]
+    pub stdlib_version: String,
     pub modules: BTreeMap<String, ModuleEntry>,
 }
 
@@ -19,7 +25,9 @@ pub struct ModuleEntry {
 impl BuildManifest {
     pub fn new() -> Self {
         Self {
-            version: 1,
+            version: MANIFEST_VERSION,
+            compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+            stdlib_version: STDLIB_VERSION.to_string(),
             modules: BTreeMap::new(),
         }
     }
@@ -38,6 +46,12 @@ impl BuildManifest {
     }
 
     pub fn needs_recompile(&self, import_path: &str, current_hash: &str) -> bool {
+        if self.version != MANIFEST_VERSION
+            || self.compiler_version != env!("CARGO_PKG_VERSION")
+            || self.stdlib_version != STDLIB_VERSION
+        {
+            return true;
+        }
         match self.modules.get(import_path) {
             Some(entry) => entry.content_hash != current_hash,
             None => true,
@@ -83,6 +97,20 @@ mod tests {
     }
 
     #[test]
+    fn needs_recompile_returns_true_for_old_manifest_metadata() {
+        let mut manifest = BuildManifest::new();
+        manifest.version = 1;
+        manifest.modules.insert(
+            "example/foo".to_string(),
+            ModuleEntry {
+                content_hash: "abc123".to_string(),
+                output_file: "example__foo.rs".to_string(),
+            },
+        );
+        assert!(manifest.needs_recompile("example/foo", "abc123"));
+    }
+
+    #[test]
     fn round_trip_save_and_load() {
         let tmp = tempfile::tempdir().unwrap();
         let mut manifest = BuildManifest::new();
@@ -95,7 +123,9 @@ mod tests {
         );
         manifest.save(tmp.path()).unwrap();
         let loaded = BuildManifest::load(tmp.path()).unwrap();
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.compiler_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(loaded.stdlib_version, STDLIB_VERSION);
         assert_eq!(loaded.modules.len(), 1);
         assert!(!loaded.needs_recompile("fmt", "aaa"));
     }

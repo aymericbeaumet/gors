@@ -11,10 +11,14 @@ impl VisitMut for TypeConversion {
         if let syn::Expr::Call(expr_call) = expr {
             if let syn::Expr::Path(path) = &*expr_call.func {
                 let segments = &path.path.segments;
-                if segments.len() == 1 && is_type(&segments[0].ident) {
+                if let Some(segment) = segments.first()
+                    && segments.len() == 1
+                    && is_type(&segment.ident)
+                    && let Some(arg) = expr_call.args.first()
+                {
                     *expr = syn::Expr::Cast(syn::ExprCast {
                         attrs: vec![],
-                        expr: Box::new(expr_call.args[0].clone()),
+                        expr: Box::new(parenthesize_expr(arg.clone())),
                         as_token: <syn::Token![as]>::default(),
                         ty: Box::new(syn::Type::Path(syn::TypePath {
                             path: syn::Path {
@@ -23,13 +27,21 @@ impl VisitMut for TypeConversion {
                             },
                             qself: None,
                         })),
-                    })
+                    });
                 }
             }
         }
 
         visit_mut::visit_expr_mut(self, expr);
     }
+}
+
+fn parenthesize_expr(expr: syn::Expr) -> syn::Expr {
+    syn::Expr::Paren(syn::ExprParen {
+        attrs: vec![],
+        paren_token: syn::token::Paren::default(),
+        expr: Box::new(expr),
+    })
 }
 
 fn is_type(ident: &syn::Ident) -> bool {

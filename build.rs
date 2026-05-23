@@ -1,5 +1,3 @@
-#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
-
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -9,71 +7,76 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const GO_VERSION: &str = "1.24.3";
+const STDLIB_ARCHIVE_SCHEMA: &str = "go1.24.3-stdlib-all-internal-v3";
 
-fn go_arch() -> &'static str {
+type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+fn build_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::other(message.into())
+}
+
+fn go_arch() -> BuildResult<&'static str> {
     match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        arch => panic!("unsupported arch for Go SDK download: {arch}"),
+        "x86_64" => Ok("amd64"),
+        "aarch64" => Ok("arm64"),
+        arch => Err(build_error(format!("unsupported arch for Go SDK download: {arch}")).into()),
     }
 }
 
-fn go_os() -> &'static str {
+fn go_os() -> BuildResult<&'static str> {
     match std::env::consts::OS {
-        "macos" => "darwin",
-        "linux" => "linux",
-        os => panic!("unsupported OS for Go SDK download: {os}"),
+        "macos" => Ok("darwin"),
+        "linux" => Ok("linux"),
+        os => Err(build_error(format!("unsupported OS for Go SDK download: {os}")).into()),
     }
 }
 
-fn download_url() -> String {
-    format!(
+fn download_url() -> BuildResult<String> {
+    Ok(format!(
         "https://dl.google.com/go/go{GO_VERSION}.{}-{}.tar.gz",
-        go_os(),
-        go_arch()
-    )
+        go_os()?,
+        go_arch()?
+    ))
 }
 
-fn checksum_url() -> String {
-    format!(
+fn checksum_url() -> BuildResult<String> {
+    Ok(format!(
         "https://dl.google.com/go/go{GO_VERSION}.{}-{}.tar.gz.sha256",
-        go_os(),
-        go_arch()
-    )
+        go_os()?,
+        go_arch()?
+    ))
 }
 
-fn download_bytes(url: &str) -> Vec<u8> {
-    let response =
-        reqwest::blocking::get(url).unwrap_or_else(|e| panic!("failed to download {url}: {e}"));
+fn download_bytes(url: &str) -> BuildResult<Vec<u8>> {
+    let response = reqwest::blocking::get(url)?;
     if !response.status().is_success() {
-        panic!("HTTP {} for {url}", response.status());
+        return Err(build_error(format!("HTTP {} for {url}", response.status())).into());
     }
-    response
-        .bytes()
-        .unwrap_or_else(|e| panic!("failed to read response body from {url}: {e}"))
-        .to_vec()
+    Ok(response.bytes()?.to_vec())
 }
 
-fn verify_checksum(data: &[u8], expected_hex: &str) {
+fn verify_checksum(data: &[u8], expected_hex: &str) -> BuildResult<()> {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let hash = hasher.finalize();
     let actual_hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(
-        actual_hex, expected_hex,
-        "checksum mismatch: expected {expected_hex}, got {actual_hex}"
-    );
+    if actual_hex != expected_hex {
+        return Err(build_error(format!(
+            "checksum mismatch: expected {expected_hex}, got {actual_hex}"
+        ))
+        .into());
+    }
+    Ok(())
 }
 
-fn cache_dir() -> PathBuf {
-    let cargo_home = std::env::var("CARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .expect("cannot determine home directory")
-                .join(".cargo")
-        });
-    cargo_home.join("gors-cache")
+fn cache_dir() -> BuildResult<PathBuf> {
+    let cargo_home = match std::env::var("CARGO_HOME") {
+        Ok(path) => PathBuf::from(path),
+        Err(_) => dirs::home_dir()
+            .ok_or_else(|| build_error("cannot determine home directory"))?
+            .join(".cargo"),
+    };
+    Ok(cargo_home.join("gors-cache"))
 }
 
 fn should_include_file(path: &str) -> bool {
@@ -117,7 +120,6 @@ fn extract_stdlib_from_sdk(sdk_path: &Path) -> BTreeMap<String, Vec<(String, Str
                 if name_str == "testdata"
                     || name_str == "vendor"
                     || name_str == "cmd"
-                    || name_str == "internal"
                     || name_str.starts_with('.')
                 {
                     continue;
@@ -150,12 +152,14 @@ fn extract_stdlib_from_sdk(sdk_path: &Path) -> BTreeMap<String, Vec<(String, Str
     packages
 }
 
-fn extract_stdlib_from_tarball(tarball: &[u8]) -> BTreeMap<String, Vec<(String, String)>> {
+fn extract_stdlib_from_tarball(
+    tarball: &[u8],
+) -> BuildResult<BTreeMap<String, Vec<(String, String)>>> {
     let decoder = GzDecoder::new(tarball);
     let mut archive = tar::Archive::new(decoder);
     let mut packages: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
 
-    for entry in archive.entries().expect("failed to read tar entries") {
+    for entry in archive.entries()? {
         let mut entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -175,10 +179,6 @@ fn extract_stdlib_from_tarball(tarball: &[u8]) -> BTreeMap<String, Vec<(String, 
             None => continue,
         };
 
-        if pkg_path.contains("/internal") || pkg_path.starts_with("internal") {
-            continue;
-        }
-
         let mut content = String::new();
         if entry.read_to_string(&mut content).is_ok() {
             packages
@@ -188,12 +188,14 @@ fn extract_stdlib_from_tarball(tarball: &[u8]) -> BTreeMap<String, Vec<(String, 
         }
     }
 
-    packages
+    Ok(packages)
 }
 
-fn create_stdlib_archive(packages: &BTreeMap<String, Vec<(String, String)>>, output_path: &Path) {
-    let file = std::fs::File::create(output_path)
-        .unwrap_or_else(|e| panic!("failed to create {}: {e}", output_path.display()));
+fn create_stdlib_archive(
+    packages: &BTreeMap<String, Vec<(String, String)>>,
+    output_path: &Path,
+) -> BuildResult<()> {
+    let file = std::fs::File::create(output_path)?;
     let encoder = GzEncoder::new(file, Compression::best());
     let mut builder = tar::Builder::new(encoder);
 
@@ -205,58 +207,70 @@ fn create_stdlib_archive(packages: &BTreeMap<String, Vec<(String, String)>>, out
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            builder
-                .append_data(&mut header, &entry_path, data)
-                .unwrap_or_else(|e| panic!("failed to add {entry_path} to archive: {e}"));
+            builder.append_data(&mut header, &entry_path, data)?;
         }
     }
 
-    builder
-        .finish()
-        .unwrap_or_else(|e| panic!("failed to finish archive: {e}"));
+    builder.finish()?;
+    Ok(())
 }
 
-fn main() {
+fn create_stdlib_index(
+    packages: &BTreeMap<String, Vec<(String, String)>>,
+    output_path: &Path,
+) -> BuildResult<()> {
+    let mut content = String::new();
+    for pkg_path in packages.keys() {
+        content.push_str(pkg_path);
+        content.push('\n');
+    }
+    std::fs::write(output_path, content)?;
+    Ok(())
+}
+
+fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
 
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     let archive_path = out_dir.join("go_stdlib.tar.gz");
+    let index_path = out_dir.join("go_stdlib.index");
+    let marker_path = out_dir.join("go_stdlib.version");
 
-    if archive_path.exists() {
-        return;
+    if archive_path.exists()
+        && index_path.exists()
+        && std::fs::read_to_string(&marker_path).is_ok_and(|s| s == STDLIB_ARCHIVE_SCHEMA)
+    {
+        return Ok(());
     }
 
     let packages = if let Ok(sdk_path) = std::env::var("GORS_GO_SDK_PATH") {
         eprintln!("Using Go SDK from GORS_GO_SDK_PATH={sdk_path}");
         extract_stdlib_from_sdk(Path::new(&sdk_path))
     } else {
-        let cache = cache_dir();
+        let cache = cache_dir()?;
         let cached_tarball = cache.join(format!("go{GO_VERSION}.tar.gz"));
 
         let tarball_data = if cached_tarball.exists() {
             eprintln!("Using cached Go SDK tarball: {}", cached_tarball.display());
-            std::fs::read(&cached_tarball)
-                .unwrap_or_else(|e| panic!("failed to read cached tarball: {e}"))
+            std::fs::read(&cached_tarball)?
         } else {
             eprintln!("Downloading Go {GO_VERSION} SDK...");
-            let url = download_url();
-            let data = download_bytes(&url);
+            let url = download_url()?;
+            let data = download_bytes(&url)?;
 
             eprintln!("Verifying checksum...");
-            let checksum_bytes = download_bytes(&checksum_url());
+            let checksum_bytes = download_bytes(&checksum_url()?)?;
             let expected = String::from_utf8_lossy(&checksum_bytes).trim().to_string();
-            verify_checksum(&data, &expected);
+            verify_checksum(&data, &expected)?;
 
-            std::fs::create_dir_all(&cache)
-                .unwrap_or_else(|e| panic!("failed to create cache dir: {e}"));
-            std::fs::write(&cached_tarball, &data)
-                .unwrap_or_else(|e| panic!("failed to cache tarball: {e}"));
+            std::fs::create_dir_all(&cache)?;
+            std::fs::write(&cached_tarball, &data)?;
             eprintln!("Cached Go SDK tarball at {}", cached_tarball.display());
             data
         };
 
-        extract_stdlib_from_tarball(&tarball_data)
+        extract_stdlib_from_tarball(&tarball_data)?
     };
 
     eprintln!(
@@ -265,6 +279,9 @@ fn main() {
         packages.values().map(|v| v.len()).sum::<usize>()
     );
 
-    create_stdlib_archive(&packages, &archive_path);
+    create_stdlib_archive(&packages, &archive_path)?;
+    create_stdlib_index(&packages, &index_path)?;
+    std::fs::write(&marker_path, STDLIB_ARCHIVE_SCHEMA)?;
     eprintln!("Created stdlib archive at {}", archive_path.display());
+    Ok(())
 }

@@ -14,7 +14,10 @@ impl VisitMut for InlineErrors {
             if let syn::Expr::Path(path) = call.func.as_ref() {
                 let sgmts = &path.path.segments;
                 // errors.New("msg") -> "msg".to_string()
-                if sgmts.len() == 2 && sgmts[0].ident == "errors" && sgmts[1].ident == "New" {
+                let is_errors_new = sgmts.len() == 2
+                    && sgmts.first().is_some_and(|seg| seg.ident == "errors")
+                    && sgmts.iter().nth(1).is_some_and(|seg| seg.ident == "New");
+                if is_errors_new {
                     if let Some(first_arg) = call.args.first() {
                         let arg = first_arg.clone();
                         *expr = syn::parse_quote! { #arg.to_string() };

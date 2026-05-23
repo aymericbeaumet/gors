@@ -3,7 +3,7 @@ import js from "@eslint/js";
 export default [
   js.configs.recommended,
   {
-    ignores: ["dist/", "wasm/pkg/", "v86/"],
+    ignores: ["dist/", "wasm/pkg/", "v86/", "src/*.svelte"],
   },
   {
     files: ["webpack.config.js"],

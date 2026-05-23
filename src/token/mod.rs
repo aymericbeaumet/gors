@@ -212,10 +212,7 @@ impl Token {
             EQL | NEQ | LSS | LEQ | GTR | GEQ => 3,
             LAND => 2,
             LOR => 1,
-            _ => unreachable!(
-                "precedence() is only supported for binary operators, called with: {:?}",
-                self
-            ),
+            _ => Self::lowest_precedence(),
         }
     }
 

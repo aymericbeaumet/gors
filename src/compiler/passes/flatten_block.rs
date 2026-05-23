@@ -16,7 +16,7 @@ impl VisitMut for FlattenBlock {
             {
                 let bstmts = &b.block.stmts;
                 if bstmts.len() == 1 {
-                    if let syn::Stmt::Expr(expr, None) = &bstmts[0] {
+                    if let Some(syn::Stmt::Expr(expr, None)) = bstmts.first() {
                         *stmt = syn::Stmt::Expr(expr.clone(), None);
                         continue;
                     }

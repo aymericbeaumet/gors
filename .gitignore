@@ -4,3 +4,4 @@
 pkg/
 target/
 tests/fixtures/go_runner/gors-go
+gors_output/

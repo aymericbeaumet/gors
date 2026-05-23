@@ -1,4 +1,5 @@
-const DONE_PREFIX = 'GORS_DONE:';
+const COMPILE_DONE = 'GORS_COMPILE_DONE:';
+const RUN_DONE = 'GORS_RUN_DONE:';
 const BOOT_READY_MARKER = 'GORS_BOOT_READY';
 const READY_MARKER = 'GORS_READY';
 
@@ -11,6 +12,7 @@ export const State = Object.freeze({
   BOOTING: 'booting',
   READY: 'ready',
   COMPILING: 'compiling',
+  RUNNING: 'running',
   ERROR: 'error',
 });
 
@@ -131,7 +133,7 @@ export class RustRunner {
       bios: { url: this._assetUrl('seabios.bin') },
       vga_bios: { url: this._assetUrl('vgabios.bin') },
       autostart: true,
-      memory_size: 256 * 1024 * 1024,
+      memory_size: 512 * 1024 * 1024,
       vga_memory_size: 2 * 1024 * 1024,
       disable_keyboard: true,
       disable_mouse: true,
@@ -192,12 +194,11 @@ export class RustRunner {
     if (!this._markerResolve || !this._markerTarget) return;
     const idx = this._serialBuffer.indexOf(this._markerTarget);
     if (idx === -1) return;
-    const before = this._serialBuffer.substring(0, idx);
     this._serialBuffer = this._serialBuffer.substring(idx + this._markerTarget.length);
     const resolve = this._markerResolve;
     this._markerResolve = null;
     this._markerTarget = null;
-    resolve(before);
+    resolve();
   }
 
   async _readFile(path) {
@@ -213,48 +214,73 @@ export class RustRunner {
     const jobId = String(nextJobId++);
     this._currentJobId = jobId;
 
-    if (this._state !== State.READY && this._state !== State.COMPILING) {
-      return { success: false, output: '', errors: `VM not ready (${this._state})` };
+    if (this._state !== State.READY && this._state !== State.COMPILING && this._state !== State.RUNNING) {
+      return { cancelled: false, compile: { success: false, stderr: `VM not ready (${this._state})` } };
     }
 
     this._setState(State.COMPILING);
 
-    // Write source via 9p
     await this._emulator.create_file(`tmp/${jobId}.rs`, new TextEncoder().encode(rustSource));
-
-    // Run compile-run, wait for done marker with status
     this._serialBuffer = '';
-    this._sendCommand(`compile-run ${jobId}`);
-
-    // Marker format: GORS_DONE:<id>:compile_error or GORS_DONE:<id>:ok:<exit_code>
-    await this._waitForMarker(DONE_PREFIX + jobId + ':');
-    // tail now contains everything after "GORS_DONE:<id>:"
-    // Read until newline to get the status
-    const nlIdx = this._serialBuffer.indexOf('\n');
-    const statusLine = nlIdx !== -1 ? this._serialBuffer.substring(0, nlIdx).trim() : this._serialBuffer.trim();
-    this._serialBuffer = nlIdx !== -1 ? this._serialBuffer.substring(nlIdx + 1) : '';
+    this._sendCommand(`gors-compile ${jobId}`);
+    await this._waitForMarker(COMPILE_DONE + jobId);
 
     if (this._currentJobId !== jobId) {
       this._setState(State.READY);
-      return { success: false, output: '', errors: 'cancelled' };
+      return { cancelled: true, compile: null };
+    }
+
+    const compileStatus = (await this._readFile(`tmp/${jobId}.compile.status`)).trim();
+    const compileStderr = (await this._readFile(`tmp/${jobId}.compile.err`)).replace(ANSI_RE, '');
+
+    this._setState(State.READY);
+    return {
+      cancelled: false,
+      jobId,
+      compile: {
+        success: compileStatus === '0',
+        stderr: compileStderr.trim() || (compileStatus !== '0' ? 'compilation failed' : ''),
+      },
+    };
+  }
+
+  async runJob(jobId) {
+    this._currentJobId = jobId;
+
+    if (this._state !== State.READY && this._state !== State.COMPILING && this._state !== State.RUNNING) {
+      return { cancelled: false, run: null };
+    }
+
+    this._setState(State.RUNNING);
+
+    this._serialBuffer = '';
+    this._sendCommand(`gors-run ${jobId}`);
+    await this._waitForMarker(RUN_DONE + jobId);
+
+    if (this._currentJobId !== jobId) {
+      this._setState(State.READY);
+      return { cancelled: true, run: null };
     }
 
     this._setState(State.READY);
 
-    // Read output files via 9p (raw text, no JSON escaping needed)
-    if (statusLine === 'compile_error' || statusLine.startsWith('compile_error')) {
-      const errors = (await this._readFile(`tmp/${jobId}.err`)).replace(ANSI_RE, '');
-      return { success: false, output: '', errors: errors || 'compilation failed' };
+    const exitCode = parseInt((await this._readFile(`tmp/${jobId}.run.status`)).trim(), 10) || 0;
+    const stdout = await this._readFile(`tmp/${jobId}.run.out`);
+    const runStderr = await this._readFile(`tmp/${jobId}.run.err`);
+
+    return {
+      cancelled: false,
+      run: { exitCode, stdout: stdout.trim(), stderr: runStderr.trim() },
+    };
+  }
+
+  async run(rustSource) {
+    const compileResult = await this.compile(rustSource);
+    if (compileResult.cancelled || !compileResult.compile.success) {
+      return { ...compileResult, run: null };
     }
 
-    const exitCode = parseInt(statusLine.replace(/^ok:?/, ''), 10) || 0;
-    const stdout = await this._readFile(`tmp/${jobId}.out`);
-    const stderr = await this._readFile(`tmp/${jobId}.err`);
-
-    if (exitCode !== 0) {
-      return { success: true, output: stdout.trim(), errors: (stderr || `program exited with code ${exitCode}`).trim() };
-    }
-
-    return { success: true, output: stdout.trim(), errors: stderr.trim() };
+    const runResult = await this.runJob(compileResult.jobId);
+    return { ...runResult, compile: compileResult.compile };
   }
 }

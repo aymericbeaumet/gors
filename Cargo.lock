@@ -615,13 +615,10 @@ dependencies = [
 name = "gors"
 version = "0.1.0"
 dependencies = [
- "atty",
- "clap",
  "dirs",
  "flate2",
  "log",
  "phf",
- "pretty_env_logger",
  "prettyplease",
  "proc-macro2",
  "quote",
@@ -635,6 +632,19 @@ dependencies = [
  "tar",
  "tempfile",
  "unicode-general-category",
+]
+
+[[package]]
+name = "gors-cli"
+version = "0.1.0"
+dependencies = [
+ "atty",
+ "clap",
+ "gors",
+ "pretty_env_logger",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

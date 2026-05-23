@@ -37,8 +37,8 @@ fn find_rust_functions(lines: &[&str]) -> Vec<RustFunction> {
     let mut functions = Vec::new();
     let mut i = 0;
 
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
+    while let Some(line) = lines.get(i) {
+        let trimmed = line.trim();
         if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
             let start_line = i;
             // Find the closing brace by tracking brace depth

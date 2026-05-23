@@ -11,14 +11,11 @@ repository = "https://github.com/aymericbeaumet/gors/"
 name = "gors"
 path = "src/lib.rs"
 
-[[bin]]
-name = "gors"
-path = "src/main.rs"
-
 [workspace]
 resolver = "3"
 members = [
   ".",
+  "cli",
   "fuzz",
 ]
 exclude = [
@@ -32,6 +29,9 @@ workspace = true
 [workspace.lints.rust]
 # Forbid dead code in the entire workspace
 dead_code = "deny"
+unsafe_code = "forbid"
+unused_imports = "deny"
+unused_macros = "deny"
 
 [workspace.lints.clippy]
 # Enable all pedantic lints as warnings, with specific exceptions
@@ -42,6 +42,10 @@ nursery = { level = "warn", priority = -1 }
 panic = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
 # Allow lints that are too pedantic for this codebase
 collapsible_if = "allow"           # Let chains are suggested but not always clearer
 option_if_let_else = "allow"       # map_or_else is not always clearer
@@ -64,7 +68,7 @@ proc-macro2 = "1.0"
 quote = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 sourcemap = "9"
-syn = { version = "2.0", features = ["full", "visit-mut"] }
+syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
 unicode-general-category = "1.1"
 
 # Stdlib archive decompression (used by embedded stdlib at runtime)
@@ -72,12 +76,7 @@ flate2 = "1"
 sha2 = "0.11"
 tar = "0.4"
 
-# Binary dependencies
-atty = "0.2"
-clap = { version = "4.6", features = ["derive"] }
-pretty_env_logger = "0.5"
 serde_json = "1.0"
-tempfile = "3.27"
 
 [build-dependencies]
 dirs = "6"
@@ -88,6 +87,7 @@ tar = "0.4"
 
 [dev-dependencies]
 rayon = "1.12"
+tempfile = "3.27"
 
 [profile.dev]
 opt-level = 0

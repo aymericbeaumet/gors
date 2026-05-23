@@ -342,13 +342,18 @@ fn parse_dir(
     }
 
     // Verify all files have the same package name
-    let expected_package = asts[0].name.name;
+    let Some(expected_package) = asts.first().map(|ast| ast.name.name) else {
+        return Err(PathParseError::NoGoFiles(dir_path.to_string()));
+    };
     for (i, ast) in asts.iter().enumerate().skip(1) {
         if ast.name.name != expected_package {
             return Err(PathParseError::PackageMismatch {
                 expected: expected_package.to_string(),
                 found: ast.name.name.to_string(),
-                file: go_files[i].clone(),
+                file: go_files
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown file)".to_string()),
             });
         }
     }
@@ -465,16 +470,29 @@ pub fn parse_program(path: &str) -> std::result::Result<ParsedProgram, PathParse
 pub fn parse_program_files(
     file_paths: &[String],
 ) -> std::result::Result<ParsedProgram, PathParseError> {
+    if file_paths.is_empty() {
+        return Err(PathParseError::NoGoFiles("(no files given)".to_string()));
+    }
     if file_paths.len() == 1 {
-        return parse_program(&file_paths[0]);
+        return parse_program(
+            file_paths
+                .first()
+                .map(String::as_str)
+                .unwrap_or("(no files given)"),
+        );
     }
 
     let (main_ast, files) = parse_explicit_files(file_paths)?;
 
-    let dir_path = std::path::Path::new(&file_paths[0])
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| ".".to_string());
+    let dir_path = std::path::Path::new(
+        file_paths
+            .first()
+            .map(String::as_str)
+            .unwrap_or("(no files given)"),
+    )
+    .parent()
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_else(|| ".".to_string());
 
     let module_root = find_module_root(&dir_path);
     let module_name = module_root
@@ -510,6 +528,35 @@ pub fn parse_program_files(
     })
 }
 
+/// Parse a Go program from in-memory source code.
+///
+/// This is the entry point for environments without filesystem access (e.g. WASM).
+/// It parses the source, extracts stdlib imports, and returns a `ParsedProgram`
+/// identical to what [`parse_program`] would return for a single-file program.
+pub fn parse_program_from_source(
+    filename: &str,
+    source: &str,
+) -> std::result::Result<ParsedProgram, PathParseError> {
+    let filename_static: &'static str = Box::leak(filename.to_string().into_boxed_str());
+    let source_static: &'static str = Box::leak(source.to_string().into_boxed_str());
+    let ast = parse_file(filename_static, source_static).map_err(PathParseError::ParserError)?;
+
+    let mut stdlib_imports = Vec::new();
+    collect_stdlib_imports(&ast, &mut stdlib_imports);
+
+    let pkg_name = ast.name.name.to_string();
+    Ok(ParsedProgram {
+        main_package: ParsedPackage {
+            name: pkg_name,
+            import_path: String::new(),
+            ast,
+            files: vec![(filename.to_string(), source.to_string())],
+        },
+        imports: vec![],
+        stdlib_imports,
+    })
+}
+
 fn parse_explicit_files(
     file_paths: &[String],
 ) -> std::result::Result<(ast::File<'static>, Vec<(String, String)>), PathParseError> {
@@ -530,13 +577,18 @@ fn parse_explicit_files(
         asts.push(ast);
     }
 
-    let expected_package = asts[0].name.name;
+    let Some(expected_package) = asts.first().map(|ast| ast.name.name) else {
+        return Err(PathParseError::NoGoFiles("(no files given)".to_string()));
+    };
     for (i, ast) in asts.iter().enumerate().skip(1) {
         if ast.name.name != expected_package {
             return Err(PathParseError::PackageMismatch {
                 expected: expected_package.to_string(),
                 found: ast.name.name.to_string(),
-                file: file_paths[i].clone(),
+                file: file_paths
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown file)".to_string()),
             });
         }
     }
@@ -577,7 +629,7 @@ fn parse_go_mod(module_root: &str) -> std::result::Result<String, PathParseError
 fn collect_stdlib_imports(file: &ast::File<'_>, stdlib_imports: &mut Vec<String>) {
     for import_spec in file.imports() {
         let import_path = import_spec.path.value.trim_matches('"');
-        if crate::stdlib::is_known(import_path)
+        if crate::go_stdlib::is_known(import_path)
             && !stdlib_imports.contains(&import_path.to_string())
         {
             stdlib_imports.push(import_path.to_string());
@@ -604,7 +656,7 @@ fn resolve_imports_recursive(
         let rel_path = match import_path.strip_prefix(module_name) {
             Some(rest) => rest.trim_start_matches('/'),
             None => {
-                if crate::stdlib::is_known(import_path)
+                if crate::go_stdlib::is_known(import_path)
                     && !stdlib_imports.contains(&import_path.to_string())
                 {
                     stdlib_imports.push(import_path.to_string());
@@ -740,12 +792,14 @@ fn split_top_level(s: &str, op: u8) -> Vec<&str> {
     let mut start = 0;
     let mut i = 0;
 
-    while i < bytes.len() {
-        match bytes[i] {
+    while let Some(byte) = bytes.get(i).copied() {
+        match byte {
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
-            c if c == op && depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == op => {
-                parts.push(&s[start..i]);
+            c if c == op && depth == 0 && bytes.get(i + 1).is_some_and(|next| *next == op) => {
+                if let Some(part) = s.get(start..i) {
+                    parts.push(part);
+                }
                 i += 2;
                 start = i;
                 continue;
@@ -754,7 +808,9 @@ fn split_top_level(s: &str, op: u8) -> Vec<&str> {
         }
         i += 1;
     }
-    parts.push(&s[start..]);
+    if let Some(part) = s.get(start..) {
+        parts.push(part);
+    }
     parts
 }
 
@@ -858,7 +914,9 @@ impl<'scanner> Parser<'scanner> {
     }
 
     fn newlines_between(&self, start: usize, end: usize) -> usize {
-        self.buffer[start..end]
+        self.buffer
+            .get(start..end)
+            .unwrap_or_default()
             .bytes()
             .filter(|&b| b == b'\n')
             .count()
@@ -869,13 +927,18 @@ impl<'scanner> Parser<'scanner> {
         n: usize,
         buffer: &str,
     ) -> (ast::CommentGroup<'scanner>, usize, usize) {
-        let mut list = vec![comments[0].clone()];
-        let mut end_offset = Self::comment_end_offset(&comments[0]);
-        let mut endline = Self::comment_end_line(&comments[0]);
+        let Some(first_comment) = comments.first() else {
+            return (ast::CommentGroup { list: Vec::new() }, 0, 0);
+        };
+        let mut list = vec![first_comment.clone()];
+        let mut end_offset = Self::comment_end_offset(first_comment);
+        let mut endline = Self::comment_end_line(first_comment);
         let mut consumed = 1;
 
-        for comment in &comments[1..] {
-            let gap_newlines = buffer[end_offset..comment.slash.offset]
+        for comment in comments.iter().skip(1) {
+            let gap_newlines = buffer
+                .get(end_offset..comment.slash.offset)
+                .unwrap_or_default()
                 .bytes()
                 .filter(|&b| b == b'\n')
                 .count();
@@ -1246,7 +1309,9 @@ impl<'scanner> Parser<'scanner> {
                     }));
                 }
                 Some(mut field_list)
-                    if field_list.list.len() == 1 && field_list.list[0].names.is_none() =>
+                    if field_list.list.first().is_some_and(|field| {
+                        field_list.list.len() == 1 && field.names.is_none()
+                    }) =>
                 {
                     // This was [expr] - it's an array type, not type params
                     // TypeParameters stored the length expression in the type_ field
@@ -1270,15 +1335,22 @@ impl<'scanner> Parser<'scanner> {
                 }
                 Some(field_list)
                     if field_list.list.len() == 1
-                        && field_list.list[0].names.is_some()
+                        && field_list
+                            .list
+                            .first()
+                            .is_some_and(|field| field.names.is_some())
                         && matches!(
-                            field_list.list[0].type_.as_ref(),
+                            field_list.list.first().and_then(|field| field.type_.as_ref()),
                             Some(ast::Expr::StarExpr(s)) if matches!(*s.x, ast::Expr::Ident(_))
                         )
                         && !matches!(self.current_step.1, Token::ASSIGN)
-                        && !self.buffer[field_list.opening.map_or(0, |p| p.offset)
-                            ..field_list.closing.map_or(0, |p| p.offset)]
-                            .contains(',') =>
+                        && self
+                            .buffer
+                            .get(
+                                field_list.opening.map_or(0, |p| p.offset)
+                                    ..field_list.closing.map_or(0, |p| p.offset),
+                            )
+                            .is_some_and(|text| !text.contains(',')) =>
                 {
                     // [Name * Ident]Type without comma — reinterpret * as multiplication.
                     if let Some(elt) = self.parse_type()? {
@@ -2125,20 +2197,6 @@ impl<'scanner> Parser<'scanner> {
         }
 
         Ok(Some(key))
-    }
-
-    // FunctionLit = "func" Signature FunctionBody .
-    fn parse_function_lit(&mut self) -> Result<Option<ast::FuncLit<'scanner>>> {
-        log::debug!("Parser::parse_function_lit()");
-
-        let func = match self.token(Token::FUNC)? {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        let type_ = self.parse_signature(Some(func.0)).required()?;
-        let body = self.parse_function_body().required()?;
-
-        Ok(Some(ast::FuncLit { type_, body }))
     }
 
     // BasicLit = int_lit | float_lit | imaginary_lit | rune_lit | string_lit .
@@ -4265,7 +4323,9 @@ impl<'scanner> Parser<'scanner> {
                             }
                         }
                         if let ast::Stmt::AssignStmt(ref assign) = expr_or_stmt {
-                            if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                            if assign.rhs.len() == 1
+                                && assign.rhs.first().is_some_and(is_type_switch_guard)
+                            {
                                 self.expr_level = prev_expr_level;
                                 let body = self.parse_switch_body(true)?;
                                 return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
@@ -4303,7 +4363,9 @@ impl<'scanner> Parser<'scanner> {
                                 }
                             }
                             if let ast::Stmt::AssignStmt(ref assign) = expr_or_stmt {
-                                if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                                if assign.rhs.len() == 1
+                                    && assign.rhs.first().is_some_and(is_type_switch_guard)
+                                {
                                     self.expr_level = prev_expr_level;
                                     let body = self.parse_switch_body(true)?;
                                     return Ok(Some(ast::Stmt::TypeSwitchStmt(
@@ -4337,7 +4399,9 @@ impl<'scanner> Parser<'scanner> {
                         }
                     }
                     if let ast::Stmt::AssignStmt(ref assign) = simple_stmt {
-                        if assign.rhs.len() == 1 && is_type_switch_guard(&assign.rhs[0]) {
+                        if assign.rhs.len() == 1
+                            && assign.rhs.first().is_some_and(is_type_switch_guard)
+                        {
                             self.expr_level = prev_expr_level;
                             let body = self.parse_switch_body(true)?;
                             return Ok(Some(ast::Stmt::TypeSwitchStmt(ast::TypeSwitchStmt {
@@ -4777,7 +4841,7 @@ impl<'scanner> Parser<'scanner> {
                     if is_type_param {
                         if let ast::Expr::Ident(name) = *call.fun {
                             let Some(arg) = call.args.take().and_then(|mut a| a.pop()) else {
-                                unreachable!("is_type_param guarantees args has exactly 1 element");
+                                return Err(ParserError::UnexpectedToken);
                             };
                             let constraint = ast::Expr::ParenExpr(ast::ParenExpr {
                                 lparen: call.lparen,
@@ -4805,7 +4869,7 @@ impl<'scanner> Parser<'scanner> {
                                 closing: Some(rbrack.0),
                             }));
                         }
-                        unreachable!()
+                        return Err(ParserError::UnexpectedToken);
                     } else {
                         ast::Expr::CallExpr(call)
                     }
@@ -4987,7 +5051,7 @@ impl<'scanner> Parser<'scanner> {
                 // partial type parameter. For now, treat single ident without constraint
                 // as type parameter with inferred 'any' constraint (Go 1.18 behavior)
                 ast::Expr::Ident(ast::Ident {
-                    name_pos: names[0].name_pos,
+                    name_pos: names.first().map(|name| name.name_pos).unwrap_or_default(),
                     name: "any",
                     obj: None,
                 })
@@ -5329,14 +5393,20 @@ impl<'scanner> Parser<'scanner> {
 
         let mut i = 0;
 
-        if comments[0].slash.line == prev.line && prev.line > 0 {
+        if comments
+            .first()
+            .is_some_and(|comment| comment.slash.line == prev.line)
+            && prev.line > 0
+        {
             let (group, endline, consumed) =
-                Self::consume_comment_group(&comments[i..], 0, self.buffer);
+                Self::consume_comment_group(comments.get(i..).unwrap_or_default(), 0, self.buffer);
             i += consumed;
             self.all_comments.push(group.clone());
 
             let next_on_different_line = if i < comments.len() {
-                comments[i].slash.line != endline
+                comments
+                    .get(i)
+                    .is_some_and(|comment| comment.slash.line != endline)
             } else {
                 self.current_step.0.line != endline
                     || (self.current_step.1 == Token::SEMICOLON && self.current_step.2 == "\n")
@@ -5350,7 +5420,8 @@ impl<'scanner> Parser<'scanner> {
 
         let mut last_group: Option<ast::CommentGroup<'scanner>> = None;
         while i < comments.len() {
-            let (group, _, consumed) = Self::consume_comment_group(&comments[i..], 1, self.buffer);
+            let (group, _, consumed) =
+                Self::consume_comment_group(comments.get(i..).unwrap_or_default(), 1, self.buffer);
             i += consumed;
             self.all_comments.push(group.clone());
             last_group = Some(group);

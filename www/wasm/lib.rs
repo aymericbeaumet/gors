@@ -329,6 +329,33 @@ fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<Strin
     Some(start_char.to_string())
 }
 
+fn collect_comments(ast: &gors::ast::File<'_>) -> Vec<CommentInfo> {
+    let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for decl in &ast.decls {
+        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
+            if let Some(ref doc) = func_decl.doc {
+                for comment in &doc.list {
+                    doc_comment_lines.insert(comment.slash.line as u32);
+                }
+            }
+        }
+    }
+
+    let mut comments = Vec::new();
+    for comment_group in &ast.comments {
+        for comment in &comment_group.list {
+            let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
+            comments.push(CommentInfo {
+                go_line: comment.slash.line as u32,
+                go_col: comment.slash.column.saturating_sub(1) as u32,
+                text: comment.text.to_string(),
+                is_doc,
+            });
+        }
+    }
+    comments
+}
+
 /// Build Go source code and return Rust code with structured error information.
 /// This is an alias for build_rust() for backward compatibility.
 #[wasm_bindgen]
@@ -341,56 +368,34 @@ pub fn build(input: String) -> BuildResult {
 pub fn build_rust(input: String) -> BuildResult {
     console_error_panic_hook::set_once();
 
-    // Parse
-    let ast = match gors::parser::parse_file("main.go", &input) {
-        Ok(ast) => ast,
+    // Use the same pipeline as the CLI: parse_program → compile_program_multi → generate_single
+    let program = match gors::parser::parse_program_from_source("main.go", &input) {
+        Ok(program) => program,
         Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, "main.go", &input);
-            return BuildResult::error_result(diagnostic);
-        }
-    };
-
-    // Collect all comments from the AST
-    // Mark doc comments (those attached to function declarations) as already handled
-    let mut comments: Vec<CommentInfo> = Vec::new();
-    let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-    // Find doc comment lines (comments attached to function declarations)
-    for decl in &ast.decls {
-        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-            if let Some(ref doc) = func_decl.doc {
-                for comment in &doc.list {
-                    doc_comment_lines.insert(comment.slash.line as u32);
+            let diagnostic = match err {
+                gors::parser::PathParseError::ParserError(ref e) => {
+                    Diagnostic::from_parser_error(e, "main.go", &input)
                 }
-            }
-        }
-    }
-
-    // Collect all comments with their positions
-    for comment_group in &ast.comments {
-        for comment in &comment_group.list {
-            let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-            comments.push(CommentInfo {
-                go_line: comment.slash.line as u32,
-                go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                text: comment.text.to_string(),
-                is_doc,
-            });
-        }
-    }
-
-    // Compile with source map tracking
-    let compiled = match gors::compiler::compile_with_source_map(ast, "main.go", &input) {
-        Ok(result) => result,
-        Err(err) => {
-            let diagnostic =
-                Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                _ => Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler),
+            };
             return BuildResult::error_result(diagnostic);
         }
     };
 
-    // Generate Rust code WITHOUT comments first
-    let rust_code = match gors::backend_rust::generate(compiled) {
+    // Collect comments from the parsed AST before compilation consumes it
+    let comments = collect_comments(&program.main_package.ast);
+
+    let compiled =
+        match gors::compiler::compile_program_multi_with_source_map(program, "main.go", &input) {
+            Ok(result) => result,
+            Err(err) => {
+                let diagnostic =
+                    Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                return BuildResult::error_result(diagnostic);
+            }
+        };
+
+    let rust_code = match gors::backend_rust::generate_single(compiled) {
         Ok(output) => output,
         Err(err) => {
             let diagnostic =
@@ -694,51 +699,24 @@ fn insert_comments_with_sourcemap(
 mod tests {
     use super::*;
 
-    /// Helper function to build Go code and return output (for testing without wasm_bindgen)
     fn build_go(input: &str) -> Result<String, String> {
-        let ast = gors::parser::parse_file("main.go", input)
+        let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        // Collect comments
-        let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let comments = collect_comments(&program.main_package.ast);
 
-        for decl in &ast.decls {
-            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-                if let Some(ref doc) = func_decl.doc {
-                    for comment in &doc.list {
-                        doc_comment_lines.insert(comment.slash.line as u32);
-                    }
-                }
-            }
-        }
+        let compiled =
+            gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
+                .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        for comment_group in &ast.comments {
-            for comment in &comment_group.list {
-                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-                comments.push(CommentInfo {
-                    go_line: comment.slash.line as u32,
-                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                    text: comment.text.to_string(),
-                    is_doc,
-                });
-            }
-        }
-
-        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
-            .map_err(|e| format!("Compile error: {:?}", e))?;
-
-        let rust_code = gors::backend_rust::generate(compiled)
+        let rust_code = gors::backend_rust::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let source_map = gors::compiler::build_source_map(&rust_code);
-        let (output, _comment_mappings) =
-            insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
+        let (output, _) = insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
 
         Ok(output)
     }
-    use super::*;
 
     #[test]
     fn test_comment_between_statements() {
@@ -1033,41 +1011,17 @@ func bar() {
         );
     }
 
-    /// Helper to build and return the source map along with output
     fn build_with_sourcemap(input: &str) -> Result<(String, SourceMap), String> {
-        let ast = gors::parser::parse_file("main.go", input)
+        let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let comments = collect_comments(&program.main_package.ast);
 
-        for decl in &ast.decls {
-            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-                if let Some(ref doc) = func_decl.doc {
-                    for comment in &doc.list {
-                        doc_comment_lines.insert(comment.slash.line as u32);
-                    }
-                }
-            }
-        }
+        let compiled =
+            gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
+                .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        for comment_group in &ast.comments {
-            for comment in &comment_group.list {
-                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-                comments.push(CommentInfo {
-                    go_line: comment.slash.line as u32,
-                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                    text: comment.text.to_string(),
-                    is_doc,
-                });
-            }
-        }
-
-        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
-            .map_err(|e| format!("Compile error: {:?}", e))?;
-
-        let rust_code = gors::backend_rust::generate(compiled)
+        let rust_code = gors::backend_rust::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let initial_source_map = gors::compiler::build_source_map(&rust_code);

@@ -151,18 +151,23 @@ impl Diagnostic {
         }
 
         let mut end = col;
-        let start_char = chars[col];
+        let Some(start_char) = chars.get(col).copied() else {
+            return self.column + 1;
+        };
 
         if start_char.is_alphanumeric() || start_char == '_' {
             // Identifier or keyword - find end of word
-            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            while chars
+                .get(end)
+                .is_some_and(|ch| ch.is_alphanumeric() || *ch == '_')
+            {
                 end += 1;
             }
         } else if start_char == '"' || start_char == '\'' || start_char == '`' {
             // String/char literal - find closing quote or end of line
             end += 1;
-            while end < chars.len() && chars[end] != start_char {
-                if chars[end] == '\\' && end + 1 < chars.len() {
+            while chars.get(end).is_some_and(|ch| *ch != start_char) {
+                if chars.get(end).is_some_and(|ch| *ch == '\\') && end + 1 < chars.len() {
                     end += 1; // Skip escaped char
                 }
                 end += 1;
@@ -174,8 +179,8 @@ impl Diagnostic {
             // Single character token or operator
             end += 1;
             // Check for multi-character operators
-            if end < chars.len() {
-                let two_char: String = [start_char, chars[end]].iter().collect();
+            if let Some(next_char) = chars.get(end).copied() {
+                let two_char: String = [start_char, next_char].iter().collect();
                 if matches!(
                     two_char.as_str(),
                     ":=" | "=="
