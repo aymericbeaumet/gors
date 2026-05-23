@@ -6,6 +6,10 @@ with `gors run <dir>`.
 
 ## fmt
 
+Status: not full. Current fixtures cover 13 of 23 public functions listed by
+`go doc fmt`; interface method behavior is not counted in that total and still
+needs explicit behavioral fixtures.
+
 Covered in this batch: `Append`, `Appendf`, `Appendln`, `Errorf`, `Fprint`,
 `Fprintf`, `Fprintln`, `Print`, `Printf`, `Println`, `Sprint`, `Sprintf`,
 `Sprintln`.
@@ -32,6 +36,11 @@ Remaining: broader `Interface` implementations beyond `IntSlice`,
 function literals are supported by the parser/compiler.
 
 ## strings
+
+Status: not full. Current fixtures cover 47 of 55 package-level functions listed
+by `go doc strings`. They do not yet cover constructors or public methods on
+`Builder`, `Reader`, and `Replacer`; counting those method surfaces brings the
+package to 47 covered targets out of 79 public function/method targets.
 
 Covered direct functions: `Clone`, `Compare`, `Contains`, `ContainsAny`,
 `ContainsFunc`, `ContainsRune`, `Count`, `Cut`, `CutPrefix`, `CutSuffix`,
