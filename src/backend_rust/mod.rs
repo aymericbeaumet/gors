@@ -833,6 +833,43 @@ pub fn min3<T: PartialOrd>(a: T, b: T, c: T) -> T {
 }
 
 // ---------------------------------------------------------------------------
+// sort helpers
+// ---------------------------------------------------------------------------
+
+#[inline]
+pub fn go_sort<T: Ord>(values: &mut [T]) {
+    values.sort();
+}
+
+#[inline]
+pub fn go_is_sorted<T: Ord>(values: &[T]) -> bool {
+    values.windows(2).all(|pair| pair[0] <= pair[1])
+}
+
+fn go_cmp_float64(left: f64, right: f64) -> std::cmp::Ordering {
+    match (left.is_nan(), right.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => left
+            .partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
+#[inline]
+pub fn go_sort_float64s(values: &mut [f64]) {
+    values.sort_by(|left, right| go_cmp_float64(*left, *right));
+}
+
+#[inline]
+pub fn go_float64s_are_sorted(values: &[f64]) -> bool {
+    values
+        .windows(2)
+        .all(|pair| go_cmp_float64(pair[0], pair[1]) != std::cmp::Ordering::Greater)
+}
+
+// ---------------------------------------------------------------------------
 // complex / real / imag
 // ---------------------------------------------------------------------------
 

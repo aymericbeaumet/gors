@@ -4510,6 +4510,67 @@ fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+enum LoweredStdlibCall {
+    SortInts,
+    SortStrings,
+    SortFloat64s,
+    SortIntsAreSorted,
+    SortStringsAreSorted,
+    SortFloat64sAreSorted,
+}
+
+fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
+    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
+        return None;
+    };
+    let ast::Expr::Ident(pkg) = &*selector.x else {
+        return None;
+    };
+    if pkg.name != "sort" {
+        return None;
+    }
+    if !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
+        return None;
+    }
+
+    match selector.sel.name {
+        "Ints" => Some(LoweredStdlibCall::SortInts),
+        "Strings" => Some(LoweredStdlibCall::SortStrings),
+        "Float64s" => Some(LoweredStdlibCall::SortFloat64s),
+        "IntsAreSorted" => Some(LoweredStdlibCall::SortIntsAreSorted),
+        "StringsAreSorted" => Some(LoweredStdlibCall::SortStringsAreSorted),
+        "Float64sAreSorted" => Some(LoweredStdlibCall::SortFloat64sAreSorted),
+        _ => None,
+    }
+}
+
+fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibCall) -> syn::Expr {
+    let mut args = call_expr.args.unwrap_or_default().into_iter();
+    let Some(arg) = args.next() else {
+        return compile_error_expr("sort call requires one argument");
+    };
+    if args.next().is_some() {
+        return compile_error_expr("sort call requires one argument");
+    }
+    let arg: syn::Expr = arg.into();
+
+    match lowered {
+        LoweredStdlibCall::SortInts | LoweredStdlibCall::SortStrings => {
+            syn::parse_quote! { crate::builtin::go_sort(&mut #arg) }
+        }
+        LoweredStdlibCall::SortFloat64s => {
+            syn::parse_quote! { crate::builtin::go_sort_float64s(&mut #arg) }
+        }
+        LoweredStdlibCall::SortIntsAreSorted | LoweredStdlibCall::SortStringsAreSorted => {
+            syn::parse_quote! { crate::builtin::go_is_sorted(&#arg) }
+        }
+        LoweredStdlibCall::SortFloat64sAreSorted => {
+            syn::parse_quote! { crate::builtin::go_float64s_are_sorted(&#arg) }
+        }
+    }
+}
+
 fn call_func_key(fun: &ast::Expr) -> Option<String> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -5945,6 +6006,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 }
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
+                }
+                if let Some(lowered) = lowered_stdlib_call(&call_expr) {
+                    return compile_lowered_stdlib_call(call_expr, lowered);
                 }
                 if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
                     return compile_variadic_any_call(call_expr, variadic_start);
@@ -9169,11 +9233,14 @@ func main() {
 import "fmt"
 import "errors"
 import "strconv"
+import "sort"
 
 func main() {
 	fmt.Println("hello")
 	e := errors.New("fail")
 	s := strconv.Itoa(42)
+	xs := []int{3, 1}
+	sort.Ints(xs)
 }
 "#;
         let ast = parse_file("main.go", go_source).unwrap();
@@ -9188,6 +9255,7 @@ func main() {
             stdlib_imports: vec![
                 "errors".to_string(),
                 "fmt".to_string(),
+                "sort".to_string(),
                 "strconv".to_string(),
             ],
         };
@@ -9195,14 +9263,17 @@ func main() {
         assert!(compiled.modules.contains_key("fmt"));
         assert!(compiled.modules.contains_key("strconv"));
         assert!(!compiled.modules.contains_key("errors"));
+        assert!(!compiled.modules.contains_key("sort"));
         let output = backend_rust::generate_multi(compiled).unwrap();
         assert!(output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("strconv.rs"));
         assert!(!output.files.contains_key("errors.rs"));
+        assert!(!output.files.contains_key("sort.rs"));
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod strconv"));
         assert!(!lib_rs.contains("pub mod errors"));
+        assert!(!lib_rs.contains("pub mod sort"));
     }
 
     // --- Iota + Const tests (Agent 2) ---
