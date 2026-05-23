@@ -36,6 +36,225 @@ pub const r#false: r#bool = false;
 pub const iota: int = 0;
 pub const nil: Option<()> = None;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum __GorsReflectKind {
+    Invalid,
+    Bool,
+    Int,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Uint,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    Uintptr,
+    Float32,
+    Float64,
+    Complex64,
+    Complex128,
+    Array,
+    Chan,
+    Func,
+    Interface,
+    Map,
+    Pointer,
+    Slice,
+    String,
+    Struct,
+    UnsafePointer,
+}
+
+pub trait __GorsReflectKindValue {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind;
+}
+
+impl<T: __GorsReflectKindValue + ?Sized> __GorsReflectKindValue for &T {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        (**self).__gors_reflect_kind()
+    }
+}
+
+impl __GorsReflectKindValue for Box<dyn Any> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        reflect_kind_of_any(&**self)
+    }
+}
+
+impl __GorsReflectKindValue for r#bool {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Bool
+    }
+}
+
+impl __GorsReflectKindValue for int {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Int
+    }
+}
+
+impl __GorsReflectKindValue for int8 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Int8
+    }
+}
+
+impl __GorsReflectKindValue for int16 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Int16
+    }
+}
+
+impl __GorsReflectKindValue for int32 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Int32
+    }
+}
+
+impl __GorsReflectKindValue for int64 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Int64
+    }
+}
+
+impl __GorsReflectKindValue for uint {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Uint
+    }
+}
+
+impl __GorsReflectKindValue for uint8 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Uint8
+    }
+}
+
+impl __GorsReflectKindValue for uint16 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Uint16
+    }
+}
+
+impl __GorsReflectKindValue for uint32 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Uint32
+    }
+}
+
+impl __GorsReflectKindValue for uint64 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Uint64
+    }
+}
+
+impl __GorsReflectKindValue for float32 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Float32
+    }
+}
+
+impl __GorsReflectKindValue for float64 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Float64
+    }
+}
+
+impl __GorsReflectKindValue for complex64 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Complex64
+    }
+}
+
+impl __GorsReflectKindValue for complex128 {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Complex128
+    }
+}
+
+impl __GorsReflectKindValue for std::string::String {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::String
+    }
+}
+
+impl __GorsReflectKindValue for str {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::String
+    }
+}
+
+impl<T> __GorsReflectKindValue for Vec<T> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Slice
+    }
+}
+
+impl<T, const N: usize> __GorsReflectKindValue for [T; N] {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Array
+    }
+}
+
+impl<K, V> __GorsReflectKindValue for HashMap<K, V> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Map
+    }
+}
+
+impl<T> __GorsReflectKindValue for Chan<T> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Chan
+    }
+}
+
+#[inline]
+pub fn reflect_kind_is<T: __GorsReflectKindValue + ?Sized>(
+    value: &T,
+    kind: __GorsReflectKind,
+) -> bool {
+    value.__gors_reflect_kind() == kind
+}
+
+fn reflect_kind_of_any(value: &dyn Any) -> __GorsReflectKind {
+    if value.is::<r#bool>() {
+        __GorsReflectKind::Bool
+    } else if value.is::<int>() {
+        __GorsReflectKind::Int
+    } else if value.is::<int8>() {
+        __GorsReflectKind::Int8
+    } else if value.is::<int16>() {
+        __GorsReflectKind::Int16
+    } else if value.is::<int32>() {
+        __GorsReflectKind::Int32
+    } else if value.is::<int64>() {
+        __GorsReflectKind::Int64
+    } else if value.is::<uint>() {
+        __GorsReflectKind::Uint
+    } else if value.is::<uint8>() {
+        __GorsReflectKind::Uint8
+    } else if value.is::<uint16>() {
+        __GorsReflectKind::Uint16
+    } else if value.is::<uint32>() {
+        __GorsReflectKind::Uint32
+    } else if value.is::<uint64>() {
+        __GorsReflectKind::Uint64
+    } else if value.is::<float32>() {
+        __GorsReflectKind::Float32
+    } else if value.is::<float64>() {
+        __GorsReflectKind::Float64
+    } else if value.is::<complex64>() {
+        __GorsReflectKind::Complex64
+    } else if value.is::<complex128>() {
+        __GorsReflectKind::Complex128
+    } else if value.is::<std::string::String>() || value.is::<&str>() {
+        __GorsReflectKind::String
+    } else {
+        __GorsReflectKind::Invalid
+    }
+}
+
 pub trait Len {
     fn len_value(&self) -> usize;
 }
@@ -940,6 +1159,23 @@ mod tests {
         assert_eq!(min3(2, 5, 4), 2);
         assert_eq!(string(vec![104, 105]), "hi");
         assert_eq!(string("hi"), "hi");
+    }
+
+    #[test]
+    fn reflect_kind_checks_cover_direct_and_boxed_values() {
+        assert!(reflect_kind_is(
+            &"go".to_string(),
+            __GorsReflectKind::String
+        ));
+        assert!(reflect_kind_is(&true, __GorsReflectKind::Bool));
+        assert!(reflect_kind_is(&1_isize, __GorsReflectKind::Int));
+        assert!(reflect_kind_is(&vec![1, 2], __GorsReflectKind::Slice));
+
+        let boxed_string = Box::new("go".to_string()) as Box<dyn Any>;
+        let boxed_int = Box::new(1_isize) as Box<dyn Any>;
+        assert!(reflect_kind_is(&boxed_string, __GorsReflectKind::String));
+        assert!(reflect_kind_is(&boxed_int, __GorsReflectKind::Int));
+        assert!(!reflect_kind_is(&boxed_int, __GorsReflectKind::String));
     }
 
     #[test]

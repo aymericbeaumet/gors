@@ -6949,6 +6949,29 @@ fn compile_binary_side(
 
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
+    if let Some(compare) = detect_reflect_kind_compare(&binary_expr) {
+        let is_eq = op == token::Token::EQL;
+        let value = match compare.side {
+            ReflectKindCompareSide::Left => reflect_typeof_kind_arg(*binary_expr.x),
+            ReflectKindCompareSide::Right => reflect_typeof_kind_arg(*binary_expr.y),
+        };
+        let Some(value) = value else {
+            return compile_error_expr("unsupported reflect TypeOf Kind expression");
+        };
+        let Some(kind) = reflect_kind_variant_expr(&compare.kind) else {
+            return compile_error_expr("unsupported reflect Kind constant");
+        };
+        let value: syn::Expr = value.into();
+        let check: syn::Expr = syn::parse_quote! {
+            crate::builtin::reflect_kind_is(&#value, #kind)
+        };
+        return if is_eq {
+            check
+        } else {
+            syn::parse_quote! { !(#check) }
+        };
+    }
+
     if matches!(op, token::Token::EQL | token::Token::NEQ)
         && (is_nil_expr(&binary_expr.x) || is_nil_expr(&binary_expr.y))
     {
@@ -7027,6 +7050,129 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         op,
         right: Box::new(right),
     })
+}
+
+struct ReflectKindCompare {
+    side: ReflectKindCompareSide,
+    kind: String,
+}
+
+enum ReflectKindCompareSide {
+    Left,
+    Right,
+}
+
+fn detect_reflect_kind_compare(binary_expr: &ast::BinaryExpr) -> Option<ReflectKindCompare> {
+    if !matches!(binary_expr.op, token::Token::EQL | token::Token::NEQ) {
+        return None;
+    }
+
+    if reflect_typeof_kind_arg_ref(&binary_expr.x) {
+        let kind = reflect_kind_const_ref(&binary_expr.y)?;
+        reflect_kind_variant_expr(kind)?;
+        return Some(ReflectKindCompare {
+            side: ReflectKindCompareSide::Left,
+            kind: kind.to_string(),
+        });
+    }
+
+    if reflect_typeof_kind_arg_ref(&binary_expr.y) {
+        let kind = reflect_kind_const_ref(&binary_expr.x)?;
+        reflect_kind_variant_expr(kind)?;
+        return Some(ReflectKindCompare {
+            side: ReflectKindCompareSide::Right,
+            kind: kind.to_string(),
+        });
+    }
+
+    None
+}
+
+fn reflect_typeof_kind_arg_ref(expr: &ast::Expr) -> bool {
+    let ast::Expr::CallExpr(kind_call) = expr else {
+        return false;
+    };
+    if kind_call.args.as_ref().is_some_and(|args| !args.is_empty()) {
+        return false;
+    }
+    let ast::Expr::SelectorExpr(kind_selector) = &*kind_call.fun else {
+        return false;
+    };
+    if kind_selector.sel.name != "Kind" {
+        return false;
+    }
+    let ast::Expr::CallExpr(type_of_call) = &*kind_selector.x else {
+        return false;
+    };
+    let ast::Expr::SelectorExpr(type_of_selector) = &*type_of_call.fun else {
+        return false;
+    };
+    matches!(&*type_of_selector.x, ast::Expr::Ident(pkg) if pkg.name == "reflect")
+        && type_of_selector.sel.name == "TypeOf"
+        && matches!(type_of_call.args.as_deref(), Some([_]))
+}
+
+fn reflect_typeof_kind_arg(expr: ast::Expr) -> Option<ast::Expr> {
+    let ast::Expr::CallExpr(kind_call) = expr else {
+        return None;
+    };
+    let ast::Expr::SelectorExpr(kind_selector) = *kind_call.fun else {
+        return None;
+    };
+    let ast::Expr::CallExpr(type_of_call) = *kind_selector.x else {
+        return None;
+    };
+    let mut args = type_of_call.args?;
+    if args.len() == 1 {
+        Some(args.remove(0))
+    } else {
+        None
+    }
+}
+
+fn reflect_kind_const_ref<'expr, 'ast>(expr: &'expr ast::Expr<'ast>) -> Option<&'ast str> {
+    let ast::Expr::SelectorExpr(selector) = expr else {
+        return None;
+    };
+    if !matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "reflect") {
+        return None;
+    }
+    Some(selector.sel.name)
+}
+
+fn reflect_kind_variant_expr(name: &str) -> Option<syn::Expr> {
+    match name {
+        "Invalid" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Invalid }),
+        "Bool" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Bool }),
+        "Int" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Int }),
+        "Int8" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Int8 }),
+        "Int16" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Int16 }),
+        "Int32" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Int32 }),
+        "Int64" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Int64 }),
+        "Uint" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uint }),
+        "Uint8" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uint8 }),
+        "Uint16" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uint16 }),
+        "Uint32" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uint32 }),
+        "Uint64" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uint64 }),
+        "Uintptr" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Uintptr }),
+        "Float32" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Float32 }),
+        "Float64" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Float64 }),
+        "Complex64" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Complex64 }),
+        "Complex128" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Complex128 }),
+        "Array" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Array }),
+        "Chan" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Chan }),
+        "Func" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Func }),
+        "Interface" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Interface }),
+        "Map" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Map }),
+        "Pointer" | "Ptr" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Pointer }),
+        "Slice" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Slice }),
+        "String" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::String }),
+        "Struct" => Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::Struct }),
+        "UnsafePointer" => {
+            Some(syn::parse_quote! { crate::builtin::__GorsReflectKind::UnsafePointer })
+        }
+        _ => None,
+    }
 }
 
 fn is_type_arg_expr(expr: &ast::Expr) -> bool {
