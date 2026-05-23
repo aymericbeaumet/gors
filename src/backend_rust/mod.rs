@@ -616,6 +616,9 @@ impl GoLen for str {
 impl<T> GoLen for [T] {
     fn go_len(&self) -> usize { self.len() }
 }
+impl<T, const N: usize> GoLen for [T; N] {
+    fn go_len(&self) -> usize { N }
+}
 impl<K, V> GoLen for HashMap<K, V> {
     fn go_len(&self) -> usize { self.len() }
 }
@@ -641,6 +644,9 @@ pub trait GoCap {
 impl<T> GoCap for Vec<T> {
     fn go_cap(&self) -> usize { self.capacity() }
 }
+impl<T, const N: usize> GoCap for [T; N] {
+    fn go_cap(&self) -> usize { N }
+}
 impl<T> GoCap for GoChan<T> {
     fn go_cap(&self) -> usize { self.cap() }
 }
@@ -654,6 +660,32 @@ impl<T: GoCap + ?Sized> GoCap for &mut T {
 #[inline]
 pub fn cap<T: GoCap + ?Sized>(v: &T) -> usize {
     v.go_cap()
+}
+
+// ---------------------------------------------------------------------------
+// unsafe pointer scalar bitcasts
+// ---------------------------------------------------------------------------
+
+pub trait GoBitcastFrom<T> {
+    fn go_bitcast_from(value: T) -> Self;
+}
+
+impl GoBitcastFrom<f32> for u32 {
+    fn go_bitcast_from(value: f32) -> Self { value.to_bits() }
+}
+impl GoBitcastFrom<u32> for f32 {
+    fn go_bitcast_from(value: u32) -> Self { f32::from_bits(value) }
+}
+impl GoBitcastFrom<f64> for u64 {
+    fn go_bitcast_from(value: f64) -> Self { value.to_bits() }
+}
+impl GoBitcastFrom<u64> for f64 {
+    fn go_bitcast_from(value: u64) -> Self { f64::from_bits(value) }
+}
+
+#[inline]
+pub fn go_bitcast_ref<T: Copy, U: GoBitcastFrom<T>>(value: &T) -> U {
+    U::go_bitcast_from(*value)
 }
 
 // ---------------------------------------------------------------------------

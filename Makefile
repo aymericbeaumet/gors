@@ -23,44 +23,44 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Setup:"
-	@echo "  setup            Initialize git submodules (required for tests)"
-	@echo "  install-tools    Install required development tools"
+	@echo "  setup             Initialize git submodules (required for tests)"
+	@echo "  install-tools     Install required development tools"
 	@echo ""
 	@echo "Development:"
-	@echo "  all              Run lint, test, and build (default)"
+	@echo "  all               Run lint, test, and build (default)"
 	@echo ""
 	@echo "Linting & Formatting:"
-	@echo "  fmt              Format code with rustfmt"
-	@echo "  fmt-check        Check code formatting (CI mode)"
-	@echo "  lint             Run all linters (fmt-check + clippy)"
-	@echo "  clippy           Run clippy linter"
-	@echo "  doc              Generate documentation"
+	@echo "  fmt               Format code with rustfmt"
+	@echo "  fmt-check         Check code formatting (CI mode)"
+	@echo "  lint              Run all linters (fmt-check + clippy)"
+	@echo "  clippy            Run clippy linter"
+	@echo "  doc               Generate documentation"
 	@echo ""
 	@echo "Building:"
-	@echo "  build            Build all packages (debug)"
-	@echo "  build-release    Build all packages (release)"
+	@echo "  build             Build all packages (debug)"
+	@echo "  build-release     Build all packages (release)"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test-unit        Run unit tests (fast, no external dependencies)"
-	@echo "  test-integrations Run lexer+parser integration tests in parallel (requires: make setup)"
-	@echo "  test-lexer       Run lexer integration tests (with output)"
-	@echo "  test-parser      Run parser integration tests (with output)"
-	@echo "  test             Alias for test-unit (backward compatibility)"
+	@echo "  test-unit         Run all ungated tests, including go_programs fixtures"
+	@echo "  test-integrations Run cargo test with --features integration"
+	@echo "  test-lexer        Run lexer integration tests (with output)"
+	@echo "  test-parser       Run parser integration tests (with output)"
+	@echo "  test              Alias for test-unit (backward compatibility)"
 	@echo ""
 	@echo "Fuzzing:"
-	@echo "  fuzz-test        Run property-based fuzz tests (stable Rust, CI-friendly)"
-	@echo "  fuzz-scanner     Fuzz the Go scanner with AFL (requires: cargo install afl)"
-	@echo "  fuzz-parser      Fuzz the Go parser with AFL"
-	@echo "  fuzz-roundtrip   Fuzz parse->print->reparse with AFL"
-	@echo "  fuzz-build       Build all AFL fuzz targets"
-	@echo "  fuzz-export      Export crash inputs as test files"
+	@echo "  fuzz-test         Run property-based fuzz tests (stable Rust, CI-friendly)"
+	@echo "  fuzz-scanner      Fuzz the Go scanner with AFL (requires: cargo install afl)"
+	@echo "  fuzz-parser       Fuzz the Go parser with AFL"
+	@echo "  fuzz-roundtrip    Fuzz parse->print->reparse with AFL"
+	@echo "  fuzz-build        Build all AFL fuzz targets"
+	@echo "  fuzz-export       Export crash inputs as test files"
 	@echo ""
 	@echo "Packaging:"
-	@echo "  package          Build release binary and create tarball"
+	@echo "  package           Build release binary and create tarball"
 	@echo ""
 	@echo "Cleanup:"
-	@echo "  clean            Clean build artifacts"
-	@echo "  clean-all        Clean everything including dependencies"
+	@echo "  clean             Clean build artifacts"
+	@echo "  clean-all         Clean everything including dependencies"
 
 #------------------------------------------------------------------------------
 # Setup
@@ -108,15 +108,13 @@ build-release:
 # Testing
 #------------------------------------------------------------------------------
 
-# Unit tests: fast tests for core library (no external dependencies)
+# Default tests: all ungated tests, including go_programs stdlib fixtures.
 test-unit:
-	cargo test --package=gors
+	cargo test
 
-# Integration tests: lexer and parser tests against real Go repositories
-# Runs both in parallel using make's job parallelization
-# The test runner internally uses all available CPU cores
+# Integration tests: default suite plus lexer/parser repository integrations.
 test-integrations: build-release
-	@$(MAKE) -j2 _test-lexer _test-parser
+	cargo test --release --package=gors --features integration
 
 # Internal targets for parallel execution (do not call directly)
 _test-lexer:

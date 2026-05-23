@@ -352,6 +352,7 @@ pub struct TypeEnv {
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
     /// Package-level string constants emitted as owned-String functions.
     string_consts: HashSet<std::string::String>,
+    consts: HashSet<std::string::String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -455,6 +456,14 @@ impl TypeEnv {
         self.string_consts.insert(name.to_string());
     }
 
+    pub fn set_const(&mut self, name: &str) {
+        self.consts.insert(name.to_string());
+    }
+
+    pub fn is_const(&self, name: &str) -> bool {
+        self.consts.contains(name)
+    }
+
     pub fn is_string_const(&self, name: &str) -> bool {
         self.string_consts.contains(name)
     }
@@ -546,6 +555,9 @@ impl TypeEnv {
         let values = vs.values.as_ref();
 
         for (i, name) in vs.names.iter().enumerate() {
+            if tok == token::Token::CONST {
+                self.set_const(name.name);
+            }
             let ty = if let Some(ref et) = explicit_type {
                 et.clone()
             } else if tok == token::Token::CONST {

@@ -85,7 +85,8 @@ fn compile_multi_file_hello_world() {
     let compiled = gors::compiler::compile_program_multi(program).unwrap();
     assert!(compiled.has_main);
     assert!(compiled.modules.contains_key("__main__"));
-    assert!(compiled.modules.contains_key("fmt"));
+    assert!(compiled.modules.contains_key("builtin"));
+    assert!(!compiled.modules.contains_key("fmt"));
 }
 
 #[test]
@@ -99,12 +100,8 @@ fn compile_multi_file_with_imports() {
 
     assert!(compiled.has_main);
     assert!(compiled.modules.values().any(|m| m.mod_name == "greet"));
-    assert!(
-        compiled
-            .modules
-            .values()
-            .any(|m| m.mod_name == "fmt" && m.is_stdlib)
-    );
+    assert!(compiled.modules.contains_key("builtin"));
+    assert!(!compiled.modules.contains_key("fmt"));
 
     let greet = compiled
         .modules

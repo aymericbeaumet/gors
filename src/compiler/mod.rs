@@ -377,66 +377,401 @@ fn generics_for_idents(idents: &[syn::Ident]) -> syn::Generics {
     }
 }
 
-/// Attempt to evaluate a Go constant expression at compile time, substituting `iota` with the
-/// given value. Returns `Some(value)` if fully evaluable, `None` otherwise.
-fn const_eval_expr(expr: &ast::Expr, iota_value: i64) -> Option<i64> {
-    match expr {
-        ast::Expr::BasicLit(lit) => {
-            if lit.kind == token::Token::INT {
-                let s = lit.value;
-                if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                    i64::from_str_radix(hex, 16).ok()
-                } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-                    i64::from_str_radix(bin, 2).ok()
-                } else if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
-                    i64::from_str_radix(oct, 8).ok()
+#[derive(Clone, Debug)]
+enum ConstValue {
+    Bool(bool),
+    Float(f64),
+    Int(i128),
+    Str(String),
+    Uint(u128, u32),
+}
+
+impl ConstValue {
+    fn as_i128(&self) -> Option<i128> {
+        match self {
+            ConstValue::Int(value) => Some(*value),
+            ConstValue::Uint(value, _) => i128::try_from(*value).ok(),
+            ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
+        }
+    }
+
+    fn as_u128(&self) -> Option<u128> {
+        match self {
+            ConstValue::Int(value) => u128::try_from(*value).ok(),
+            ConstValue::Uint(value, _) => Some(*value),
+            ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
+        }
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            ConstValue::Float(value) => Some(*value),
+            ConstValue::Int(value) => Some(*value as f64),
+            ConstValue::Uint(value, _) => Some(*value as f64),
+            ConstValue::Bool(_) | ConstValue::Str(_) => None,
+        }
+    }
+
+    fn rust_type(&self) -> syn::Type {
+        match self {
+            ConstValue::Bool(_) => syn::parse_quote! { bool },
+            ConstValue::Float(_) => syn::parse_quote! { f64 },
+            ConstValue::Str(_) => syn::parse_quote! { &str },
+            ConstValue::Int(value) if *value >= 0 && *value > i64::MAX as i128 => {
+                if *value <= u64::MAX as i128 {
+                    syn::parse_quote! { u64 }
                 } else {
-                    s.parse::<i64>().ok()
+                    syn::parse_quote! { u128 }
                 }
+            }
+            ConstValue::Int(value) if *value < isize::MIN as i128 => syn::parse_quote! { i128 },
+            ConstValue::Int(_) => syn::parse_quote! { isize },
+            ConstValue::Uint(_, bits) if *bits <= usize::BITS => syn::parse_quote! { usize },
+            ConstValue::Uint(_, bits) if *bits <= 64 => syn::parse_quote! { u64 },
+            ConstValue::Uint(_, _) => syn::parse_quote! { u128 },
+        }
+    }
+
+    fn to_expr(&self) -> syn::Expr {
+        match self {
+            ConstValue::Bool(true) => syn::parse_quote! { true },
+            ConstValue::Bool(false) => syn::parse_quote! { false },
+            ConstValue::Float(value) => {
+                if value.is_infinite() && value.is_sign_positive() {
+                    syn::parse_quote! { f64::INFINITY }
+                } else if value.is_infinite() {
+                    syn::parse_quote! { f64::NEG_INFINITY }
+                } else if value.is_nan() {
+                    syn::parse_quote! { f64::NAN }
+                } else {
+                    let lit = syn::LitFloat::new(&format!("{value:e}"), Span::mixed_site());
+                    syn::parse_quote! { #lit }
+                }
+            }
+            ConstValue::Int(value) => {
+                let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
+                syn::parse_quote! { #lit }
+            }
+            ConstValue::Str(value) => {
+                let lit = syn::LitStr::new(value, Span::mixed_site());
+                syn::parse_quote! { #lit }
+            }
+            ConstValue::Uint(value, _) => {
+                let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
+                syn::parse_quote! { #lit }
+            }
+        }
+    }
+}
+
+fn parse_go_int_literal(lit: &str) -> Option<ConstValue> {
+    let lit = lit.replace('_', "");
+    let (digits, radix) =
+        if let Some(hex) = lit.strip_prefix("0x").or_else(|| lit.strip_prefix("0X")) {
+            (hex, 16)
+        } else if let Some(bin) = lit.strip_prefix("0b").or_else(|| lit.strip_prefix("0B")) {
+            (bin, 2)
+        } else if let Some(oct) = lit.strip_prefix("0o").or_else(|| lit.strip_prefix("0O")) {
+            (oct, 8)
+        } else if lit.len() > 1 && lit.starts_with('0') {
+            (&lit[1..], 8)
+        } else {
+            (lit.as_str(), 10)
+        };
+    let value = u128::from_str_radix(digits, radix).ok()?;
+    if let Ok(value) = i128::try_from(value) {
+        Some(ConstValue::Int(value))
+    } else {
+        Some(ConstValue::Uint(value, 128))
+    }
+}
+
+fn parse_go_float_literal(lit: &str) -> Option<f64> {
+    let lit = lit.replace('_', "");
+    let lower = lit.to_ascii_lowercase();
+    if !lower.starts_with("0x") {
+        return lit.parse::<f64>().ok();
+    }
+
+    let body = &lower[2..];
+    let (mantissa, exponent) = body.split_once('p')?;
+    let exponent = exponent.parse::<i32>().ok()?;
+    let mut value = 0f64;
+    let mut fractional_digits = 0i32;
+    let mut after_dot = false;
+    for ch in mantissa.chars() {
+        if ch == '.' {
+            after_dot = true;
+            continue;
+        }
+        let digit = ch.to_digit(16)? as f64;
+        value = value * 16.0 + digit;
+        if after_dot {
+            fractional_digits += 1;
+        }
+    }
+    Some(value * 16f64.powi(-fractional_digits) * 2f64.powi(exponent))
+}
+
+fn mask_for_bits(bits: u32) -> u128 {
+    if bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
+    }
+}
+
+fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstValue> {
+    let target_name = extract_type_name(target)?;
+    match target_name.as_str() {
+        "bool" => match value {
+            ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
+            _ => None,
+        },
+        "float32" | "float64" => Some(ConstValue::Float(value.as_f64()?)),
+        "int" => Some(ConstValue::Int(value.as_i128()? as isize as i128)),
+        "int8" => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
+        "int16" => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
+        "int32" | "rune" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
+        "int64" => Some(ConstValue::Int(value.as_i128()? as i64 as i128)),
+        "uint" | "uintptr" => Some(ConstValue::Uint(
+            value.as_u128()? & mask_for_bits(usize::BITS),
+            usize::BITS,
+        )),
+        "uint8" | "byte" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(8), 8)),
+        "uint16" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(16), 16)),
+        "uint32" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(32), 32)),
+        "uint64" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(64), 64)),
+        "string" => match value {
+            ConstValue::Str(value) => Some(ConstValue::Str(value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn const_binary_expr(lhs: ConstValue, op: token::Token, rhs: ConstValue) -> Option<ConstValue> {
+    match op {
+        token::Token::ADD => match (lhs, rhs) {
+            (ConstValue::Str(lhs), ConstValue::Str(rhs)) => Some(ConstValue::Str(lhs + &rhs)),
+            (lhs, rhs)
+                if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) =>
+            {
+                Some(ConstValue::Float(lhs.as_f64()? + rhs.as_f64()?))
+            }
+            (ConstValue::Uint(lhs, bits), rhs) => {
+                Some(ConstValue::Uint(lhs + rhs.as_u128()?, bits))
+            }
+            (lhs, ConstValue::Uint(rhs, bits)) => {
+                Some(ConstValue::Uint(lhs.as_u128()? + rhs, bits))
+            }
+            (lhs, rhs) => Some(ConstValue::Int(lhs.as_i128()?.checked_add(rhs.as_i128()?)?)),
+        },
+        token::Token::SUB => {
+            if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) {
+                Some(ConstValue::Float(lhs.as_f64()? - rhs.as_f64()?))
+            } else if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_sub(rhs.as_u128()?)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_sub(rhs.as_i128()?)?))
+            }
+        }
+        token::Token::MUL => {
+            if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) {
+                Some(ConstValue::Float(lhs.as_f64()? * rhs.as_f64()?))
+            } else if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_mul(rhs.as_u128()?)?, *bits))
+            } else if let ConstValue::Uint(rhs, bits) = &rhs {
+                Some(ConstValue::Uint(lhs.as_u128()?.checked_mul(*rhs)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_mul(rhs.as_i128()?)?))
+            }
+        }
+        token::Token::QUO => {
+            if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) {
+                Some(ConstValue::Float(lhs.as_f64()? / rhs.as_f64()?))
+            } else if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_div(rhs.as_u128()?)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_div(rhs.as_i128()?)?))
+            }
+        }
+        token::Token::REM => {
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_rem(rhs.as_u128()?)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_rem(rhs.as_i128()?)?))
+            }
+        }
+        token::Token::SHL => {
+            let shift = u32::try_from(rhs.as_u128()?).ok()?;
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_shl(shift)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_shl(shift)?))
+            }
+        }
+        token::Token::SHR => {
+            let shift = u32::try_from(rhs.as_u128()?).ok()?;
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(lhs.checked_shr(shift)?, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()?.checked_shr(shift)?))
+            }
+        }
+        token::Token::AND => {
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(*lhs & rhs.as_u128()?, *bits))
+            } else if let ConstValue::Uint(rhs, bits) = &rhs {
+                Some(ConstValue::Uint(lhs.as_u128()? & *rhs, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()? & rhs.as_i128()?))
+            }
+        }
+        token::Token::AND_NOT => {
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(
+                    *lhs & !rhs.as_u128()? & mask_for_bits(*bits),
+                    *bits,
+                ))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()? & !rhs.as_i128()?))
+            }
+        }
+        token::Token::OR => {
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(*lhs | rhs.as_u128()?, *bits))
+            } else if let ConstValue::Uint(rhs, bits) = &rhs {
+                Some(ConstValue::Uint(lhs.as_u128()? | *rhs, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()? | rhs.as_i128()?))
+            }
+        }
+        token::Token::XOR => {
+            if let ConstValue::Uint(lhs, bits) = &lhs {
+                Some(ConstValue::Uint(*lhs ^ rhs.as_u128()?, *bits))
+            } else if let ConstValue::Uint(rhs, bits) = &rhs {
+                Some(ConstValue::Uint(lhs.as_u128()? ^ *rhs, *bits))
+            } else {
+                Some(ConstValue::Int(lhs.as_i128()? ^ rhs.as_i128()?))
+            }
+        }
+        token::Token::EQL => Some(ConstValue::Bool(match (&lhs, &rhs) {
+            (ConstValue::Bool(lhs), ConstValue::Bool(rhs)) => lhs == rhs,
+            (ConstValue::Str(lhs), ConstValue::Str(rhs)) => lhs == rhs,
+            _ if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) => {
+                lhs.as_f64()? == rhs.as_f64()?
+            }
+            _ => lhs.as_i128()? == rhs.as_i128()?,
+        })),
+        token::Token::NEQ => const_binary_expr(lhs, token::Token::EQL, rhs).and_then(|value| {
+            if let ConstValue::Bool(value) = value {
+                Some(ConstValue::Bool(!value))
             } else {
                 None
             }
+        }),
+        token::Token::LSS | token::Token::GTR | token::Token::LEQ | token::Token::GEQ => {
+            let ord =
+                if matches!(&lhs, ConstValue::Float(_)) || matches!(&rhs, ConstValue::Float(_)) {
+                    lhs.as_f64()?.partial_cmp(&rhs.as_f64()?)?
+                } else {
+                    lhs.as_i128()?.cmp(&rhs.as_i128()?)
+                };
+            Some(ConstValue::Bool(match op {
+                token::Token::LSS => ord.is_lt(),
+                token::Token::GTR => ord.is_gt(),
+                token::Token::LEQ => !ord.is_gt(),
+                token::Token::GEQ => !ord.is_lt(),
+                _ => false,
+            }))
         }
-        ast::Expr::Ident(ident) if ident.name == "iota" => Some(iota_value),
+        token::Token::LAND => {
+            let ConstValue::Bool(lhs) = lhs else {
+                return None;
+            };
+            let ConstValue::Bool(rhs) = rhs else {
+                return None;
+            };
+            Some(ConstValue::Bool(lhs && rhs))
+        }
+        token::Token::LOR => {
+            let ConstValue::Bool(lhs) = lhs else {
+                return None;
+            };
+            let ConstValue::Bool(rhs) = rhs else {
+                return None;
+            };
+            Some(ConstValue::Bool(lhs || rhs))
+        }
+        _ => None,
+    }
+}
+
+fn const_eval_expr(
+    expr: &ast::Expr,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+) -> Option<ConstValue> {
+    match expr {
+        ast::Expr::BasicLit(lit) => match lit.kind {
+            token::Token::INT => parse_go_int_literal(lit.value),
+            token::Token::FLOAT => parse_go_float_literal(lit.value).map(ConstValue::Float),
+            token::Token::STRING => {
+                let raw = lit.value;
+                let inner = &raw[1..raw.len() - 1];
+                let value = if raw.starts_with('`') {
+                    inner.to_string()
+                } else {
+                    interpret_go_string_escapes(inner)
+                };
+                Some(ConstValue::Str(value))
+            }
+            _ => None,
+        },
+        ast::Expr::Ident(ident) if ident.name == "iota" => Some(ConstValue::Int(iota_value.into())),
+        ast::Expr::Ident(ident) if ident.name == "true" => Some(ConstValue::Bool(true)),
+        ast::Expr::Ident(ident) if ident.name == "false" => Some(ConstValue::Bool(false)),
+        ast::Expr::Ident(ident) => values.get(ident.name).cloned(),
         ast::Expr::BinaryExpr(bin) => {
-            let lhs = const_eval_expr(&bin.x, iota_value)?;
-            let rhs = const_eval_expr(&bin.y, iota_value)?;
-            match bin.op {
-                token::Token::ADD => lhs.checked_add(rhs),
-                token::Token::SUB => lhs.checked_sub(rhs),
-                token::Token::MUL => lhs.checked_mul(rhs),
-                token::Token::QUO => {
-                    if rhs == 0 {
-                        None
+            let lhs = const_eval_expr(&bin.x, iota_value, values)?;
+            let rhs = const_eval_expr(&bin.y, iota_value, values)?;
+            const_binary_expr(lhs, bin.op, rhs)
+        }
+        ast::Expr::ParenExpr(paren) => const_eval_expr(&paren.x, iota_value, values),
+        ast::Expr::UnaryExpr(unary) => {
+            let value = const_eval_expr(&unary.x, iota_value, values)?;
+            match unary.op {
+                token::Token::SUB => {
+                    if let ConstValue::Float(value) = value {
+                        Some(ConstValue::Float(-value))
                     } else {
-                        lhs.checked_div(rhs)
+                        Some(ConstValue::Int(value.as_i128()?.checked_neg()?))
                     }
                 }
-                token::Token::REM => {
-                    if rhs == 0 {
-                        None
-                    } else {
-                        lhs.checked_rem(rhs)
-                    }
+                token::Token::ADD => Some(value),
+                token::Token::NOT => {
+                    let ConstValue::Bool(value) = value else {
+                        return None;
+                    };
+                    Some(ConstValue::Bool(!value))
                 }
-                token::Token::SHL => u32::try_from(rhs).ok().and_then(|rhs| lhs.checked_shl(rhs)),
-                token::Token::SHR => u32::try_from(rhs).ok().and_then(|rhs| lhs.checked_shr(rhs)),
-                token::Token::AND => Some(lhs & rhs),
-                token::Token::AND_NOT => Some(lhs & !rhs),
-                token::Token::OR => Some(lhs | rhs),
-                token::Token::XOR => Some(lhs ^ rhs),
+                token::Token::XOR => match value {
+                    ConstValue::Uint(value, bits) => {
+                        Some(ConstValue::Uint(!value & mask_for_bits(bits), bits))
+                    }
+                    value => Some(ConstValue::Int(!value.as_i128()?)),
+                },
                 _ => None,
             }
         }
-        ast::Expr::ParenExpr(paren) => const_eval_expr(&paren.x, iota_value),
-        ast::Expr::UnaryExpr(unary) => {
-            let val = const_eval_expr(&unary.x, iota_value)?;
-            match unary.op {
-                token::Token::SUB => val.checked_neg(),
-                token::Token::ADD => Some(val),
-                token::Token::XOR => Some(!val),
-                _ => None,
+        ast::Expr::CallExpr(call) => {
+            let args = call.args.as_ref()?;
+            if args.len() != 1 {
+                return None;
             }
+            let value = const_eval_expr(args.first()?, iota_value, values)?;
+            convert_const_value(value, &call.fun)
         }
         _ => None,
     }
@@ -454,6 +789,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
 
     let mut items = vec![];
     let mut last_valued_idx: Option<usize> = None;
+    let mut const_values: BTreeMap<String, ConstValue> = BTreeMap::new();
 
     for (iota, spec_idx) in (0..value_specs.len()).enumerate() {
         let Some(value_spec) = value_specs.get(spec_idx) else {
@@ -494,30 +830,6 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             })
         };
 
-        let inferred_from_value = source_values.and_then(|vals| {
-            vals.first().and_then(|expr| match expr {
-                ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => {
-                    Some(syn::parse_quote! { &str })
-                }
-                ast::Expr::BasicLit(lit) if lit.kind == token::Token::FLOAT => {
-                    Some(syn::parse_quote! { f64 })
-                }
-                ast::Expr::Ident(id) if id.name == "true" || id.name == "false" => {
-                    Some(syn::parse_quote! { bool })
-                }
-                _ => None,
-            })
-        });
-
-        let rust_type: syn::Type = if let Some(name) = type_name_str {
-            let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
-            syn::parse_quote! { #type_ident }
-        } else if let Some(ty) = inferred_from_value {
-            ty
-        } else {
-            syn::parse_quote! { isize }
-        };
-
         for (name_idx, name) in value_spec.names.iter().enumerate() {
             if name.name == "_" {
                 continue;
@@ -527,11 +839,31 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             let ident = syn::Ident::new(&import_rust_name(name.name), Span::mixed_site());
 
             let value_expr = source_values.and_then(|vals| vals.get(name_idx));
+            let evaluated =
+                value_expr.and_then(|expr| const_eval_expr(expr, iota as i64, &const_values));
+
+            let rust_type: syn::Type = if let Some(name) = type_name_str {
+                let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
+                syn::parse_quote! { #type_ident }
+            } else if let Some(value) = &evaluated {
+                value.rust_type()
+            } else if let Some(expr) = value_expr {
+                TYPE_ENV.with(|env| {
+                    let go_type = typeinfer::GoType::infer_expr(expr, &env.borrow());
+                    if matches!(go_type, typeinfer::GoType::String) {
+                        syn::parse_quote! { &str }
+                    } else {
+                        rust_type_from_go_type(&go_type)
+                            .unwrap_or_else(|| syn::parse_quote! { isize })
+                    }
+                })
+            } else {
+                syn::parse_quote! { isize }
+            };
 
             let value: syn::Expr = if let Some(expr) = value_expr {
-                if let Some(evaluated) = const_eval_expr(expr, iota as i64) {
-                    let lit = syn::LitInt::new(&evaluated.to_string(), Span::mixed_site());
-                    syn::parse_quote! { #lit }
+                if let Some(evaluated) = &evaluated {
+                    evaluated.to_expr()
                 } else if let ast::Expr::BasicLit(lit) = expr {
                     match lit.kind {
                         token::Token::STRING => {
@@ -546,7 +878,11 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                             syn::parse_quote! { #s }
                         }
                         token::Token::FLOAT => {
-                            let f = syn::LitFloat::new(lit.value, Span::mixed_site());
+                            let value = parse_go_float_literal(lit.value).map_or_else(
+                                || lit.value.to_string(),
+                                |value| format!("{value:e}"),
+                            );
+                            let f = syn::LitFloat::new(&value, Span::mixed_site());
                             syn::parse_quote! { #f }
                         }
                         _ => syn::parse_quote! { 0 },
@@ -589,6 +925,9 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 items.push(syn::parse_quote! {
                     #vis const #ident: #rust_type = #value;
                 });
+            }
+            if let Some(evaluated) = evaluated {
+                const_values.insert(name.name.to_string(), evaluated);
             }
         }
     }
@@ -1527,6 +1866,13 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 if roots.is_empty() {
                     continue;
                 }
+                let expanded_roots;
+                let roots = if module.mod_name == "builtin" {
+                    expanded_roots = expand_builtin_roots(roots);
+                    &expanded_roots
+                } else {
+                    roots
+                };
                 let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, &module_names);
                 changed |= merge_required_refs(&mut required, refs);
             }
@@ -1553,9 +1899,18 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             let Some(roots) = required.get(&module.mod_name) else {
                 continue;
             };
+            let expanded_roots;
+            let roots = if module.mod_name == "builtin" {
+                expanded_roots = expand_builtin_roots(roots);
+                &expanded_roots
+            } else {
+                roots
+            };
             prune_items_to_roots(&mut module.file.items, roots, &module_names);
             if module.mod_name == "builtin" {
                 prune_builtin_channel_helpers(&mut module.file.items, roots);
+                prune_builtin_complex_helpers(&mut module.file.items, roots);
+                prune_builtin_bitcast_helpers(&mut module.file.items, roots);
                 prune_unneeded_builtin_traits(&mut module.file.items, roots);
             } else if let Some(builtin_roots) = required.get("builtin") {
                 prune_unneeded_builtin_traits(&mut module.file.items, builtin_roots);
@@ -1607,6 +1962,48 @@ fn prune_items_to_roots(
                 .flatten()
         })
         .collect();
+}
+
+fn expand_builtin_roots(
+    roots: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut expanded = roots.clone();
+    let needs_channel_methods = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "GoChan"
+                | "GoChanIter"
+                | "ChanInner"
+                | "make_chan"
+                | "close"
+                | "send"
+                | "recv"
+                | "recv_with_ok"
+                | "GoChan::send"
+                | "GoChan::recv"
+                | "GoChan::recv_with_ok"
+                | "GoChan::len"
+                | "GoChan::cap"
+        )
+    });
+    if needs_channel_methods {
+        for root in [
+            "GoChan",
+            "GoChanIter",
+            "ChanInner",
+            "GoChan::new",
+            "GoChan::send",
+            "GoChan::recv",
+            "GoChan::recv_with_ok",
+            "new",
+            "send",
+            "recv",
+            "recv_with_ok",
+        ] {
+            expanded.insert(root.to_string());
+        }
+    }
+    expanded
 }
 
 fn modules_reachability_fingerprint(modules: &BTreeMap<String, CompiledModule>) -> String {
@@ -1710,6 +2107,87 @@ fn prune_builtin_channel_helpers(
             return true;
         };
         !named_self_type(&item_impl.self_ty).is_some_and(|name| channel_names.contains(&name))
+    });
+}
+
+fn prune_builtin_complex_helpers(
+    items: &mut Vec<syn::Item>,
+    roots: &std::collections::HashSet<String>,
+) {
+    let needs_complex64 = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "Complex64" | "complex64" | "real64" | "imag64" | "to_complex64"
+        )
+    });
+    let needs_complex_conversions = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "to_complex64" | "to_complex128" | "GoComplex64" | "GoComplex128"
+        )
+    });
+
+    items.retain(|item| {
+        if let Some(name) = item_name(item)
+            && name == "impl_real_complex_conversions"
+        {
+            return needs_complex_conversions;
+        }
+        if let syn::Item::Struct(item_struct) = item
+            && item_struct.ident == "Complex64"
+        {
+            return needs_complex64 || needs_complex_conversions;
+        }
+        if let syn::Item::Trait(item_trait) = item
+            && matches!(
+                item_trait.ident.to_string().as_str(),
+                "GoComplex64" | "GoComplex128"
+            )
+        {
+            return needs_complex_conversions;
+        }
+        let syn::Item::Impl(item_impl) = item else {
+            return true;
+        };
+        if named_self_type(&item_impl.self_ty).is_some_and(|name| name == "Complex64") {
+            return needs_complex64 || needs_complex_conversions;
+        }
+        if let Some((_, path, _)) = &item_impl.trait_
+            && path.segments.last().is_some_and(|seg| {
+                matches!(
+                    seg.ident.to_string().as_str(),
+                    "GoComplex64" | "GoComplex128"
+                )
+            })
+        {
+            return needs_complex_conversions;
+        }
+        true
+    });
+}
+
+fn prune_builtin_bitcast_helpers(
+    items: &mut Vec<syn::Item>,
+    roots: &std::collections::HashSet<String>,
+) {
+    if roots.contains("go_bitcast_ref") {
+        return;
+    }
+
+    items.retain(|item| {
+        if let syn::Item::Trait(item_trait) = item
+            && item_trait.ident == "GoBitcastFrom"
+        {
+            return false;
+        }
+        let syn::Item::Impl(item_impl) = item else {
+            return true;
+        };
+        item_impl
+            .trait_
+            .as_ref()
+            .and_then(|(_, path, _)| path.segments.last())
+            .is_none_or(|seg| seg.ident != "GoBitcastFrom")
     });
 }
 
@@ -3246,12 +3724,15 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
 }
 
 fn array_len_expr(expr: &ast::Expr) -> syn::Expr {
-    if let Some(value) = const_eval_expr(expr, 0) {
-        let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
-        syn::parse_quote! { #lit }
-    } else {
-        syn::parse_quote! { 0 }
-    }
+    let values = BTreeMap::new();
+    let Some(value) = const_eval_expr(expr, 0, &values) else {
+        return syn::parse_quote! { 0 };
+    };
+    let Some(value) = value.as_u128() else {
+        return syn::parse_quote! { 0 };
+    };
+    let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
+    syn::parse_quote! { #lit }
 }
 
 fn next_unnamed_arg_ident() -> syn::Ident {
@@ -4479,6 +4960,86 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
         "[]rune" => syn::parse_quote! { (#arg).chars().collect::<Vec<char>>() },
         _ => compile_error_expr(format!("unsupported type conversion: {kind}")),
     }
+}
+
+fn compile_unsafe_pointer_bitcast(expr: ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::CallExpr(pointer_cast) = expr else {
+        return None;
+    };
+    let target = pointer_type_target(*pointer_cast.fun)?;
+    let mut pointer_args = pointer_cast.args?.into_iter();
+    let unsafe_pointer_call = pointer_args.next()?;
+    if pointer_args.next().is_some() {
+        return None;
+    }
+    let ast::Expr::CallExpr(unsafe_pointer_call) = unsafe_pointer_call else {
+        return None;
+    };
+    let ast::Expr::SelectorExpr(selector) = *unsafe_pointer_call.fun else {
+        return None;
+    };
+    if !matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
+        || selector.sel.name != "Pointer"
+    {
+        return None;
+    }
+    let mut unsafe_args = unsafe_pointer_call.args?.into_iter();
+    let source = unsafe_args.next()?;
+    if unsafe_args.next().is_some() {
+        return None;
+    }
+    let ast::Expr::UnaryExpr(source) = source else {
+        return None;
+    };
+    if source.op != token::Token::AND {
+        return None;
+    }
+    let source: syn::Expr = (*source.x).into();
+    let target_ty = type_from_expr_ref(&target);
+    Some(syn::parse_quote! {
+        crate::builtin::go_bitcast_ref::<_, #target_ty>(&#source)
+    })
+}
+
+fn pointer_type_target(expr: ast::Expr) -> Option<ast::Expr> {
+    match expr {
+        ast::Expr::StarExpr(star) => Some(*star.x),
+        ast::Expr::ParenExpr(paren) => pointer_type_target(*paren.x),
+        _ => None,
+    }
+}
+
+fn pointer_type_target_ref<'expr, 'ast>(
+    expr: &'expr ast::Expr<'ast>,
+) -> Option<&'expr ast::Expr<'ast>> {
+    match expr {
+        ast::Expr::StarExpr(star) => Some(&star.x),
+        ast::Expr::ParenExpr(paren) => pointer_type_target_ref(&paren.x),
+        _ => None,
+    }
+}
+
+fn is_unsafe_pointer_bitcast_expr(expr: &ast::Expr) -> bool {
+    let ast::Expr::CallExpr(pointer_cast) = expr else {
+        return false;
+    };
+    if pointer_type_target_ref(&pointer_cast.fun).is_none() {
+        return false;
+    }
+    let Some(args) = &pointer_cast.args else {
+        return false;
+    };
+    let [unsafe_pointer_call] = args.as_slice() else {
+        return false;
+    };
+    let ast::Expr::CallExpr(unsafe_pointer_call) = unsafe_pointer_call else {
+        return false;
+    };
+    let ast::Expr::SelectorExpr(selector) = &*unsafe_pointer_call.fun else {
+        return false;
+    };
+    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
+        && selector.sel.name == "Pointer"
 }
 
 fn rust_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -6144,7 +6705,40 @@ fn coerce_assignment_expr(
         }
     }
 
+    rhs_expr = coerce_numeric_expr(lhs_ty, rhs_ty, rhs_expr);
+
     rhs_expr
+}
+
+fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
+    TYPE_ENV.with(|env| env.borrow().resolve_alias(ty))
+}
+
+fn numeric_cast_type(ty: &typeinfer::GoType) -> Option<syn::Type> {
+    let resolved = resolved_go_type(ty);
+    if !resolved.is_numeric() && !matches!(resolved, typeinfer::GoType::Uintptr) {
+        return None;
+    }
+    rust_type_from_go_type(&resolved)
+}
+
+fn coerce_numeric_expr(
+    expected: &typeinfer::GoType,
+    actual: &typeinfer::GoType,
+    expr: syn::Expr,
+) -> syn::Expr {
+    let expected_resolved = resolved_go_type(expected);
+    let actual_resolved = resolved_go_type(actual);
+    if expected_resolved == actual_resolved {
+        return expr;
+    }
+    let Some(target_ty) = numeric_cast_type(&expected_resolved) else {
+        return expr;
+    };
+    if !actual_resolved.is_numeric() && !matches!(actual_resolved, typeinfer::GoType::Uintptr) {
+        return expr;
+    }
+    syn::parse_quote! { (#expr as #target_ty) }
 }
 
 fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {
@@ -6168,6 +6762,17 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
             let expr: syn::Expr = expr.into();
             return syn::parse_quote! { &mut #expr };
         }
+    }
+
+    if let Some(expected) = expected {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        let compiled = if numeric_cast_type(expected).is_some() && is_const_like_expr(&expr) {
+            const_eval_expr(&expr, 0, &BTreeMap::new())
+                .map_or_else(|| expr.into(), |value| value.to_expr())
+        } else {
+            expr.into()
+        };
+        return coerce_numeric_expr(expected, &actual, compiled);
     }
 
     expr.into()
@@ -6765,6 +7370,48 @@ fn is_nil_expr(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::Ident(id) if id.name == "nil")
 }
 
+fn should_coerce_numeric_binary_side(
+    expr: &ast::Expr,
+    expr_ty: &typeinfer::GoType,
+    other_ty: &typeinfer::GoType,
+) -> bool {
+    let expr_ty = resolved_go_type(expr_ty);
+    let other_ty = resolved_go_type(other_ty);
+    if expr_ty == other_ty || numeric_cast_type(&other_ty).is_none() {
+        return false;
+    }
+    if !expr_ty.is_numeric() && !matches!(expr_ty, typeinfer::GoType::Uintptr) {
+        return false;
+    }
+    is_const_like_expr(expr)
+}
+
+fn is_const_like_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::BasicLit(_) => true,
+        ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
+        ast::Expr::Ident(ident) => TYPE_ENV.with(|env| env.borrow().is_const(ident.name)),
+        ast::Expr::ParenExpr(paren) => is_const_like_expr(&paren.x),
+        ast::Expr::UnaryExpr(unary) => is_const_like_expr(&unary.x),
+        ast::Expr::BinaryExpr(binary) => {
+            is_const_like_expr(&binary.x) && is_const_like_expr(&binary.y)
+        }
+        _ => false,
+    }
+}
+
+fn compile_binary_side(
+    expr: ast::Expr,
+    expr_ty: &typeinfer::GoType,
+    other_ty: &typeinfer::GoType,
+) -> syn::Expr {
+    if should_coerce_numeric_binary_side(&expr, expr_ty, other_ty) {
+        compile_expr_with_expected(expr, Some(other_ty))
+    } else {
+        expr.into()
+    }
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if matches!(op, token::Token::EQL | token::Token::NEQ)
@@ -6814,7 +7461,32 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         }
     }
 
-    syn::Expr::Binary(binary_expr.into())
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
+    let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
+    let original_op = binary_expr.op;
+    let op: syn::BinOp = original_op.into();
+    let left = compile_binary_side(*binary_expr.x, &left_ty, &right_ty);
+    let right = compile_binary_side(*binary_expr.y, &right_ty, &left_ty);
+    if original_op == token::Token::AND_NOT {
+        let not_right = syn::Expr::Unary(syn::ExprUnary {
+            attrs: vec![],
+            op: syn::UnOp::Not(<Token![!]>::default()),
+            expr: Box::new(right),
+        });
+        return syn::Expr::Binary(syn::ExprBinary {
+            attrs: vec![],
+            left: Box::new(left),
+            op: syn::BinOp::BitAnd(<Token![&]>::default()),
+            right: Box::new(not_right),
+        });
+    }
+    syn::Expr::Binary(syn::ExprBinary {
+        attrs: vec![],
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    })
 }
 
 fn is_type_arg_expr(expr: &ast::Expr) -> bool {
@@ -7098,11 +7770,19 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     index: Box::new(idx),
                 })
             }
-            ast::Expr::StarExpr(star_expr) => Self::Unary(syn::ExprUnary {
-                attrs: vec![],
-                op: syn::UnOp::Deref(<Token![*]>::default()),
-                expr: Box::new((*star_expr.x).into()),
-            }),
+            ast::Expr::StarExpr(star_expr) => {
+                let inner = *star_expr.x;
+                if is_unsafe_pointer_bitcast_expr(&inner) {
+                    return compile_unsafe_pointer_bitcast(inner).unwrap_or_else(|| {
+                        compile_error_expr("unsupported unsafe pointer bitcast")
+                    });
+                }
+                Self::Unary(syn::ExprUnary {
+                    attrs: vec![],
+                    op: syn::UnOp::Deref(<Token![*]>::default()),
+                    expr: Box::new(inner.into()),
+                })
+            }
             ast::Expr::CompositeLit(comp_lit) => compile_composite_lit(comp_lit),
             ast::Expr::FuncLit(func_lit) => compile_func_lit(func_lit),
             ast::Expr::SliceExpr(slice_expr) => compile_slice_expr(slice_expr),
