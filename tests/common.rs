@@ -197,19 +197,44 @@ pub fn discover_program_dirs() -> Vec<PathBuf> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir() && p.join("main.go").exists())
-        .filter(|p| {
-            config.filter.as_ref().is_none_or(|filter| {
-                p.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.contains(filter))
-            })
-        })
         .collect();
+
+    collect_stdlib_program_dirs(&programs_dir.join("stdlib"), &mut dirs);
+    dirs.retain(|p| program_matches_filter(&programs_dir, p, config.filter.as_deref()));
     dirs.sort();
     if let Some(limit) = config.limit {
         dirs.truncate(limit);
     }
     dirs
+}
+
+fn collect_stdlib_program_dirs(dir: &Path, dirs: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("main.go").exists() {
+            dirs.push(path);
+        } else {
+            collect_stdlib_program_dirs(&path, dirs);
+        }
+    }
+}
+
+fn program_matches_filter(programs_dir: &Path, path: &Path, filter: Option<&str>) -> bool {
+    filter.is_none_or(|filter| {
+        path.strip_prefix(programs_dir)
+            .ok()
+            .and_then(|relative| relative.to_str())
+            .or_else(|| path.file_name().and_then(|name| name.to_str()))
+            .is_some_and(|name| name.contains(filter))
+    })
 }
 
 /// Collect all `.go` files from a directory recursively.

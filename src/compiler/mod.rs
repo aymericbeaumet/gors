@@ -1556,8 +1556,9 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             prune_items_to_roots(&mut module.file.items, roots, &module_names);
             if module.mod_name == "builtin" {
                 prune_builtin_channel_helpers(&mut module.file.items, roots);
+                prune_unneeded_builtin_traits(&mut module.file.items, roots);
             } else if let Some(builtin_roots) = required.get("builtin") {
-                prune_unneeded_builtin_trait_impls(&mut module.file.items, builtin_roots);
+                prune_unneeded_builtin_traits(&mut module.file.items, builtin_roots);
             }
             if has_main {
                 prune_unused_struct_fields(&mut module.file.items);
@@ -1712,11 +1713,18 @@ fn prune_builtin_channel_helpers(
     });
 }
 
-fn prune_unneeded_builtin_trait_impls(
+fn prune_unneeded_builtin_traits(
     items: &mut Vec<syn::Item>,
     builtin_roots: &std::collections::HashSet<String>,
 ) {
     items.retain(|item| {
+        if let syn::Item::Trait(item_trait) = item
+            && let Some(needed_root) = builtin_trait_required_root(&item_trait.ident.to_string())
+        {
+            return builtin_roots.contains(needed_root)
+                || builtin_roots.contains(&item_trait.ident.to_string());
+        }
+
         let syn::Item::Impl(item_impl) = item else {
             return true;
         };
@@ -1730,28 +1738,21 @@ fn prune_unneeded_builtin_trait_impls(
         else {
             return true;
         };
-        let needed_root = match trait_name.as_str() {
-            "GoAppend" => Some("append"),
-            "GoCap" => Some("cap"),
-            "GoLen" => Some("len"),
-            "GoString" => Some("go_string"),
-            _ => None,
-        };
+        let needed_root = builtin_trait_required_root(&trait_name);
         let Some(needed_root) = needed_root else {
             return true;
         };
-        !is_builtin_trait_path(trait_path) || builtin_roots.contains(needed_root)
+        builtin_roots.contains(needed_root) || builtin_roots.contains(&trait_name)
     });
 }
 
-fn is_builtin_trait_path(path: &syn::Path) -> bool {
-    let mut segments = path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string());
-    match (segments.next().as_deref(), segments.next().as_deref()) {
-        (Some("crate"), Some("builtin")) | (Some("builtin"), Some(_)) => true,
-        _ => false,
+fn builtin_trait_required_root(trait_name: &str) -> Option<&'static str> {
+    match trait_name {
+        "GoAppend" => Some("append"),
+        "GoCap" => Some("cap"),
+        "GoLen" => Some("len"),
+        "GoString" => Some("go_string"),
+        _ => None,
     }
 }
 
@@ -4512,6 +4513,19 @@ fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
 
 #[derive(Clone, Copy)]
 enum LoweredStdlibCall {
+    FmtAppend,
+    FmtAppendf,
+    FmtAppendln,
+    FmtPrint,
+    FmtPrintf,
+    FmtPrintln,
+    FmtSprint,
+    FmtSprintf,
+    FmtSprintln,
+    FmtFprint,
+    FmtFprintf,
+    FmtFprintln,
+    FmtErrorf,
     SortInts,
     SortStrings,
     SortFloat64s,
@@ -4527,26 +4541,124 @@ fn lowered_stdlib_call(call_expr: &ast::CallExpr) -> Option<LoweredStdlibCall> {
     let ast::Expr::Ident(pkg) = &*selector.x else {
         return None;
     };
-    if pkg.name != "sort" {
-        return None;
-    }
     if !IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)) {
         return None;
     }
 
-    match selector.sel.name {
-        "Ints" => Some(LoweredStdlibCall::SortInts),
-        "Strings" => Some(LoweredStdlibCall::SortStrings),
-        "Float64s" => Some(LoweredStdlibCall::SortFloat64s),
-        "IntsAreSorted" => Some(LoweredStdlibCall::SortIntsAreSorted),
-        "StringsAreSorted" => Some(LoweredStdlibCall::SortStringsAreSorted),
-        "Float64sAreSorted" => Some(LoweredStdlibCall::SortFloat64sAreSorted),
+    match (pkg.name, selector.sel.name) {
+        ("fmt", "Append") => Some(LoweredStdlibCall::FmtAppend),
+        ("fmt", "Appendf") => Some(LoweredStdlibCall::FmtAppendf),
+        ("fmt", "Appendln") => Some(LoweredStdlibCall::FmtAppendln),
+        ("fmt", "Print") => Some(LoweredStdlibCall::FmtPrint),
+        ("fmt", "Printf") => Some(LoweredStdlibCall::FmtPrintf),
+        ("fmt", "Println") => Some(LoweredStdlibCall::FmtPrintln),
+        ("fmt", "Sprint") => Some(LoweredStdlibCall::FmtSprint),
+        ("fmt", "Sprintf") => Some(LoweredStdlibCall::FmtSprintf),
+        ("fmt", "Sprintln") => Some(LoweredStdlibCall::FmtSprintln),
+        ("fmt", "Fprint") => Some(LoweredStdlibCall::FmtFprint),
+        ("fmt", "Fprintf") => Some(LoweredStdlibCall::FmtFprintf),
+        ("fmt", "Fprintln") => Some(LoweredStdlibCall::FmtFprintln),
+        ("fmt", "Errorf") => Some(LoweredStdlibCall::FmtErrorf),
+        ("sort", "Ints") => Some(LoweredStdlibCall::SortInts),
+        ("sort", "Strings") => Some(LoweredStdlibCall::SortStrings),
+        ("sort", "Float64s") => Some(LoweredStdlibCall::SortFloat64s),
+        ("sort", "IntsAreSorted") => Some(LoweredStdlibCall::SortIntsAreSorted),
+        ("sort", "StringsAreSorted") => Some(LoweredStdlibCall::SortStringsAreSorted),
+        ("sort", "Float64sAreSorted") => Some(LoweredStdlibCall::SortFloat64sAreSorted),
         _ => None,
     }
 }
 
 fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibCall) -> syn::Expr {
-    let mut args = call_expr.args.unwrap_or_default().into_iter();
+    let raw_args = call_expr.args.unwrap_or_default();
+    if matches!(
+        lowered,
+        LoweredStdlibCall::FmtPrint
+            | LoweredStdlibCall::FmtPrintln
+            | LoweredStdlibCall::FmtSprint
+            | LoweredStdlibCall::FmtSprintln
+    ) {
+        let args = compile_fmt_any_vec(raw_args);
+        return match lowered {
+            LoweredStdlibCall::FmtPrint => {
+                syn::parse_quote! { crate::builtin::go_fmt_print(#args) }
+            }
+            LoweredStdlibCall::FmtPrintln => {
+                syn::parse_quote! { crate::builtin::go_fmt_println(#args) }
+            }
+            LoweredStdlibCall::FmtSprint => {
+                syn::parse_quote! { crate::builtin::go_fmt_sprint(#args) }
+            }
+            LoweredStdlibCall::FmtSprintln => {
+                syn::parse_quote! { crate::builtin::go_fmt_sprintln(#args) }
+            }
+            _ => compile_error_expr("unsupported fmt print lowering"),
+        };
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::FmtAppend | LoweredStdlibCall::FmtAppendln
+    ) {
+        let mut raw_args = raw_args.into_iter();
+        let Some(buffer) = raw_args.next() else {
+            return compile_error_expr("fmt append call requires a buffer argument");
+        };
+        let buffer: syn::Expr = buffer.into();
+        let args = compile_fmt_any_vec(raw_args.collect());
+        return match lowered {
+            LoweredStdlibCall::FmtAppend => {
+                syn::parse_quote! { crate::builtin::go_fmt_append(#buffer, #args) }
+            }
+            LoweredStdlibCall::FmtAppendln => {
+                syn::parse_quote! { crate::builtin::go_fmt_appendln(#buffer, #args) }
+            }
+            _ => compile_error_expr("unsupported fmt append lowering"),
+        };
+    }
+
+    if matches!(lowered, LoweredStdlibCall::FmtAppendf) {
+        let mut raw_args = raw_args.into_iter();
+        let Some(buffer) = raw_args.next() else {
+            return compile_error_expr("fmt appendf call requires a buffer argument");
+        };
+        let Some(format_arg) = raw_args.next() else {
+            return compile_error_expr("fmt appendf call requires a format argument");
+        };
+        let buffer: syn::Expr = buffer.into();
+        let format = compile_expr_with_expected(format_arg, Some(&typeinfer::GoType::String));
+        let args = compile_fmt_any_vec(raw_args.collect());
+        return syn::parse_quote! { crate::builtin::go_fmt_appendf(#buffer, &#format, #args) };
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::FmtPrintf | LoweredStdlibCall::FmtSprintf | LoweredStdlibCall::FmtErrorf
+    ) {
+        return compile_fmt_format_call(raw_args, 0, lowered);
+    }
+
+    if matches!(
+        lowered,
+        LoweredStdlibCall::FmtFprint | LoweredStdlibCall::FmtFprintln
+    ) {
+        let args = compile_fmt_any_vec(raw_args.into_iter().skip(1).collect());
+        return match lowered {
+            LoweredStdlibCall::FmtFprint => {
+                syn::parse_quote! { crate::builtin::go_fmt_print(#args) }
+            }
+            LoweredStdlibCall::FmtFprintln => {
+                syn::parse_quote! { crate::builtin::go_fmt_println(#args) }
+            }
+            _ => compile_error_expr("unsupported fmt writer lowering"),
+        };
+    }
+
+    if matches!(lowered, LoweredStdlibCall::FmtFprintf) {
+        return compile_fmt_format_call(raw_args, 1, lowered);
+    }
+
+    let mut args = raw_args.into_iter();
     let Some(arg) = args.next() else {
         return compile_error_expr("sort call requires one argument");
     };
@@ -4568,6 +4680,47 @@ fn compile_lowered_stdlib_call(call_expr: ast::CallExpr, lowered: LoweredStdlibC
         LoweredStdlibCall::SortFloat64sAreSorted => {
             syn::parse_quote! { crate::builtin::go_float64s_are_sorted(&#arg) }
         }
+        _ => compile_error_expr("unsupported sort lowering"),
+    }
+}
+
+fn compile_fmt_any_vec(raw_args: Vec<ast::Expr>) -> syn::Expr {
+    let args: Vec<syn::Expr> = raw_args
+        .into_iter()
+        .map(|arg| {
+            let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
+            syn::parse_quote! { Box::new(#arg.clone()) as Box<dyn std::any::Any> }
+        })
+        .collect();
+
+    if args.is_empty() {
+        syn::parse_quote! { Vec::<Box<dyn std::any::Any>>::new() }
+    } else {
+        syn::parse_quote! { Vec::from([#(#args),*]) }
+    }
+}
+
+fn compile_fmt_format_call(
+    raw_args: Vec<ast::Expr>,
+    format_index: usize,
+    lowered: LoweredStdlibCall,
+) -> syn::Expr {
+    let mut raw_args = raw_args.into_iter();
+    let format_arg = raw_args.nth(format_index);
+    let Some(format_arg) = format_arg else {
+        return compile_error_expr("fmt format call requires a format argument");
+    };
+    let format = compile_expr_with_expected(format_arg, Some(&typeinfer::GoType::String));
+    let args = compile_fmt_any_vec(raw_args.collect());
+
+    match lowered {
+        LoweredStdlibCall::FmtPrintf | LoweredStdlibCall::FmtFprintf => {
+            syn::parse_quote! { crate::builtin::go_fmt_printf(&#format, #args) }
+        }
+        LoweredStdlibCall::FmtSprintf | LoweredStdlibCall::FmtErrorf => {
+            syn::parse_quote! { crate::builtin::go_fmt_sprintf(&#format, #args) }
+        }
+        _ => compile_error_expr("unsupported fmt format lowering"),
     }
 }
 
@@ -8487,21 +8640,18 @@ func main() {
         let compiled = super::compile_program_multi(program).unwrap();
         assert!(compiled.has_main);
         assert!(compiled.modules.contains_key("__main__"));
-        assert!(compiled.modules.contains_key("fmt"));
-        let fmt_mod = compiled.modules.get("fmt").unwrap();
-        assert_eq!(fmt_mod.mod_name, "fmt");
-        assert_eq!(fmt_mod.filename, "fmt.rs");
-        assert!(fmt_mod.is_stdlib);
-        let fmt_item_names: std::collections::HashSet<_> = fmt_mod
+        assert!(compiled.modules.contains_key("builtin"));
+        assert!(!compiled.modules.contains_key("fmt"));
+        let builtin_mod = compiled.modules.get("builtin").unwrap();
+        let builtin_item_names: std::collections::HashSet<_> = builtin_mod
             .file
             .items
             .iter()
             .filter_map(super::item_name)
             .collect();
-        assert!(fmt_item_names.contains("Println"));
-        assert!(fmt_item_names.contains("Fprintln"));
-        assert!(fmt_item_names.contains("newPrinter"));
-        assert!(!fmt_item_names.contains("format_any"));
+        assert!(builtin_item_names.contains("go_fmt_println"));
+        assert!(builtin_item_names.contains("go_fmt_sprintln"));
+        assert!(!builtin_item_names.contains("append"));
     }
 
     #[test]
@@ -8523,13 +8673,16 @@ func main() {
         let output = backend_rust::generate_multi(compiled).unwrap();
         assert!(output.files.contains_key("main.rs"));
         assert!(output.files.contains_key("lib.rs"));
-        assert!(output.files.contains_key("fmt.rs"));
+        assert!(output.files.contains_key("builtin.rs"));
+        assert!(!output.files.contains_key("fmt.rs"));
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("mod lib"));
         assert!(main_rs.contains("use lib::{"));
-        assert!(main_rs.contains("fmt"));
+        assert!(main_rs.contains("builtin"));
+        assert!(main_rs.contains("go_fmt_println"));
         let lib_rs = output.files.get("lib.rs").unwrap();
-        assert!(lib_rs.contains("pub mod fmt"));
+        assert!(lib_rs.contains("pub mod builtin"));
+        assert!(!lib_rs.contains("pub mod fmt"));
     }
 
     #[test]
@@ -9260,17 +9413,17 @@ func main() {
             ],
         };
         let compiled = super::compile_program_multi(program).unwrap();
-        assert!(compiled.modules.contains_key("fmt"));
+        assert!(!compiled.modules.contains_key("fmt"));
         assert!(compiled.modules.contains_key("strconv"));
         assert!(!compiled.modules.contains_key("errors"));
         assert!(!compiled.modules.contains_key("sort"));
         let output = backend_rust::generate_multi(compiled).unwrap();
-        assert!(output.files.contains_key("fmt.rs"));
+        assert!(!output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("strconv.rs"));
         assert!(!output.files.contains_key("errors.rs"));
         assert!(!output.files.contains_key("sort.rs"));
         let lib_rs = output.files.get("lib.rs").unwrap();
-        assert!(lib_rs.contains("pub mod fmt"));
+        assert!(!lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod strconv"));
         assert!(!lib_rs.contains("pub mod errors"));
         assert!(!lib_rs.contains("pub mod sort"));

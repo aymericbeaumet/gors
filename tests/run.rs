@@ -3,7 +3,18 @@
 mod common;
 
 use common::{discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin};
+use std::path::Path;
 use std::process::Command;
+
+fn program_name(dir: &Path) -> String {
+    let programs_dir = fixtures_dir().join("go_programs");
+    dir.strip_prefix(&programs_dir)
+        .ok()
+        .and_then(|relative| relative.to_str())
+        .or_else(|| dir.file_name().and_then(|name| name.to_str()))
+        .unwrap_or("<unknown>")
+        .to_string()
+}
 
 #[test]
 fn run_single_file() {
@@ -200,7 +211,7 @@ fn run_programs_rust_backend() {
     let mut failed: Vec<(String, String)> = Vec::new();
 
     for dir in &dirs {
-        let name = dir.file_name().unwrap().to_str().unwrap();
+        let name = program_name(dir);
 
         let go_out = Command::new("go")
             .args(["run", "."])
@@ -261,7 +272,7 @@ fn run_programs_go_runner() {
     );
 
     for dir in &dirs {
-        let name = dir.file_name().unwrap().to_str().unwrap();
+        let name = program_name(dir);
 
         let go_out = Command::new("go")
             .args(["run", "."])

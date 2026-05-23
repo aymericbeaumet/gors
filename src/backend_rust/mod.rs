@@ -870,6 +870,296 @@ pub fn go_float64s_are_sorted(values: &[f64]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// fmt helpers
+// ---------------------------------------------------------------------------
+
+fn go_fmt_is_string(value: &dyn std::any::Any) -> bool {
+    value.is::<String>() || value.is::<&str>()
+}
+
+fn go_fmt_slice_display<T: fmt::Display>(value: &[T]) -> String {
+    let mut out = String::from("[");
+    for (idx, item) in value.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push_str(&item.to_string());
+    }
+    out.push(']');
+    out
+}
+
+fn go_fmt_default(value: &dyn std::any::Any) -> String {
+    if let Some(value) = value.downcast_ref::<String>() {
+        return value.clone();
+    }
+    if let Some(value) = value.downcast_ref::<&str>() {
+        return (*value).to_string();
+    }
+    if let Some(value) = value.downcast_ref::<bool>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<isize>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<i8>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<i16>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<i32>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<i64>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<usize>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<u8>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<u16>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<u32>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<u64>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<f32>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<f64>() {
+        return value.to_string();
+    }
+    if let Some(value) = value.downcast_ref::<Vec<isize>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<String>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<&str>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<f64>>() {
+        return go_fmt_slice_display(value);
+    }
+    if let Some(value) = value.downcast_ref::<Vec<bool>>() {
+        return go_fmt_slice_display(value);
+    }
+    String::new()
+}
+
+fn go_fmt_int(value: &dyn std::any::Any) -> Option<String> {
+    if let Some(value) = value.downcast_ref::<isize>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<i8>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<i16>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<i32>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<i64>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<usize>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<u8>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<u16>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<u32>() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.downcast_ref::<u64>() {
+        return Some(value.to_string());
+    }
+    None
+}
+
+fn go_fmt_float(value: &dyn std::any::Any, precision: Option<usize>) -> Option<String> {
+    if let Some(value) = value.downcast_ref::<f32>() {
+        return Some(match precision {
+            Some(precision) => format!("{value:.precision$}"),
+            None => value.to_string(),
+        });
+    }
+    if let Some(value) = value.downcast_ref::<f64>() {
+        return Some(match precision {
+            Some(precision) => format!("{value:.precision$}"),
+            None => value.to_string(),
+        });
+    }
+    None
+}
+
+fn go_fmt_char(value: &dyn std::any::Any) -> Option<String> {
+    let rune = if let Some(value) = value.downcast_ref::<isize>() {
+        u32::try_from(*value).ok()
+    } else if let Some(value) = value.downcast_ref::<i32>() {
+        u32::try_from(*value).ok()
+    } else if let Some(value) = value.downcast_ref::<i64>() {
+        u32::try_from(*value).ok()
+    } else if let Some(value) = value.downcast_ref::<usize>() {
+        u32::try_from(*value).ok()
+    } else if let Some(value) = value.downcast_ref::<u32>() {
+        Some(*value)
+    } else if let Some(value) = value.downcast_ref::<char>() {
+        return Some(value.to_string());
+    } else {
+        None
+    }?;
+    char::from_u32(rune).map(|ch| ch.to_string())
+}
+
+fn go_fmt_format_arg(value: &dyn std::any::Any, verb: char, precision: Option<usize>) -> String {
+    match verb {
+        'c' => go_fmt_char(value).unwrap_or_else(|| go_fmt_default(value)),
+        'd' => go_fmt_int(value).unwrap_or_else(|| go_fmt_default(value)),
+        'f' => go_fmt_float(value, precision).unwrap_or_else(|| go_fmt_default(value)),
+        'q' => format!("{:?}", go_fmt_default(value)),
+        's' => go_fmt_default(value),
+        't' => value
+            .downcast_ref::<bool>()
+            .map(bool::to_string)
+            .unwrap_or_else(|| go_fmt_default(value)),
+        'v' => go_fmt_default(value),
+        _ => go_fmt_default(value),
+    }
+}
+
+pub fn go_fmt_sprintf(format: &str, args: Vec<Box<dyn std::any::Any>>) -> String {
+    let chars: Vec<char> = format.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    let mut arg_idx = 0usize;
+
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= chars.len() {
+            out.push('%');
+            break;
+        }
+        if chars[i] == '%' {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+
+        while i < chars.len() && matches!(chars[i], '#' | '+' | '-' | '0' | ' ') {
+            i += 1;
+        }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let precision = if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            chars[start..i]
+                .iter()
+                .collect::<String>()
+                .parse::<usize>()
+                .ok()
+        } else {
+            None
+        };
+        if i >= chars.len() {
+            break;
+        }
+
+        let verb = chars[i];
+        i += 1;
+        if let Some(arg) = args.get(arg_idx) {
+            out.push_str(&go_fmt_format_arg(&**arg, verb, precision));
+        }
+        arg_idx += 1;
+    }
+
+    out
+}
+
+pub fn go_fmt_sprint(args: Vec<Box<dyn std::any::Any>>) -> String {
+    let mut out = String::new();
+    let mut previous_was_string = false;
+    for (idx, arg) in args.iter().enumerate() {
+        let is_string = go_fmt_is_string(&**arg);
+        if idx > 0 && !previous_was_string && !is_string {
+            out.push(' ');
+        }
+        out.push_str(&go_fmt_default(&**arg));
+        previous_was_string = is_string;
+    }
+    out
+}
+
+pub fn go_fmt_sprintln(args: Vec<Box<dyn std::any::Any>>) -> String {
+    let mut out = String::new();
+    for (idx, arg) in args.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push_str(&go_fmt_default(&**arg));
+    }
+    out.push('\n');
+    out
+}
+
+pub fn go_fmt_print(args: Vec<Box<dyn std::any::Any>>) -> (isize, String) {
+    let out = go_fmt_sprint(args);
+    print!("{out}");
+    (out.len() as isize, String::new())
+}
+
+pub fn go_fmt_println(args: Vec<Box<dyn std::any::Any>>) -> (isize, String) {
+    let out = go_fmt_sprintln(args);
+    print!("{out}");
+    (out.len() as isize, String::new())
+}
+
+pub fn go_fmt_printf(format: &str, args: Vec<Box<dyn std::any::Any>>) -> (isize, String) {
+    let out = go_fmt_sprintf(format, args);
+    print!("{out}");
+    (out.len() as isize, String::new())
+}
+
+pub fn go_fmt_append(mut buffer: Vec<u8>, args: Vec<Box<dyn std::any::Any>>) -> Vec<u8> {
+    buffer.extend(go_fmt_sprint(args).into_bytes());
+    buffer
+}
+
+pub fn go_fmt_appendln(mut buffer: Vec<u8>, args: Vec<Box<dyn std::any::Any>>) -> Vec<u8> {
+    buffer.extend(go_fmt_sprintln(args).into_bytes());
+    buffer
+}
+
+pub fn go_fmt_appendf(
+    mut buffer: Vec<u8>,
+    format: &str,
+    args: Vec<Box<dyn std::any::Any>>,
+) -> Vec<u8> {
+    buffer.extend(go_fmt_sprintf(format, args).into_bytes());
+    buffer
+}
+
+// ---------------------------------------------------------------------------
 // complex / real / imag
 // ---------------------------------------------------------------------------
 
