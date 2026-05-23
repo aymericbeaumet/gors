@@ -106,6 +106,7 @@ impl VisitMut for CoerceTypes {
 
         for mut stmt in old_stmts {
             visit_mut::visit_stmt_mut(self, &mut stmt);
+            new_stmts.extend(hoist_args_read_after_mut_borrow(&mut stmt));
             let needs_flush = stmt_needs_fmt_flush(&stmt);
             new_stmts.push(stmt);
             if needs_flush {
@@ -169,6 +170,20 @@ impl VisitMut for CoerceTypes {
         if is_rune_self_path(&binary.right) && matches!(&*binary.left, syn::Expr::Index(_)) {
             let left = (*binary.left).clone();
             binary.left = Box::new(syn::parse_quote! { (#left as u32) });
+        }
+
+        if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            return;
+        }
+
+        if let Some(inner) = box_new_call_arg(&binary.right) {
+            let left = binary.left.clone();
+            binary.left = Box::new(syn::parse_quote! { *#left });
+            binary.right = Box::new(inner);
+        } else if let Some(inner) = box_new_call_arg(&binary.left) {
+            let right = binary.right.clone();
+            binary.left = Box::new(inner);
+            binary.right = Box::new(syn::parse_quote! { *#right });
         }
     }
 
@@ -886,6 +901,73 @@ fn expr_needs_fmt_flush(expr: &syn::Expr) -> bool {
     is_self_expr(&call.receiver)
 }
 
+fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
+    let syn::Stmt::Expr(syn::Expr::Call(call), _) = stmt else {
+        return Vec::new();
+    };
+
+    let borrowed: Vec<(usize, String)> = call
+        .args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| mut_borrowed_path_name(arg).map(|name| (index, name)))
+        .collect();
+    if borrowed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hoisted = Vec::new();
+    for (borrow_index, name) in borrowed {
+        for (arg_index, arg) in call.args.iter_mut().enumerate() {
+            if arg_index <= borrow_index || !expr_contains_path_ident(arg, &name) {
+                continue;
+            }
+            let temp = quote::format_ident!("__gors_preborrow_arg_{}", hoisted.len());
+            let value = arg.clone();
+            *arg = syn::parse_quote! { #temp };
+            hoisted.push(syn::parse_quote! {
+                let #temp = #value;
+            });
+        }
+    }
+    hoisted
+}
+
+fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Reference(reference) = expr else {
+        return None;
+    };
+    reference.mutability.as_ref()?;
+    path_ident_name(&reference.expr)
+}
+
+fn expr_contains_path_ident(expr: &syn::Expr, name: &str) -> bool {
+    struct Finder<'a> {
+        name: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+            if path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == self.name)
+            {
+                self.found = true;
+            }
+            syn::visit::visit_expr_path(self, path);
+        }
+    }
+
+    let mut finder = Finder { name, found: false };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
 fn borrow_expr(expr: &mut syn::Expr) {
     if matches!(expr, syn::Expr::Reference(_)) || is_owned_value_expr(expr) {
         return;
@@ -905,6 +987,14 @@ fn borrow_mut_expr(expr: &mut syn::Expr) {
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
+    if is_path_ident(expr, "self") {
+        return;
+    }
+    if let Some(name) = path_ident_name(expr) {
+        let ident = syn::Ident::new(&name, proc_macro2::Span::mixed_site());
+        *expr = syn::parse_quote! { &mut #ident };
+        return;
+    }
     let inner = expr.clone();
     *expr = syn::parse_quote! { &mut #inner };
 }
@@ -919,6 +1009,16 @@ fn coerce_write_arg(expr: &mut syn::Expr) {
 
 fn is_box_new_call_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Call(call) if is_path_call(&call.func, &["Box", "new"]))
+}
+
+fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::Call(call) = expr else {
+        return None;
+    };
+    if !is_path_call(&call.func, &["Box", "new"]) || call.args.len() != 1 {
+        return None;
+    }
+    call.args.first().cloned()
 }
 
 fn replace_self_deref_with_take(expr: &mut syn::Expr) {

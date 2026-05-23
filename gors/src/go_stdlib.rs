@@ -237,6 +237,8 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
     let mut all_items: Vec<syn::Item> = Vec::new();
+    let ast_refs: Vec<_> = parsed_files.iter().map(|(_, ast)| ast).collect();
+    crate::compiler::set_borrow_pointer_arg_indices_for_files(&ast_refs);
 
     for (filename, ast) in parsed_files {
         let mut type_env = package_type_env.clone();
@@ -276,6 +278,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         };
         all_items.extend(compiled.items);
     }
+    crate::compiler::clear_borrow_pointer_arg_indices();
 
     if all_items.is_empty() {
         cache_transitive_imports(import_path, Vec::new());
