@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin};
+use common::{TestConfig, discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin};
 use std::path::Path;
 use std::process::Command;
 
@@ -201,6 +201,7 @@ func main() {}
 #[test]
 fn run_programs_generated_rust() {
     let gors = gors_bin();
+    let config = TestConfig::from_env();
     let dirs = discover_program_dirs();
     assert!(
         !dirs.is_empty(),
@@ -212,6 +213,9 @@ fn run_programs_generated_rust() {
 
     for dir in &dirs {
         let name = program_name(dir);
+        if config.verbose {
+            eprintln!("RUN  {name}");
+        }
 
         let go_out = Command::new("go")
             .args(["run", "."])
@@ -234,22 +238,33 @@ fn run_programs_generated_rust() {
 
         if gors_out.status.success() && gors_stdout == go_stdout.as_str() {
             passed += 1;
+            if config.verbose {
+                eprintln!("PASS {name}");
+            }
         } else if gors_out.status.success() {
-            failed.push((
-                name.to_string(),
-                format!(
-                    "Output mismatch:\nExpected: {:?}\nGot: {:?}",
-                    go_stdout, gors_stdout
-                ),
-            ));
+            let error = format!(
+                "Output mismatch:\nExpected: {:?}\nGot: {:?}",
+                go_stdout, gors_stdout
+            );
+            if config.verbose {
+                eprintln!("FAIL {name}: {}", error.lines().next().unwrap_or(""));
+            }
+            failed.push((name.to_string(), error));
+            if config.fail_fast {
+                break;
+            }
         } else {
-            failed.push((
-                name.to_string(),
-                format!(
-                    "gors run failed:\n{}",
-                    String::from_utf8_lossy(&gors_out.stderr)
-                ),
-            ));
+            let error = format!(
+                "gors run failed:\n{}",
+                String::from_utf8_lossy(&gors_out.stderr)
+            );
+            if config.verbose {
+                eprintln!("FAIL {name}: {}", error.lines().next().unwrap_or(""));
+            }
+            failed.push((name.to_string(), error));
+            if config.fail_fast {
+                break;
+            }
         }
     }
 

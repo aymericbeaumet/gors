@@ -151,6 +151,7 @@ they are `#[ignore]`d. CI runs them via `make test-integrations`.
 - `GORS_TEST_LIMIT=N` — cap number of files tested
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
+- `GORS_TEST_FAIL_FAST=1` — stop after the first failing generated-Rust program test
 
 ## Run patterns
 

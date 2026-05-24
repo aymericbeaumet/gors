@@ -8,6 +8,7 @@
 //! - `GORS_TEST_LIMIT`: Maximum number of files to test (default: unlimited)
 //! - `GORS_TEST_FILTER`: Only test files matching this substring
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
+//! - `GORS_TEST_FAIL_FAST`: Stop after the first failure (set to "1" to enable)
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -28,6 +29,8 @@ pub struct TestConfig {
     pub filter: Option<String>,
     /// Show verbose progress output
     pub verbose: bool,
+    /// Stop after the first failure
+    pub fail_fast: bool,
 }
 
 impl TestConfig {
@@ -39,6 +42,9 @@ impl TestConfig {
                 .and_then(|s| s.parse().ok()),
             filter: std::env::var("GORS_TEST_FILTER").ok(),
             verbose: std::env::var("GORS_TEST_VERBOSE")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false),
+            fail_fast: std::env::var("GORS_TEST_FAIL_FAST")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(false),
         }
