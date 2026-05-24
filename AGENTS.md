@@ -23,7 +23,7 @@ gors/
     compiler/      # Go AST → Rust syn AST conversion + transformation passes
       passes/      # Post-compilation Rust→Rust AST transforms
       manifest.rs  # Build manifest for incremental compilation
-    printer/      # syn AST → formatted Rust source via prettyplease
+    printer/       # syn AST → formatted Rust source via prettyplease
     toolchain/     # Hermetic Go toolchain download and management
     mapping/       # Source map tracking (Go ↔ Rust position mapping)
     token/         # Go token types
@@ -151,7 +151,7 @@ they are `#[ignore]`d. CI runs them via `make test-integrations`.
 - `GORS_TEST_LIMIT=N` — cap number of files tested
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
-- `GORS_TEST_FAIL_FAST=1` — stop after the first failing generated-Rust program test
+- `GORS_TEST_FAIL_FAST=1` — cancel queued/running generated-Rust program tests after the first failure
 
 ## Run patterns
 

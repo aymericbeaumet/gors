@@ -3,8 +3,15 @@
 mod common;
 
 use common::{TestConfig, discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin};
+use rayon::prelude::*;
+use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 fn program_name(dir: &Path) -> String {
     let programs_dir = fixtures_dir().join("go_programs");
@@ -198,6 +205,151 @@ func main() {}
     );
 }
 
+struct ProgramRunResult {
+    name: String,
+    passed: bool,
+    skipped: bool,
+    error: Option<String>,
+}
+
+fn command_output_abortable(
+    mut command: Command,
+    abort: &AtomicBool,
+) -> Result<Option<Output>, String> {
+    if abort.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+    let stdout_file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    let stderr_file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    command
+        .stdout(Stdio::from(
+            stdout_file.reopen().map_err(|e| e.to_string())?,
+        ))
+        .stderr(Stdio::from(
+            stderr_file.reopen().map_err(|e| e.to_string())?,
+        ));
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    loop {
+        if abort.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Ok(Some(Output {
+                status,
+                stdout: fs::read(stdout_file.path()).map_err(|e| e.to_string())?,
+                stderr: fs::read(stderr_file.path()).map_err(|e| e.to_string())?,
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn run_generated_rust_program(
+    gors: &Path,
+    dir: &Path,
+    config: &TestConfig,
+    abort: &AtomicBool,
+) -> ProgramRunResult {
+    let name = program_name(dir);
+    if config.fail_fast && abort.load(Ordering::SeqCst) {
+        return ProgramRunResult {
+            name,
+            passed: false,
+            skipped: true,
+            error: None,
+        };
+    }
+    if config.verbose {
+        eprintln!("RUN  {name}");
+    }
+
+    let mut go_cmd = Command::new("go");
+    go_cmd.args(["run", "."]).current_dir(dir);
+    let go_out = command_output_abortable(go_cmd, abort);
+    let go_stdout = match go_out {
+        Ok(Some(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(None) => {
+            return ProgramRunResult {
+                name,
+                passed: false,
+                skipped: true,
+                error: None,
+            };
+        }
+        _ => {
+            eprintln!("Skipping {name} - go run failed");
+            return ProgramRunResult {
+                name,
+                passed: false,
+                skipped: true,
+                error: None,
+            };
+        }
+    };
+
+    let mut gors_cmd = Command::new(gors);
+    gors_cmd.args(["run", dir.to_str().unwrap()]);
+    let gors_out = command_output_abortable(gors_cmd, abort)
+        .unwrap_or_else(|e| panic!("failed to run gors on {name}: {e}"));
+    let Some(gors_out) = gors_out else {
+        return ProgramRunResult {
+            name,
+            passed: false,
+            skipped: true,
+            error: None,
+        };
+    };
+
+    let gors_stdout = String::from_utf8_lossy(&gors_out.stdout);
+    let result = if gors_out.status.success() && gors_stdout == go_stdout.as_str() {
+        ProgramRunResult {
+            name,
+            passed: true,
+            skipped: false,
+            error: None,
+        }
+    } else if gors_out.status.success() {
+        ProgramRunResult {
+            name,
+            passed: false,
+            skipped: false,
+            error: Some(format!(
+                "Output mismatch:\nExpected: {:?}\nGot: {:?}",
+                go_stdout, gors_stdout
+            )),
+        }
+    } else {
+        ProgramRunResult {
+            name,
+            passed: false,
+            skipped: false,
+            error: Some(format!(
+                "gors run failed:\n{}",
+                String::from_utf8_lossy(&gors_out.stderr)
+            )),
+        }
+    };
+
+    if config.verbose {
+        if result.passed {
+            eprintln!("PASS {}", result.name);
+        } else if let Some(error) = &result.error {
+            eprintln!(
+                "FAIL {}: {}",
+                result.name,
+                error.lines().next().unwrap_or("")
+            );
+        }
+    }
+    if config.fail_fast && result.error.is_some() {
+        abort.store(true, Ordering::SeqCst);
+    }
+
+    result
+}
+
 #[test]
 fn run_programs_generated_rust() {
     let gors = gors_bin();
@@ -208,67 +360,23 @@ fn run_programs_generated_rust() {
         "No programs found in fixtures/go_programs"
     );
 
-    let mut passed = 0;
-    let mut failed: Vec<(String, String)> = Vec::new();
+    let abort = Arc::new(AtomicBool::new(false));
+    let results: Vec<_> = dirs
+        .par_iter()
+        .map(|dir| run_generated_rust_program(gors.as_path(), dir, &config, &abort))
+        .collect();
 
-    for dir in &dirs {
-        let name = program_name(dir);
-        if config.verbose {
-            eprintln!("RUN  {name}");
-        }
+    let passed = results.iter().filter(|result| result.passed).count();
+    let skipped = results.iter().filter(|result| result.skipped).count();
+    let failed: Vec<(String, String)> = results
+        .into_iter()
+        .filter_map(|result| result.error.map(|error| (result.name, error)))
+        .collect();
 
-        let go_out = Command::new("go")
-            .args(["run", "."])
-            .current_dir(dir)
-            .output();
-        let go_stdout = match go_out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => {
-                eprintln!("Skipping {name} - go run failed");
-                continue;
-            }
-        };
-
-        let gors_out = Command::new(gors.as_path())
-            .args(["run", dir.to_str().unwrap()])
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run gors on {name}: {e}"));
-
-        let gors_stdout = String::from_utf8_lossy(&gors_out.stdout);
-
-        if gors_out.status.success() && gors_stdout == go_stdout.as_str() {
-            passed += 1;
-            if config.verbose {
-                eprintln!("PASS {name}");
-            }
-        } else if gors_out.status.success() {
-            let error = format!(
-                "Output mismatch:\nExpected: {:?}\nGot: {:?}",
-                go_stdout, gors_stdout
-            );
-            if config.verbose {
-                eprintln!("FAIL {name}: {}", error.lines().next().unwrap_or(""));
-            }
-            failed.push((name.to_string(), error));
-            if config.fail_fast {
-                break;
-            }
-        } else {
-            let error = format!(
-                "gors run failed:\n{}",
-                String::from_utf8_lossy(&gors_out.stderr)
-            );
-            if config.verbose {
-                eprintln!("FAIL {name}: {}", error.lines().next().unwrap_or(""));
-            }
-            failed.push((name.to_string(), error));
-            if config.fail_fast {
-                break;
-            }
-        }
-    }
-
-    eprintln!("\nResults: {passed}/{} passed", passed + failed.len());
+    eprintln!(
+        "\nResults: {passed}/{} passed, {skipped} skipped",
+        passed + failed.len()
+    );
     if !failed.is_empty() {
         for (name, err) in &failed {
             eprintln!("  FAIL {name}: {}", err.lines().next().unwrap_or(""));
@@ -286,7 +394,7 @@ fn run_programs_go_runner() {
         "No programs found in fixtures/go_programs"
     );
 
-    for dir in &dirs {
+    dirs.par_iter().for_each(|dir| {
         let name = program_name(dir);
 
         let go_out = Command::new("go")
@@ -295,7 +403,7 @@ fn run_programs_go_runner() {
             .output();
         let go_stdout = match go_out {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => continue,
+            _ => return,
         };
 
         let runner_out = Command::new(go_bin.as_path())
@@ -311,5 +419,5 @@ fn run_programs_go_runner() {
                 "Output mismatch for {name}"
             );
         }
-    }
+    });
 }

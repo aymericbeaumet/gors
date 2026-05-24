@@ -8,7 +8,7 @@
 //! - `GORS_TEST_LIMIT`: Maximum number of files to test (default: unlimited)
 //! - `GORS_TEST_FILTER`: Only test files matching this substring
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
-//! - `GORS_TEST_FAIL_FAST`: Stop after the first failure (set to "1" to enable)
+//! - `GORS_TEST_FAIL_FAST`: Cancel queued/running program tests after the first failure
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
