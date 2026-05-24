@@ -1,7 +1,7 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
 [gors](https://github.com/aymericbeaumet/gors) is an experimental Go toolchain
-written in Rust, featuring a parser, compiler, and code generator that transpiles
+written in Rust, featuring a parser, compiler, and code printer that transpiles
 Go to Rust.
 
 ## Features
@@ -90,7 +90,6 @@ Hello, World!
 ```bash
 brew install rustup go binaryen watchexec
 rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
-curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 cargo install --force cargo-fuzz
 ```
 
@@ -103,11 +102,11 @@ cargo clippy --workspace -- -D warnings
 # Build
 cargo build --workspace
 
-# Run unit tests
-cargo test --workspace --exclude=gors-cli
+# Run all ungated tests
+cargo test
 
-# Run integration tests
-cargo test --workspace --package=gors-cli -- --nocapture --test-threads=1
+# Run lexer/parser integrations too
+cargo test --package=gors --features integration
 
 # Fuzz testing
 cargo +nightly fuzz run scanner
@@ -120,10 +119,10 @@ cargo doc -p gors --open
 ### Debug Mode
 
 ```bash
-RUST_LOG=debug cargo run -- tokens gors-cli/tests/programs/fizzbuzz.go
-RUST_LOG=debug cargo run -- ast gors-cli/tests/programs/fizzbuzz.go
-RUST_LOG=debug cargo run -- build --emit=rust gors-cli/tests/programs/fizzbuzz.go
-RUST_LOG=debug cargo run -- run gors-cli/tests/programs/fizzbuzz.go
+RUST_LOG=debug cargo run -p gors-cli -- tokens gors/tests/fixtures/go_programs/fizzbuzz/main.go
+RUST_LOG=debug cargo run -p gors-cli -- ast gors/tests/fixtures/go_programs/fizzbuzz/main.go
+RUST_LOG=debug cargo run -p gors-cli -- build gors/tests/fixtures/go_programs/fizzbuzz
+RUST_LOG=debug cargo run -p gors-cli -- run gors/tests/fixtures/go_programs/fizzbuzz
 ```
 
 ## License

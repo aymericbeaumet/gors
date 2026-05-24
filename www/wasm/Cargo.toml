@@ -2,6 +2,9 @@
 name = "gors-wasm"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "WebAssembly bindings for gors"
+repository = "https://github.com/aymericbeaumet/gors/"
 publish = false
 
 [lib]
@@ -9,14 +12,12 @@ name = "gors"
 path = "lib.rs"
 crate-type = ["cdylib"]
 
-[lints]
-workspace = true
+[workspace]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
 
 [dependencies]
 console_error_panic_hook = "0.1"
-gors = { path = "../.." }
+gors = { path = "../../gors" }
 wasm-bindgen = "0.2"
-# wasmi is used for running compiled WASM - works when gors itself is compiled to WASM
-wasmi = "1.0"
-# wasmprinter converts WASM binary to WAT text format for display
-wasmprinter = "0.249"

@@ -8,78 +8,33 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
-      - name: Run make lint
+      - name: Lint
         run: make lint
-
-      - name: Run make doc
-        run: make doc
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
-      - name: Run make build-release
-        run: make build-release
+      - name: Build
+        run: make build
 
-  test-unit:
+  web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-
-      - name: Install Go toolchain
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.x'
-
-      - name: Run unit tests
-        run: make test-unit
-
-  test-integrations:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-
-      - name: Install Go toolchain
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.x'
-
-      - name: Run integration tests (lexer + parser in parallel)
-        run: make test-integrations
-
-  www:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -88,35 +43,139 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install Node.js toolchain
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
-      - name: Install wasm-pack
-        run: make install-tools
+      - name: Lint web
+        run: make web-lint
 
-      - name: Build www
-        run: make www
+      - name: Build web
+        run: make web-build
 
-      - name: Lint www
-        run: make www-lint
-
-      - name: Upload the build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload web artifacts
+        uses: actions/upload-artifact@v7
         with:
           name: www-dist
           path: ./www/dist
+
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Test unit
+        run: make test-unit
+
+  test-integration-lexer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration lexer
+        run: make test-integration-lexer
+
+  test-integration-parser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration parser
+        run: make test-integration-parser
+
+  test-integration-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration run
+        run: make test-integration-run
+
+  test-integration-generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration generate
+        run: make test-integration-generate
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Fuzz
+        run: make fuzz
 
   # Deploy website on every push to master (nightly)
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: [lint, build, test-unit, test-integrations, www]
+    needs: [lint, build, web, test-unit, test-integration-lexer, test-integration-parser, test-integration-run, test-integration-generate, fuzz]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download the build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: www-dist
           path: ./www/dist

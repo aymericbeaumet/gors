@@ -329,6 +329,33 @@ fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<Strin
     Some(start_char.to_string())
 }
 
+fn collect_comments(ast: &gors::ast::File<'_>) -> Vec<CommentInfo> {
+    let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for decl in &ast.decls {
+        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
+            if let Some(ref doc) = func_decl.doc {
+                for comment in &doc.list {
+                    doc_comment_lines.insert(comment.slash.line as u32);
+                }
+            }
+        }
+    }
+
+    let mut comments = Vec::new();
+    for comment_group in &ast.comments {
+        for comment in &comment_group.list {
+            let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
+            comments.push(CommentInfo {
+                go_line: comment.slash.line as u32,
+                go_col: comment.slash.column.saturating_sub(1) as u32,
+                text: comment.text.to_string(),
+                is_doc,
+            });
+        }
+    }
+    comments
+}
+
 /// Build Go source code and return Rust code with structured error information.
 /// This is an alias for build_rust() for backward compatibility.
 #[wasm_bindgen]
@@ -341,56 +368,34 @@ pub fn build(input: String) -> BuildResult {
 pub fn build_rust(input: String) -> BuildResult {
     console_error_panic_hook::set_once();
 
-    // Parse
-    let ast = match gors::parser::parse_file("main.go", &input) {
-        Ok(ast) => ast,
+    // Use the same pipeline as the CLI: parse_program → compile_program_multi → generate_single
+    let program = match gors::parser::parse_program_from_source("main.go", &input) {
+        Ok(program) => program,
         Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, "main.go", &input);
-            return BuildResult::error_result(diagnostic);
-        }
-    };
-
-    // Collect all comments from the AST
-    // Mark doc comments (those attached to function declarations) as already handled
-    let mut comments: Vec<CommentInfo> = Vec::new();
-    let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-    // Find doc comment lines (comments attached to function declarations)
-    for decl in &ast.decls {
-        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-            if let Some(ref doc) = func_decl.doc {
-                for comment in &doc.list {
-                    doc_comment_lines.insert(comment.slash.line as u32);
+            let diagnostic = match err {
+                gors::parser::PathParseError::ParserError(ref e) => {
+                    Diagnostic::from_parser_error(e, "main.go", &input)
                 }
-            }
-        }
-    }
-
-    // Collect all comments with their positions
-    for comment_group in &ast.comments {
-        for comment in &comment_group.list {
-            let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-            comments.push(CommentInfo {
-                go_line: comment.slash.line as u32,
-                go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                text: comment.text.to_string(),
-                is_doc,
-            });
-        }
-    }
-
-    // Compile with source map tracking
-    let compiled = match gors::compiler::compile_with_source_map(ast, "main.go", &input) {
-        Ok(result) => result,
-        Err(err) => {
-            let diagnostic =
-                Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                _ => Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler),
+            };
             return BuildResult::error_result(diagnostic);
         }
     };
 
-    // Generate Rust code WITHOUT comments first
-    let rust_code = match gors::backend_rust::generate(compiled) {
+    // Collect comments from the parsed AST before compilation consumes it
+    let comments = collect_comments(&program.main_package.ast);
+
+    let compiled =
+        match gors::compiler::compile_program_multi_with_source_map(program, "main.go", &input) {
+            Ok(result) => result,
+            Err(err) => {
+                let diagnostic =
+                    Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
+                return BuildResult::error_result(diagnostic);
+            }
+        };
+
+    let rust_code = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
         Err(err) => {
             let diagnostic =
@@ -690,310 +695,28 @@ fn insert_comments_with_sourcemap(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
-    /// Helper function to build Go code and return output (for testing without wasm_bindgen)
     fn build_go(input: &str) -> Result<String, String> {
-        let ast = gors::parser::parse_file("main.go", input)
+        let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        // Collect comments
-        let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let comments = collect_comments(&program.main_package.ast);
 
-        for decl in &ast.decls {
-            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-                if let Some(ref doc) = func_decl.doc {
-                    for comment in &doc.list {
-                        doc_comment_lines.insert(comment.slash.line as u32);
-                    }
-                }
-            }
-        }
+        let compiled =
+            gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
+                .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        for comment_group in &ast.comments {
-            for comment in &comment_group.list {
-                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-                comments.push(CommentInfo {
-                    go_line: comment.slash.line as u32,
-                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                    text: comment.text.to_string(),
-                    is_doc,
-                });
-            }
-        }
-
-        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
-            .map_err(|e| format!("Compile error: {:?}", e))?;
-
-        let rust_code = gors::backend_rust::generate(compiled)
+        let rust_code = gors::printer::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let source_map = gors::compiler::build_source_map(&rust_code);
-        let (output, _comment_mappings) =
-            insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
+        let (output, _) = insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
 
         Ok(output)
     }
-}
-
-/// Result of compiling Go to WebAssembly.
-#[wasm_bindgen]
-pub struct WasmBuildResult {
-    success: bool,
-    /// WASM binary (empty on error)
-    wasm_bytes: Vec<u8>,
-    error_message: String,
-}
-
-#[wasm_bindgen]
-impl WasmBuildResult {
-    #[wasm_bindgen(getter)]
-    pub fn success(&self) -> bool {
-        self.success
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn wasm_bytes(&self) -> Vec<u8> {
-        self.wasm_bytes.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn error_message(&self) -> String {
-        self.error_message.clone()
-    }
-
-    /// Get the WASM as WAT (WebAssembly Text format) for display.
-    #[wasm_bindgen(getter)]
-    pub fn wat(&self) -> String {
-        if self.wasm_bytes.is_empty() {
-            return String::new();
-        }
-        wasmprinter::print_bytes(&self.wasm_bytes)
-            .unwrap_or_else(|e| format!("Error converting to WAT: {e}"))
-    }
-}
-
-/// Compile Go source code directly to WebAssembly bytecode.
-///
-/// This function parses Go code, transpiles it to Rust AST, and then
-/// compiles it directly to WASM using the Walrus library.
-/// No external Rust toolchain is required.
-#[wasm_bindgen]
-pub fn compile_to_wasm(input: String) -> WasmBuildResult {
-    console_error_panic_hook::set_once();
-
-    // Parse Go source
-    let ast = match gors::parser::parse_file("main.go", &input) {
-        Ok(ast) => ast,
-        Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, "main.go", &input);
-            return WasmBuildResult {
-                success: false,
-                wasm_bytes: vec![],
-                error_message: diagnostic.message,
-            };
-        }
-    };
-
-    // Compile to Rust AST
-    let compiled = match gors::compiler::compile(ast) {
-        Ok(compiled) => compiled,
-        Err(err) => {
-            return WasmBuildResult {
-                success: false,
-                wasm_bytes: vec![],
-                error_message: format!("Compiler error: {err}"),
-            };
-        }
-    };
-
-    // Compile Rust AST to WASM
-    match gors::backend_wasm::compile_to_wasm(&compiled) {
-        Ok(wasm_bytes) => WasmBuildResult {
-            success: true,
-            wasm_bytes,
-            error_message: String::new(),
-        },
-        Err(err) => WasmBuildResult {
-            success: false,
-            wasm_bytes: vec![],
-            error_message: err.to_string(),
-        },
-    }
-}
-
-/// Result of running Go code via WASM.
-#[wasm_bindgen]
-pub struct RunResult {
-    success: bool,
-    output: String,
-    error_message: String,
-}
-
-#[wasm_bindgen]
-impl RunResult {
-    #[wasm_bindgen(getter)]
-    pub fn success(&self) -> bool {
-        self.success
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn output(&self) -> String {
-        self.output.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn error_message(&self) -> String {
-        self.error_message.clone()
-    }
-}
-
-impl RunResult {
-    fn success_with_output(output: String) -> Self {
-        Self {
-            success: true,
-            output,
-            error_message: String::new(),
-        }
-    }
-
-    fn error(message: String) -> Self {
-        Self {
-            success: false,
-            output: String::new(),
-            error_message: message,
-        }
-    }
-}
-
-/// Compile and run Go source code.
-///
-/// This function compiles Go code to WASM and executes it using the wasmi
-/// interpreter. It captures output from print_i32 calls and returns the result.
-/// This works both natively and when gors itself is compiled to WASM.
-///
-/// # Arguments
-///
-/// * `input` - Go source code to compile and run
-///
-/// # Returns
-///
-/// Returns a `RunResult` with:
-/// - `success`: true if compilation and execution succeeded
-/// - `output`: captured output from the program (print_i32 calls, newline-separated)
-/// - `error_message`: error description if compilation or execution failed
-///
-/// # Example
-///
-/// ```javascript
-/// const result = run_go(`
-///     package main
-///     
-///     func main() {
-///         print_i32(42)
-///     }
-/// `);
-/// if (result.success) {
-///     console.log(result.output); // "42"
-/// } else {
-///     console.error(result.error_message);
-/// }
-/// ```
-#[wasm_bindgen]
-pub fn run_go(input: String) -> RunResult {
-    console_error_panic_hook::set_once();
-
-    // First compile to WASM
-    let wasm_result = compile_to_wasm(input);
-    if !wasm_result.success {
-        return RunResult::error(wasm_result.error_message);
-    }
-
-    // Execute the WASM using wasmi
-    match execute_wasm_with_wasmi(&wasm_result.wasm_bytes) {
-        Ok(output) => RunResult::success_with_output(output),
-        Err(e) => RunResult::error(format!("Execution error: {e}")),
-    }
-}
-
-/// Execute WASM bytes using the wasmi interpreter.
-/// This works both natively and when gors itself is compiled to WASM.
-fn execute_wasm_with_wasmi(wasm_bytes: &[u8]) -> Result<String, String> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use wasmi::{Caller, Engine, Extern, Func, Linker, Module, Store};
-
-    // Create output collector
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-
-    // Create engine and store with the output collector as state
-    let engine = Engine::default();
-    let output_clone = Rc::clone(&output);
-    let mut store = Store::new(&engine, output_clone);
-
-    // Compile the WASM module
-    let module =
-        Module::new(&engine, wasm_bytes).map_err(|e| format!("Failed to compile WASM: {e}"))?;
-
-    // Create linker and add import functions
-    let mut linker = Linker::new(&engine);
-
-    // print_i32 function that captures output to the store's state
-    linker
-        .func_wrap(
-            "env",
-            "print_i32",
-            |caller: Caller<'_, Rc<RefCell<Vec<String>>>>, value: i32| {
-                caller.data().borrow_mut().push(value.to_string());
-            },
-        )
-        .map_err(|e| format!("Failed to add print_i32: {e}"))?;
-
-    // print_str function that reads a string from memory and outputs it
-    linker
-        .func_wrap(
-            "env",
-            "print_str",
-            |caller: Caller<'_, Rc<RefCell<Vec<String>>>>, ptr: i32, len: i32| {
-                // Get memory from the caller's instance
-                if let Some(Extern::Memory(memory)) = caller.get_export("memory") {
-                    let mut buffer = vec![0u8; len as usize];
-                    if memory.read(&caller, ptr as usize, &mut buffer).is_ok() {
-                        if let Ok(s) = String::from_utf8(buffer) {
-                            caller.data().borrow_mut().push(s);
-                        }
-                    }
-                }
-            },
-        )
-        .map_err(|e| format!("Failed to add print_str: {e}"))?;
-
-    // Instantiate the module
-    let instance = linker
-        .instantiate_and_start(&mut store, &module)
-        .map_err(|e| format!("Failed to instantiate: {e}"))?;
-
-    // Get and call the main function
-    let main_func: Func = instance
-        .get_export(&store, "main")
-        .and_then(Extern::into_func)
-        .ok_or("main function not found")?;
-
-    main_func
-        .call(&mut store, &[], &mut [])
-        .map_err(|e| format!("main() execution failed: {e}"))?;
-
-    // Collect output
-    let output_vec = output.borrow();
-    Ok(output_vec.join("\n"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn test_comment_between_statements() {
@@ -1288,41 +1011,17 @@ func bar() {
         );
     }
 
-    /// Helper to build and return the source map along with output
     fn build_with_sourcemap(input: &str) -> Result<(String, SourceMap), String> {
-        let ast = gors::parser::parse_file("main.go", input)
+        let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        let mut comments: Vec<CommentInfo> = Vec::new();
-        let mut doc_comment_lines: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let comments = collect_comments(&program.main_package.ast);
 
-        for decl in &ast.decls {
-            if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-                if let Some(ref doc) = func_decl.doc {
-                    for comment in &doc.list {
-                        doc_comment_lines.insert(comment.slash.line as u32);
-                    }
-                }
-            }
-        }
+        let compiled =
+            gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
+                .map_err(|e| format!("Compile error: {:?}", e))?;
 
-        for comment_group in &ast.comments {
-            for comment in &comment_group.list {
-                let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
-                comments.push(CommentInfo {
-                    go_line: comment.slash.line as u32,
-                    go_col: comment.slash.column.saturating_sub(1) as u32, // Convert to 0-based
-                    text: comment.text.to_string(),
-                    is_doc,
-                });
-            }
-        }
-
-        let compiled = gors::compiler::compile_with_source_map(ast, "main.go", input)
-            .map_err(|e| format!("Compile error: {:?}", e))?;
-
-        let rust_code = gors::backend_rust::generate(compiled)
+        let rust_code = gors::printer::generate_single(compiled)
             .map_err(|e| format!("Codegen error: {:?}", e))?;
 
         let initial_source_map = gors::compiler::build_source_map(&rust_code);

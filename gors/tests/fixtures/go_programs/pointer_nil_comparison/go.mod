@@ -1,0 +1,2 @@
+module pointer_nil_comparison
+

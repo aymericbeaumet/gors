@@ -1,5 +1,5 @@
 [package]
-name = "gors-fuzz"
+name = "fuzz"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -8,7 +8,7 @@ publish = false
 workspace = true
 
 [dependencies]
-gors = { path = ".." }
+gors = { path = "../gors" }
 
 # AFL dependency is optional - only used when building fuzz targets with `cargo afl build`
 afl = { version = "0.18", optional = true }

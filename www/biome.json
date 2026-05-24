@@ -1,0 +1,12 @@
+{
+	"files": {
+		"includes": [
+			"**",
+			"!dist/**",
+			"!node_modules/**",
+			"!v86/**",
+			"!wasm/pkg/**",
+			"!wasm/target/**"
+		]
+	}
+}

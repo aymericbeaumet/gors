@@ -1,0 +1,7 @@
+*.img
+*.img.gz
+*.bin
+*.bin.gz
+rootfs.json
+rootfs-flat/
+rootfs.tar

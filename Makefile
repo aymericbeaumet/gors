@@ -1,255 +1,81 @@
-# gors Makefile
-# Abstracts Rust/Cargo/Clippy/wasm-pack commands for development and CI
+.PHONY: all build format lint test test-unit test-integration-lexer test-integration-parser test-integration-run test-integration-generate fuzz
+.PHONY: web-install web-build web-format web-lint web-dev
 
-.PHONY: all help
-.PHONY: setup install-tools
-.PHONY: fmt fmt-check lint clippy doc
-.PHONY: build build-release build-wasm build-wasm-dev
-.PHONY: test test-unit test-integrations test-lexer test-parser _test-lexer _test-parser
-.PHONY: fuzz fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-build fuzz-export
-.PHONY: www www-install www-lint www-build www-dev
-.PHONY: clean clean-all
-.PHONY: package
+FUZZ_CASES ?= 128
+FUZZ_EDGE_CASES ?= 32
+FUZZ_SMOKE_CASES ?= 1
+FUZZ_SMOKE_EDGE_CASES ?= 1
 
-# Default target
-all: lint test build
+########
+# rust #
+########
 
-#------------------------------------------------------------------------------
-# Help
-#------------------------------------------------------------------------------
-
-help:
-	@echo "gors Makefile"
-	@echo ""
-	@echo "Usage: make [target]"
-	@echo ""
-	@echo "Setup:"
-	@echo "  setup            Initialize git submodules (required for tests)"
-	@echo "  install-tools    Install required development tools"
-	@echo ""
-	@echo "Development:"
-	@echo "  all              Run lint, test, and build (default)"
-	@echo ""
-	@echo "Linting & Formatting:"
-	@echo "  fmt              Format code with rustfmt"
-	@echo "  fmt-check        Check code formatting (CI mode)"
-	@echo "  lint             Run all linters (fmt-check + clippy)"
-	@echo "  clippy           Run clippy linter"
-	@echo "  doc              Generate documentation"
-	@echo ""
-	@echo "Building:"
-	@echo "  build            Build all packages (debug)"
-	@echo "  build-release    Build all packages (release)"
-	@echo "  build-wasm       Build gors-wasm package (release)"
-	@echo "  build-wasm-dev   Build gors-wasm package (dev)"
-	@echo ""
-	@echo "Testing:"
-	@echo "  test-unit        Run unit tests (fast, no external dependencies)"
-	@echo "  test-integrations Run lexer+parser integration tests in parallel (requires: make setup)"
-	@echo "  test-lexer       Run lexer integration tests (with output)"
-	@echo "  test-parser      Run parser integration tests (with output)"
-	@echo "  test             Alias for test-unit (backward compatibility)"
-	@echo ""
-	@echo "Fuzzing:"
-	@echo "  fuzz-test        Run property-based fuzz tests (stable Rust, CI-friendly)"
-	@echo "  fuzz-scanner     Fuzz the Go scanner with AFL (requires: cargo install afl)"
-	@echo "  fuzz-parser      Fuzz the Go parser with AFL"
-	@echo "  fuzz-roundtrip   Fuzz parse->print->reparse with AFL"
-	@echo "  fuzz-build       Build all AFL fuzz targets"
-	@echo "  fuzz-export      Export crash inputs as test files"
-	@echo ""
-	@echo "Website:"
-	@echo "  www              Build website (install deps + build wasm + build www)"
-	@echo "  www-install      Install www dependencies"
-	@echo "  www-lint         Lint www code"
-	@echo "  www-build        Build www code"
-	@echo "  www-dev          Start www development server"
-	@echo ""
-	@echo "Packaging:"
-	@echo "  package          Build release binary and create tarball"
-	@echo ""
-	@echo "Cleanup:"
-	@echo "  clean            Clean build artifacts"
-	@echo "  clean-all        Clean everything including dependencies"
-
-#------------------------------------------------------------------------------
-# Setup
-#------------------------------------------------------------------------------
-
-setup:
-	@echo "Initializing git submodules..."
-	git submodule update --init --recursive --depth 1
-	@echo "Submodules initialized successfully"
-
-install-tools:
-	@echo "Installing development tools..."
-	rustup component add rustfmt clippy
-	@command -v wasm-pack >/dev/null 2>&1 || \
-		(echo "Installing wasm-pack..." && \
-		curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh)
-	@echo "Tools installed successfully"
-
-#------------------------------------------------------------------------------
-# Formatting & Linting
-#------------------------------------------------------------------------------
-
-fmt:
-	cargo fmt --all
-
-fmt-check:
-	cargo fmt --all -- --check
-
-clippy:
-	cargo clippy --workspace --all-features -- -D warnings
-
-lint: fmt-check clippy
-
-doc:
-	cargo doc --package=gors --no-deps
-
-#------------------------------------------------------------------------------
-# Building
-#------------------------------------------------------------------------------
+all: build lint test
 
 build:
-	cargo build --workspace --exclude=gors-fuzz
+	# rust
+	cargo build --workspace
 
-build-release:
-	cargo build --workspace --exclude=gors-fuzz --release
+lint:
+	# rust
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-build-wasm:
-	cd www/wasm && wasm-pack build --release
+test:
+	# rust
+	GORS_FUZZ_CASES=$(FUZZ_SMOKE_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_SMOKE_EDGE_CASES) GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --workspace --features gors/test_integration_lexer,gors/test_integration_parser,gors/test_integration_run,gors/test_integration_generate -- --nocapture
 
-build-wasm-dev:
-	cd www/wasm && wasm-pack build --dev
-
-#------------------------------------------------------------------------------
-# Testing
-#------------------------------------------------------------------------------
-
-# Unit tests: fast tests for core library (no external dependencies)
 test-unit:
-	cargo test --package=gors
+	# rust
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --workspace --lib --bins --examples -- --nocapture
 
-# Integration tests: lexer and parser tests against real Go repositories
-# Runs both in parallel using make's job parallelization
-# The test runner internally uses all available CPU cores
-test-integrations: build-release
-	@$(MAKE) -j2 _test-lexer _test-parser
+test-integration-lexer:
+	# rust
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --release --package=gors --features test_integration_lexer --test test_integration_lexer -- --nocapture
 
-# Internal targets for parallel execution (do not call directly)
-_test-lexer:
-	cargo test --release --package=gors lexer
+test-integration-parser:
+	# rust
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --release --package=gors --features test_integration_parser --test test_integration_parser -- --nocapture
 
-_test-parser:
-	cargo test --release --package=gors parser
+test-integration-run:
+	# rust
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --release --package=gors --features test_integration_run --test test_integration_run -- --nocapture
 
-# Individual test targets (for debugging specific failures)
-test-lexer:
-	cargo test --release --package=gors lexer -- --nocapture
+test-integration-generate:
+	# rust
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --release --package=gors --features test_integration_generate --test test_integration_generate -- --nocapture
 
-test-parser:
-	cargo test --release --package=gors parser -- --nocapture
+format: web-install
+	# rust
+	cargo fmt --all
+	# web
+	npm --prefix www run format
 
-# Legacy alias for backward compatibility
-test: test-unit
+fuzz:
+	# rust
+	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo test --package=fuzz --test proptest -- --nocapture
 
-#------------------------------------------------------------------------------
-# Fuzzing
-#------------------------------------------------------------------------------
+#######
+# web #
+#######
 
-# Run property-based tests (stable Rust, suitable for CI)
-fuzz-test:
-	cargo test --package gors-fuzz
+web-install:
+	# web
+	npm --prefix www ci --no-audit --fund=false --loglevel=error
 
-# Alias for fuzz-test
-fuzz: fuzz-test
+web-build: web-install
+	# web
+	npm --prefix www run build
 
-# Build fuzz targets with AFL instrumentation
-fuzz-build:
-	cd fuzz && cargo afl build --release --features afl-fuzz
+web-lint: web-install
+	# web
+	npm --prefix www run format:check
+	npm --prefix www run lint
 
-# Fuzz the scanner/lexer
-fuzz-scanner:
-	./fuzz/scripts/fuzz.sh scanner
+web-dev: web-install
+	# web
+	npm --prefix www run dev
 
-# Fuzz the parser
-fuzz-parser:
-	./fuzz/scripts/fuzz.sh parser
-
-# Fuzz the roundtrip (parse->print->reparse)
-fuzz-roundtrip:
-	./fuzz/scripts/fuzz.sh roundtrip
-
-# Export crash inputs as test files to gors/tests/files/
-fuzz-export:
-	./fuzz/scripts/export-crashes.sh
-
-#------------------------------------------------------------------------------
-# Website
-#------------------------------------------------------------------------------
-
-www: build-wasm www-install www-build
-
-www-install:
-	cd www && npm install
-
-www-lint:
-	cd www && npm run lint
-
-www-build:
-	cd www && npm run build
-
-www-dev: build-wasm-dev www-install
-	cd www && npm run dev
-
-#------------------------------------------------------------------------------
-# Packaging
-#------------------------------------------------------------------------------
-
-# Detect OS and architecture for packaging
-UNAME_S := $(shell uname -s)
-UNAME_M := $(shell uname -m)
-
-ifeq ($(UNAME_S),Linux)
-    ifeq ($(UNAME_M),x86_64)
-        TARGET := x86_64-unknown-linux-gnu
-        PACKAGE_NAME := gors-linux-x86_64
-    else ifeq ($(UNAME_M),aarch64)
-        TARGET := aarch64-unknown-linux-gnu
-        PACKAGE_NAME := gors-linux-aarch64
-    endif
-else ifeq ($(UNAME_S),Darwin)
-    ifeq ($(UNAME_M),x86_64)
-        TARGET := x86_64-apple-darwin
-        PACKAGE_NAME := gors-darwin-x86_64
-    else ifeq ($(UNAME_M),arm64)
-        TARGET := aarch64-apple-darwin
-        PACKAGE_NAME := gors-darwin-aarch64
-    endif
-endif
-
-package: build-release
-ifdef TARGET
-	@echo "Packaging for $(TARGET)..."
-	cd target/release && tar -czvf ../../$(PACKAGE_NAME).tar.gz gors
-	@echo "Created $(PACKAGE_NAME).tar.gz"
-else
-	@echo "Error: Unsupported platform $(UNAME_S)/$(UNAME_M)"
-	@exit 1
-endif
-
-#------------------------------------------------------------------------------
-# Cleanup
-#------------------------------------------------------------------------------
-
-clean:
-	cargo clean
-	rm -rf www/dist
-	rm -rf www/wasm/pkg
-	rm -f gors-*.tar.gz
-
-clean-all: clean
-	rm -rf www/node_modules
-	rm -rf target
-	rm -rf fuzz/out fuzz/sync
+web-format: web-install
+	# web
+	npm --prefix www run format

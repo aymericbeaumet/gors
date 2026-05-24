@@ -1,35 +1,22 @@
-[package]
-name = "gors"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-description = "Experimental go toolchain written in rust (parser, compiler) "
-homepage = "https://aymericbeaumet.github.io/gors/"
-repository = "https://github.com/aymericbeaumet/gors/"
-
-[lib]
-name = "gors"
-path = "src/lib.rs"
-
-[[bin]]
-name = "gors"
-path = "src/main.rs"
-
 [workspace]
 resolver = "3"
 members = [
-  ".",
-  "www/wasm",
+  "gors",
+  "gors-cli",
+  "gors-builtin",
   "fuzz",
 ]
-
-[lints]
-workspace = true
+exclude = [
+  "www/wasm",
+]
 
 # Workspace-level lints configuration
 [workspace.lints.rust]
 # Forbid dead code in the entire workspace
 dead_code = "deny"
+unsafe_code = "forbid"
+unused_imports = "deny"
+unused_macros = "deny"
 
 [workspace.lints.clippy]
 # Enable all pedantic lints as warnings, with specific exceptions
@@ -40,6 +27,10 @@ nursery = { level = "warn", priority = -1 }
 panic = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
 # Allow lints that are too pedantic for this codebase
 collapsible_if = "allow"           # Let chains are suggested but not always clearer
 option_if_let_else = "allow"       # map_or_else is not always clearer
@@ -49,33 +40,8 @@ unnecessary_struct_initialization = "allow"  # Sometimes explicit initialization
 needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
 large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
 fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
-
-[dependencies]
-# Library dependencies
-log = { version = "0.4", features = ["release_max_level_warn"] }
-phf = { version = "0.13", features = ["macros"] }
-prettyplease = "0.2"
-proc-macro2 = "1.0"
-quote = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-sourcemap = "9"
-syn = { version = "2.0", features = ["full", "visit-mut"] }
-unicode-general-category = "1.1"
-
-# WASM backend dependencies
-walrus = "0.26"
-# WASM runtime - wasmi works both natively and when compiled to WASM
-wasmi = "1.0"
-
-# Binary dependencies
-atty = "0.2"
-clap = { version = "4.6", features = ["derive"] }
-pretty_env_logger = "0.5"
-serde_json = "1.0"
-tempfile = "3.27"
-
-[dev-dependencies]
-rayon = "1.12"
+cognitive_complexity = "allow"     # Complex compiler passes are clearer when kept local
+too_many_lines = "allow"           # Large compiler functions and tests are split only when useful
 
 [profile.dev]
 opt-level = 0
