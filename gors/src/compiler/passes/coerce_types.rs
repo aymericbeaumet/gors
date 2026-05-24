@@ -107,6 +107,7 @@ impl VisitMut for CoerceTypes {
         for mut stmt in old_stmts {
             visit_mut::visit_stmt_mut(self, &mut stmt);
             new_stmts.extend(hoist_args_read_after_mut_borrow(&mut stmt));
+            new_stmts.extend(hoist_method_args_read_receiver(&mut stmt));
             let needs_flush = stmt_needs_fmt_flush(&stmt);
             new_stmts.push(stmt);
             if needs_flush {
@@ -929,6 +930,29 @@ fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
                 let #temp = #value;
             });
         }
+    }
+    hoisted
+}
+
+fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
+    let syn::Stmt::Expr(syn::Expr::MethodCall(call), _) = stmt else {
+        return Vec::new();
+    };
+    let Some(receiver_name) = path_ident_name(&call.receiver) else {
+        return Vec::new();
+    };
+
+    let mut hoisted = Vec::new();
+    for arg in &mut call.args {
+        if !expr_contains_path_ident(arg, &receiver_name) {
+            continue;
+        }
+        let temp = quote::format_ident!("__gors_premethod_arg_{}", hoisted.len());
+        let value = arg.clone();
+        *arg = syn::parse_quote! { #temp };
+        hoisted.push(syn::parse_quote! {
+            let #temp = #value;
+        });
     }
     hoisted
 }

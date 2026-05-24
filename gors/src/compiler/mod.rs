@@ -4422,6 +4422,13 @@ fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item
     ]
 }
 
+fn slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    match expr {
+        ast::Expr::ArrayType(array) if array.len.is_none() => Some(type_from_expr_ref(&array.elt)),
+        _ => None,
+    }
+}
+
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts
         .name
@@ -4711,7 +4718,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
         }
         other => {
             let is_byte_slice = is_byte_slice_type(&other);
+            let slice_elem_type = slice_elem_type_from_expr(&other);
             let underlying_go_type = typeinfer::GoType::from_expr(&other);
+            let is_slice_alias = matches!(underlying_go_type, typeinfer::GoType::Slice(_));
             let is_copy_alias = go_type_is_copy(&underlying_go_type);
             let rust_type: syn::Type = other.into();
             let struct_item: syn::Item = if is_copy_alias {
@@ -4739,6 +4748,64 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
             if is_copy_alias {
                 items.extend(numeric_newtype_impls(&ident, &rust_type));
+            }
+            if is_slice_alias && !is_byte_slice {
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Len for #ident {
+                        fn len_value(&self) -> usize { self.0.len() }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Cap for #ident {
+                        fn cap_value(&self) -> usize { self.0.capacity() }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl From<#rust_type> for #ident {
+                        fn from(value: #rust_type) -> Self { Self(value) }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl From<#ident> for #rust_type {
+                        fn from(value: #ident) -> Self { value.0 }
+                    }
+                });
+                if let Some(elem_ty) = &slice_elem_type {
+                    items.push(syn::parse_quote! {
+                        impl AsRef<[#elem_ty]> for #ident {
+                            fn as_ref(&self) -> &[#elem_ty] { self.0.as_ref() }
+                        }
+                    });
+                    items.push(syn::parse_quote! {
+                        impl AsMut<[#elem_ty]> for #ident {
+                            fn as_mut(&mut self) -> &mut [#elem_ty] { self.0.as_mut() }
+                        }
+                    });
+                    items.push(syn::parse_quote! {
+                        impl crate::builtin::Append<#elem_ty> for #ident {
+                            fn append_value(mut self, elem: #elem_ty) -> Self {
+                                self.0.push(elem);
+                                self
+                            }
+                        }
+                    });
+                }
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Append<#rust_type> for #ident {
+                        fn append_value(mut self, elem: #rust_type) -> Self {
+                            self.0.extend(elem);
+                            self
+                        }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Append<#ident> for #rust_type {
+                        fn append_value(mut self, elem: #ident) -> Self {
+                            self.extend(elem.0);
+                            self
+                        }
+                    }
+                });
             }
             if is_byte_slice {
                 items.push(syn::parse_quote! {
@@ -5121,9 +5188,16 @@ fn compile_method(
         .ok_or_else(|| CompilerError::UnsupportedConstruct("receiver has no type".to_string()))?;
 
     let (type_name, is_pointer) = extract_receiver_type(&recv_type)?;
+    let is_slice_receiver = TYPE_ENV.with(|env| {
+        matches!(
+            env.borrow()
+                .resolve_alias(&typeinfer::GoType::Named(type_name.clone())),
+            typeinfer::GoType::Slice(_)
+        )
+    });
     let type_args = receiver_type_args(&recv_type);
 
-    let self_arg: syn::FnArg = if is_pointer {
+    let self_arg: syn::FnArg = if is_pointer || is_slice_receiver {
         syn::parse_quote! { &mut self }
     } else {
         syn::parse_quote! { &self }
@@ -5153,12 +5227,13 @@ fn compile_method(
 
     let borrow_pointer_params =
         pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
+    let type_param_info = TypeParamInfo::default();
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
     for param in func_decl.type_.params.list {
         for arg in compile_field_to_fn_args_with_type_params(
             param,
-            &TypeParamInfo::default(),
+            &type_param_info,
             &borrow_pointer_params,
         )? {
             inputs.push(arg);
@@ -5168,14 +5243,15 @@ fn compile_method(
     let vis: syn::Visibility = (&func_decl.name).into();
     let attrs = comment_group_to_attrs(&func_decl.doc);
 
-    let mut block = if let Some(body) = func_decl.body {
-        body.try_into()?
+    let block_result = if let Some(body) = func_decl.body {
+        body.try_into()
     } else {
-        syn::Block {
+        Ok(syn::Block {
             brace_token: syn::token::Brace::default(),
             stmts: vec![],
-        }
+        })
     };
+    let mut block = block_result?;
 
     if !recv_name.is_empty() {
         rewrite_receiver(&mut block, &recv_name);
@@ -5405,18 +5481,16 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     }
 
     let target_ty = type_from_expr_ref(&target_fun);
-    if let ast::Expr::Ident(id) = &target_fun
-        && let Some(inner_ty) = TYPE_ENV.with(|env| {
-            let env = env.borrow();
-            match env.get_type_kind(id.name) {
-                Some(typeinfer::TypeKind::Alias(inner)) if inner.is_numeric() => {
-                    rust_type_from_go_type(inner)
-                }
-                _ => None,
-            }
-        })
-    {
-        return syn::parse_quote! { #target_ty((#arg) as #inner_ty) };
+    if let Some(typeinfer::TypeKind::Alias(inner)) = type_kind_for_type_expr(&target_fun) {
+        if inner.is_numeric()
+            && let Some(inner_ty) = rust_type_from_go_type(&inner)
+        {
+            return syn::parse_quote! { #target_ty((#arg) as #inner_ty) };
+        }
+        if matches!(inner, typeinfer::GoType::Slice(_)) {
+            return syn::parse_quote! { #target_ty::from(#arg) };
+        }
+        return syn::parse_quote! { #target_ty(#arg) };
     }
     if let Some(inner_ty) = box_inner_type(&target_ty) {
         return syn::parse_quote! { Box::new(<#inner_ty>::default()) };
@@ -8856,8 +8930,48 @@ fn type_from_param_expr(
             }
         }
         ast::Expr::FuncType(func_type) => impl_func_type_from_ast(func_type),
+        _ if type_expr_resolves_to_slice_alias(expr) => {
+            let inner = type_from_expr_ref(expr);
+            syn::parse_quote! { &mut #inner }
+        }
         _ => type_from_expr_ref(expr),
     }
+}
+
+fn type_kind_for_type_expr(expr: &ast::Expr) -> Option<typeinfer::TypeKind> {
+    if let ast::Expr::ParenExpr(paren) = expr {
+        return type_kind_for_type_expr(&paren.x);
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        match expr {
+            ast::Expr::Ident(ident) => env.get_type_kind(ident.name).cloned(),
+            ast::Expr::SelectorExpr(selector) => {
+                if let ast::Expr::Ident(pkg) = &*selector.x {
+                    let key = format!("{}.{}", pkg.name, selector.sel.name);
+                    env.get_type_kind(&key)
+                        .cloned()
+                        .or_else(|| env.get_type_kind(selector.sel.name).cloned())
+                } else {
+                    None
+                }
+            }
+            ast::Expr::IndexExpr(index) => {
+                extract_type_name(&index.x).and_then(|name| env.get_type_kind(&name).cloned())
+            }
+            ast::Expr::IndexListExpr(index) => {
+                extract_type_name(&index.x).and_then(|name| env.get_type_kind(&name).cloned())
+            }
+            _ => None,
+        }
+    })
+}
+
+fn type_expr_resolves_to_slice_alias(expr: &ast::Expr) -> bool {
+    matches!(
+        type_kind_for_type_expr(expr),
+        Some(typeinfer::TypeKind::Alias(typeinfer::GoType::Slice(_)))
+    )
 }
 
 fn compile_field_to_fn_args_with_type_params(
