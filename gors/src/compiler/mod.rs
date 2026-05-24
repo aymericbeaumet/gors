@@ -2004,6 +2004,7 @@ fn compile_program_impl(
     prune_generated_dead_code(&mut modules, has_main_fn);
     inject_post_prune_stdlib_helpers(&mut modules, &stdlib_imports);
     prune_generated_dead_code(&mut modules, has_main_fn);
+    borrow_mutated_vec_params(&mut modules);
     drop(dce_timer);
 
     prefix_final_module_paths(&mut modules);
@@ -2072,6 +2073,271 @@ fn inject_post_prune_stdlib_helpers(
     let mut preserved = std::collections::HashSet::from(["builtin".to_string()]);
     preserved.extend(roots.iter().map(|root| crate::go_stdlib::module_name(root)));
     prune_unreferenced_stdlib_modules(modules, &preserved);
+}
+
+fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
+    let mut targets = collect_mut_ref_vec_targets(modules);
+
+    loop {
+        if !targets.is_empty() {
+            for module in modules.values_mut() {
+                syn::visit_mut::VisitMut::visit_file_mut(
+                    &mut BorrowMutatedVecCallArgs {
+                        module_name: module.mod_name.clone(),
+                        targets: &targets,
+                    },
+                    &mut module.file,
+                );
+            }
+        }
+
+        let mut changed = false;
+        for module in modules.values_mut() {
+            let module_name = module.mod_name.clone();
+            for item in &mut module.file.items {
+                let syn::Item::Fn(item_fn) = item else {
+                    continue;
+                };
+                if return_type_is_vec(&item_fn.sig.output) {
+                    continue;
+                }
+                let params = mutated_vec_param_indices(&item_fn.sig, &item_fn.block);
+                if params.is_empty() {
+                    continue;
+                }
+                let key = format!("{}::{}", module_name, item_fn.sig.ident);
+                let indices = params.iter().map(|(index, _, _)| *index).collect();
+                rewrite_vec_params_as_mut_refs(&mut item_fn.sig, &params);
+                reborrow_mutated_vec_params(&mut item_fn.block, &params);
+                if targets.insert(key, indices).is_none() {
+                    changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn collect_mut_ref_vec_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> BTreeMap<String, std::collections::HashSet<usize>> {
+    let mut targets = BTreeMap::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Fn(item_fn) = item else {
+                continue;
+            };
+            let indices = mut_ref_vec_param_indices(&item_fn.sig);
+            if indices.is_empty() {
+                continue;
+            }
+            targets.insert(
+                format!("{}::{}", module.mod_name, item_fn.sig.ident),
+                indices,
+            );
+        }
+    }
+    targets
+}
+
+fn mut_ref_vec_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let syn::FnArg::Typed(pat_type) = input else {
+                return None;
+            };
+            mut_ref_vec_inner(&pat_type.ty).map(|_| index)
+        })
+        .collect()
+}
+
+fn mut_ref_vec_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Reference(reference) = ty else {
+        return None;
+    };
+    reference.mutability.as_ref()?;
+    vec_type_inner(&reference.elem)
+}
+
+fn return_type_is_vec(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    vec_type_inner(ty).is_some()
+}
+
+fn mutated_vec_param_indices(
+    sig: &syn::Signature,
+    block: &syn::Block,
+) -> Vec<(usize, syn::Ident, syn::Type)> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let syn::FnArg::Typed(pat_type) = input else {
+                return None;
+            };
+            let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
+                return None;
+            };
+            let inner = vec_type_inner(&pat_type.ty)?;
+            body_mut_borrows_ident(block, &pat_ident.ident)
+                .then(|| (index, pat_ident.ident.clone(), inner))
+        })
+        .collect()
+}
+
+fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = path.path.segments.first()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(inner.clone())
+}
+
+fn body_mut_borrows_ident(block: &syn::Block, ident: &syn::Ident) -> bool {
+    struct Finder<'a> {
+        ident: &'a syn::Ident,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_reference(&mut self, reference: &syn::ExprReference) {
+            if reference.mutability.is_some()
+                && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident(self.ident))
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_reference(self, reference);
+        }
+    }
+
+    let mut finder = Finder {
+        ident,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+fn rewrite_vec_params_as_mut_refs(
+    sig: &mut syn::Signature,
+    params: &[(usize, syn::Ident, syn::Type)],
+) {
+    for (index, _, inner) in params {
+        let Some(syn::FnArg::Typed(pat_type)) = sig.inputs.iter_mut().nth(*index) else {
+            continue;
+        };
+        pat_type.ty = Box::new(syn::parse_quote! { &mut Vec<#inner> });
+    }
+}
+
+fn reborrow_mutated_vec_params(block: &mut syn::Block, params: &[(usize, syn::Ident, syn::Type)]) {
+    struct Reborrow {
+        names: std::collections::HashSet<String>,
+    }
+
+    impl syn::visit_mut::VisitMut for Reborrow {
+        fn visit_expr_reference_mut(&mut self, reference: &mut syn::ExprReference) {
+            syn::visit_mut::visit_expr_reference_mut(self, reference);
+            if reference.mutability.is_none() {
+                return;
+            }
+            let syn::Expr::Path(path) = &*reference.expr else {
+                return;
+            };
+            let Some(ident) = path.path.get_ident() else {
+                return;
+            };
+            if !self.names.contains(&ident.to_string()) {
+                return;
+            }
+            reference.expr = Box::new(syn::parse_quote! { *#ident });
+        }
+    }
+
+    let names = params
+        .iter()
+        .map(|(_, ident, _)| ident.to_string())
+        .collect();
+    syn::visit_mut::VisitMut::visit_block_mut(&mut Reborrow { names }, block);
+}
+
+struct BorrowMutatedVecCallArgs<'a> {
+    module_name: String,
+    targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+}
+
+impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        syn::visit_mut::visit_expr_call_mut(self, call);
+        let Some(key) = call_target_key(&call.func, &self.module_name) else {
+            return;
+        };
+        let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                borrow_mut_vec_call_arg(arg);
+            }
+        }
+    }
+}
+
+fn call_target_key(func: &syn::Expr, current_module: &str) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    let segments: Vec<_> = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [name] => Some(format!("{current_module}::{name}")),
+        [.., module, name] => Some(format!("{module}::{name}")),
+        [] => None,
+    }
+}
+
+fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
+    if matches!(arg, syn::Expr::Reference(_)) {
+        return;
+    }
+    if let Some(name) = expr_path_ident(arg) {
+        let ident = syn::Ident::new(&name, Span::mixed_site());
+        *arg = syn::parse_quote! { &mut #ident };
+        return;
+    }
+    let inner = arg.clone();
+    *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = expr else {
+        return None;
+    };
+    path.path.get_ident().map(ToString::to_string)
 }
 
 fn prefix_final_module_paths(modules: &mut BTreeMap<String, CompiledModule>) {
