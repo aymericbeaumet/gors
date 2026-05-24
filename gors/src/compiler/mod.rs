@@ -42,6 +42,7 @@ thread_local! {
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
+    static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 struct ProfileTimer {
@@ -322,6 +323,14 @@ fn go_constraint_to_rust_bounds(
             bounds.extend(go_constraint_to_rust_bounds(&unary.x));
         }
         ast::Expr::BinaryExpr(bin) if bin.op == token::Token::OR => {
+            if is_string_or_byte_slice_union(constraint) {
+                bounds.push(syn::parse_quote! { crate::builtin::ByteSeq });
+                bounds.push(syn::parse_quote! { crate::builtin::Len });
+                bounds.push(syn::parse_quote! { Clone });
+                bounds.push(syn::parse_quote! { PartialEq });
+                bounds.push(syn::parse_quote! { PartialOrd });
+                return dedupe_type_param_bounds(bounds);
+            }
             // Union type like `int | float64` → approximate with common traits
             append_type_param_bounds(&mut bounds, go_constraint_to_rust_bounds(&bin.x));
             append_type_param_bounds(&mut bounds, go_constraint_to_rust_bounds(&bin.y));
@@ -371,6 +380,7 @@ fn append_type_param_bounds(
 struct TypeParamInfo {
     names: std::collections::HashSet<String>,
     slice_aliases: BTreeMap<String, syn::Type>,
+    byte_seq_names: std::collections::HashSet<String>,
 }
 
 impl TypeParamInfo {
@@ -403,7 +413,45 @@ fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInf
             }
         }
     }
+    for field in &type_params.list {
+        if !field
+            .type_
+            .as_ref()
+            .is_some_and(is_string_or_byte_slice_union)
+        {
+            continue;
+        }
+        if let Some(names) = &field.names {
+            for name in names {
+                info.byte_seq_names.insert(name.name.to_string());
+            }
+        }
+    }
     info
+}
+
+fn is_string_or_byte_slice_union(expr: &ast::Expr) -> bool {
+    fn collect(expr: &ast::Expr, has_string: &mut bool, has_byte_slice: &mut bool) {
+        match expr {
+            ast::Expr::BinaryExpr(binary) if binary.op == token::Token::OR => {
+                collect(&binary.x, has_string, has_byte_slice);
+                collect(&binary.y, has_string, has_byte_slice);
+            }
+            ast::Expr::Ident(ident) if ident.name == "string" => *has_string = true,
+            ast::Expr::ArrayType(array)
+                if array.len.is_none()
+                    && matches!(&*array.elt, ast::Expr::Ident(ident) if ident.name == "byte" || ident.name == "uint8") =>
+            {
+                *has_byte_slice = true;
+            }
+            _ => {}
+        }
+    }
+
+    let mut has_string = false;
+    let mut has_byte_slice = false;
+    collect(expr, &mut has_string, &mut has_byte_slice);
+    has_string && has_byte_slice
 }
 
 fn slice_alias_element_type(expr: &ast::Expr) -> Option<syn::Type> {
@@ -5304,6 +5352,9 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
         "string" if is_int_arg || is_numeric_var => {
             syn::parse_quote! { char::from_u32(#arg as u32).map(String::from).unwrap_or_default() }
         }
+        "string" if is_byte_seq_type_param(&arg_go_type) => {
+            syn::parse_quote! { crate::builtin::string_from_byte_seq(&#arg) }
+        }
         "string" => {
             syn::parse_quote! { crate::builtin::string(&#arg) }
         }
@@ -6063,6 +6114,17 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
         syn::parse_quote! { (#e) as usize }
     });
 
+    if is_byte_seq_type_param(&x_go_type) {
+        let start: syn::Expr = low
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| syn::parse_quote! { 0usize });
+        let end: syn::Expr = high.as_ref().cloned().unwrap_or_else(|| {
+            syn::parse_quote! { crate::builtin::len(&#x) as usize }
+        });
+        return syn::parse_quote! { crate::builtin::byte_slice(&#x, #start, #end) };
+    }
+
     if is_any_slice {
         return match (low.as_ref(), high.as_ref()) {
             (None, None) => syn::parse_quote! { #x },
@@ -6197,6 +6259,10 @@ fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
         }),
         _ => false,
     }
+}
+
+fn is_byte_seq_type_param(go_type: &typeinfer::GoType) -> bool {
+    matches!(go_type, typeinfer::GoType::Named(name) if BYTE_SEQ_TYPE_PARAMS.with(|params| params.borrow().contains(name)))
 }
 
 fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
@@ -7606,6 +7672,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 let base: syn::Expr = (*index_expr.x).into();
                 let idx: syn::Expr = (*index_expr.index).into();
 
+                if is_byte_seq_type_param(&container_type) {
+                    return syn::parse_quote! { crate::builtin::byte_at(&#base, (#idx) as usize) };
+                }
+
                 // For string indexing, use .as_bytes()[i] since Go's s[i] returns a byte
                 let base = if container_type == typeinfer::GoType::String {
                     syn::parse_quote! { (#base).as_bytes() }
@@ -8612,14 +8682,24 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let output = compile_return_type(func_decl.type_.results)?;
 
-        let mut block = Box::new(if let Some(body) = func_decl.body {
-            body.try_into()?
+        let previous_byte_seq_type_params = BYTE_SEQ_TYPE_PARAMS.with(|params| {
+            std::mem::replace(
+                &mut *params.borrow_mut(),
+                type_param_info.byte_seq_names.clone(),
+            )
+        });
+        let block_result = if let Some(body) = func_decl.body {
+            body.try_into()
         } else {
-            syn::Block {
+            Ok(syn::Block {
                 brace_token: syn::token::Brace::default(),
                 stmts: vec![],
-            }
+            })
+        };
+        BYTE_SEQ_TYPE_PARAMS.with(|params| {
+            *params.borrow_mut() = previous_byte_seq_type_params;
         });
+        let mut block = Box::new(block_result?);
 
         // For named returns: prepend variable declarations and rewrite bare returns
         if !named_return_info.is_empty() {
@@ -9428,7 +9508,13 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                                 env.borrow_mut().set_var(&ident.to_string(), inferred);
                             });
                         }
-                        let init_expr: Option<syn::Expr> = init_ast.map(Into::into);
+                        let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
+                            if let Some(ref go_type) = go_type {
+                                compile_expr_with_expected(expr, Some(go_type))
+                            } else {
+                                expr.into()
+                            }
+                        });
 
                         let init = init_expr
                             .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
@@ -10179,18 +10265,20 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     "compound assignment only supports a single lhs element".to_string(),
                 ));
             }
-            let left: syn::Expr = assign_stmt
+            let lhs_ast = assign_stmt
                 .lhs
                 .into_iter()
                 .next()
-                .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?
-                .into();
-            let right: syn::Expr = assign_stmt
+                .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?;
+            let rhs_ast = assign_stmt
                 .rhs
                 .into_iter()
                 .next()
-                .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?
-                .into();
+                .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?;
+            let lhs_ty =
+                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
+            let right = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
+            let left: syn::Expr = lhs_ast.into();
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
         }

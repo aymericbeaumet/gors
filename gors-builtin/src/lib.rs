@@ -259,6 +259,56 @@ pub trait Len {
     fn len_value(&self) -> usize;
 }
 
+pub trait ByteSeq {
+    fn byte_at(&self, index: usize) -> u8;
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8>;
+}
+
+impl ByteSeq for std::string::String {
+    fn byte_at(&self, index: usize) -> u8 {
+        self.as_bytes()[index]
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        self.as_bytes()[start..end].to_vec()
+    }
+}
+
+impl ByteSeq for Vec<u8> {
+    fn byte_at(&self, index: usize) -> u8 {
+        self[index]
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        self[start..end].to_vec()
+    }
+}
+
+impl<T: ByteSeq + ?Sized> ByteSeq for &T {
+    fn byte_at(&self, index: usize) -> u8 {
+        (**self).byte_at(index)
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        (**self).byte_slice(start, end)
+    }
+}
+
+#[inline]
+pub fn byte_at<T: ByteSeq + ?Sized>(value: &T, index: usize) -> u8 {
+    value.byte_at(index)
+}
+
+#[inline]
+pub fn byte_slice<T: ByteSeq + ?Sized>(value: &T, start: usize, end: usize) -> Vec<u8> {
+    value.byte_slice(start, end)
+}
+
+#[inline]
+pub fn string_from_byte_seq<T: ByteSeq + Len + ?Sized>(value: &T) -> std::string::String {
+    std::string::String::from_utf8(value.byte_slice(0, value.len_value())).unwrap_or_default()
+}
+
 impl<T> Len for Vec<T> {
     fn len_value(&self) -> usize {
         self.len()
@@ -1176,6 +1226,19 @@ mod tests {
         assert!(reflect_kind_is(&boxed_string, __GorsReflectKind::String));
         assert!(reflect_kind_is(&boxed_int, __GorsReflectKind::Int));
         assert!(!reflect_kind_is(&boxed_int, __GorsReflectKind::String));
+    }
+
+    #[test]
+    fn byte_sequence_helpers_cover_strings_and_byte_slices() {
+        let text = "gors".to_string();
+        let bytes = vec![b'g', b'o', b'r', b's'];
+
+        assert_eq!(byte_at(&text, 1), b'o');
+        assert_eq!(byte_at(&bytes, 2), b'r');
+        assert_eq!(byte_slice(&text, 1, 3), vec![b'o', b'r']);
+        assert_eq!(byte_slice(&bytes, 0, 2), vec![b'g', b'o']);
+        assert_eq!(string_from_byte_seq(&text), "gors");
+        assert_eq!(string_from_byte_seq(&bytes), "gors");
     }
 
     #[test]
