@@ -43,6 +43,7 @@ thread_local! {
     static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
 }
 
 struct ProfileTimer {
@@ -4796,6 +4797,25 @@ fn compile_return_type(results: Option<ast::FieldList>) -> Result<syn::ReturnTyp
     }
 }
 
+fn collect_return_go_types(results: Option<&ast::FieldList>) -> Vec<typeinfer::GoType> {
+    let Some(results) = results else {
+        return Vec::new();
+    };
+    results
+        .list
+        .iter()
+        .flat_map(|field| {
+            let count = field.names.as_ref().map_or(1, |names| names.len());
+            field
+                .type_
+                .as_ref()
+                .map(typeinfer::GoType::from_expr)
+                .map(|ty| std::iter::repeat_n(ty, count).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 fn return_type_from_expr(expr: ast::Expr) -> syn::Type {
     let is_interface = is_interface_expr(&expr);
     let ty: syn::Type = expr.into();
@@ -5364,6 +5384,74 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
         "[]byte" => syn::parse_quote! { (#arg).as_bytes().to_vec() },
         "[]rune" => syn::parse_quote! { (#arg).chars().collect::<Vec<char>>() },
         _ => compile_error_expr(format!("unsupported type conversion: {kind}")),
+    }
+}
+
+fn unsafe_intrinsic_name<'ast>(call_expr: &ast::CallExpr<'ast>) -> Option<&'ast str> {
+    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
+        return None;
+    };
+    if matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") {
+        Some(selector.sel.name)
+    } else {
+        None
+    }
+}
+
+fn unsafe_string_byte_source(expr: ast::Expr) -> Option<ast::Expr> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => unsafe_string_byte_source(*paren.x),
+        ast::Expr::CallExpr(call)
+            if unsafe_intrinsic_name(&call) == Some("SliceData")
+                && call.args.as_ref().is_some_and(|args| args.len() == 1) =>
+        {
+            call.args.and_then(|mut args| args.pop())
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => match *unary.x {
+            ast::Expr::IndexExpr(index) => Some(*index.x),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn compile_unsafe_intrinsic_call(call_expr: ast::CallExpr) -> syn::Expr {
+    let is_string = unsafe_intrinsic_name(&call_expr) == Some("String");
+    let is_slice_data = unsafe_intrinsic_name(&call_expr) == Some("SliceData");
+    let args = call_expr.args.unwrap_or_default();
+    match (is_string, is_slice_data, args.len()) {
+        (true, false, 2) => {
+            let mut args = args.into_iter();
+            let Some(ptr) = args.next() else {
+                return syn::parse_quote! { String::new() };
+            };
+            let Some(len) = args.next() else {
+                return syn::parse_quote! { String::new() };
+            };
+            let source = unsafe_string_byte_source(ptr)
+                .map(syn::Expr::from)
+                .unwrap_or_else(|| syn::parse_quote! { Vec::<u8>::new() });
+            let len: syn::Expr = len.into();
+            syn::parse_quote! {
+                String::from_utf8(
+                    crate::builtin::byte_slice(&#source, 0usize, (#len) as usize)
+                ).unwrap_or_default()
+            }
+        }
+        (false, true, 1) => {
+            let Some(source) = args.into_iter().next() else {
+                return syn::parse_quote! { Vec::<u8>::new() };
+            };
+            let source: syn::Expr = source.into();
+            syn::parse_quote! { #source }
+        }
+        _ => {
+            if is_string {
+                syn::parse_quote! { String::new() }
+            } else {
+                syn::parse_quote! { Vec::<u8>::new() }
+            }
+        }
     }
 }
 
@@ -6077,9 +6165,16 @@ fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
         }
     }
 
+    let return_go_types = collect_return_go_types(func_lit.type_.results.as_ref());
     let ret = compile_return_type(func_lit.type_.results).unwrap_or(syn::ReturnType::Default);
 
-    let block: syn::Block = func_lit.body.try_into().unwrap_or(syn::Block {
+    let previous_return_types =
+        RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let block_result = func_lit.body.try_into();
+    RETURN_TYPES.with(|types| {
+        *types.borrow_mut() = previous_return_types;
+    });
+    let block: syn::Block = block_result.unwrap_or(syn::Block {
         brace_token: syn::token::Brace::default(),
         stmts: vec![],
     });
@@ -7465,6 +7560,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
             ast::Expr::BinaryExpr(binary_expr) => compile_binary_expr(binary_expr),
             ast::Expr::CallExpr(call_expr) => {
+                if matches!(
+                    unsafe_intrinsic_name(&call_expr),
+                    Some("String" | "SliceData")
+                ) {
+                    return compile_unsafe_intrinsic_call(call_expr);
+                }
                 if let Some(kind) = detect_type_conversion(&call_expr) {
                     return compile_type_conversion(call_expr, kind);
                 }
@@ -8680,6 +8781,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         }
 
+        let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
         let output = compile_return_type(func_decl.type_.results)?;
 
         let previous_byte_seq_type_params = BYTE_SEQ_TYPE_PARAMS.with(|params| {
@@ -8688,16 +8790,28 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 type_param_info.byte_seq_names.clone(),
             )
         });
+        let previous_return_types =
+            RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
         } else {
+            let stmts = if matches!(output, syn::ReturnType::Default) {
+                vec![]
+            } else {
+                vec![syn::parse_quote! {
+                    std::panic::panic_any("unimplemented".to_string());
+                }]
+            };
             Ok(syn::Block {
                 brace_token: syn::token::Brace::default(),
-                stmts: vec![],
+                stmts,
             })
         };
         BYTE_SEQ_TYPE_PARAMS.with(|params| {
             *params.borrow_mut() = previous_byte_seq_type_params;
+        });
+        RETURN_TYPES.with(|types| {
+            *types.borrow_mut() = previous_return_types;
         });
         let mut block = Box::new(block_result?);
 
@@ -10294,9 +10408,10 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
     fn from(return_stmt: ast::ReturnStmt) -> Self {
         record_mapping(&return_stmt.return_, Some("return"));
 
+        let expected_return_types = RETURN_TYPES.with(|types| types.borrow().clone());
         let expr = match return_stmt.results.len() {
             0 => None,
-            1 => Some(syn::Expr::from(
+            1 => Some(compile_expr_with_expected(
                 return_stmt.results.into_iter().next().unwrap_or_else(|| {
                     ast::Expr::Ident(ast::Ident {
                         name_pos: token::Position::default(),
@@ -10304,11 +10419,15 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
                         obj: None,
                     })
                 }),
+                expected_return_types.first(),
             )),
             _ => {
                 let mut elems = syn::punctuated::Punctuated::new();
-                for result in return_stmt.results {
-                    elems.push(result.into());
+                for (idx, result) in return_stmt.results.into_iter().enumerate() {
+                    elems.push(compile_expr_with_expected(
+                        result,
+                        expected_return_types.get(idx),
+                    ));
                 }
                 Some(syn::Expr::Tuple(syn::ExprTuple {
                     attrs: vec![],
