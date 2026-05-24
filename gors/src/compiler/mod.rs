@@ -4750,6 +4750,7 @@ fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
 }
 
 fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
+    let func_ty = shared_func_type_from_ast(func_type);
     let mut params = Vec::new();
     for field in &func_type.params.list {
         let ty: syn::Type = field
@@ -4764,7 +4765,6 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
         }
     }
 
-    let func_ty = boxed_func_type_from_ast(func_type);
     let body = match func_type
         .results
         .as_ref()
@@ -4791,7 +4791,9 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
         }
     };
 
-    syn::parse_quote! { Box::new(move |#(#params),*| { #body }) as #func_ty }
+    syn::parse_quote! {
+        std::rc::Rc::new(std::cell::RefCell::new(move |#(#params),*| { #body })) as #func_ty
+    }
 }
 
 fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
@@ -4854,7 +4856,7 @@ fn selector_path_from_ref(selector_expr: &ast::SelectorExpr) -> syn::Path {
 fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
     match expr {
         ast::Expr::ParenExpr(paren) => type_from_expr_ref(&paren.x),
-        ast::Expr::FuncType(func_type) => boxed_func_type_from_ast(func_type),
+        ast::Expr::FuncType(func_type) => shared_func_type_from_ast(func_type),
         ast::Expr::Ident(ident) if ident.name == "any" => {
             syn::parse_quote! { Box<dyn std::any::Any> }
         }
@@ -4991,16 +4993,22 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
         .collect()
 }
 
-fn boxed_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result> }
+    syn::parse_quote! { std::rc::Rc<std::cell::RefCell<dyn FnMut(#(#params),*) -> #result>> }
 }
 
 fn impl_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
     syn::parse_quote! { impl FnMut(#(#params),*) -> #result }
+}
+
+fn fn_pointer_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+    let params = func_param_types_from_ast(func_type);
+    let result = func_result_type_from_ast(func_type);
+    syn::parse_quote! { fn(#(#params),*) -> #result }
 }
 
 fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item> {
@@ -5276,12 +5284,14 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     })?;
                     let interface_trait_path = interface_trait_path_from_expr(&field_type);
                     has_borrowed_interface_field |= interface_trait_path.is_some();
+                    let field_contains_func = contains_func_type(&field_type);
                     let field_needs_manual_default =
-                        contains_array_type(&field_type) || contains_func_type(&field_type);
+                        contains_array_type(&field_type) || field_contains_func;
                     let field_cannot_derive_clone =
                         contains_any_type(&field_type) || interface_trait_path.is_some();
                     let field_cannot_default = interface_trait_path.is_some();
-                    let field_can_derive_copy = interface_trait_path.is_none()
+                    let field_can_derive_copy = !field_contains_func
+                        && interface_trait_path.is_none()
                         && go_type_is_copy(&typeinfer::GoType::from_expr(&field_type));
                     let field_default = default_expr_for_type(&field_type);
                     can_derive_copy &= field_can_derive_copy;
@@ -5290,7 +5300,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
-                            field_type.into()
+                            type_from_expr_ref(&field_type)
                         };
                         for field_name in names {
                             let field_vis: syn::Visibility = (&field_name).into();
@@ -5323,7 +5333,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
-                            field_type.into()
+                            type_from_expr_ref(&field_type)
                         };
                         if let Some(name) = embedded_name {
                             let field_ident =
@@ -6657,6 +6667,86 @@ fn rust_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
     }
 }
 
+fn named_go_type_path(name: &str) -> syn::Type {
+    let mut segments = syn::punctuated::Punctuated::new();
+    for segment in name.split('.') {
+        segments.push(syn::PathSegment {
+            ident: syn::Ident::new(&rust_safe_ident_name(segment), Span::mixed_site()),
+            arguments: syn::PathArguments::None,
+        });
+    }
+    syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments,
+        },
+    })
+}
+
+fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
+    let resolved = resolved_go_type(go_type);
+    if let Some(ty) = rust_type_from_go_type(&resolved) {
+        return ty;
+    }
+    match resolved {
+        typeinfer::GoType::String => syn::parse_quote! { String },
+        typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem) => {
+            let elem = rust_type_from_inferred_go_type(&elem);
+            syn::parse_quote! { Vec<#elem> }
+        }
+        typeinfer::GoType::Map(key, value) => {
+            let key = rust_type_from_inferred_go_type(&key);
+            let value = rust_type_from_inferred_go_type(&value);
+            syn::parse_quote! { std::collections::HashMap<#key, #value> }
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            let inner = rust_type_from_inferred_go_type(&inner);
+            syn::parse_quote! { Box<#inner> }
+        }
+        typeinfer::GoType::Chan(inner) => {
+            let inner = rust_type_from_inferred_go_type(&inner);
+            syn::parse_quote! { crate::builtin::Chan<#inner> }
+        }
+        typeinfer::GoType::Func { params, results } => {
+            shared_func_type_from_go_parts(&params, &results)
+        }
+        typeinfer::GoType::Named(name) => named_go_type_path(&name),
+        typeinfer::GoType::Any | typeinfer::GoType::Interface(_) => {
+            syn::parse_quote! { Box<dyn std::any::Any> }
+        }
+        typeinfer::GoType::Error => syn::parse_quote! { String },
+        typeinfer::GoType::Unknown => syn::parse_quote! { Box<dyn std::any::Any> },
+        _ => syn::parse_quote! { Box<dyn std::any::Any> },
+    }
+}
+
+fn shared_func_type_from_go_parts(
+    params: &[typeinfer::GoType],
+    results: &[typeinfer::GoType],
+) -> syn::Type {
+    let params = params.iter().map(rust_type_from_inferred_go_type);
+    let result_types: Vec<syn::Type> = results
+        .iter()
+        .map(rust_type_from_inferred_go_type)
+        .collect();
+    let result: syn::Type = match result_types.as_slice() {
+        [] => syn::parse_quote! { () },
+        [ty] => ty.clone(),
+        _ => syn::parse_quote! { (#(#result_types),*) },
+    };
+    syn::parse_quote! { std::rc::Rc<std::cell::RefCell<dyn FnMut(#(#params),*) -> #result>> }
+}
+
+fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
+    match resolved_go_type(go_type) {
+        typeinfer::GoType::Func { params, results } => {
+            Some(shared_func_type_from_go_parts(&params, &results))
+        }
+        _ => None,
+    }
+}
+
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
     if let ast::Expr::Ident(ident) = &*call_expr.fun {
         BUILTINS.contains(&ident.name)
@@ -6987,6 +7077,21 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
     syn::parse_quote! { std::panic::panic_any(#arg) }
 }
 
+fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
+    let is_function_field_selector =
+        matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
+    let compiled = compile_expr_with_expected(expr, Some(expected));
+    if is_function_field_selector {
+        return compiled;
+    }
+    if let Some(func_ty) = shared_func_type_from_go_type(expected) {
+        return syn::parse_quote! {
+            std::rc::Rc::new(std::cell::RefCell::new(#compiled)) as #func_ty
+        };
+    }
+    compiled
+}
+
 fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Vec<syn::FieldValue> {
     let struct_fields = type_name
         .map(|name| TYPE_ENV.with(|env| env.borrow().get_struct_fields(name)))
@@ -7005,7 +7110,11 @@ fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Ve
                         .iter()
                         .find(|(name, _)| name == &field_name)
                         .map(|(_, ty)| ty.clone());
-                    let expr = compile_expr_with_expected(*kv.value, expected.as_ref());
+                    let expr = if let Some(expected) = expected.as_ref() {
+                        compile_struct_field_expr(*kv.value, expected)
+                    } else {
+                        compile_expr_with_expected(*kv.value, None)
+                    };
                     return syn::FieldValue {
                         attrs: vec![],
                         member: syn::Member::Named(syn::Ident::new(
@@ -7028,7 +7137,7 @@ fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Ve
                     attrs: vec![],
                     member: syn::Member::Named(syn::Ident::new(&field_name, Span::mixed_site())),
                     colon_token: Some(<Token![:]>::default()),
-                    expr: compile_expr_with_expected(elt, Some(field_ty)),
+                    expr: compile_struct_field_expr(elt, field_ty),
                 };
             }
             let index = positional_index as u32;
@@ -7736,6 +7845,29 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
             _ => Vec::new(),
         }
     })
+}
+
+fn function_field_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
+    if !matches!(fun, ast::Expr::SelectorExpr(_)) {
+        return None;
+    }
+    let ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(fun, &env.borrow()));
+    match resolved_go_type(&ty) {
+        typeinfer::GoType::Func { params, .. } => Some(params),
+        _ => None,
+    }
+}
+
+fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
+    let params = function_field_call_params(&call_expr.fun)?;
+    let func: syn::Expr = (*call_expr.fun).into();
+    let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    if let Some(raw_args) = call_expr.args {
+        for (idx, arg) in raw_args.into_iter().enumerate() {
+            args.push(compile_expr_with_expected(arg, params.get(idx)));
+        }
+    }
+    Some(syn::parse_quote! { (#func).borrow_mut()(#args) })
 }
 
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
@@ -8873,6 +9005,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
                     return compile_variadic_any_call(call_expr, variadic_start);
                 }
+                if function_field_call_params(&call_expr.fun).is_some() {
+                    return compile_function_field_call(call_expr)
+                        .unwrap_or_else(|| compile_error_expr("invalid function field call"));
+                }
                 let param_types = call_param_types(&call_expr.fun);
                 let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
                 // Detect method call vs package function call
@@ -9267,40 +9403,7 @@ impl From<ast::Expr<'_>> for syn::Type {
                 type_with_generic_args(base, args)
             }
             ast::Expr::StructType(struct_type) => anonymous_struct_type(struct_type),
-            ast::Expr::FuncType(func_type) => {
-                let mut param_types = syn::punctuated::Punctuated::<syn::Type, Token![,]>::new();
-                for field in func_type.params.list {
-                    if let Some(type_expr) = field.type_ {
-                        let ty: syn::Type = type_expr.into();
-                        let count = field.names.as_ref().map_or(1, |n| n.len());
-                        for _ in 0..count {
-                            param_types.push(ty.clone());
-                        }
-                    }
-                }
-                if let Some(results) = func_type.results {
-                    let mut result_fields = results.list;
-                    if result_fields.len() == 1 {
-                        let field = result_fields.remove(0);
-                        let ret_type: syn::Type = field
-                            .type_
-                            .map(Into::into)
-                            .unwrap_or_else(|| syn::parse_quote! { () });
-                        syn::parse_quote! { fn(#param_types) -> #ret_type }
-                    } else {
-                        let mut ret_types =
-                            syn::punctuated::Punctuated::<syn::Type, Token![,]>::new();
-                        for field in result_fields {
-                            if let Some(type_expr) = field.type_ {
-                                ret_types.push(type_expr.into());
-                            }
-                        }
-                        syn::parse_quote! { fn(#param_types) -> (#ret_types) }
-                    }
-                } else {
-                    syn::parse_quote! { fn(#param_types) }
-                }
-            }
+            ast::Expr::FuncType(func_type) => fn_pointer_type_from_ast(&func_type),
             ast::Expr::ChanType(chan_type) => {
                 // chan T → crate::builtin::Chan<T>
                 let inner: syn::Type = (*chan_type.value).into();
