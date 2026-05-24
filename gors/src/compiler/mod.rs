@@ -5011,7 +5011,7 @@ fn fn_pointer_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     syn::parse_quote! { fn(#(#params),*) -> #result }
 }
 
-fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item> {
+fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
     vec![
         syn::parse_quote! {
             impl std::ops::BitXorAssign for #ident {
@@ -5036,14 +5036,17 @@ fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item
                 }
             }
         },
-        syn::parse_quote! {
-            impl From<#ident> for #inner {
-                fn from(value: #ident) -> #inner {
-                    value.0
-                }
-            }
-        },
     ]
+}
+
+fn newtype_into_inner_impl(ident: &syn::Ident, inner: &syn::Type) -> syn::Item {
+    syn::parse_quote! {
+        impl From<#ident> for #inner {
+            fn from(value: #ident) -> #inner {
+                value.0
+            }
+        }
+    }
 }
 
 fn slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
@@ -5623,6 +5626,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let underlying_go_type = typeinfer::GoType::from_expr(&other);
             let is_slice_alias = matches!(underlying_go_type, typeinfer::GoType::Slice(_));
             let is_copy_alias = go_type_is_copy(&underlying_go_type);
+            let is_numeric_alias = resolved_go_type(&underlying_go_type).is_numeric();
             let rust_type: syn::Type = other.into();
             let struct_item: syn::Item = if is_copy_alias {
                 syn::parse_quote! {
@@ -5648,7 +5652,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             };
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
             if is_copy_alias {
-                items.extend(numeric_newtype_impls(&ident, &rust_type));
+                items.push(newtype_into_inner_impl(&ident, &rust_type));
+            }
+            if is_numeric_alias {
+                items.extend(numeric_newtype_impls(&ident));
             }
             if is_slice_alias && !is_byte_slice {
                 items.push(syn::parse_quote! {
