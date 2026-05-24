@@ -10412,9 +10412,16 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?;
-            let lhs_ty =
-                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
-            let right = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
+            let right = if matches!(
+                assign_stmt.tok,
+                token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN
+            ) {
+                rhs_ast.into()
+            } else {
+                let lhs_ty =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
+                compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
+            };
             let left: syn::Expr = lhs_ast.into();
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
