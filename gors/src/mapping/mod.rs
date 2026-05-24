@@ -407,7 +407,7 @@ mod tests {
         let source = "fn main() {}";
         let tokens = extract_tokens(source);
 
-        let fn_token = tokens.get(0).unwrap();
+        let fn_token = tokens.first().unwrap();
         assert_eq!(fn_token.text, "fn");
         assert_eq!(fn_token.start_line, 1);
         assert_eq!(fn_token.start_column, 1);

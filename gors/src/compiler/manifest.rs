@@ -129,4 +129,53 @@ mod tests {
         assert_eq!(loaded.modules.len(), 1);
         assert!(!loaded.needs_recompile("fmt", "aaa"));
     }
+
+    #[test]
+    fn saved_generated_output_skips_unchanged_modules() {
+        use sha2::Digest;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let output = crate::printer::GeneratedOutput {
+            files: [
+                ("main.rs".to_string(), "fn main() {}\n".to_string()),
+                ("alpha.rs".to_string(), "pub fn Alpha() {}\n".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let mut manifest = BuildManifest::new();
+        for (filename, source) in &output.files {
+            std::fs::write(tmp.path().join(filename), source).unwrap();
+            manifest.modules.insert(
+                filename.clone(),
+                ModuleEntry {
+                    content_hash: sha2::Sha256::digest(source.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>(),
+                    output_file: filename.clone(),
+                },
+            );
+        }
+        manifest.save(tmp.path()).unwrap();
+
+        let loaded = BuildManifest::load(tmp.path()).unwrap();
+        for (filename, source) in &output.files {
+            if filename == "lib.rs" || filename == "main.rs" {
+                continue;
+            }
+            let digest = sha2::Sha256::digest(source.as_bytes());
+            let hash = digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            assert!(
+                !loaded.needs_recompile(filename, &hash),
+                "unchanged module {filename} should not need recompile"
+            );
+        }
+
+        assert!(loaded.needs_recompile("fmt.rs", "different_hash"));
+    }
 }

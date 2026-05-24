@@ -499,6 +499,8 @@ impl<'a> From<RustcArgs<'a>> for Vec<String> {
             "unused_imports".to_string(),
             "-D".to_string(),
             "unused_macros".to_string(),
+            "-C".to_string(),
+            "overflow-checks=off".to_string(),
         ];
 
         if let Some(emit) = args.emit {

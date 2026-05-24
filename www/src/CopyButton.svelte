@@ -1,20 +1,24 @@
 <script>
-  export let getContent;
-  export let title = 'Copy';
+export let getContent;
+export let title = "Copy";
 
-  let copied = false;
-  let timer;
+let copied = false;
+let timer;
 
-  async function copy() {
-    const content = getContent();
-    if (!content) return;
-    try {
-      await navigator.clipboard.writeText(content);
-      copied = true;
-      clearTimeout(timer);
-      timer = setTimeout(() => { copied = false; }, 2000);
-    } catch { /* ignore */ }
-  }
+async function copy() {
+	const content = getContent();
+	if (!content) return;
+	try {
+		await navigator.clipboard.writeText(content);
+		copied = true;
+		clearTimeout(timer);
+		timer = setTimeout(() => {
+			copied = false;
+		}, 2000);
+	} catch {
+		/* ignore */
+	}
+}
 </script>
 
 <button class="copy-button" class:copied {title} on:click={copy}>

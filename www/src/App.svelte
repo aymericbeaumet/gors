@@ -1,489 +1,609 @@
 <script>
-  import { onMount, onDestroy, tick } from 'svelte';
-  import * as monaco from 'monaco-editor';
-  import { Terminal } from 'xterm';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { Go2RustCompiler } from '../go2rust-compiler.js';
-  import { RustRunner, State } from '../rust-runner.js';
-  import MonacoEditor from './MonacoEditor.svelte';
-  import CopyButton from './CopyButton.svelte';
+import { onMount, onDestroy, tick } from "svelte";
+import * as monaco from "monaco-editor";
+import { Terminal } from "xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { Go2RustCompiler } from "../go2rust-compiler.js";
+import { RustRunner, State } from "../rust-runner.js";
+import MonacoEditor from "./MonacoEditor.svelte";
+import CopyButton from "./CopyButton.svelte";
 
-  const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
-  const STATE_TITLES = {
-    [State.INITIALIZING]: 'VM initializing...',
-    [State.DOWNLOADING]: 'VM downloading...',
-    [State.BOOTING]: 'VM booting...',
-    [State.READY]: 'VM ready',
-    [State.COMPILING]: 'VM busy',
-    [State.RUNNING]: 'VM busy',
-    [State.ERROR]: 'VM error',
-  };
+const STATE_TITLES = {
+	[State.INITIALIZING]: "VM initializing...",
+	[State.DOWNLOADING]: "VM downloading...",
+	[State.BOOTING]: "VM booting...",
+	[State.READY]: "VM ready",
+	[State.COMPILING]: "VM busy",
+	[State.RUNNING]: "VM busy",
+	[State.ERROR]: "VM error",
+};
 
-  const MODES = [
-    { value: 'autorun', label: 'Transpile + Compile + Run' },
-    { value: 'autocompile', label: 'Transpile + Compile' },
-    { value: 'autotranspile', label: 'Transpile' },
-    { value: 'manual', label: 'Noop' },
-  ];
-  const PIPELINE_DEBOUNCE_MS = 350;
+const MODES = [
+	{ value: "autorun", label: "Transpile + Compile + Run" },
+	{ value: "autocompile", label: "Transpile + Compile" },
+	{ value: "autotranspile", label: "Transpile" },
+	{ value: "manual", label: "Noop" },
+];
+const PIPELINE_DEBOUNCE_MS = 350;
 
-  let runMode = localStorage.getItem('gors:runMode') || 'autorun';
-  let vmState = State.INITIALIZING;
-  let vmOverlayVisible = false;
-  let consoleLines = [];
+let runMode = localStorage.getItem("gors:runMode") || "autorun";
+let vmState = State.INITIALIZING;
+let vmOverlayVisible = false;
+let consoleLines = [];
 
-  let storedRatio = parseFloat(localStorage.getItem('gors:heightRatio'));
-  let editorsFlex = (isNaN(storedRatio) || storedRatio <= 0) ? 1.618 : storedRatio;
+let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio"));
+let editorsFlex = isNaN(storedRatio) || storedRatio <= 0 ? 1.618 : storedRatio;
 
-  let goEditor = null;
-  let rustEditor = null;
+let goEditor = null;
+let rustEditor = null;
 
-  let editorsEl;
-  let consoleSectionEl;
-  let vmTerminalEl;
+let editorsEl;
+let consoleSectionEl;
+let vmTerminalEl;
 
-  const go2rust = new Go2RustCompiler();
-  const runner = new RustRunner();
-  let pipelineGeneration = 0;
-  let pipelineDebounceTimer = null;
-  let queuedPipeline = false;
+const go2rust = new Go2RustCompiler();
+const runner = new RustRunner();
+let pipelineGeneration = 0;
+let pipelineDebounceTimer = null;
+let queuedPipeline = false;
 
-  let sourceMap = null;
-  let goDecorations = [];
-  let rustDecorations = [];
+let sourceMap = null;
+let goDecorations = [];
+let rustDecorations = [];
 
-  // Read-only enforcement for rust editor
-  let rustExpectedValue = '';
+// Read-only enforcement for rust editor
+let rustExpectedValue = "";
 
-  let transpiling = false;
-  let activePipelines = 0;
+let transpiling = false;
+let activePipelines = 0;
 
-  // xterm
-  let term;
-  let fitAddon;
+// xterm
+let term;
+let fitAddon;
 
-  $: vmTitle = STATE_TITLES[vmState] || vmState;
-  $: vmStarted = vmState === State.READY || vmState === State.COMPILING || vmState === State.RUNNING;
-  $: if (vmOverlayVisible && vmStarted) {
-    tick().then(() => { fitAddon.fit(); term.focus(); });
-  }
-  let prevRunMode = runMode;
-  $: if (runMode !== prevRunMode) {
-    prevRunMode = runMode;
-    localStorage.setItem('gors:runMode', runMode);
-    if (initialized) {
-      pipelineGeneration++;
-      schedulePipeline(0);
-    }
-  }
-  $: pipelineBusy = activePipelines > 0;
-  $: transpileDisabled = runMode !== 'manual' || pipelineBusy;
-  $: compileDisabled = runMode === 'autocompile' || runMode === 'autorun' || pipelineBusy;
-  $: runDisabled = runMode === 'autorun' || pipelineBusy;
+$: vmTitle = STATE_TITLES[vmState] || vmState;
+$: vmStarted =
+	vmState === State.READY ||
+	vmState === State.COMPILING ||
+	vmState === State.RUNNING;
+$: if (vmOverlayVisible && vmStarted) {
+	tick().then(() => {
+		fitAddon.fit();
+		term.focus();
+	});
+}
+let prevRunMode = runMode;
+$: if (runMode !== prevRunMode) {
+	prevRunMode = runMode;
+	localStorage.setItem("gors:runMode", runMode);
+	if (initialized) {
+		pipelineGeneration++;
+		schedulePipeline(0);
+	}
+}
+$: pipelineBusy = activePipelines > 0;
+$: transpileDisabled = runMode !== "manual" || pipelineBusy;
+$: compileDisabled =
+	runMode === "autocompile" || runMode === "autorun" || pipelineBusy;
+$: runDisabled = runMode === "autorun" || pipelineBusy;
 
-  // Console helpers
-  function conClear() { consoleLines = []; }
-  function conCmd(text) { consoleLines = [...consoleLines, { type: 'cmd', text }]; }
-  function conOut(text) { if (text) consoleLines = [...consoleLines, { type: 'out', text }]; }
-  function conErr(text) {
-    if (!text) return;
-    const clean = text.replace(ANSI_RE, '');
-    consoleLines = [...consoleLines, { type: 'err', text: clean }];
-  }
-  function getConsoleText() { return consoleLines.map(l => l.text).join('\n'); }
+// Console helpers
+function conClear() {
+	consoleLines = [];
+}
+function conCmd(text) {
+	consoleLines = [...consoleLines, { type: "cmd", text }];
+}
+function conOut(text) {
+	if (text) consoleLines = [...consoleLines, { type: "out", text }];
+}
+function conErr(text) {
+	if (!text) return;
+	const clean = text.replace(ANSI_RE, "");
+	consoleLines = [...consoleLines, { type: "err", text: clean }];
+}
+function getConsoleText() {
+	return consoleLines.map((l) => l.text).join("\n");
+}
 
-  function escapeHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+function escapeHtml(s) {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
-  function linkifyRustErrors(html) {
-    return html.replace(
-      /rustc --explain (E\d{4})/g,
-      '<a href="https://doc.rust-lang.org/error_codes/$1.html" target="_blank" rel="noopener">rustc --explain $1</a>',
-    );
-  }
+function linkifyRustErrors(html) {
+	return html.replace(
+		/rustc --explain (E\d{4})/g,
+		'<a href="https://doc.rust-lang.org/error_codes/$1.html" target="_blank" rel="noopener">rustc --explain $1</a>',
+	);
+}
 
-  function formatConsoleLine(line) {
-    if (line.type === 'err') return linkifyRustErrors(escapeHtml(line.text));
-    return escapeHtml(line.text);
-  }
+function formatConsoleLine(line) {
+	if (line.type === "err") return linkifyRustErrors(escapeHtml(line.text));
+	return escapeHtml(line.text);
+}
 
-  // Rustc error parsing
-  function parseRustcErrors(text) {
-    const markers = [];
-    const clean = text.replace(ANSI_RE, '');
-    const re = /^(error|warning)(?:\[([A-Z]\d+)\])?: (.+)\n\s*--> [^:]+:(\d+):(\d+)/gm;
-    let m;
-    while ((m = re.exec(clean)) !== null) {
-      const severity = m[1] === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error;
-      const code = m[2] || '';
-      const message = m[3];
-      const line = parseInt(m[4], 10);
-      const col = parseInt(m[5], 10);
-      const after = clean.substring(m.index + m[0].length, m.index + m[0].length + 500);
-      const ul = after.match(/^\s*\|?\s*(\^+)/m);
-      const endCol = ul ? col + ul[1].length : col + 1;
-      markers.push({ severity, message: code ? `${code}: ${message}` : message,
-        startLineNumber: line, startColumn: col, endLineNumber: line, endColumn: endCol,
-        source: 'rustc', code });
-    }
-    return markers;
-  }
+// Rustc error parsing
+function parseRustcErrors(text) {
+	const markers = [];
+	const clean = text.replace(ANSI_RE, "");
+	const re =
+		/^(error|warning)(?:\[([A-Z]\d+)\])?: (.+)\n\s*--> [^:]+:(\d+):(\d+)/gm;
+	let m;
+	while ((m = re.exec(clean)) !== null) {
+		const severity =
+			m[1] === "warning"
+				? monaco.MarkerSeverity.Warning
+				: monaco.MarkerSeverity.Error;
+		const code = m[2] || "";
+		const message = m[3];
+		const line = parseInt(m[4], 10);
+		const col = parseInt(m[5], 10);
+		const after = clean.substring(
+			m.index + m[0].length,
+			m.index + m[0].length + 500,
+		);
+		const ul = after.match(/^\s*\|?\s*(\^+)/m);
+		const endCol = ul ? col + ul[1].length : col + 1;
+		markers.push({
+			severity,
+			message: code ? `${code}: ${message}` : message,
+			startLineNumber: line,
+			startColumn: col,
+			endLineNumber: line,
+			endColumn: endCol,
+			source: "rustc",
+			code,
+		});
+	}
+	return markers;
+}
 
-  // Source map highlighting
-  function highlightFromGo(line, column) {
-    if (!sourceMap || !sourceMap.success || !rustEditor) { clearRustHighlight(); return; }
-    const span = sourceMap.go_to_output(line, column);
-    if (span.length === 4) {
-      rustDecorations = rustEditor.deltaDecorations(rustDecorations, [{
-        range: new monaco.Range(span[0], span[1], span[2], span[3]),
-        options: { className: 'source-map-highlight', isWholeLine: false },
-      }]);
-    } else { clearRustHighlight(); }
-  }
+// Source map highlighting
+function highlightFromGo(line, column) {
+	if (!sourceMap || !sourceMap.success || !rustEditor) {
+		clearRustHighlight();
+		return;
+	}
+	const span = sourceMap.go_to_output(line, column);
+	if (span.length === 4) {
+		rustDecorations = rustEditor.deltaDecorations(rustDecorations, [
+			{
+				range: new monaco.Range(span[0], span[1], span[2], span[3]),
+				options: { className: "source-map-highlight", isWholeLine: false },
+			},
+		]);
+	} else {
+		clearRustHighlight();
+	}
+}
 
-  function highlightFromRust(line, column) {
-    if (!sourceMap || !sourceMap.success || !goEditor) { clearGoHighlight(); return; }
-    const span = sourceMap.output_to_go(line, column);
-    if (span.length === 4) {
-      goDecorations = goEditor.deltaDecorations(goDecorations, [{
-        range: new monaco.Range(span[0], span[1], span[2], span[3]),
-        options: { className: 'source-map-highlight', isWholeLine: false },
-      }]);
-    } else { clearGoHighlight(); }
-  }
+function highlightFromRust(line, column) {
+	if (!sourceMap || !sourceMap.success || !goEditor) {
+		clearGoHighlight();
+		return;
+	}
+	const span = sourceMap.output_to_go(line, column);
+	if (span.length === 4) {
+		goDecorations = goEditor.deltaDecorations(goDecorations, [
+			{
+				range: new monaco.Range(span[0], span[1], span[2], span[3]),
+				options: { className: "source-map-highlight", isWholeLine: false },
+			},
+		]);
+	} else {
+		clearGoHighlight();
+	}
+}
 
-  function clearGoHighlight() { if (goEditor) goDecorations = goEditor.deltaDecorations(goDecorations, []); }
-  function clearRustHighlight() { if (rustEditor) rustDecorations = rustEditor.deltaDecorations(rustDecorations, []); }
+function clearGoHighlight() {
+	if (goEditor) goDecorations = goEditor.deltaDecorations(goDecorations, []);
+}
+function clearRustHighlight() {
+	if (rustEditor)
+		rustDecorations = rustEditor.deltaDecorations(rustDecorations, []);
+}
 
-  // Pipeline – each step caches its result and is skipped when inputs haven't changed
-  let cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
+// Pipeline – each step caches its result and is skipped when inputs haven't changed
+let cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
 
-  function cancelScheduledPipeline() {
-    if (pipelineDebounceTimer) {
-      clearTimeout(pipelineDebounceTimer);
-      pipelineDebounceTimer = null;
-    }
-  }
+function cancelScheduledPipeline() {
+	if (pipelineDebounceTimer) {
+		clearTimeout(pipelineDebounceTimer);
+		pipelineDebounceTimer = null;
+	}
+}
 
-  function schedulePipeline(delay = PIPELINE_DEBOUNCE_MS) {
-    cancelScheduledPipeline();
-    if (!initialized || runMode === 'manual') return;
-    pipelineDebounceTimer = setTimeout(() => {
-      pipelineDebounceTimer = null;
-      runPipeline();
-    }, delay);
-  }
+function schedulePipeline(delay = PIPELINE_DEBOUNCE_MS) {
+	cancelScheduledPipeline();
+	if (!initialized || runMode === "manual") return;
+	pipelineDebounceTimer = setTimeout(() => {
+		pipelineDebounceTimer = null;
+		runPipeline();
+	}, delay);
+}
 
-  function setRustValue(v) {
-    rustExpectedValue = v;
-    if (rustEditor) rustEditor.getModel().setValue(v);
-  }
+function setRustValue(v) {
+	rustExpectedValue = v;
+	if (rustEditor) rustEditor.getModel().setValue(v);
+}
 
-  async function waitForVM() {
-    if (runner.state !== State.READY && runner.state !== State.COMPILING && runner.state !== State.RUNNING) {
-      await new Promise((resolve) => {
-        const unsub = runner.onStateChange((state) => {
-          if (state === State.READY) { unsub(); resolve(); }
-        });
-      });
-    }
-  }
+async function waitForVM() {
+	if (
+		runner.state !== State.READY &&
+		runner.state !== State.COMPILING &&
+		runner.state !== State.RUNNING
+	) {
+		await new Promise((resolve) => {
+			const unsub = runner.onStateChange((state) => {
+				if (state === State.READY) {
+					unsub();
+					resolve();
+				}
+			});
+		});
+	}
+}
 
-  async function doTranspile() {
-    const goCode = goEditor.getModel().getValue();
-    if (cache.goSource === goCode && cache.rustCode !== null) return cache.rustCode;
+async function doTranspile() {
+	const goCode = goEditor.getModel().getValue();
+	if (cache.goSource === goCode && cache.rustCode !== null)
+		return cache.rustCode;
 
-    cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
-    ++pipelineGeneration;
-    const goModel = goEditor.getModel();
-    const rustModel = rustEditor.getModel();
+	cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
+	++pipelineGeneration;
+	const goModel = goEditor.getModel();
+	const rustModel = rustEditor.getModel();
 
-    setRustValue('');
-    monaco.editor.setModelMarkers(goModel, 'gors', []);
-    monaco.editor.setModelMarkers(rustModel, 'rustc', []);
-    sourceMap = null;
+	setRustValue("");
+	monaco.editor.setModelMarkers(goModel, "gors", []);
+	monaco.editor.setModelMarkers(rustModel, "rustc", []);
+	sourceMap = null;
 
-    conCmd('$ gors build -o main.rs main.go');
-    transpiling = true;
-    await tick();
-    const goResult = go2rust.compile(goCode);
-    transpiling = false;
+	conCmd("$ gors build -o main.rs main.go");
+	transpiling = true;
+	await tick();
+	const goResult = go2rust.compile(goCode);
+	transpiling = false;
 
-    if (!goResult.success) {
-      const err = goResult.error;
-      const loc = err.line > 0 ? `:${err.line}:${err.column}` : '';
-      conErr(`main.go${loc}: ${err.kind}: ${err.message}`);
-      if (err.line > 0) {
-        const lines = goCode.split('\n');
-        let endCol = err.endColumn || err.column + 1;
-        if (err.line <= lines.length) endCol = Math.min(endCol, lines[err.line - 1].length + 1);
-        monaco.editor.setModelMarkers(goModel, 'gors', [{
-          severity: monaco.MarkerSeverity.Error, message: err.message,
-          startLineNumber: err.line, startColumn: err.column,
-          endLineNumber: err.line, endColumn: endCol,
-          source: 'gors', code: err.kind,
-        }]);
-      }
-      return null;
-    }
+	if (!goResult.success) {
+		const err = goResult.error;
+		const loc = err.line > 0 ? `:${err.line}:${err.column}` : "";
+		conErr(`main.go${loc}: ${err.kind}: ${err.message}`);
+		if (err.line > 0) {
+			const lines = goCode.split("\n");
+			let endCol = err.endColumn || err.column + 1;
+			if (err.line <= lines.length)
+				endCol = Math.min(endCol, lines[err.line - 1].length + 1);
+			monaco.editor.setModelMarkers(goModel, "gors", [
+				{
+					severity: monaco.MarkerSeverity.Error,
+					message: err.message,
+					startLineNumber: err.line,
+					startColumn: err.column,
+					endLineNumber: err.line,
+					endColumn: endCol,
+					source: "gors",
+					code: err.kind,
+				},
+			]);
+		}
+		return null;
+	}
 
-    setRustValue(goResult.rustCode);
-    sourceMap = goResult.sourceMap;
-    cache = { goSource: goCode, rustCode: goResult.rustCode, jobId: null, compiled: false };
-    return goResult.rustCode;
-  }
+	setRustValue(goResult.rustCode);
+	sourceMap = goResult.sourceMap;
+	cache = {
+		goSource: goCode,
+		rustCode: goResult.rustCode,
+		jobId: null,
+		compiled: false,
+	};
+	return goResult.rustCode;
+}
 
-  async function doCompile(rustCode) {
-    if (cache.compiled && cache.jobId) return cache.jobId;
+async function doCompile(rustCode) {
+	if (cache.compiled && cache.jobId) return cache.jobId;
 
-    const gen = pipelineGeneration;
-    await waitForVM();
-    if (gen !== pipelineGeneration) return null;
+	const gen = pipelineGeneration;
+	await waitForVM();
+	if (gen !== pipelineGeneration) return null;
 
-    conCmd('$ rustc -o main main.rs');
-    const result = await runner.compile(rustCode);
-    if (gen !== pipelineGeneration) return null;
-    if (result.cancelled) return null;
+	conCmd("$ rustc -o main main.rs");
+	const result = await runner.compile(rustCode);
+	if (gen !== pipelineGeneration) return null;
+	if (result.cancelled) return null;
 
-    const rustModel = rustEditor.getModel();
-    monaco.editor.setModelMarkers(rustModel, 'rustc', []);
+	const rustModel = rustEditor.getModel();
+	monaco.editor.setModelMarkers(rustModel, "rustc", []);
 
-    if (!result.compile.success) {
-      conErr(result.compile.stderr);
-      monaco.editor.setModelMarkers(rustModel, 'rustc', parseRustcErrors(result.compile.stderr));
-      return null;
-    }
+	if (!result.compile.success) {
+		conErr(result.compile.stderr);
+		monaco.editor.setModelMarkers(
+			rustModel,
+			"rustc",
+			parseRustcErrors(result.compile.stderr),
+		);
+		return null;
+	}
 
-    cache.compiled = true;
-    cache.jobId = result.jobId;
-    return result.jobId;
-  }
+	cache.compiled = true;
+	cache.jobId = result.jobId;
+	return result.jobId;
+}
 
-  async function doRun(jobId) {
-    const gen = pipelineGeneration;
-    conCmd('$ ./main');
-    const result = await runner.runJob(jobId);
-    if (gen !== pipelineGeneration) return;
-    if (result.cancelled) return;
+async function doRun(jobId) {
+	const gen = pipelineGeneration;
+	conCmd("$ ./main");
+	const result = await runner.runJob(jobId);
+	if (gen !== pipelineGeneration) return;
+	if (result.cancelled) return;
 
-    conOut(result.run.stdout);
-    conErr(result.run.stderr);
-    if (result.run.exitCode !== 0 && !result.run.stderr) {
-      conErr(`program exited with code ${result.run.exitCode}`);
-    }
-  }
+	conOut(result.run.stdout);
+	conErr(result.run.stderr);
+	if (result.run.exitCode !== 0 && !result.run.stderr) {
+		conErr(`program exited with code ${result.run.exitCode}`);
+	}
+}
 
-  async function runPipeline() {
-    if (runMode === 'manual') return;
-    if (activePipelines > 0) {
-      queuedPipeline = true;
-      return;
-    }
-    activePipelines++;
-    try {
-      conClear();
-      const rustCode = await doTranspile();
-      if (!rustCode) return;
-      if (runMode === 'autorun') {
-        const jobId = await doCompile(rustCode);
-        if (jobId) await doRun(jobId);
-      } else if (runMode === 'autocompile') {
-        await doCompile(rustCode);
-      }
-    } finally {
-      activePipelines--;
-      if (queuedPipeline && runMode !== 'manual') {
-        queuedPipeline = false;
-        schedulePipeline(0);
-      }
-    }
-  }
+async function runPipeline() {
+	if (runMode === "manual") return;
+	if (activePipelines > 0) {
+		queuedPipeline = true;
+		return;
+	}
+	activePipelines++;
+	try {
+		conClear();
+		const rustCode = await doTranspile();
+		if (!rustCode) return;
+		if (runMode === "autorun") {
+			const jobId = await doCompile(rustCode);
+			if (jobId) await doRun(jobId);
+		} else if (runMode === "autocompile") {
+			await doCompile(rustCode);
+		}
+	} finally {
+		activePipelines--;
+		if (queuedPipeline && runMode !== "manual") {
+			queuedPipeline = false;
+			schedulePipeline(0);
+		}
+	}
+}
 
-  function onGoChanged() {
-    pipelineGeneration++;
-    schedulePipeline();
-  }
+function onGoChanged() {
+	pipelineGeneration++;
+	schedulePipeline();
+}
 
-  async function handleTranspile() {
-    cancelScheduledPipeline();
-    pipelineGeneration++;
-    activePipelines++;
-    try { conClear(); await doTranspile(); } finally { activePipelines--; }
-  }
-  async function handleCompile() {
-    cancelScheduledPipeline();
-    pipelineGeneration++;
-    activePipelines++;
-    try {
-      conClear();
-      const rustCode = await doTranspile();
-      if (rustCode) await doCompile(rustCode);
-    } finally { activePipelines--; }
-  }
-  async function handleRun() {
-    cancelScheduledPipeline();
-    pipelineGeneration++;
-    activePipelines++;
-    try {
-      conClear();
-      const rustCode = await doTranspile();
-      if (!rustCode) return;
-      const jobId = await doCompile(rustCode);
-      if (!jobId) return;
-      await doRun(jobId);
-    } finally { activePipelines--; }
-  }
+async function handleTranspile() {
+	cancelScheduledPipeline();
+	pipelineGeneration++;
+	activePipelines++;
+	try {
+		conClear();
+		await doTranspile();
+	} finally {
+		activePipelines--;
+	}
+}
+async function handleCompile() {
+	cancelScheduledPipeline();
+	pipelineGeneration++;
+	activePipelines++;
+	try {
+		conClear();
+		const rustCode = await doTranspile();
+		if (rustCode) await doCompile(rustCode);
+	} finally {
+		activePipelines--;
+	}
+}
+async function handleRun() {
+	cancelScheduledPipeline();
+	pipelineGeneration++;
+	activePipelines++;
+	try {
+		conClear();
+		const rustCode = await doTranspile();
+		if (!rustCode) return;
+		const jobId = await doCompile(rustCode);
+		if (!jobId) return;
+		await doRun(jobId);
+	} finally {
+		activePipelines--;
+	}
+}
 
-  // Resize
-  function onResizeMousedown(e) {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startEH = editorsEl.offsetHeight;
-    const startCH = consoleSectionEl.offsetHeight;
-    const total = startEH + startCH;
-    editorsEl.style.flex = 'none';
-    consoleSectionEl.style.flex = 'none';
-    editorsEl.style.height = startEH + 'px';
-    consoleSectionEl.style.height = startCH + 'px';
-    function onMove(ev) {
-      const h = Math.min(total - 200, Math.max(200, startEH + ev.clientY - startY));
-      editorsEl.style.height = h + 'px';
-      consoleSectionEl.style.height = (total - h) + 'px';
-    }
-    function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      const eh = editorsEl.offsetHeight;
-      const ch = consoleSectionEl.offsetHeight;
-      editorsFlex = ch > 0 ? eh / ch : 1.618;
-      localStorage.setItem('gors:heightRatio', editorsFlex.toString());
-      editorsEl.style.height = '';
-      editorsEl.style.flex = '';
-      consoleSectionEl.style.height = '';
-      consoleSectionEl.style.flex = '';
-    }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }
+// Resize
+function onResizeMousedown(e) {
+	e.preventDefault();
+	const startY = e.clientY;
+	const startEH = editorsEl.offsetHeight;
+	const startCH = consoleSectionEl.offsetHeight;
+	const total = startEH + startCH;
+	editorsEl.style.flex = "none";
+	consoleSectionEl.style.flex = "none";
+	editorsEl.style.height = startEH + "px";
+	consoleSectionEl.style.height = startCH + "px";
+	function onMove(ev) {
+		const h = Math.min(
+			total - 200,
+			Math.max(200, startEH + ev.clientY - startY),
+		);
+		editorsEl.style.height = h + "px";
+		consoleSectionEl.style.height = total - h + "px";
+	}
+	function onUp() {
+		document.removeEventListener("mousemove", onMove);
+		document.removeEventListener("mouseup", onUp);
+		const eh = editorsEl.offsetHeight;
+		const ch = consoleSectionEl.offsetHeight;
+		editorsFlex = ch > 0 ? eh / ch : 1.618;
+		localStorage.setItem("gors:heightRatio", editorsFlex.toString());
+		editorsEl.style.height = "";
+		editorsEl.style.flex = "";
+		consoleSectionEl.style.height = "";
+		consoleSectionEl.style.flex = "";
+	}
+	document.addEventListener("mousemove", onMove);
+	document.addEventListener("mouseup", onUp);
+}
 
-  // VM terminal overlay
-  function openVmOverlay() {
-    vmOverlayVisible = true;
-  }
+// VM terminal overlay
+function openVmOverlay() {
+	vmOverlayVisible = true;
+}
 
-  function closeVmOverlay() { vmOverlayVisible = false; }
+function closeVmOverlay() {
+	vmOverlayVisible = false;
+}
 
-  function onOverlayClick(e) { if (e.target === e.currentTarget) closeVmOverlay(); }
+function onOverlayClick(e) {
+	if (e.target === e.currentTarget) closeVmOverlay();
+}
 
-  function onKeydown(e) {
-    if (e.key === 'Escape' && vmOverlayVisible) closeVmOverlay();
-  }
+function onKeydown(e) {
+	if (e.key === "Escape" && vmOverlayVisible) closeVmOverlay();
+}
 
-  let resizeObserver;
+let resizeObserver;
 
-  onMount(() => {
-    // xterm
-    term = new Terminal({
-      fontSize: 12,
-      fontFamily: "'Fira Code Variable', 'Fira Code', monospace",
-      theme: { background: '#0d1117', foreground: '#c9d1d9' },
-      convertEol: true, scrollback: 5000, cursorStyle: 'bar', cursorBlink: true,
-    });
-    fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(vmTerminalEl);
-    term.onData((data) => { if (runner._emulator) runner._emulator.serial0_send(data); });
+onMount(() => {
+	// xterm
+	term = new Terminal({
+		fontSize: 12,
+		fontFamily: "'Fira Code Variable', 'Fira Code', monospace",
+		theme: { background: "#0d1117", foreground: "#c9d1d9" },
+		convertEol: true,
+		scrollback: 5000,
+		cursorStyle: "bar",
+		cursorBlink: true,
+	});
+	fitAddon = new FitAddon();
+	term.loadAddon(fitAddon);
+	term.open(vmTerminalEl);
+	term.onData((data) => {
+		if (runner._emulator) runner._emulator.serial0_send(data);
+	});
 
-    let serialByteQueue = [];
-    let serialFlushTimer = null;
-    runner.onSerialByte((byte) => {
-      serialByteQueue.push(byte);
-      if (!serialFlushTimer) {
-        serialFlushTimer = setTimeout(() => {
-          if (serialByteQueue.length > 0) term.write(new Uint8Array(serialByteQueue));
-          serialByteQueue = [];
-          serialFlushTimer = null;
-        }, 50);
-      }
-    });
+	let serialByteQueue = [];
+	let serialFlushTimer = null;
+	runner.onSerialByte((byte) => {
+		serialByteQueue.push(byte);
+		if (!serialFlushTimer) {
+			serialFlushTimer = setTimeout(() => {
+				if (serialByteQueue.length > 0)
+					term.write(new Uint8Array(serialByteQueue));
+				serialByteQueue = [];
+				serialFlushTimer = null;
+			}, 50);
+		}
+	});
 
-    // VM state
-    runner.onStateChange((state) => { vmState = state; });
-    runner.start().catch(() => { vmState = State.ERROR; });
+	// VM state
+	runner.onStateChange((state) => {
+		vmState = state;
+	});
+	runner.start().catch(() => {
+		vmState = State.ERROR;
+	});
 
-    // Resize observer for terminal
-    resizeObserver = new ResizeObserver(() => {
-      if (vmOverlayVisible) fitAddon.fit();
-    });
-    resizeObserver.observe(vmTerminalEl);
+	// Resize observer for terminal
+	resizeObserver = new ResizeObserver(() => {
+		if (vmOverlayVisible) fitAddon.fit();
+	});
+	resizeObserver.observe(vmTerminalEl);
 
-    // Rust hover provider
-    monaco.languages.registerHoverProvider('rust', {
-      provideHover(model, position) {
-        const markers = monaco.editor.getModelMarkers({ resource: model.uri });
-        for (const m of markers) {
-          if (position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
-              position.column >= m.startColumn && position.column <= m.endColumn) {
-            return {
-              range: new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn),
-              contents: [{ value: `**${m.source}(${m.code})**: ${m.message}` }],
-            };
-          }
-        }
-        return null;
-      },
-    });
-  });
+	// Rust hover provider
+	monaco.languages.registerHoverProvider("rust", {
+		provideHover(model, position) {
+			const markers = monaco.editor.getModelMarkers({ resource: model.uri });
+			for (const m of markers) {
+				if (
+					position.lineNumber >= m.startLineNumber &&
+					position.lineNumber <= m.endLineNumber &&
+					position.column >= m.startColumn &&
+					position.column <= m.endColumn
+				) {
+					return {
+						range: new monaco.Range(
+							m.startLineNumber,
+							m.startColumn,
+							m.endLineNumber,
+							m.endColumn,
+						),
+						contents: [{ value: `**${m.source}(${m.code})**: ${m.message}` }],
+					};
+				}
+			}
+			return null;
+		},
+	});
+});
 
-  // Wire up editors after they're bound
-  let goEditorReady = false;
-  let rustEditorReady = false;
+// Wire up editors after they're bound
+let goEditorReady = false;
+let rustEditorReady = false;
 
-  $: if (goEditor && !goEditorReady) {
-    goEditorReady = true;
-    goEditor.onMouseMove((e) => {
-      if (e.target.position) highlightFromGo(e.target.position.lineNumber, e.target.position.column);
-    });
-    goEditor.onMouseLeave(() => clearRustHighlight());
-  }
+$: if (goEditor && !goEditorReady) {
+	goEditorReady = true;
+	goEditor.onMouseMove((e) => {
+		if (e.target.position)
+			highlightFromGo(e.target.position.lineNumber, e.target.position.column);
+	});
+	goEditor.onMouseLeave(() => clearRustHighlight());
+}
 
-  $: if (rustEditor && !rustEditorReady) {
-    rustEditorReady = true;
-    rustEditor.onMouseMove((e) => {
-      if (e.target.position) highlightFromRust(e.target.position.lineNumber, e.target.position.column);
-    });
-    rustEditor.onMouseLeave(() => clearGoHighlight());
+$: if (rustEditor && !rustEditorReady) {
+	rustEditorReady = true;
+	rustEditor.onMouseMove((e) => {
+		if (e.target.position)
+			highlightFromRust(e.target.position.lineNumber, e.target.position.column);
+	});
+	rustEditor.onMouseLeave(() => clearGoHighlight());
 
-    // Read-only enforcement
-    rustEditor.getModel().onDidChangeContent(() => {
-      const current = rustEditor.getModel().getValue();
-      if (current !== rustExpectedValue) {
-        const markers = monaco.editor.getModelMarkers({ resource: rustEditor.getModel().uri });
-        rustEditor.getModel().setValue(rustExpectedValue);
-        monaco.editor.setModelMarkers(rustEditor.getModel(), 'rustc', markers);
-      }
-    });
-  }
+	// Read-only enforcement
+	rustEditor.getModel().onDidChangeContent(() => {
+		const current = rustEditor.getModel().getValue();
+		if (current !== rustExpectedValue) {
+			const markers = monaco.editor.getModelMarkers({
+				resource: rustEditor.getModel().uri,
+			});
+			rustEditor.getModel().setValue(rustExpectedValue);
+			monaco.editor.setModelMarkers(rustEditor.getModel(), "rustc", markers);
+		}
+	});
+}
 
-  $: if (goEditor && rustEditor && !initialized) {
-    initialized = true;
-    goEditor.focus();
-    goEditor.getModel().setValue([
-      'package main', '', 'import "fmt"', '',
-      'func main() {', '\tfmt.Println("Hello, World!")', '}',
-    ].join('\n'));
-    goEditor.setPosition({ lineNumber: 6, column: 2 });
-  }
+$: if (goEditor && rustEditor && !initialized) {
+	initialized = true;
+	goEditor.focus();
+	goEditor
+		.getModel()
+		.setValue(
+			[
+				"package main",
+				"",
+				'import "fmt"',
+				"",
+				"func main() {",
+				'\tfmt.Println("Hello, World!")',
+				"}",
+			].join("\n"),
+		);
+	goEditor.setPosition({ lineNumber: 6, column: 2 });
+}
 
-  let initialized = false;
+let initialized = false;
 
-  onDestroy(() => {
-    cancelScheduledPipeline();
-    if (resizeObserver) resizeObserver.disconnect();
-    if (term) term.dispose();
-  });
+onDestroy(() => {
+	cancelScheduledPipeline();
+	if (resizeObserver) resizeObserver.disconnect();
+	if (term) term.dispose();
+});
 </script>
 
 <svelte:window on:keydown={onKeydown} />

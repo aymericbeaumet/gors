@@ -16,7 +16,7 @@ impl VisitMut for StringLit {
         if matches!(binary.op, syn::BinOp::Add(_)) {
             if is_string_lit(&binary.left) {
                 let inner = (*binary.left).clone();
-                binary.left = Box::new(syn::parse_quote! { #inner.to_string() });
+                *binary.left = syn::parse_quote! { #inner.to_string() };
             }
 
             if is_string_concat_expr(&binary.left)
@@ -24,7 +24,7 @@ impl VisitMut for StringLit {
                 && !matches!(&*binary.right, syn::Expr::Reference(_))
             {
                 let right = (*binary.right).clone();
-                binary.right = Box::new(syn::parse_quote! { &#right });
+                *binary.right = syn::parse_quote! { &#right };
             }
         }
     }

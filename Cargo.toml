@@ -40,6 +40,8 @@ unnecessary_struct_initialization = "allow"  # Sometimes explicit initialization
 needless_pass_by_ref_mut = "allow" # Sometimes &mut is needed for consistency
 large_enum_variant = "allow"       # AST nodes can be large, boxing adds overhead
 fallible_impl_from = "allow"       # Some From impls may panic for unsupported cases
+cognitive_complexity = "allow"     # Complex compiler passes are clearer when kept local
+too_many_lines = "allow"           # Large compiler functions and tests are split only when useful
 
 [profile.dev]
 opt-level = 0

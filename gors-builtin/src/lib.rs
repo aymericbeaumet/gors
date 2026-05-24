@@ -266,21 +266,23 @@ pub trait ByteSeq {
 
 impl ByteSeq for std::string::String {
     fn byte_at(&self, index: usize) -> u8 {
-        self.as_bytes()[index]
+        self.as_bytes().get(index).copied().unwrap_or_default()
     }
 
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self.as_bytes()[start..end].to_vec()
+        self.as_bytes()
+            .get(start..end)
+            .map_or_else(Vec::new, <[u8]>::to_vec)
     }
 }
 
 impl ByteSeq for Vec<u8> {
     fn byte_at(&self, index: usize) -> u8 {
-        self[index]
+        self.get(index).copied().unwrap_or_default()
     }
 
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self[start..end].to_vec()
+        self.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
     }
 }
 
@@ -520,7 +522,9 @@ where
     let dst = dst.as_mut();
     let src = src.as_ref();
     let n = dst.len().min(src.len());
-    dst[..n].clone_from_slice(&src[..n]);
+    if let (Some(dst), Some(src)) = (dst.get_mut(..n), src.get(..n)) {
+        dst.clone_from_slice(src);
+    }
     n
 }
 
@@ -670,8 +674,8 @@ macro_rules! impl_complex_ops {
 
             fn mul(self, rhs: Self) -> Self {
                 Self {
-                    re: self.re * rhs.re - self.im * rhs.im,
-                    im: self.re * rhs.im + self.im * rhs.re,
+                    re: self.re.mul_add(rhs.re, -(self.im * rhs.im)),
+                    im: self.re.mul_add(rhs.im, self.im * rhs.re),
                 }
             }
         }
@@ -680,10 +684,10 @@ macro_rules! impl_complex_ops {
             type Output = Self;
 
             fn div(self, rhs: Self) -> Self {
-                let denom = rhs.re * rhs.re + rhs.im * rhs.im;
+                let denom = rhs.re.mul_add(rhs.re, rhs.im * rhs.im);
                 Self {
-                    re: (self.re * rhs.re + self.im * rhs.im) / denom,
-                    im: (self.im * rhs.re - self.re * rhs.im) / denom,
+                    re: self.re.mul_add(rhs.re, self.im * rhs.im) / denom,
+                    im: self.im.mul_add(rhs.re, -(self.re * rhs.im)) / denom,
                 }
             }
         }
@@ -922,6 +926,7 @@ impl<T> Chan<T> {
         }
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     pub fn send(&self, val: T) {
         let (lock, rx_cv, tx_cv) = &*self.inner;
         let mut inner = lock_chan(lock);
@@ -971,6 +976,7 @@ impl<T> Chan<T> {
         }
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     pub fn close(&self) {
         let (lock, rx_cv, tx_cv) = &*self.inner;
         let mut inner = lock_chan(lock);
@@ -985,6 +991,11 @@ impl<T> Chan<T> {
     pub fn len(&self) -> usize {
         let (lock, _, _) = &*self.inner;
         lock_chan(lock).buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let (lock, _, _) = &*self.inner;
+        lock_chan(lock).buf.is_empty()
     }
 
     pub fn cap(&self) -> usize {
@@ -1051,6 +1062,7 @@ pub fn recv_with_ok<T: Default>(ch: &Chan<T>) -> (T, bool) {
 }
 
 #[inline]
+#[allow(clippy::panic)]
 pub fn r#panic<T: Any + Send + 'static>(value: T) -> ! {
     std::panic::panic_any(value)
 }
@@ -1112,6 +1124,31 @@ pub fn format_slice<T: std::fmt::Display>(values: &[T]) -> std::string::String {
     out
 }
 
+pub fn append_float(
+    mut dst: Vec<u8>,
+    value: f64,
+    fmt: u8,
+    prec: isize,
+    _bit_size: isize,
+) -> Vec<u8> {
+    let precision = usize::try_from(prec).ok();
+    let formatted = match fmt as char {
+        'f' => precision.map_or_else(|| format!("{value}"), |p| format!("{value:.p$}")),
+        'e' => precision.map_or_else(|| format!("{value:e}"), |p| format!("{value:.p$e}")),
+        'E' => precision.map_or_else(|| format!("{value:E}"), |p| format!("{value:.p$E}")),
+        'g' | 'G' => {
+            if prec < 0 {
+                format!("{value}")
+            } else {
+                precision.map_or_else(|| format!("{value}"), |p| format!("{value:.p$}"))
+            }
+        }
+        _ => format!("{value}"),
+    };
+    dst.extend_from_slice(formatted.as_bytes());
+    dst
+}
+
 #[macro_export]
 macro_rules! print {
     () => {};
@@ -1158,7 +1195,8 @@ mod tests {
         let _: string = "ok".to_string();
         let _: complex64 = complex64(1.0, 2.0);
         let _: complex128 = complex128(1.0, 2.0);
-        assert!(!r#false);
+        let false_value = r#false;
+        assert!(!false_value);
         assert_eq!(iota, 0);
         assert_eq!(nil, None);
     }
@@ -1292,9 +1330,12 @@ mod tests {
     fn panic_and_recover_helpers_have_defined_behavior() {
         assert!(recover().is_none());
         assert_eq!(recover_func(|| {}).as_deref(), None);
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
         assert_eq!(
             recover_func(|| panic_value("boom")).as_deref(),
             Some("boom")
         );
+        std::panic::set_hook(previous_hook);
     }
 }

@@ -141,7 +141,7 @@ impl GoType {
                             .map(GoType::from_expr)
                             .unwrap_or(GoType::Unknown);
                         let count = f.names.as_ref().map_or(1, |n| n.len());
-                        std::iter::repeat(ty).take(count)
+                        std::iter::repeat_n(ty, count)
                     })
                     .collect();
                 let results: Vec<GoType> = ft
@@ -157,7 +157,7 @@ impl GoType {
                                     .map(GoType::from_expr)
                                     .unwrap_or(GoType::Unknown);
                                 let count = f.names.as_ref().map_or(1, |n| n.len());
-                                std::iter::repeat(ty).take(count)
+                                std::iter::repeat_n(ty, count)
                             })
                             .collect()
                     })
@@ -209,6 +209,9 @@ impl GoType {
                 "nil" => GoType::Any,
                 name => env.get_var(name).unwrap_or(GoType::Unknown),
             },
+            ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {
+                GoType::Pointer(Box::new(GoType::infer_expr(&u.x, env)))
+            }
             ast::Expr::UnaryExpr(u) => GoType::infer_expr(&u.x, env),
             ast::Expr::BinaryExpr(bin) => {
                 match bin.op {
@@ -250,6 +253,12 @@ impl GoType {
                                 GoType::Pointer(Box::new(inner))
                             }
                             "append" => call
+                                .args
+                                .as_ref()
+                                .and_then(|a| a.first())
+                                .map(|e| GoType::infer_expr(e, env))
+                                .unwrap_or(GoType::Unknown),
+                            "max" | "min" => call
                                 .args
                                 .as_ref()
                                 .and_then(|a| a.first())
@@ -683,7 +692,7 @@ impl TypeEnv {
                     variadic_start = Some(param_count);
                 }
                 param_count += count;
-                std::iter::repeat(ty).take(count)
+                std::iter::repeat_n(ty, count)
             })
             .collect();
 
@@ -702,7 +711,7 @@ impl TypeEnv {
                             .map(GoType::from_expr)
                             .unwrap_or(GoType::Unknown);
                         let count = f.names.as_ref().map_or(1, |n| n.len());
-                        std::iter::repeat(ty).take(count)
+                        std::iter::repeat_n(ty, count)
                     })
                     .collect()
             })

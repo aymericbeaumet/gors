@@ -14,7 +14,7 @@ impl VisitMut for IndexCast {
             let idx = &*index.index;
             if !is_already_usize(idx) && !is_range(idx) {
                 let inner = index.index.clone();
-                index.index = Box::new(syn::parse_quote! { (#inner) as usize });
+                *index.index = syn::parse_quote! { (#inner) as usize };
             }
         }
     }
@@ -37,8 +37,7 @@ fn is_already_usize(expr: &syn::Expr) -> bool {
             lit: syn::Lit::Int(_),
             ..
         }) => true,
-        // Paren expression wrapping a cast to isize (from coerce_types len() wrapping)
-        syn::Expr::Paren(paren) => matches!(&*paren.expr, syn::Expr::Cast(_)),
+        syn::Expr::Paren(paren) => is_already_usize(&paren.expr),
         _ => false,
     }
 }

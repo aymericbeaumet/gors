@@ -10,10 +10,11 @@ static STDLIB_INDEX: &str = include_str!(concat!(env!("OUT_DIR"), "/go_stdlib.in
 
 type PackageFiles = Vec<(String, String)>;
 type TypeEnv = crate::compiler::typeinfer::TypeEnv;
+type TypeEnvCache = HashMap<String, Option<(String, TypeEnv)>>;
 
 static PACKAGE_INDEX: OnceLock<Vec<&'static str>> = OnceLock::new();
 static PACKAGE_FILES: OnceLock<Mutex<HashMap<String, Option<Arc<PackageFiles>>>>> = OnceLock::new();
-static TYPE_ENVS: OnceLock<Mutex<HashMap<String, Option<(String, TypeEnv)>>>> = OnceLock::new();
+static TYPE_ENVS: OnceLock<Mutex<TypeEnvCache>> = OnceLock::new();
 static TRANSITIVE_IMPORTS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 static PANIC_HOOK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -1097,11 +1098,11 @@ fn has_method(items: &[syn::Item], ty_name: &str, method_name: &str) -> bool {
         let syn::Type::Path(type_path) = &*item_impl.self_ty else {
             return false;
         };
-        if !type_path
+        if type_path
             .path
             .segments
             .last()
-            .is_some_and(|seg| seg.ident == ty_name)
+            .is_none_or(|seg| seg.ident != ty_name)
         {
             return false;
         }

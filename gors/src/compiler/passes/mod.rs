@@ -35,6 +35,7 @@ pub fn pass_for_imported_package(file: &mut syn::File) {
     type_conversion::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
+    index_cast::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }

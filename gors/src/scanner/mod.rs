@@ -1140,7 +1140,7 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1, column 13), IDENT "y", SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(*tokens.first().unwrap(), (1, 1, Token::IDENT, "x"));
         assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
         assert_eq!(*tokens.get(2).unwrap(), (1, 13, Token::SEMICOLON, "\n")); // Position at first newline
         assert_eq!(tokens.get(3).unwrap().2, Token::IDENT);
@@ -1160,7 +1160,7 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON (at line 1), RPAREN, SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(*tokens.first().unwrap(), (1, 1, Token::IDENT, "x"));
         assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
         assert_eq!(tokens.get(2).unwrap().0, 1); // Semicolon at line 1
         assert_eq!(tokens.get(2).unwrap().2, Token::SEMICOLON);
@@ -1180,7 +1180,7 @@ mod tests {
 
         // Expected: IDENT "x", COMMENT, SEMICOLON, IDENT "y", SEMICOLON, EOF
         assert_eq!(tokens.len(), 6);
-        assert_eq!(*tokens.get(0).unwrap(), (1, 1, Token::IDENT, "x"));
+        assert_eq!(*tokens.first().unwrap(), (1, 1, Token::IDENT, "x"));
         assert_eq!(tokens.get(1).unwrap().2, Token::COMMENT);
         assert_eq!(tokens.get(2).unwrap().2, Token::SEMICOLON);
         assert_eq!(tokens.get(3).unwrap().2, Token::IDENT);

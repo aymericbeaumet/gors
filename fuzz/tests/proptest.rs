@@ -3,8 +3,9 @@
 //! These tests use proptest to generate random inputs and verify properties.
 //! They can run on stable Rust without AFL, making them suitable for CI.
 //!
-//! The number of test cases can be controlled via the PROPTEST_CASES environment
-//! variable (default: 100,000 cases for thorough fuzzing).
+//! The number of test cases can be controlled via the GORS_FUZZ_CASES environment
+//! variable. Defaults are smoke-sized so `cargo test --workspace` stays fast;
+//! use `make fuzz` or explicit environment values for deeper runs.
 
 // Tests may use unwrap for assertions
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
@@ -13,18 +14,18 @@ use proptest::prelude::*;
 
 /// Get the number of test cases from environment or use default
 fn get_test_cases() -> u32 {
-    std::env::var("PROPTEST_CASES")
+    std::env::var("GORS_FUZZ_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(100_000)
+        .unwrap_or(1)
 }
 
 /// Get the number of edge case tests from environment or use default
 fn get_edge_test_cases() -> u32 {
-    std::env::var("PROPTEST_EDGE_CASES")
+    std::env::var("GORS_FUZZ_EDGE_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10_000)
+        .unwrap_or(1)
 }
 
 /// Go keywords that cannot be used as identifiers
@@ -269,6 +270,7 @@ proptest! {
     #![proptest_config(ProptestConfig {
         cases: get_test_cases(),
         max_shrink_iters: 10000,
+        failure_persistence: None,
         ..ProptestConfig::default()
     })]
 
@@ -550,6 +552,7 @@ proptest! {
     #![proptest_config(ProptestConfig {
         cases: get_edge_test_cases(),
         max_shrink_iters: 5000,
+        failure_persistence: None,
         ..ProptestConfig::default()
     })]
 
@@ -599,7 +602,8 @@ proptest! {
     /// Test scanner with two-byte sequences
     #[test]
     fn scanner_two_bytes(b1 in prop::num::u8::ANY, b2 in prop::num::u8::ANY) {
-        let input = String::from_utf8_lossy(&[b1, b2]).into_owned();
+        let bytes: [u8; 2] = (b1, b2).into();
+        let input = String::from_utf8_lossy(&bytes).into_owned();
         let scanner = gors::scanner::Scanner::new("test.go", &input);
         for result in scanner {
             let _ = result;

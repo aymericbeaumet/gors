@@ -29,10 +29,10 @@
 //! "#;
 //!
 //! // Parse Go source into AST
-//! let ast = parser::parse_file("example.go", go_source).unwrap();
+//! let go_ast = parser::parse_file("example.go", go_source).unwrap();
 //!
 //! // Compile Go AST to Rust AST
-//! let rust_ast = compiler::compile(ast).unwrap();
+//! let rust_ast = compiler::compile(go_ast).unwrap();
 //!
 //! // Generate Rust source code
 //! let rust_source = printer::generate(rust_ast).unwrap();
@@ -91,3 +91,13 @@ pub mod go_stdlib;
 /// Contains token types matching the Go specification and
 /// position tracking for source locations.
 pub mod token;
+
+#[cfg(any(
+    test,
+    feature = "test_integration_lexer",
+    feature = "test_integration_parser",
+    feature = "test_integration_run",
+    feature = "test_integration_generate"
+))]
+#[doc(hidden)]
+pub mod test_support;

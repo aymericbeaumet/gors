@@ -1,8 +1,9 @@
+#![cfg(feature = "test_integration_run")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-mod common;
-
-use common::{TestConfig, discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin};
+use gors::test_support::{
+    TestConfig, discover_program_dirs, fixtures_dir, go_runner_bin, gors_bin,
+};
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;

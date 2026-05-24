@@ -48,19 +48,18 @@ impl VisitMut for CoerceTypes {
         prune_print_arg_reflection_fallback(&mut func.block.stmts);
 
         if func.sig.ident == "newPrinter" && tokens_contain(&func.block, "ppFree") {
-            func.block = Box::new(syn::parse_quote!({
+            *func.block = syn::parse_quote!({
                 let mut p = Box::new(pp::default());
                 p.panicking = false;
                 p.erroring = false;
                 p.wrapErrs = false;
                 p.fmt.init(Box::new((p.buf).clone()));
                 p
-            }));
+            });
         }
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
-        allow_dead_code(&mut func.attrs);
         let scope = fn_arg_scope(&func.sig);
         self.mutable_ref_params.push(scope.mutable_refs);
         self.generic_value_params.push(scope.generic_values);
@@ -170,7 +169,7 @@ impl VisitMut for CoerceTypes {
 
         if is_rune_self_path(&binary.right) && matches!(&*binary.left, syn::Expr::Index(_)) {
             let left = (*binary.left).clone();
-            binary.left = Box::new(syn::parse_quote! { (#left as u32) });
+            *binary.left = syn::parse_quote! { (#left as u32) };
         }
 
         if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
@@ -179,12 +178,12 @@ impl VisitMut for CoerceTypes {
 
         if let Some(inner) = box_new_call_arg(&binary.right) {
             let left = binary.left.clone();
-            binary.left = Box::new(syn::parse_quote! { *#left });
-            binary.right = Box::new(inner);
+            *binary.left = syn::parse_quote! { *#left };
+            *binary.right = inner;
         } else if let Some(inner) = box_new_call_arg(&binary.left) {
             let right = binary.right.clone();
-            binary.left = Box::new(inner);
-            binary.right = Box::new(syn::parse_quote! { *#right });
+            *binary.left = inner;
+            *binary.right = syn::parse_quote! { *#right };
         }
     }
 
@@ -198,17 +197,17 @@ impl VisitMut for CoerceTypes {
         } else if matches!(&*assign.left, syn::Expr::Field(field) if is_self_member(field, "arg"))
             && is_path_ident(&assign.right, "arg")
         {
-            assign.right = Box::new(syn::parse_quote! {
+            *assign.right = syn::parse_quote! {
                 Box::new(()) as Box<dyn std::any::Any>
-            });
+            };
         } else if is_path_ident(&assign.left, "err") && is_path_ident(&assign.right, "w") {
-            assign.right = Box::new(syn::parse_quote! { w.Error() });
+            *assign.right = syn::parse_quote! { w.Error() };
         } else if is_path_ident(&assign.left, "err") && is_box_new_call_expr(&assign.right) {
             let right = assign.right.clone();
-            assign.right = Box::new(syn::parse_quote! {{
+            *assign.right = syn::parse_quote! {{
                 let mut __gors_error_value = #right;
                 __gors_error_value.Error()
-            }});
+            }};
         }
 
         if let Some(self_ty) = self.impl_self_types.last()
@@ -218,7 +217,7 @@ impl VisitMut for CoerceTypes {
         {
             let ident = syn::Ident::new(self_ty, proc_macro2::Span::mixed_site());
             let right = assign.right.clone();
-            assign.right = Box::new(syn::parse_quote! { #ident(#right) });
+            *assign.right = syn::parse_quote! { #ident(#right) };
         }
     }
 
@@ -229,7 +228,7 @@ impl VisitMut for CoerceTypes {
             && self.tuple_newtypes.contains(self_ty)
             && is_deref_self_expr(&cast.expr)
         {
-            cast.expr = Box::new(syn::parse_quote! { self.0 });
+            *cast.expr = syn::parse_quote! { self.0 };
         }
     }
 
@@ -395,9 +394,9 @@ impl VisitMut for CoerceTypes {
 
         if let Some(init) = &mut local.init {
             replace_self_deref_with_take(&mut init.expr);
-            if is_path_ident(&init.expr, "value") || is_path_ident(&init.expr, "f") {
-                clone_expr(&mut init.expr);
-            } else if matches!(&*init.expr, syn::Expr::Field(field) if is_named_member(field, "fmtFlags"))
+            if is_path_ident(&init.expr, "value")
+                || is_path_ident(&init.expr, "f")
+                || matches!(&*init.expr, syn::Expr::Field(field) if is_named_member(field, "fmtFlags"))
             {
                 clone_expr(&mut init.expr);
             }
@@ -416,7 +415,7 @@ impl VisitMut for CoerceTypes {
                 if let Some(ref pat_type) = type_ann {
                     if is_integer_type(pat_type) {
                         let lit = init.expr.clone();
-                        init.expr = Box::new(syn::parse_quote! { #lit as #pat_type });
+                        *init.expr = syn::parse_quote! { #lit as #pat_type };
                     }
                 }
             }
@@ -496,10 +495,8 @@ fn prune_print_arg_stmt(stmt: syn::Stmt) -> Option<syn::Stmt> {
                         &mut init.expr,
                         Box::new(syn::parse_quote! { Default::default() }),
                     );
-                    let Some(expr) = prune_print_arg_expr(*expr) else {
-                        return None;
-                    };
-                    init.expr = Box::new(expr);
+                    let expr = prune_print_arg_expr(*expr)?;
+                    *init.expr = expr;
                 }
                 Some(syn::Stmt::Local(local))
             }
@@ -575,16 +572,6 @@ fn is_false_lit_expr(expr: &syn::Expr) -> bool {
 
 fn tokens_contain<T: quote::ToTokens>(node: &T, needle: &str) -> bool {
     quote::quote!(#node).to_string().contains(needle)
-}
-
-fn allow_dead_code(attrs: &mut Vec<syn::Attribute>) {
-    if attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("allow") && tokens_contain(attr, "dead_code"))
-    {
-        return;
-    }
-    attrs.push(syn::parse_quote! { #[allow(dead_code)] });
 }
 
 fn collect_tuple_newtypes(file: &syn::File) -> std::collections::HashSet<String> {
@@ -722,9 +709,9 @@ fn fn_arg_scope(sig: &syn::Signature) -> FnArgScope {
         {
             mutable_refs.insert(name.clone());
         }
-        if type_is_generic_param(&pat_type.ty, &generic_names) {
-            generic_values.insert(name);
-        } else if type_is_cloneable_box(&pat_type.ty) {
+        if type_is_generic_param(&pat_type.ty, &generic_names)
+            || type_is_cloneable_box(&pat_type.ty)
+        {
             generic_values.insert(name);
         }
     }

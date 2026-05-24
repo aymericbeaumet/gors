@@ -15,11 +15,8 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Run make lint
+      - name: Lint
         run: make lint
-
-      - name: Run make doc
-        run: make doc
 
   build:
     runs-on: ubuntu-latest
@@ -31,8 +28,36 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Run make build-release
-        run: make build-release
+      - name: Build
+        run: make build
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint web
+        run: make web-lint
+
+      - name: Build web
+        run: make web-build
+
+      - name: Upload web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: www-dist
+          path: ./www/dist
 
   test-unit:
     runs-on: ubuntu-latest
@@ -49,10 +74,10 @@ jobs:
         with:
           go-version: '1.26.x'
 
-      - name: Run unit tests
+      - name: Test unit
         run: make test-unit
 
-  test-integrations:
+  test-integration-lexer:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,10 +94,30 @@ jobs:
         with:
           go-version: '1.26.x'
 
-      - name: Run integration tests
-        run: cargo test --release --package=gors --features integration
+      - name: Test integration lexer
+        run: make test-integration-lexer
 
-  www:
+  test-integration-parser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration parser
+        run: make test-integration-parser
+
+  test-integration-run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,33 +126,51 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
-      - name: Install Node.js toolchain
-        uses: actions/setup-node@v4
+      - name: Install Go toolchain
+        uses: actions/setup-go@v5
         with:
-          node-version: '20'
+          go-version: '1.26.x'
 
-      - name: Install dependencies
-        run: cd www && npm install
+      - name: Test integration run
+        run: make test-integration-run
 
-      - name: Build www
-        run: cd www && npm run build
+  test-integration-generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Lint www
-        run: cd www && npm run lint
-
-      - name: Upload the build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          name: www-dist
-          path: ./www/dist
+          components: rustfmt, clippy
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Test integration generate
+        run: make test-integration-generate
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Fuzz
+        run: make fuzz
 
   # Deploy website on every push to master (nightly)
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: [lint, build, test-unit, test-integrations, www]
+    needs: [lint, build, web, test-unit, test-integration-lexer, test-integration-parser, test-integration-run, test-integration-generate, fuzz]
     steps:
       - uses: actions/checkout@v4
 

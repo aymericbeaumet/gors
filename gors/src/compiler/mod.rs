@@ -45,12 +45,36 @@ thread_local! {
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
+    static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
 }
 
 #[derive(Clone)]
 struct EmbeddedInterfaceField {
     field_ident: syn::Ident,
     trait_path: syn::Path,
+}
+
+struct MainPackageVarModeGuard {
+    previous: bool,
+}
+
+impl MainPackageVarModeGuard {
+    fn set(current: bool) -> Self {
+        let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
+            let previous = *value.borrow();
+            *value.borrow_mut() = current;
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for MainPackageVarModeGuard {
+    fn drop(&mut self) {
+        MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
+            *value.borrow_mut() = self.previous;
+        });
+    }
 }
 
 struct ProfileTimer {
@@ -563,7 +587,7 @@ fn type_expr_mentions_type_param(expr: &ast::Expr, info: &TypeParamInfo) -> bool
 fn rust_type_from_type_expr(expr: &ast::Expr) -> Option<syn::Type> {
     match expr {
         ast::Expr::Ident(ident) => {
-            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            let ident = syn::Ident::new(&import_rust_name(ident.name), Span::mixed_site());
             Some(syn::parse_quote! { #ident })
         }
         ast::Expr::SelectorExpr(selector) => {
@@ -707,7 +731,7 @@ impl ConstValue {
             ConstValue::Bool(_) => syn::parse_quote! { bool },
             ConstValue::Float(_) => syn::parse_quote! { f64 },
             ConstValue::Str(_) => syn::parse_quote! { &str },
-            ConstValue::Int(value) if *value >= 0 && *value > i64::MAX as i128 => {
+            ConstValue::Int(value) if *value >= 0 && *value > isize::MAX as i128 => {
                 if *value <= u64::MAX as i128 {
                     syn::parse_quote! { u64 }
                 } else {
@@ -756,6 +780,24 @@ impl ConstValue {
     }
 }
 
+fn const_rust_type_from_inferred(ty: &typeinfer::GoType, value: &ConstValue) -> Option<syn::Type> {
+    if matches!(ty, typeinfer::GoType::String) {
+        return Some(syn::parse_quote! { &str });
+    }
+    if matches!(ty, typeinfer::GoType::Int) {
+        match value {
+            ConstValue::Int(value)
+                if *value < isize::MIN as i128 || *value > isize::MAX as i128 =>
+            {
+                return Some(ConstValue::Int(*value).rust_type());
+            }
+            ConstValue::Uint(_, _) => return Some(value.rust_type()),
+            _ => {}
+        }
+    }
+    rust_type_from_go_type(ty)
+}
+
 fn parse_go_int_literal(lit: &str) -> Option<ConstValue> {
     let lit = lit.replace('_', "");
     let (digits, radix) =
@@ -797,7 +839,7 @@ fn parse_go_float_literal(lit: &str) -> Option<f64> {
             continue;
         }
         let digit = ch.to_digit(16)? as f64;
-        value = value * 16.0 + digit;
+        value = value.mul_add(16.0, digit);
         if after_dot {
             fractional_digits += 1;
         }
@@ -1149,13 +1191,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 TYPE_ENV.with(|env| {
                     env.borrow()
                         .get_var(name.name)
-                        .and_then(|ty| {
-                            if matches!(ty, typeinfer::GoType::String) {
-                                Some(syn::parse_quote! { &str })
-                            } else {
-                                rust_type_from_go_type(&ty)
-                            }
-                        })
+                        .and_then(|ty| const_rust_type_from_inferred(&ty, value))
                         .unwrap_or_else(|| value.rust_type())
                 })
             } else if let Some(expr) = value_expr {
@@ -1977,7 +2013,7 @@ fn compile_program_impl(
         let mut type_env = local_type_envs
             .get(&pkg.import_path)
             .map(|(_, env)| env.clone())
-            .unwrap_or_else(typeinfer::TypeEnv::new);
+            .unwrap_or_default();
         merge_import_type_envs(&mut type_env, &pkg.ast, &local_type_envs, &stdlib_type_envs);
         let import_rewrites = import_module_rewrites(
             &pkg.ast,
@@ -2072,6 +2108,10 @@ fn compile_program_impl(
     prune_dependency_stdlib_modules(&mut modules, &stdlib_imports);
     drop(stdlib_timer);
 
+    for module in modules.values_mut() {
+        cast_self_in_pointer_comparisons(&mut module.file);
+    }
+
     let dce_timer = ProfileTimer::start("compiler.dce");
     prune_generated_dead_code(&mut modules, has_main_fn);
     inject_post_prune_stdlib_helpers(&mut modules, &stdlib_imports);
@@ -2080,6 +2120,7 @@ fn compile_program_impl(
     restore_vec_newtype_method_receivers(&mut modules);
     borrow_mut_ref_call_args(&mut modules);
     restore_vec_newtype_method_receivers(&mut modules);
+    clone_vec_value_call_args(&mut modules);
     drop(dce_timer);
 
     prefix_final_module_paths(&mut modules);
@@ -2096,27 +2137,26 @@ fn inject_post_prune_stdlib_helpers(
 ) {
     for module in modules.values_mut().filter(|module| module.is_stdlib) {
         match module.mod_name.as_str() {
-            "reflect" => {
+            "reflect"
                 if module
                     .file
                     .items
                     .iter()
                     .any(|item| matches!(item, syn::Item::Struct(item_struct) if item_struct.ident == "Value"))
-                {
+                => {
                     module.file.items = vec![syn::parse_quote! {
                         #[derive(Clone, Default)]
                         pub struct Value;
                     }];
                     module.content_hash = String::new();
                 }
-            }
-            "os" => {
+            "os"
                 if module
                     .file
                     .items
                     .iter()
                     .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == "Stdout"))
-                {
+                => {
                     module.file.items = vec![
                         syn::parse_quote! {
                             #[derive(Clone, Copy, Default)]
@@ -2141,7 +2181,6 @@ fn inject_post_prune_stdlib_helpers(
                     ];
                     module.content_hash = String::new();
                 }
-            }
             _ => {}
         }
     }
@@ -2267,26 +2306,6 @@ fn mutated_vec_param_indices(
         .collect()
 }
 
-fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
-    let syn::Type::Path(path) = ty else {
-        return None;
-    };
-    if path.qself.is_some() || path.path.segments.len() != 1 {
-        return None;
-    }
-    let segment = path.path.segments.first()?;
-    if segment.ident != "Vec" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    let syn::GenericArgument::Type(inner) = args.args.first()? else {
-        return None;
-    };
-    Some(inner.clone())
-}
-
 fn body_mut_borrows_ident(block: &syn::Block, ident: &syn::Ident) -> bool {
     struct Finder<'a> {
         ident: &'a syn::Ident,
@@ -2313,6 +2332,26 @@ fn body_mut_borrows_ident(block: &syn::Block, ident: &syn::Ident) -> bool {
     finder.found
 }
 
+fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = path.path.segments.first()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(inner.clone())
+}
+
 fn rewrite_vec_params_as_mut_refs(
     sig: &mut syn::Signature,
     params: &[(usize, syn::Ident, syn::Type)],
@@ -2321,7 +2360,7 @@ fn rewrite_vec_params_as_mut_refs(
         let Some(syn::FnArg::Typed(pat_type)) = sig.inputs.iter_mut().nth(*index) else {
             continue;
         };
-        pat_type.ty = Box::new(syn::parse_quote! { &mut Vec<#inner> });
+        *pat_type.ty = syn::parse_quote! { &mut Vec<#inner> };
     }
 }
 
@@ -2345,7 +2384,7 @@ fn reborrow_mutated_vec_params(block: &mut syn::Block, params: &[(usize, syn::Id
             if !self.names.contains(&ident.to_string()) {
                 return;
             }
-            reference.expr = Box::new(syn::parse_quote! { *#ident });
+            *reference.expr = syn::parse_quote! { *#ident };
         }
     }
 
@@ -2409,6 +2448,172 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     }
     let inner = arg.clone();
     *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
+    let targets = collect_vec_value_param_targets(modules);
+    let vec_newtypes = collect_vec_newtypes(modules);
+    if targets.is_empty() && vec_newtypes.is_empty() {
+        return;
+    }
+
+    for module in modules.values_mut() {
+        syn::visit_mut::VisitMut::visit_file_mut(
+            &mut CloneVecValueCallArgs {
+                module_name: module.mod_name.clone(),
+                targets: &targets,
+                vec_newtypes: &vec_newtypes,
+            },
+            &mut module.file,
+        );
+    }
+}
+
+fn collect_vec_value_param_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> BTreeMap<String, std::collections::HashSet<usize>> {
+    let mut targets = BTreeMap::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Fn(item_fn) = item else {
+                continue;
+            };
+            let indices = vec_value_param_indices(&item_fn.sig);
+            if indices.is_empty() {
+                continue;
+            }
+            targets.insert(
+                format!("{}::{}", module.mod_name, item_fn.sig.ident),
+                indices,
+            );
+        }
+    }
+    targets
+}
+
+fn vec_value_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+    let clone_type_params: std::collections::HashSet<String> = sig
+        .generics
+        .params
+        .iter()
+        .filter_map(|param| {
+            let syn::GenericParam::Type(type_param) = param else {
+                return None;
+            };
+            type_param
+                .bounds
+                .iter()
+                .any(|bound| {
+                    matches!(bound, syn::TypeParamBound::Trait(trait_bound) if trait_bound.path.is_ident("Clone"))
+                })
+                .then(|| type_param.ident.to_string())
+        })
+        .collect();
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let syn::FnArg::Typed(pat_type) = input else {
+                return None;
+            };
+            cloneable_value_param_type(&pat_type.ty, &clone_type_params).then_some(index)
+        })
+        .collect()
+}
+
+fn cloneable_value_param_type(
+    ty: &syn::Type,
+    clone_type_params: &std::collections::HashSet<String>,
+) -> bool {
+    if matches!(ty, syn::Type::Reference(_)) {
+        return false;
+    }
+    if let Some(inner) = vec_type_inner(ty) {
+        return !is_box_dyn_any_type(&inner);
+    }
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    if type_path.qself.is_some() {
+        return false;
+    }
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    matches!(segment.ident.to_string().as_str(), "String")
+        || clone_type_params.contains(&segment.ident.to_string())
+}
+
+fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return false;
+    }
+    let Some(segment) = type_path.path.segments.first() else {
+        return false;
+    };
+    if segment.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::TraitObject(trait_object))) = args.args.first()
+    else {
+        return false;
+    };
+    trait_object
+        .bounds
+        .iter()
+        .any(|bound| matches!(bound, syn::TypeParamBound::Trait(trait_bound) if trait_bound.path.to_token_stream().to_string() == "dyn std :: any :: Any" || trait_bound.path.to_token_stream().to_string() == "std :: any :: Any" || trait_bound.path.to_token_stream().to_string() == "Any"))
+}
+
+struct CloneVecValueCallArgs<'a> {
+    module_name: String,
+    targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    vec_newtypes: &'a std::collections::HashSet<String>,
+}
+
+impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        syn::visit_mut::visit_expr_call_mut(self, call);
+
+        if let Some(type_key) = from_call_vec_newtype_key(&call.func, &self.module_name)
+            && self.vec_newtypes.contains(&type_key)
+            && call.args.len() == 1
+            && let Some(arg) = call.args.first_mut()
+        {
+            clone_path_arg(arg);
+        }
+
+        let Some(key) = call_target_key(&call.func, &self.module_name) else {
+            return;
+        };
+        let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                clone_path_arg(arg);
+            }
+        }
+    }
+}
+
+fn clone_path_arg(arg: &mut syn::Expr) {
+    if !matches!(arg, syn::Expr::Path(_)) {
+        return;
+    }
+    let Some(name) = expr_path_ident(arg) else {
+        return;
+    };
+    if name == "self" {
+        return;
+    }
+    let ident = syn::Ident::new(&name, Span::mixed_site());
+    *arg = syn::parse_quote! { #ident.clone() };
 }
 
 fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
@@ -2669,7 +2874,7 @@ impl syn::visit_mut::VisitMut for VecNewtypeBorrowHoister<'_> {
             source,
             from_func: (*call.func).clone(),
         });
-        reference.expr = Box::new(syn::parse_quote! { #temp });
+        *reference.expr = syn::parse_quote! { #temp };
     }
 }
 
@@ -2757,13 +2962,13 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
 
         let removable: Vec<String> = modules
             .iter()
-            .filter_map(|(key, module)| {
-                (!module.is_main
-                    && !required
+            .filter(|&(_key, module)| {
+                !module.is_main
+                    && required
                         .get(&module.mod_name)
-                        .is_some_and(|roots| !roots.is_empty()))
-                .then(|| key.clone())
+                        .is_none_or(|roots| roots.is_empty())
             })
+            .map(|(key, _module)| key.clone())
             .collect();
         for key in removable {
             modules.remove(&key);
@@ -2786,8 +2991,16 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 prune_builtin_complex_helpers(&mut module.file.items, roots);
                 prune_builtin_bitcast_helpers(&mut module.file.items, roots);
                 prune_unneeded_builtin_traits(&mut module.file.items, roots);
-            } else if let Some(builtin_roots) = required.get("builtin") {
-                prune_unneeded_builtin_traits(&mut module.file.items, builtin_roots);
+            } else {
+                let mut builtin_roots = required.get("builtin").cloned().unwrap_or_default();
+                if let Some(local_builtin_roots) =
+                    collect_external_refs(&module.file.items, &module_names).remove("builtin")
+                {
+                    builtin_roots.extend(local_builtin_roots);
+                }
+                if !builtin_roots.is_empty() {
+                    prune_unneeded_builtin_traits(&mut module.file.items, &builtin_roots);
+                }
             }
             if has_main {
                 prune_unused_struct_fields(&mut module.file.items);
@@ -2806,9 +3019,8 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
 
         let empty_modules: Vec<String> = modules
             .iter()
-            .filter_map(|(key, module)| {
-                (!module.is_main && module.file.items.is_empty()).then(|| key.clone())
-            })
+            .filter(|&(_key, module)| !module.is_main && module.file.items.is_empty())
+            .map(|(key, _module)| key.clone())
             .collect();
         for key in empty_modules {
             modules.remove(&key);
@@ -2820,6 +3032,53 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
     }
 }
 
+fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
+    use syn::visit_mut::VisitMut;
+
+    fn is_self_expr(expr: &syn::Expr) -> bool {
+        matches!(
+            expr,
+            syn::Expr::Path(path)
+                if path.path.leading_colon.is_none()
+                    && path.path.segments.len() == 1
+                    && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
+        )
+    }
+
+    fn is_self_field_expr(expr: &syn::Expr) -> bool {
+        matches!(
+            expr,
+            syn::Expr::Field(field)
+                if matches!(
+                    &*field.base,
+                    syn::Expr::Path(path)
+                        if path.path.leading_colon.is_none()
+                            && path.path.segments.len() == 1
+                            && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
+                )
+        )
+    }
+
+    struct Visitor;
+
+    impl VisitMut for Visitor {
+        fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
+            syn::visit_mut::visit_expr_binary_mut(self, binary);
+            if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+                return;
+            }
+
+            if is_self_expr(&binary.left) && is_self_field_expr(&binary.right) {
+                *binary.left = syn::parse_quote! { self as *mut Self };
+            } else if is_self_expr(&binary.right) && is_self_field_expr(&binary.left) {
+                *binary.right = syn::parse_quote! { self as *mut Self };
+            }
+        }
+    }
+
+    Visitor.visit_file_mut(file);
+}
+
 fn prune_items_to_roots(
     items: &mut Vec<syn::Item>,
     roots: &std::collections::HashSet<String>,
@@ -2827,12 +3086,13 @@ fn prune_items_to_roots(
 ) {
     let (keep, _, names) = reachable_stdlib_items(items, roots, module_names);
     let item_names = item_reachability_names(items);
+    let top_level_names = top_level_item_names(items);
     *items = items
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
             keep.contains(&idx)
-                .then(|| reachable_item_for_names(item, &names, &item_names))
+                .then(|| reachable_item_for_names(item, &names, &item_names, &top_level_names))
                 .flatten()
         })
         .collect();
@@ -2928,6 +3188,16 @@ fn exported_item_reachability_names(items: &[syn::Item]) -> std::collections::Ha
                         ));
                     }
                     _ => {}
+                }
+            }
+        }
+        if let syn::Item::Trait(item_trait) = item {
+            let trait_name = item_trait.ident.to_string();
+            for trait_item in &item_trait.items {
+                if let syn::TraitItem::Fn(func) = trait_item {
+                    let name = func.sig.ident.to_string();
+                    roots.insert(name.clone());
+                    roots.insert(impl_method_reachability_name(&trait_name, &name));
                 }
             }
         }
@@ -3073,7 +3343,8 @@ fn prune_unneeded_builtin_traits(
         if let syn::Item::Trait(item_trait) = item
             && let Some(needed_root) = builtin_trait_required_root(&item_trait.ident.to_string())
         {
-            return builtin_roots.contains(needed_root);
+            return builtin_roots.contains(needed_root)
+                || builtin_roots.contains(&item_trait.ident.to_string());
         }
 
         let syn::Item::Impl(item_impl) = item else {
@@ -3093,7 +3364,7 @@ fn prune_unneeded_builtin_traits(
         let Some(needed_root) = needed_root else {
             return true;
         };
-        builtin_roots.contains(needed_root)
+        builtin_roots.contains(needed_root) || builtin_roots.contains(&trait_name)
     });
 }
 
@@ -3610,6 +3881,7 @@ fn prune_dependency_stdlib_modules(
             continue;
         }
         let item_names = item_reachability_names(&module.file.items);
+        let top_level_names = top_level_item_names(&module.file.items);
         module.file.items = module
             .file
             .items
@@ -3617,7 +3889,7 @@ fn prune_dependency_stdlib_modules(
             .enumerate()
             .filter_map(|(idx, item)| {
                 keep.contains(&idx)
-                    .then(|| reachable_item_for_names(item, &names, &item_names))
+                    .then(|| reachable_item_for_names(item, &names, &item_names, &top_level_names))
                     .flatten()
             })
             .collect();
@@ -3652,12 +3924,12 @@ fn prune_unreferenced_stdlib_modules(
 
         let removable: Vec<String> = modules
             .iter()
-            .filter_map(|(key, module)| {
-                (module.is_stdlib
+            .filter(|&(_key, module)| {
+                module.is_stdlib
                     && !preserved_mod_names.contains(&module.mod_name)
-                    && !referenced.contains(&module.mod_name))
-                .then(|| key.clone())
+                    && !referenced.contains(&module.mod_name)
             })
+            .map(|(key, _module)| key.clone())
             .collect();
         if removable.is_empty() {
             break;
@@ -3697,23 +3969,30 @@ fn reachable_stdlib_items(
     let item_names = item_reachability_names(items);
     let top_level_names = top_level_item_names(items);
     let top_level_types = top_level_item_types(items, module_names);
+    let top_level_field_types = top_level_item_field_types(items, module_names);
+    let top_level_return_types = top_level_item_return_types(items, module_names);
+    let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
 
     loop {
         let mut changed = false;
         for (idx, item) in items.iter().enumerate() {
-            let Some(mut reachable_item) = reachable_item_for_names(item, &names, &item_names)
+            let Some(mut reachable_item) =
+                reachable_item_for_names(item, &names, &item_names, &top_level_names)
             else {
                 continue;
             };
             changed |= keep.insert(idx);
 
-            let (local_names, refs) = collect_refs_from_item(
-                &mut reachable_item,
+            let context = RefCollectionContext {
                 module_names,
-                &item_names,
-                &top_level_names,
-                &top_level_types,
-            );
+                item_names: &item_names,
+                top_level_names: &top_level_names,
+                top_level_types: &top_level_types,
+                top_level_field_types: &top_level_field_types,
+                top_level_return_types: &top_level_return_types,
+                top_level_tuple_return_types: &top_level_tuple_return_types,
+            };
+            let (local_names, refs) = collect_refs_from_item(&mut reachable_item, &context);
             for name in local_names {
                 changed |= names.insert(name);
             }
@@ -3762,6 +4041,16 @@ fn item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<Str
                 }
             }
         }
+        if let syn::Item::Trait(item_trait) = item {
+            let trait_name = item_trait.ident.to_string();
+            for trait_item in &item_trait.items {
+                if let syn::TraitItem::Fn(func) = trait_item {
+                    let name = func.sig.ident.to_string();
+                    names.insert(name.clone());
+                    names.insert(impl_method_reachability_name(&trait_name, &name));
+                }
+            }
+        }
     }
     names
 }
@@ -3774,9 +4063,40 @@ fn reachable_item_for_names(
     item: &syn::Item,
     names: &std::collections::HashSet<String>,
     item_names: &std::collections::HashSet<String>,
+    top_level_names: &std::collections::HashSet<String>,
 ) -> Option<syn::Item> {
     if matches!(item, syn::Item::Use(_)) {
         return Some(item.clone());
+    }
+
+    if let syn::Item::Trait(item_trait) = item {
+        let trait_name = item_trait.ident.to_string();
+        if !names.contains(&trait_name) {
+            return None;
+        }
+        if is_ambient_trait_name(&trait_name) {
+            return Some(item.clone());
+        }
+        let mut filtered = item_trait.clone();
+        filtered.items.retain(|trait_item| match trait_item {
+            syn::TraitItem::Fn(func) => {
+                trait_item_name_reachable(&trait_name, &func.sig.ident.to_string(), names)
+            }
+            syn::TraitItem::Const(konst) => {
+                trait_item_name_reachable(&trait_name, &konst.ident.to_string(), names)
+            }
+            syn::TraitItem::Type(ty) => {
+                trait_item_name_reachable(&trait_name, &ty.ident.to_string(), names)
+            }
+            syn::TraitItem::Macro(item_macro) => item_macro
+                .mac
+                .path
+                .segments
+                .last()
+                .is_some_and(|seg| names.contains(&seg.ident.to_string())),
+            _ => false,
+        });
+        return Some(syn::Item::Trait(filtered));
     }
 
     if let syn::Item::Macro(item_macro) = item {
@@ -3816,7 +4136,36 @@ fn reachable_item_for_names(
         {
             return None;
         }
-        return Some(item.clone());
+        let trait_name = item_impl
+            .trait_
+            .as_ref()
+            .and_then(|(_, path, _)| path.segments.last())
+            .map(|seg| seg.ident.to_string());
+        let mut filtered = item_impl.clone();
+        if let Some(trait_name) = trait_name {
+            if is_ambient_trait_name(&trait_name) {
+                return Some(item.clone());
+            }
+            filtered.items.retain(|impl_item| match impl_item {
+                syn::ImplItem::Fn(func) => {
+                    trait_item_name_reachable(&trait_name, &func.sig.ident.to_string(), names)
+                }
+                syn::ImplItem::Const(konst) => {
+                    trait_item_name_reachable(&trait_name, &konst.ident.to_string(), names)
+                }
+                syn::ImplItem::Type(ty) => {
+                    trait_item_name_reachable(&trait_name, &ty.ident.to_string(), names)
+                }
+                syn::ImplItem::Macro(item_macro) => item_macro
+                    .mac
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| names.contains(&seg.ident.to_string())),
+                _ => false,
+            });
+        }
+        return Some(syn::Item::Impl(filtered));
     }
     if !self_reachable {
         return None;
@@ -3824,7 +4173,7 @@ fn reachable_item_for_names(
     if item_impl.trait_.is_some() {
         if let Some((_, path, _)) = &item_impl.trait_
             && let Some(trait_name) = path.segments.last().map(|seg| seg.ident.to_string())
-            && item_names.contains(&trait_name)
+            && top_level_names.contains(&trait_name)
             && !names.contains(&trait_name)
         {
             return None;
@@ -3860,10 +4209,19 @@ fn impl_item_name_reachable(
     item_name: &str,
     names: &std::collections::HashSet<String>,
 ) -> bool {
+    self_name.as_ref().map_or_else(
+        || names.contains(item_name),
+        |self_name| names.contains(&impl_method_reachability_name(self_name, item_name)),
+    )
+}
+
+fn trait_item_name_reachable(
+    trait_name: &str,
+    item_name: &str,
+    names: &std::collections::HashSet<String>,
+) -> bool {
     names.contains(item_name)
-        || self_name.as_ref().is_some_and(|self_name| {
-            names.contains(&impl_method_reachability_name(self_name, item_name))
-        })
+        || names.contains(&impl_method_reachability_name(trait_name, item_name))
 }
 
 fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
@@ -3986,17 +4344,23 @@ fn collect_external_refs(
 ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
     let mut external_refs = std::collections::HashMap::new();
     let empty_types = std::collections::HashMap::new();
+    let empty_field_types = std::collections::HashMap::new();
+    let empty_return_types = std::collections::HashMap::new();
+    let empty_tuple_return_types = std::collections::HashMap::new();
     for item in items {
         let mut item_clone = item.clone();
         let empty_item_names = std::collections::HashSet::new();
         let empty_top_level_names = std::collections::HashSet::new();
-        let (_, refs) = collect_refs_from_item(
-            &mut item_clone,
+        let context = RefCollectionContext {
             module_names,
-            &empty_item_names,
-            &empty_top_level_names,
-            &empty_types,
-        );
+            item_names: &empty_item_names,
+            top_level_names: &empty_top_level_names,
+            top_level_types: &empty_types,
+            top_level_field_types: &empty_field_types,
+            top_level_return_types: &empty_return_types,
+            top_level_tuple_return_types: &empty_tuple_return_types,
+        };
+        let (_, refs) = collect_refs_from_item(&mut item_clone, &context);
         merge_required_refs(&mut external_refs, refs);
     }
     external_refs
@@ -4006,6 +4370,22 @@ fn collect_external_refs(
 struct ReceiverTypeRef {
     module: Option<String>,
     name: String,
+}
+
+type ReachabilityNameSet = std::collections::HashSet<String>;
+type ReceiverTypeMap = std::collections::HashMap<String, ReceiverTypeRef>;
+type ReceiverFieldTypeMap = std::collections::HashMap<String, ReceiverTypeMap>;
+type ReceiverTupleTypes = Vec<Option<ReceiverTypeRef>>;
+type ReceiverTupleReturnMap = std::collections::HashMap<String, ReceiverTupleTypes>;
+
+struct RefCollectionContext<'a> {
+    module_names: &'a ReachabilityNameSet,
+    item_names: &'a ReachabilityNameSet,
+    top_level_names: &'a ReachabilityNameSet,
+    top_level_types: &'a ReceiverTypeMap,
+    top_level_field_types: &'a ReceiverFieldTypeMap,
+    top_level_return_types: &'a ReceiverTypeMap,
+    top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
 }
 
 fn top_level_item_types(
@@ -4031,6 +4411,79 @@ fn top_level_item_types(
     types
 }
 
+fn top_level_item_field_types(
+    items: &[syn::Item],
+    module_names: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, std::collections::HashMap<String, ReceiverTypeRef>> {
+    let mut types = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Struct(item_struct) = item else {
+            continue;
+        };
+        let mut fields = std::collections::HashMap::new();
+        if let syn::Fields::Named(named_fields) = &item_struct.fields {
+            for field in &named_fields.named {
+                let Some(field_ident) = &field.ident else {
+                    continue;
+                };
+                if let Some(ty) = receiver_type_from_type(&field.ty, module_names) {
+                    fields.insert(field_ident.to_string(), ty);
+                }
+            }
+        }
+        if !fields.is_empty() {
+            types.insert(item_struct.ident.to_string(), fields);
+        }
+    }
+    types
+}
+
+fn top_level_item_return_types(
+    items: &[syn::Item],
+    module_names: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, ReceiverTypeRef> {
+    let mut types = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
+        let syn::ReturnType::Type(_, ty) = &item_fn.sig.output else {
+            continue;
+        };
+        if let Some(return_type) = receiver_type_from_type(ty, module_names) {
+            types.insert(item_fn.sig.ident.to_string(), return_type);
+        }
+    }
+    types
+}
+
+fn top_level_item_tuple_return_types(
+    items: &[syn::Item],
+    module_names: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, ReceiverTupleTypes> {
+    let mut types = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
+        let syn::ReturnType::Type(_, ty) = &item_fn.sig.output else {
+            continue;
+        };
+        let syn::Type::Tuple(tuple) = ty.as_ref() else {
+            continue;
+        };
+        let tuple_types = tuple
+            .elems
+            .iter()
+            .map(|ty| receiver_type_from_type(ty, module_names))
+            .collect::<Vec<_>>();
+        if tuple_types.iter().any(Option::is_some) {
+            types.insert(item_fn.sig.ident.to_string(), tuple_types);
+        }
+    }
+    types
+}
+
 fn receiver_type_from_type(
     ty: &syn::Type,
     module_names: &std::collections::HashSet<String>,
@@ -4049,6 +4502,129 @@ fn receiver_type_from_type(
         syn::Type::Path(path) => receiver_type_from_path(&path.path, module_names),
         syn::Type::Reference(reference) => receiver_type_from_type(&reference.elem, module_names),
         syn::Type::Ptr(ptr) => receiver_type_from_type(&ptr.elem, module_names),
+        syn::Type::TraitObject(trait_object) => trait_object.bounds.iter().find_map(|bound| {
+            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                receiver_type_from_path(&trait_bound.path, module_names)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn receiver_type_from_init_expr(
+    expr: &syn::Expr,
+    module_names: &std::collections::HashSet<String>,
+    item_names: &std::collections::HashSet<String>,
+    top_level_return_types: &std::collections::HashMap<String, ReceiverTypeRef>,
+) -> Option<ReceiverTypeRef> {
+    match expr {
+        syn::Expr::Call(call) => {
+            if is_path_call_expr(&call.func, &["Box", "new"]) {
+                return call.args.first().and_then(|arg| {
+                    receiver_type_from_init_expr(
+                        arg,
+                        module_names,
+                        item_names,
+                        top_level_return_types,
+                    )
+                });
+            }
+            if let syn::Expr::Path(path) = &*call.func
+                && let Some(first) = path.path.segments.first()
+            {
+                if let Some(qself) = &path.qself
+                    && let Some(receiver_type) = receiver_type_from_type(&qself.ty, module_names)
+                {
+                    return Some(receiver_type);
+                }
+                if let Some(receiver_type) =
+                    receiver_type_from_associated_call_path(&path.path, module_names, item_names)
+                {
+                    return Some(receiver_type);
+                }
+                let name = first.ident.to_string();
+                if let Some(return_type) = top_level_return_types.get(&name) {
+                    return Some(return_type.clone());
+                }
+                if item_names.contains(&name) {
+                    return Some(ReceiverTypeRef { module: None, name });
+                }
+            }
+            receiver_type_from_init_expr(
+                &call.func,
+                module_names,
+                item_names,
+                top_level_return_types,
+            )
+        }
+        syn::Expr::Cast(cast) => receiver_type_from_init_expr(
+            &cast.expr,
+            module_names,
+            item_names,
+            top_level_return_types,
+        ),
+        syn::Expr::Group(group) => receiver_type_from_init_expr(
+            &group.expr,
+            module_names,
+            item_names,
+            top_level_return_types,
+        ),
+        syn::Expr::Paren(paren) => receiver_type_from_init_expr(
+            &paren.expr,
+            module_names,
+            item_names,
+            top_level_return_types,
+        ),
+        syn::Expr::Reference(reference) => receiver_type_from_init_expr(
+            &reference.expr,
+            module_names,
+            item_names,
+            top_level_return_types,
+        ),
+        syn::Expr::Struct(expr_struct) => expr_struct
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident.to_string())
+            .filter(|name| item_names.contains(name))
+            .map(|name| ReceiverTypeRef { module: None, name }),
+        syn::Expr::Unary(unary) => receiver_type_from_init_expr(
+            &unary.expr,
+            module_names,
+            item_names,
+            top_level_return_types,
+        ),
+        _ => None,
+    }
+}
+
+fn receiver_type_from_associated_call_path(
+    path: &syn::Path,
+    module_names: &std::collections::HashSet<String>,
+    item_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [krate, module, name, ..] if krate == "crate" && module_names.contains(module) => {
+            Some(ReceiverTypeRef {
+                module: Some(module.clone()),
+                name: name.clone(),
+            })
+        }
+        [module, name, ..] if module_names.contains(module) => Some(ReceiverTypeRef {
+            module: Some(module.clone()),
+            name: name.clone(),
+        }),
+        [name, ..] if item_names.contains(name) && segments.len() > 1 => Some(ReceiverTypeRef {
+            module: None,
+            name: name.clone(),
+        }),
         _ => None,
     }
 }
@@ -4057,6 +4633,10 @@ fn receiver_type_from_path(
     path: &syn::Path,
     module_names: &std::collections::HashSet<String>,
 ) -> Option<ReceiverTypeRef> {
+    if let Some(receiver_type) = transparent_receiver_type_from_path(path, module_names) {
+        return Some(receiver_type);
+    }
+
     let mut segments = path.segments.iter().map(|seg| seg.ident.to_string());
     let first = segments.next();
     let second = segments.next();
@@ -4111,25 +4691,42 @@ fn receiver_type_from_path(
     })
 }
 
+fn transparent_receiver_type_from_path(
+    path: &syn::Path,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    let last = path.segments.last()?;
+    if last.ident != "Box" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => receiver_type_from_type(ty, module_names),
+        _ => None,
+    })
+}
+
 fn collect_refs_from_item(
     item: &mut syn::Item,
-    module_names: &std::collections::HashSet<String>,
-    item_names: &std::collections::HashSet<String>,
-    top_level_names: &std::collections::HashSet<String>,
-    top_level_types: &std::collections::HashMap<String, ReceiverTypeRef>,
+    context: &RefCollectionContext<'_>,
 ) -> (
     std::collections::HashSet<String>,
     std::collections::HashMap<String, std::collections::HashSet<String>>,
 ) {
     use syn::visit_mut::VisitMut;
 
-    struct BoundCollector {
+    struct BoundCollector<'a> {
         names: std::collections::HashSet<String>,
         types: std::collections::HashMap<String, ReceiverTypeRef>,
-        module_names: std::collections::HashSet<String>,
+        module_names: &'a ReachabilityNameSet,
+        item_names: &'a ReachabilityNameSet,
+        top_level_return_types: &'a ReceiverTypeMap,
+        top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
     }
 
-    impl VisitMut for BoundCollector {
+    impl VisitMut for BoundCollector<'_> {
         fn visit_pat_ident_mut(&mut self, pat: &mut syn::PatIdent) {
             self.names.insert(pat.ident.to_string());
             syn::visit_mut::visit_pat_ident_mut(self, pat);
@@ -4138,7 +4735,7 @@ fn collect_refs_from_item(
         fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
             if let syn::FnArg::Typed(pat_type) = arg
                 && let Some(name) = pat_ident_name(&pat_type.pat)
-                && let Some(ty) = receiver_type_from_type(&pat_type.ty, &self.module_names)
+                && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
             {
                 self.types.insert(name, ty);
             }
@@ -4146,13 +4743,72 @@ fn collect_refs_from_item(
         }
 
         fn visit_local_mut(&mut self, local: &mut syn::Local) {
+            if let Some(init) = &local.init
+                && let syn::Pat::Tuple(tuple_pat) = &local.pat
+                && let Some(tuple_types) = receiver_tuple_types_from_init_expr(
+                    &init.expr,
+                    self.top_level_tuple_return_types,
+                )
+            {
+                for (pat, receiver_type) in tuple_pat.elems.iter().zip(tuple_types) {
+                    if let Some(name) = pat_ident_name(pat)
+                        && let Some(receiver_type) = receiver_type
+                    {
+                        self.types.insert(name, receiver_type);
+                    }
+                }
+            }
+
             if let syn::Pat::Type(pat_type) = &local.pat
                 && let Some(name) = pat_ident_name(&pat_type.pat)
-                && let Some(ty) = receiver_type_from_type(&pat_type.ty, &self.module_names)
+                && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
+            {
+                self.types.insert(name, ty);
+            } else if let Some(init) = &local.init
+                && let Some(name) = pat_ident_name(&local.pat)
+                && let Some(ty) = receiver_type_from_init_expr(
+                    &init.expr,
+                    self.module_names,
+                    self.item_names,
+                    self.top_level_return_types,
+                )
             {
                 self.types.insert(name, ty);
             }
             syn::visit_mut::visit_local_mut(self, local);
+        }
+    }
+
+    fn receiver_tuple_types_from_init_expr(
+        expr: &syn::Expr,
+        top_level_tuple_return_types: &std::collections::HashMap<String, ReceiverTupleTypes>,
+    ) -> Option<ReceiverTupleTypes> {
+        match expr {
+            syn::Expr::Call(call) => {
+                if let syn::Expr::Path(path) = &*call.func
+                    && let Some(first) = path.path.segments.first()
+                    && let Some(types) = top_level_tuple_return_types.get(&first.ident.to_string())
+                {
+                    return Some(types.clone());
+                }
+                receiver_tuple_types_from_init_expr(&call.func, top_level_tuple_return_types)
+            }
+            syn::Expr::Cast(cast) => {
+                receiver_tuple_types_from_init_expr(&cast.expr, top_level_tuple_return_types)
+            }
+            syn::Expr::Group(group) => {
+                receiver_tuple_types_from_init_expr(&group.expr, top_level_tuple_return_types)
+            }
+            syn::Expr::Paren(paren) => {
+                receiver_tuple_types_from_init_expr(&paren.expr, top_level_tuple_return_types)
+            }
+            syn::Expr::Reference(reference) => {
+                receiver_tuple_types_from_init_expr(&reference.expr, top_level_tuple_return_types)
+            }
+            syn::Expr::Unary(unary) => {
+                receiver_tuple_types_from_init_expr(&unary.expr, top_level_tuple_return_types)
+            }
+            _ => None,
         }
     }
 
@@ -4206,6 +4862,11 @@ fn collect_refs_from_item(
         item_names: &'a std::collections::HashSet<String>,
         top_level_names: &'a std::collections::HashSet<String>,
         top_level_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
+        top_level_field_types: &'a std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, ReceiverTypeRef>,
+        >,
+        top_level_return_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
         bound_names: std::collections::HashSet<String>,
         bound_types: std::collections::HashMap<String, ReceiverTypeRef>,
         current_self_type: Option<ReceiverTypeRef>,
@@ -4229,6 +4890,36 @@ fn collect_refs_from_item(
                         .get(&name)
                         .cloned()
                         .or_else(|| self.top_level_types.get(&name).cloned())
+                }
+                syn::Expr::Call(call) => receiver_type_from_init_expr(
+                    expr,
+                    self.module_names,
+                    self.item_names,
+                    self.top_level_return_types,
+                )
+                .or_else(|| {
+                    if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
+                        call.args
+                            .first()
+                            .and_then(|arg| self.receiver_type_from_expr(arg))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| self.receiver_type_from_expr(&call.func)),
+                syn::Expr::MethodCall(method) if method.method == "clone" => {
+                    self.receiver_type_from_expr(&method.receiver)
+                }
+                syn::Expr::Cast(cast) => self.receiver_type_from_expr(&cast.expr),
+                syn::Expr::Field(field) => {
+                    let base_type = self.receiver_type_from_expr(&field.base)?;
+                    let syn::Member::Named(member) = &field.member else {
+                        return None;
+                    };
+                    self.top_level_field_types
+                        .get(&base_type.name)
+                        .and_then(|fields| fields.get(&member.to_string()))
+                        .cloned()
                 }
                 syn::Expr::Reference(reference) => self.receiver_type_from_expr(&reference.expr),
                 syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
@@ -4277,7 +4968,6 @@ fn collect_refs_from_item(
                     if let Some(assoc) = assoc {
                         entry.insert(assoc.to_string());
                     }
-                    return;
                 }
                 (Some(module), Some(symbol), assoc, _) if self.module_names.contains(module) => {
                     let entry = self.external_refs.entry(module.to_string()).or_default();
@@ -4285,7 +4975,6 @@ fn collect_refs_from_item(
                     if let Some(assoc) = assoc {
                         entry.insert(assoc.to_string());
                     }
-                    return;
                 }
                 (Some(local), Some(symbol), assoc, _) if self.item_names.contains(local) => {
                     if is_reachability_name(local) {
@@ -4295,7 +4984,6 @@ fn collect_refs_from_item(
                     if let Some(assoc) = assoc {
                         self.local_names.insert(assoc.to_string());
                     }
-                    return;
                 }
                 _ => {}
             }
@@ -4389,10 +5077,12 @@ fn collect_refs_from_item(
 
         fn visit_expr_method_call_mut(&mut self, method: &mut syn::ExprMethodCall) {
             let name = method.method.to_string();
-            if let Some(module) = external_module_from_expr(&method.receiver, self.module_names) {
-                self.external_refs.entry(module).or_default().insert(name);
-            } else if let Some(receiver_type) = self.receiver_type_from_expr(&method.receiver) {
+            if let Some(receiver_type) = self.receiver_type_from_expr(&method.receiver) {
                 self.insert_receiver_method_ref(receiver_type, &name);
+            } else if let Some(module) =
+                external_module_from_expr(&method.receiver, self.module_names)
+            {
+                self.external_refs.entry(module).or_default().insert(name);
             } else if !self.top_level_names.contains(&name) {
                 self.local_names.insert(name);
             }
@@ -4403,16 +5093,21 @@ fn collect_refs_from_item(
     let mut bound_collector = BoundCollector {
         names: std::collections::HashSet::new(),
         types: std::collections::HashMap::new(),
-        module_names: module_names.clone(),
+        module_names: context.module_names,
+        item_names: context.item_names,
+        top_level_return_types: context.top_level_return_types,
+        top_level_tuple_return_types: context.top_level_tuple_return_types,
     };
     let mut item_for_bounds = item.clone();
     bound_collector.visit_item_mut(&mut item_for_bounds);
 
     let mut collector = RefCollector {
-        module_names,
-        item_names,
-        top_level_names,
-        top_level_types,
+        module_names: context.module_names,
+        item_names: context.item_names,
+        top_level_names: context.top_level_names,
+        top_level_types: context.top_level_types,
+        top_level_field_types: context.top_level_field_types,
+        top_level_return_types: context.top_level_return_types,
         bound_names: bound_collector.names,
         bound_types: bound_collector.types,
         current_self_type: None,
@@ -4491,9 +5186,18 @@ fn is_ambient_trait_name(name: &str) -> bool {
             | "Display"
             | "From"
             | "Append"
+            | "BitcastFrom"
+            | "ByteSeq"
             | "Cap"
+            | "Clear"
+            | "Complex64Value"
+            | "Complex128Value"
+            | "Imag"
             | "Len"
+            | "Real"
             | "StringValue"
+            | "__GorsReflectKindValue"
+            | "comparable"
             | "Into"
             | "ToString"
     )
@@ -5056,6 +5760,18 @@ fn slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
     }
 }
 
+fn self_referential_pointer_type(expr: &ast::Expr, self_ident: &syn::Ident) -> Option<syn::Type> {
+    let ast::Expr::StarExpr(star) = expr else {
+        return None;
+    };
+    let type_name = extract_type_name(&star.x)?;
+    (*self_ident == type_name).then(|| syn::parse_quote! { *mut #self_ident })
+}
+
+fn type_from_struct_field_expr(expr: &ast::Expr, self_ident: &syn::Ident) -> syn::Type {
+    self_referential_pointer_type(expr, self_ident).unwrap_or_else(|| type_from_expr_ref(expr))
+}
+
 fn interface_mut_ref_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
     let mut impl_methods = Vec::new();
     for trait_item in trait_items {
@@ -5129,7 +5845,7 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
             syn::parse_quote!({ (**self).#method(#(#arg_names),*) })
         };
         impl_methods.push(syn::ImplItemFn {
-            attrs: vec![syn::parse_quote! { #[allow(dead_code)] }],
+            attrs: vec![],
             vis: syn::Visibility::Inherited,
             defaultness: None,
             sig,
@@ -5201,7 +5917,7 @@ fn embedded_interface_impls(
                     method.vis = syn::Visibility::Inherited;
                     if let Some(syn::FnArg::Receiver(receiver)) = method.sig.inputs.first_mut() {
                         receiver.mutability = Some(<Token![mut]>::default());
-                        receiver.ty = Box::new(syn::parse_quote! { &mut Self });
+                        *receiver.ty = syn::parse_quote! { &mut Self };
                     }
                     impl_items.push(syn::ImplItem::Fn(method));
                     continue;
@@ -5210,7 +5926,7 @@ fn embedded_interface_impls(
                 let mut sig = trait_fn.sig.clone();
                 if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
                     receiver.mutability = Some(<Token![mut]>::default());
-                    receiver.ty = Box::new(syn::parse_quote! { &mut Self });
+                    *receiver.ty = syn::parse_quote! { &mut Self };
                 }
                 let method_ident = sig.ident.clone();
                 let field_ident = field.field_ident.clone();
@@ -5232,7 +5948,7 @@ fn embedded_interface_impls(
                     syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*) })
                 };
                 impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                    attrs: vec![syn::parse_quote! { #[allow(dead_code)] }],
+                    attrs: vec![],
                     vis: syn::Visibility::Inherited,
                     defaultness: None,
                     sig,
@@ -5303,7 +6019,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
-                            type_from_expr_ref(&field_type)
+                            type_from_struct_field_expr(&field_type, &ident)
                         };
                         for field_name in names {
                             let field_vis: syn::Visibility = (&field_name).into();
@@ -5336,7 +6052,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
-                            type_from_expr_ref(&field_type)
+                            type_from_struct_field_expr(&field_type, &ident)
                         };
                         if let Some(name) = embedded_name {
                             let field_ident =
@@ -5951,6 +6667,16 @@ fn selector_top_level_var_type(sel: &ast::SelectorExpr) -> Option<typeinfer::GoT
     })
 }
 
+fn top_level_var_read_expr(path: syn::Expr, go_type: &typeinfer::GoType) -> syn::Expr {
+    if go_type_is_copy(go_type)
+        && !matches!(resolved_go_type(go_type), typeinfer::GoType::Pointer(_))
+    {
+        syn::parse_quote! { *#path }
+    } else {
+        syn::parse_quote! { (*#path).clone() }
+    }
+}
+
 fn register_type_spec_in_env(ts: &ast::TypeSpec) {
     let Some(name) = &ts.name else { return };
     match &ts.type_ {
@@ -6416,6 +7142,30 @@ fn is_general_type_conversion_fun(fun: &ast::Expr) -> bool {
     }
 }
 
+fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::CallExpr(call) => {
+            if matches!(
+                &*call.fun,
+                ast::Expr::SelectorExpr(sel)
+                    if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
+                        && sel.sel.name == "Pointer"
+            ) {
+                return true;
+            }
+            expr_contains_unsafe_pointer_conversion(&call.fun)
+                || call
+                    .args
+                    .as_ref()
+                    .is_some_and(|args| args.iter().any(expr_contains_unsafe_pointer_conversion))
+        }
+        ast::Expr::ParenExpr(paren) => expr_contains_unsafe_pointer_conversion(&paren.x),
+        ast::Expr::SelectorExpr(selector) => expr_contains_unsafe_pointer_conversion(&selector.x),
+        ast::Expr::UnaryExpr(unary) => expr_contains_unsafe_pointer_conversion(&unary.x),
+        _ => false,
+    }
+}
+
 fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let target_fun = *call_expr.fun;
     let target_fun = match target_fun {
@@ -6434,6 +7184,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
                 obj: None,
             })
         });
+    let is_unsafe_pointer_arg = expr_contains_unsafe_pointer_conversion(&raw_arg);
     let arg: syn::Expr = raw_arg.into();
 
     if matches!(&target_fun, ast::Expr::SelectorExpr(sel) if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") && sel.sel.name == "Pointer")
@@ -6445,6 +7196,9 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     }
 
     let target_ty = type_from_expr_ref(&target_fun);
+    if matches!(target_fun, ast::Expr::StarExpr(_)) && is_unsafe_pointer_arg {
+        return syn::parse_quote! { Default::default() };
+    }
     if let Some(typeinfer::TypeKind::Alias(inner)) = type_kind_for_type_expr(&target_fun) {
         if inner.is_numeric()
             && let Some(inner_ty) = rust_type_from_go_type(&inner)
@@ -6834,11 +7588,7 @@ fn compile_variadic_any_call(call_expr: ast::CallExpr, variadic_start: usize) ->
 
     if has_variadic_spread {
         for (i, arg) in raw_args.into_iter().enumerate() {
-            if i < variadic_start {
-                final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
-            } else {
-                final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
-            }
+            final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
         }
         return syn::parse_quote! { #fun_expr(#final_args) };
     }
@@ -6980,7 +7730,15 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
         "append" => compile_append_builtin(raw_args, has_variadic_spread),
         "panic" => compile_panic_builtin(raw_args),
         _ => {
-            let args: Vec<syn::Expr> = raw_args.into_iter().map(syn::Expr::from).collect();
+            let ordered_expected_type = if matches!(name.as_str(), "max" | "min") {
+                ordered_builtin_arg_expected_type(&raw_args)
+            } else {
+                None
+            };
+            let args: Vec<syn::Expr> = raw_args
+                .into_iter()
+                .map(|arg| compile_expr_with_expected(arg, ordered_expected_type.as_ref()))
+                .collect();
             match name.as_str() {
                 "len" if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::len(&#x) }
@@ -7036,6 +7794,113 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             }
         }
     }
+}
+
+fn compile_sort_slice_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return None;
+    };
+    if !matches!(*selector.x, ast::Expr::Ident(pkg) if pkg.name == "sort") {
+        return None;
+    }
+    if !matches!(selector.sel.name, "Slice" | "SliceStable" | "SliceIsSorted") {
+        return None;
+    }
+
+    let mut args = call_expr.args.unwrap_or_default().into_iter();
+    let ast::Expr::Ident(slice_ident) = args.next()? else {
+        return None;
+    };
+    let less_arg = args.next()?;
+    if args.next().is_some() {
+        return None;
+    }
+
+    let slice_ident = syn::Ident::new(&rust_safe_ident_name(slice_ident.name), Span::mixed_site());
+    let less: syn::Expr = less_arg.into();
+    match selector.sel.name {
+        "Slice" | "SliceStable" => Some(syn::parse_quote! {{
+            let mut __gors_less = #less;
+            let __gors_len = #slice_ident.len();
+            for __gors_i in 0..__gors_len {
+                for __gors_j in (__gors_i + 1)..__gors_len {
+                    if __gors_less(__gors_j as isize, __gors_i as isize) {
+                        #slice_ident.swap(__gors_i, __gors_j);
+                    }
+                }
+            }
+        }}),
+        "SliceIsSorted" => Some(syn::parse_quote! {{
+            let mut __gors_less = #less;
+            let mut __gors_sorted = true;
+            let __gors_len = #slice_ident.len();
+            let mut __gors_i = 1usize;
+            while __gors_i < __gors_len {
+                if __gors_less(__gors_i as isize, (__gors_i - 1) as isize) {
+                    __gors_sorted = false;
+                    break;
+                }
+                __gors_i += 1;
+            }
+            __gors_sorted
+        }}),
+        _ => None,
+    }
+}
+
+fn is_sort_slice_call(call_expr: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
+        return false;
+    };
+    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "sort")
+        && matches!(selector.sel.name, "Slice" | "SliceStable" | "SliceIsSorted")
+}
+
+fn compile_append_float_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return None;
+    };
+    if !matches!(*selector.x, ast::Expr::Ident(pkg) if pkg.name == "strconv") {
+        return None;
+    }
+    if selector.sel.name != "AppendFloat" {
+        return None;
+    }
+    let args = call_expr.args.unwrap_or_default();
+    if args.len() != 5 {
+        return None;
+    }
+    let mut args = args.into_iter();
+    let dst = compile_expr_with_expected(args.next()?, None);
+    let value = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Float64));
+    let fmt = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Uint8));
+    let prec = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Int));
+    let bit_size = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Int));
+    Some(syn::parse_quote! {
+        crate::builtin::append_float(#dst, #value, (#fmt) as u8, #prec, #bit_size)
+    })
+}
+
+fn is_append_float_call(call_expr: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
+        return false;
+    };
+    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "strconv")
+        && selector.sel.name == "AppendFloat"
+}
+
+fn ordered_builtin_arg_expected_type(raw_args: &[ast::Expr]) -> Option<typeinfer::GoType> {
+    let all_string = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        !raw_args.is_empty()
+            && raw_args.iter().all(|arg| {
+                matches!(
+                    env.resolve_alias(&typeinfer::GoType::infer_expr(arg, &env)),
+                    typeinfer::GoType::String
+                )
+            })
+    });
+    all_string.then_some(typeinfer::GoType::String)
 }
 
 fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -> syn::Expr {
@@ -7275,9 +8140,7 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                     return syn::parse_quote! { #type_ident(#(#elts),*) };
                 }
                 let field_values = raw_elts_to_field_values(Some(&type_name), raw_elts);
-                if field_values.is_empty() {
-                    syn::parse_quote! { #type_ident::default() }
-                } else if has_unnamed_field_values(&field_values) {
+                if field_values.is_empty() || has_unnamed_field_values(&field_values) {
                     syn::parse_quote! { #type_ident::default() }
                 } else {
                     let all_struct_fields_set = TYPE_ENV.with(|env| {
@@ -7307,10 +8170,7 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 let path: syn::ExprPath = sel.into();
                 let type_name = path.path.segments.last().map(|seg| seg.ident.to_string());
                 let field_values = raw_elts_to_field_values(type_name.as_deref(), raw_elts);
-                if field_values.is_empty() {
-                    let p = &path.path;
-                    syn::parse_quote! { #p::default() }
-                } else if has_unnamed_field_values(&field_values) {
+                if field_values.is_empty() || has_unnamed_field_values(&field_values) {
                     let p = &path.path;
                     syn::parse_quote! { #p::default() }
                 } else {
@@ -7572,6 +8432,10 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     }
 }
 
+fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
+    lvalue_expr_from_ref(&expr).unwrap_or_else(|| expr.into())
+}
+
 fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
     let Some(target) = lvalue_expr_from_ref(lhs) else {
         return;
@@ -7584,6 +8448,20 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
     }
 
     impl syn::visit_mut::VisitMut for TakeMatchingRead {
+        fn visit_expr_index_mut(&mut self, expr: &mut syn::ExprIndex) {
+            if expr.expr.to_token_stream().to_string() == self.target_key {
+                return;
+            }
+            syn::visit_mut::visit_expr_index_mut(self, expr);
+        }
+
+        fn visit_expr_reference_mut(&mut self, expr: &mut syn::ExprReference) {
+            if expr.expr.to_token_stream().to_string() == self.target_key {
+                return;
+            }
+            syn::visit_mut::visit_expr_reference_mut(self, expr);
+        }
+
         fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
             if !self.replaced && expr.to_token_stream().to_string() == self.target_key {
                 let inner = expr.clone();
@@ -7636,8 +8514,8 @@ fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
         | typeinfer::GoType::Float64
         | typeinfer::GoType::Complex64
         | typeinfer::GoType::Complex128
-        | typeinfer::GoType::Pointer(_)
-        | typeinfer::GoType::Func { .. } => true,
+        | typeinfer::GoType::Func { .. }
+        | typeinfer::GoType::Pointer(_) => true,
         typeinfer::GoType::Array(elem) => go_type_is_copy(elem),
         typeinfer::GoType::Named(name) => TYPE_ENV.with(|env| {
             let resolved = env.borrow().resolve_alias(go_type);
@@ -7703,6 +8581,7 @@ fn expr_should_clone_for_value_param(
         expected,
         typeinfer::GoType::Any
             | typeinfer::GoType::Interface(_)
+            | typeinfer::GoType::Pointer(_)
             | typeinfer::GoType::Slice(_)
             | typeinfer::GoType::Array(_)
             | typeinfer::GoType::Unknown
@@ -7710,6 +8589,7 @@ fn expr_should_clone_for_value_param(
         actual,
         typeinfer::GoType::Any
             | typeinfer::GoType::Interface(_)
+            | typeinfer::GoType::Pointer(_)
             | typeinfer::GoType::Slice(_)
             | typeinfer::GoType::Array(_)
             | typeinfer::GoType::Unknown
@@ -7760,7 +8640,10 @@ fn is_box_new_call(expr: &syn::Expr) -> bool {
     matches!(segments.as_slice(), [box_name, new_name] if box_name == "Box" && new_name == "new")
 }
 
-fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {
+fn compile_expr_with_expected(
+    mut expr: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> syn::Expr {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
         return match expected {
             Some(ty) if is_go_byte_slice_type(ty) => syn::parse_quote! { Default::default() },
@@ -7789,6 +8672,34 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
     if matches!(expected, Some(typeinfer::GoType::String)) && is_string_literal(&expr) {
         let expr: syn::Expr = expr.into();
         return syn::parse_quote! { #expr.to_string() };
+    }
+
+    if let Some(expected) = expected
+        && numeric_cast_type(expected).is_some()
+    {
+        match expr {
+            ast::Expr::BinaryExpr(binary) if is_numeric_value_binary_op(binary.op) => {
+                return compile_numeric_binary_expr_with_expected(binary, expected);
+            }
+            other => {
+                expr = other;
+            }
+        }
+    }
+
+    if matches!(expected, Some(typeinfer::GoType::Func { .. }))
+        && let ast::Expr::Ident(ident) = &expr
+    {
+        let is_func_var = TYPE_ENV.with(|env| {
+            matches!(
+                env.borrow().get_var(ident.name),
+                Some(typeinfer::GoType::Func { .. })
+            )
+        });
+        if is_func_var {
+            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            return syn::parse_quote! { &mut #ident };
+        }
     }
 
     if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
@@ -8341,6 +9252,9 @@ fn infer_static_type_from_init(expr: &ast::Expr) -> Option<syn::Type> {
                 type_from_expr_ref(type_expr)
             }
         }),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
+            infer_static_type_from_init(&unary.x).map(|inner| syn::parse_quote! { Box<#inner> })
+        }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => {
             Some(syn::parse_quote! { String })
         }
@@ -8578,6 +9492,32 @@ fn is_nil_expr(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::Ident(id) if id.name == "nil")
 }
 
+fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
+    match expr {
+        ast::Expr::SelectorExpr(selector) if matches!(&*selector.x, ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))) => {
+            syn::Expr::Path(selector.into())
+        }
+        other => lvalue_expr_from_ref(&other).unwrap_or_else(|| other.into()),
+    }
+}
+
+fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
+        match env.resolve_alias(&base_ty) {
+            typeinfer::GoType::Named(name) => Some(env.get_field_type(&name, selector.sel.name)),
+            typeinfer::GoType::Pointer(inner) => match *inner {
+                typeinfer::GoType::Named(name) => {
+                    Some(env.get_field_type(&name, selector.sel.name))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    })
+}
+
 fn should_coerce_numeric_binary_side(
     expr: &ast::Expr,
     expr_ty: &typeinfer::GoType,
@@ -8587,6 +9527,9 @@ fn should_coerce_numeric_binary_side(
     let other_ty = resolved_go_type(other_ty);
     if expr_ty == other_ty || numeric_cast_type(&other_ty).is_none() {
         return false;
+    }
+    if matches!(expr_ty, typeinfer::GoType::Unknown) {
+        return is_const_like_expr(expr);
     }
     if !expr_ty.is_numeric() && !matches!(expr_ty, typeinfer::GoType::Uintptr) {
         return false;
@@ -8664,6 +9607,19 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         };
         let other_ty = typeinfer::GoType::infer_expr(other, &TYPE_ENV.with(|e| e.borrow().clone()));
         let is_eq = op == token::Token::EQL;
+
+        if matches!(other_ty, typeinfer::GoType::Error) {
+            let other_expr = if left_nil {
+                syn::Expr::from(*binary_expr.y)
+            } else {
+                syn::Expr::from(*binary_expr.x)
+            };
+            return if is_eq {
+                syn::parse_quote! { (#other_expr).is_empty() }
+            } else {
+                syn::parse_quote! { !(#other_expr).is_empty() }
+            };
+        }
 
         if other_ty.is_interface() {
             return if is_eq {
@@ -8746,6 +9702,42 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     })
 }
 
+fn is_numeric_value_binary_op(op: token::Token) -> bool {
+    matches!(
+        op,
+        token::Token::ADD
+            | token::Token::SUB
+            | token::Token::MUL
+            | token::Token::QUO
+            | token::Token::REM
+            | token::Token::AND
+            | token::Token::OR
+            | token::Token::XOR
+            | token::Token::AND_NOT
+            | token::Token::SHL
+            | token::Token::SHR
+    )
+}
+
+fn compile_numeric_binary_expr_with_expected(
+    binary_expr: ast::BinaryExpr,
+    expected: &typeinfer::GoType,
+) -> syn::Expr {
+    let op = binary_expr.op;
+    let left = compile_expr_with_expected(*binary_expr.x, Some(expected));
+    let right = if matches!(op, token::Token::SHL | token::Token::SHR) {
+        syn::Expr::from(*binary_expr.y)
+    } else {
+        compile_expr_with_expected(*binary_expr.y, Some(expected))
+    };
+    if op == token::Token::AND_NOT {
+        let not_right: syn::Expr = syn::parse_quote! { !#right };
+        return syn::parse_quote! { #left & #not_right };
+    }
+    let op: syn::BinOp = op.into();
+    syn::parse_quote! { #left #op #right }
+}
+
 struct ReflectKindCompare {
     side: ReflectKindCompareSide,
     kind: String,
@@ -8824,7 +9816,7 @@ fn reflect_typeof_kind_arg(expr: ast::Expr) -> Option<ast::Expr> {
     }
 }
 
-fn reflect_kind_const_ref<'expr, 'ast>(expr: &'expr ast::Expr<'ast>) -> Option<&'ast str> {
+fn reflect_kind_const_ref<'ast>(expr: &ast::Expr<'ast>) -> Option<&'ast str> {
     let ast::Expr::SelectorExpr(selector) = expr else {
         return None;
     };
@@ -9004,9 +9996,11 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
         let mut args = syn::punctuated::Punctuated::new();
         if let Some(cargs) = call_expr.args {
             for (idx, arg) in cargs.into_iter().enumerate() {
+                let actual =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
                 if borrow_pointer_indices.contains(&idx) {
-                    borrow_pointer_arg_expr(&mut arg);
+                    borrow_pointer_arg_expr(&mut arg, Some(&actual));
                 }
                 args.push(arg)
             }
@@ -9044,6 +10038,14 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
+                if is_sort_slice_call(&call_expr) {
+                    return compile_sort_slice_call(call_expr)
+                        .unwrap_or_else(|| compile_error_expr("invalid sort slice call"));
+                }
+                if is_append_float_call(&call_expr) {
+                    return compile_append_float_call(call_expr)
+                        .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call"));
+                }
                 if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
                     return compile_variadic_any_call(call_expr, variadic_start);
                 }
@@ -9062,14 +10064,16 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 });
                 if is_method_call {
                     if let ast::Expr::SelectorExpr(sel) = *call_expr.fun {
-                        let receiver: syn::Expr = (*sel.x).into();
+                        let receiver = method_receiver_expr_from_ref(*sel.x);
                         let method: syn::Ident = sel.sel.into();
                         let mut args = syn::punctuated::Punctuated::new();
                         if let Some(cargs) = call_expr.args {
                             for (idx, arg) in cargs.into_iter().enumerate() {
+                                let actual = TYPE_ENV
+                                    .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
                                 if borrow_pointer_indices.contains(&idx) {
-                                    borrow_pointer_arg_expr(&mut arg);
+                                    borrow_pointer_arg_expr(&mut arg, Some(&actual));
                                 }
                                 args.push(arg);
                             }
@@ -9098,7 +10102,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 let ident_name = ident.name;
                 let is_top_level_var = TYPE_ENV.with(|env| {
                     let env = env.borrow();
-                    env.is_top_level_var(ident_name)
+                    !MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| *value.borrow())
+                        && env.is_top_level_var(ident_name)
                         && !env.is_const(ident_name)
                         && env
                             .get_top_level_var(ident_name)
@@ -9114,11 +10119,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             .get_var(ident_name)
                             .unwrap_or(typeinfer::GoType::Unknown)
                     });
-                    if go_type_is_copy(&go_type) {
-                        syn::parse_quote! { *#path }
-                    } else {
-                        syn::parse_quote! { (*#path).clone() }
-                    }
+                    top_level_var_read_expr(path, &go_type)
                 } else {
                     path
                 }
@@ -9127,24 +10128,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_type_method_expression_receiver(&selector_expr.x) {
                     return syn::parse_quote! { |_| {} };
                 }
-                let should_clone_index_field = matches!(&*selector_expr.x, ast::Expr::IndexExpr(_))
-                    && TYPE_ENV.with(|env| {
-                        let env = env.borrow();
-                        let base_ty = typeinfer::GoType::infer_expr(&selector_expr.x, &env);
-                        let field_ty = match env.resolve_alias(&base_ty) {
-                            typeinfer::GoType::Named(name) => {
-                                env.get_field_type(&name, selector_expr.sel.name)
-                            }
-                            typeinfer::GoType::Pointer(inner) => match *inner {
-                                typeinfer::GoType::Named(name) => {
-                                    env.get_field_type(&name, selector_expr.sel.name)
-                                }
-                                _ => typeinfer::GoType::Unknown,
-                            },
-                            _ => typeinfer::GoType::Unknown,
-                        };
-                        !go_type_is_copy(&field_ty)
-                    });
+                let field_go_type = selector_field_go_type(&selector_expr);
                 let is_package = match &*selector_expr.x {
                     ast::Expr::Ident(id) => {
                         IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
@@ -9155,11 +10139,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     let top_level_var_type = selector_top_level_var_type(&selector_expr);
                     let path = Self::Path(selector_expr.into());
                     if let Some(go_type) = top_level_var_type {
-                        if go_type_is_copy(&go_type) {
-                            syn::parse_quote! { *#path }
-                        } else {
-                            syn::parse_quote! { (*#path).clone() }
-                        }
+                        top_level_var_read_expr(path, &go_type)
                     } else {
                         path
                     }
@@ -9172,7 +10152,15 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         dot_token: <Token![.]>::default(),
                         member: syn::Member::Named(field),
                     });
-                    if should_clone_index_field {
+                    if matches!(
+                        field_go_type.as_ref().map(resolved_go_type),
+                        Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+                    ) {
+                        syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+                    } else if field_go_type
+                        .as_ref()
+                        .is_some_and(|field_ty| !go_type_is_copy(field_ty))
+                    {
                         syn::parse_quote! { (#field_expr).clone() }
                     } else {
                         field_expr
@@ -9469,6 +10457,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
         let is_main_package = file.name.name == "main";
+        let _main_package_var_mode = MainPackageVarModeGuard::set(is_main_package);
 
         // Track import names for selector expr disambiguation
         IMPORT_NAMES.with(|names| {
@@ -9721,7 +10710,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                     m.sig.inputs.first_mut()
                                 {
                                     receiver.mutability = Some(<Token![mut]>::default());
-                                    receiver.ty = Box::new(syn::parse_quote! { &mut Self });
+                                    *receiver.ty = syn::parse_quote! { &mut Self };
                                 }
                                 impl_items.push(syn::ImplItem::Fn(m));
                             }
@@ -9943,7 +10932,7 @@ fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet
     })
 }
 
-fn borrow_pointer_arg_expr(expr: &mut syn::Expr) {
+fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoType>) {
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
@@ -9959,7 +10948,14 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr) {
         return;
     }
     let inner = expr.clone();
-    *expr = syn::parse_quote! { &mut #inner };
+    if matches!(
+        actual.map(resolved_go_type),
+        Some(typeinfer::GoType::Pointer(_))
+    ) {
+        *expr = syn::parse_quote! { &mut *#inner };
+    } else {
+        *expr = syn::parse_quote! { &mut #inner };
+    }
 }
 
 fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
@@ -10109,7 +11105,7 @@ fn type_from_param_expr(
     match expr {
         ast::Expr::StarExpr(star) => {
             let inner = type_from_expr_ref(&star.x);
-            if borrow_pointer_params.contains(name) {
+            if borrow_pointer_params.contains(&rust_safe_ident_name(name)) {
                 syn::parse_quote! { &mut #inner }
             } else {
                 syn::parse_quote! { Box<#inner> }
@@ -10226,6 +11222,42 @@ fn compile_field_to_fn_args_with_type_params(
     Ok(args)
 }
 
+fn fn_arg_ident(arg: &syn::FnArg) -> Option<syn::Ident> {
+    let syn::FnArg::Typed(pat_type) = arg else {
+        return None;
+    };
+    let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
+        return None;
+    };
+    Some(pat_ident.ident.clone())
+}
+
+fn bodyless_function_block(
+    output: &syn::ReturnType,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, Token![,]>,
+) -> syn::Block {
+    if matches!(output, syn::ReturnType::Default) {
+        return syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: vec![],
+        };
+    }
+
+    if let syn::ReturnType::Type(_, ty) = output
+        && vec_type_inner(ty).is_some()
+        && let Some(len_ident) = inputs.iter().find_map(fn_arg_ident)
+    {
+        return syn::parse_quote! {{
+            let __gors_len = usize::try_from(#len_ident).unwrap_or_default();
+            std::iter::repeat_with(Default::default).take(__gors_len).collect()
+        }};
+    }
+
+    syn::parse_quote! {{
+        Default::default()
+    }}
+}
+
 impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
@@ -10316,17 +11348,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
         } else {
-            let stmts = if matches!(output, syn::ReturnType::Default) {
-                vec![]
-            } else {
-                vec![syn::parse_quote! {
-                    std::panic::panic_any("unimplemented".to_string());
-                }]
-            };
-            Ok(syn::Block {
-                brace_token: syn::token::Brace::default(),
-                stmts,
-            })
+            Ok(bodyless_function_block(&output, &inputs))
         };
         BYTE_SEQ_TYPE_PARAMS.with(|params| {
             *params.borrow_mut() = previous_byte_seq_type_params;
@@ -10502,7 +11524,7 @@ impl From<ast::Ident<'_>> for syn::Ident {
         // Record mapping for the identifier
         record_mapping(&ident.name_pos, Some(ident.name));
 
-        Self::new(&import_rust_name(ident.name), Span::mixed_site())
+        Self::new(&rust_safe_ident_name(ident.name), Span::mixed_site())
     }
 }
 
@@ -11406,7 +12428,7 @@ fn comma_ok_lhs_expr(expr: ast::Expr) -> Option<syn::Expr> {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "_") {
         None
     } else {
-        Some(expr.into())
+        Some(compile_assignment_lhs(expr))
     }
 }
 
@@ -11689,7 +12711,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         mutability: Some(<Token![mut]>::default()),
                     }));
                     if !matches!(&lhs, ast::Expr::Ident(ident) if ident.name == "_") {
-                        let left: syn::Expr = lhs.into();
+                        let left = compile_assignment_lhs(lhs);
                         assignments.push(syn::parse_quote! { #left = #tmp; });
                     }
                 }
@@ -11844,7 +12866,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
-                let left: syn::Expr = lhs_ast.into();
+                let left = compile_assignment_lhs(lhs_ast);
                 return Ok(vec![syn::parse_quote! { #left = #right; }]);
             }
 
@@ -11868,7 +12890,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     continue;
                 }
                 let right = quote::format_ident!("__gors_assign_{}", idx);
-                let left: syn::Expr = lhs.into();
+                let left = compile_assignment_lhs(lhs);
                 out.push(syn::parse_quote! { #left = #right; });
             }
 
@@ -12269,7 +13291,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
@@ -12290,7 +13312,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 struct point {
                     x: isize,
                     pub Y: isize,
@@ -12316,6 +13338,20 @@ func main() {
                 }
                 impl std::ops::DerefMut for MyInt {
                     fn deref_mut(&mut self) -> &mut isize { &mut self.0 }
+                }
+                impl From<MyInt> for isize {
+                    fn from(value: MyInt) -> isize { value.0 }
+                }
+                impl std::ops::BitXorAssign for MyInt {
+                    fn bitxor_assign(&mut self, rhs: Self) { self.0 ^= rhs.0; }
+                }
+                impl std::ops::Shl<i32> for MyInt {
+                    type Output = Self;
+                    fn shl(self, rhs: i32) -> Self { Self(self.0 << rhs) }
+                }
+                impl std::ops::Shr<i32> for MyInt {
+                    type Output = Self;
+                    fn shr(self, rhs: i32) -> Self { Self(self.0 >> rhs) }
                 }
             },
         );
@@ -12406,7 +13442,7 @@ func main() {
                 }
             "#,
             rust! {
-                fn deref(mut p: Box<isize>) -> isize {
+                fn deref(mut p: &mut isize) -> isize {
                     *p
                 }
             },
@@ -12425,10 +13461,10 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Node {
                     pub Value: isize,
-                    pub Next: Box<Node>,
+                    pub Next: *mut Node,
                 }
             },
         );
@@ -12489,7 +13525,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Counter {
                     pub Value: isize,
                 }
@@ -12518,7 +13554,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
@@ -12570,7 +13606,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Pair {
                     pub A: isize,
                     pub B: isize,
@@ -12603,13 +13639,13 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
                 }
                 pub fn main() {
-                    let mut p = Point { X: 1, Y: 2, .. Default::default() };
+                    let mut p = Point { X: 1, Y: 2, };
                 }
             },
         );
@@ -12696,6 +13732,26 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_slice_reassignment_without_moving_bounds() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := "abba"
+                    s = s[:len(s)-1]
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = "abba".to_string();
+                    s = (s[..((crate::builtin::len(&s) as isize) - 1) as usize]).to_string();
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_compile_address_of_as_box() {
         test(
             r#"
@@ -12767,7 +13823,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2]);
-                    s = crate::builtin::append(s, 3);
+                    s = crate::builtin::append(std::mem::take(&mut s), 3);
                 }
             },
         );
@@ -12787,7 +13843,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2]);
-                    s = crate::builtin::append(crate::builtin::append(s, 3), 4);
+                    s = crate::builtin::append(crate::builtin::append(std::mem::take(&mut s), 3), 4);
                 }
             },
         );
@@ -12806,6 +13862,26 @@ func main() {
             rust! {
                 pub fn main() {
                     std::panic::panic_any("oh no".to_string());
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_string_max_min() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    println(max("apple", "banana"))
+                    println(min("apple", "banana"))
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    crate::builtin::println_value(crate::builtin::max("apple".to_string(), "banana".to_string()));
+                    crate::builtin::println_value(crate::builtin::min("apple".to_string(), "banana".to_string()));
                 }
             },
         );
@@ -12836,6 +13912,38 @@ func main() {
         assert!(names.contains("NeededTrait"));
         assert!(names.contains("make_impl"));
         assert_eq!(keep.len(), 4);
+    }
+
+    #[test]
+    fn it_should_collect_external_methods_called_on_associated_constructors() {
+        let mut item: syn::Item = rust! {
+            pub fn main() {
+                let mut values = Vec::from([3.5e0, 1.25e0]);
+                sort::Float64Slice::from(values).Less(1, 0);
+            }
+        };
+        let module_names = std::collections::HashSet::from(["sort".to_string()]);
+        let item_names = std::collections::HashSet::new();
+        let top_level_names = std::collections::HashSet::new();
+        let top_level_types = std::collections::HashMap::new();
+        let top_level_field_types = std::collections::HashMap::new();
+        let top_level_return_types = std::collections::HashMap::new();
+        let top_level_tuple_return_types = std::collections::HashMap::new();
+
+        let context = super::RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let (_, refs) = super::collect_refs_from_item(&mut item, &context);
+
+        let sort_refs = refs.get("sort").expect("sort refs");
+        assert!(sort_refs.contains("Float64Slice"));
+        assert!(sort_refs.contains("Float64Slice::Less"));
     }
 
     #[test]
@@ -12940,7 +14048,7 @@ func main() {
                 }
             "#,
             rust! {
-                #[derive(Clone, Default)]
+                #[derive(Clone, Copy, Default, PartialEq)]
                 pub struct Flags {
                     pub X: bool,
                 }
@@ -12949,56 +14057,6 @@ func main() {
                 }
             },
         );
-    }
-
-    #[test]
-    fn compile_program_multi_retains_referenced_stdlib_imports() {
-        let go_source = r#"package main
-
-import "fmt"
-import "errors"
-import "strconv"
-import "sort"
-
-func main() {
-	fmt.Println("hello")
-	e := errors.New("fail")
-	s := strconv.Itoa(42)
-	xs := []int{3, 1}
-	sort.Ints(xs)
-}
-"#;
-        let ast = parse_file("main.go", go_source).unwrap();
-        let program = crate::parser::ParsedProgram {
-            main_package: crate::parser::ParsedPackage {
-                name: "main".to_string(),
-                import_path: String::new(),
-                ast,
-                files: vec![("main.go".to_string(), go_source.to_string())],
-            },
-            imports: vec![],
-            stdlib_imports: vec![
-                "errors".to_string(),
-                "fmt".to_string(),
-                "sort".to_string(),
-                "strconv".to_string(),
-            ],
-        };
-        let compiled = super::compile_program_multi(program).unwrap();
-        assert!(compiled.modules.contains_key("fmt"));
-        assert!(compiled.modules.contains_key("strconv"));
-        assert!(compiled.modules.contains_key("sort"));
-        assert!(!compiled.modules.contains_key("errors"));
-        let output = printer::generate_multi(compiled).unwrap();
-        assert!(output.files.contains_key("fmt.rs"));
-        assert!(output.files.contains_key("strconv.rs"));
-        assert!(output.files.contains_key("sort.rs"));
-        assert!(!output.files.contains_key("errors.rs"));
-        let lib_rs = output.files.get("lib.rs").unwrap();
-        assert!(lib_rs.contains("pub mod fmt"));
-        assert!(lib_rs.contains("pub mod strconv"));
-        assert!(lib_rs.contains("pub mod sort"));
-        assert!(!lib_rs.contains("pub mod errors"));
     }
 
     // --- Iota + Const tests (Agent 2) ---
@@ -13066,6 +14124,23 @@ func main() {
             rust! {
                 pub const KB: isize = 1024;
                 pub const MB: isize = 1048576;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_widen_large_untyped_integer_constants() {
+        test(
+            r#"
+                package main
+
+                const Huge = 0xFFF0000000000000
+
+                func main() {}
+            "#,
+            rust! {
+                pub const Huge: u64 = 18442240474082181120;
                 pub fn main() {}
             },
         )
@@ -13215,8 +14290,8 @@ func main() {
             "#,
             rust! {
                 fn swap(mut a: isize, mut b: isize) -> (isize, isize) {
-                    let mut x = 0;
-                    let mut y = 0;
+                    let mut x: isize = 0;
+                    let mut y: isize = 0;
                     x = b;
                     y = a;
                     (x, y)
@@ -13259,7 +14334,7 @@ func main() {
             "#,
             rust! {
                 pub fn Identity<T>(mut x: T) -> T {
-                    x
+                    (x).clone()
                 }
                 pub fn main() {}
             },
@@ -13282,11 +14357,11 @@ func main() {
                 func main() {}
             "#,
             rust! {
-                pub fn Max<T: PartialOrd + Copy + std::fmt::Display>(mut a: T, mut b: T) -> T {
+                pub fn Max<T: PartialEq + PartialOrd + Clone>(mut a: T, mut b: T) -> T {
                     if a > b {
-                        return a
+                        return (a).clone()
                     }
-                    b
+                    (b).clone()
                 }
                 pub fn main() {}
             },
