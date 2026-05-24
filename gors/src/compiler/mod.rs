@@ -6902,6 +6902,13 @@ fn compile_variadic_any_arg(
             syn::parse_quote! { (#expr as i32) }
         }
         ast::Expr::Ident(id) if id.name == "true" || id.name == "false" => arg.into(),
+        _ if matches!(
+            variadic_elem.map(resolved_go_type),
+            Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+        ) =>
+        {
+            compile_expr_with_expected(arg, None)
+        }
         _ => compile_expr_with_expected(arg, variadic_elem),
     }
 }
@@ -7775,6 +7782,15 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
     if matches!(expected, Some(typeinfer::GoType::String)) && is_string_literal(&expr) {
         let expr: syn::Expr = expr.into();
         return syn::parse_quote! { #expr.to_string() };
+    }
+
+    if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
+            return expr.into();
+        }
+        let expr: syn::Expr = expr.into();
+        return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
     }
 
     if let Some(typeinfer::GoType::Named(name)) = expected {
