@@ -4148,6 +4148,7 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
         }
     }
 
+    let func_ty = boxed_func_type_from_ast(func_type);
     let body = match func_type
         .results
         .as_ref()
@@ -4174,7 +4175,7 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
         }
     };
 
-    syn::parse_quote! { |#(#params),*| { #body } }
+    syn::parse_quote! { Box::new(move |#(#params),*| { #body }) as #func_ty }
 }
 
 fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
@@ -4237,6 +4238,7 @@ fn selector_path_from_ref(selector_expr: &ast::SelectorExpr) -> syn::Path {
 fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
     match expr {
         ast::Expr::ParenExpr(paren) => type_from_expr_ref(&paren.x),
+        ast::Expr::FuncType(func_type) => boxed_func_type_from_ast(func_type),
         ast::Expr::Ident(ident) if ident.name == "any" => {
             syn::parse_quote! { Box<dyn std::any::Any> }
         }
@@ -4330,6 +4332,59 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         }
         _ => syn::parse_quote! { Box<dyn std::any::Any> },
     }
+}
+
+fn func_result_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+    let Some(results) = &func_type.results else {
+        return syn::parse_quote! { () };
+    };
+    let result_types: Vec<syn::Type> = results
+        .list
+        .iter()
+        .flat_map(|field| {
+            let ty = field
+                .type_
+                .as_ref()
+                .map(type_from_expr_ref)
+                .unwrap_or_else(|| syn::parse_quote! { () });
+            let count = field.names.as_ref().map_or(1, Vec::len);
+            std::iter::repeat_n(ty, count)
+        })
+        .collect();
+    match result_types.as_slice() {
+        [] => syn::parse_quote! { () },
+        [ty] => ty.clone(),
+        _ => syn::parse_quote! { (#(#result_types),*) },
+    }
+}
+
+fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
+    func_type
+        .params
+        .list
+        .iter()
+        .flat_map(|field| {
+            let ty = field
+                .type_
+                .as_ref()
+                .map(type_from_expr_ref)
+                .unwrap_or_else(|| syn::parse_quote! { () });
+            let count = field.names.as_ref().map_or(1, Vec::len);
+            std::iter::repeat_n(ty, count)
+        })
+        .collect()
+}
+
+fn boxed_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+    let params = func_param_types_from_ast(func_type);
+    let result = func_result_type_from_ast(func_type);
+    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result> }
+}
+
+fn impl_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+    let params = func_param_types_from_ast(func_type);
+    let result = func_result_type_from_ast(func_type);
+    syn::parse_quote! { impl FnMut(#(#params),*) -> #result }
 }
 
 fn numeric_newtype_impls(ident: &syn::Ident, inner: &syn::Type) -> Vec<syn::Item> {
@@ -6333,6 +6388,59 @@ fn coerce_assignment_expr(
     rhs_expr
 }
 
+fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            Some(syn::parse_quote! { #ident })
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let base = lvalue_expr_from_ref(&selector.x)?;
+            let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+            Some(syn::parse_quote! { #base.#sel })
+        }
+        ast::Expr::IndexExpr(index) => {
+            let base = lvalue_expr_from_ref(&index.x)?;
+            let index = syn_expr_from_type_expr_like(&index.index)?;
+            Some(syn::parse_quote! { #base[(#index) as usize] })
+        }
+        ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
+        _ => None,
+    }
+}
+
+fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
+    let Some(target) = lvalue_expr_from_ref(lhs) else {
+        return;
+    };
+    let target_key = target.to_token_stream().to_string();
+
+    struct TakeMatchingRead {
+        target_key: String,
+        replaced: bool,
+    }
+
+    impl syn::visit_mut::VisitMut for TakeMatchingRead {
+        fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+            if !self.replaced && expr.to_token_stream().to_string() == self.target_key {
+                let inner = expr.clone();
+                *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
+                self.replaced = true;
+                return;
+            }
+            syn::visit_mut::visit_expr_mut(self, expr);
+        }
+    }
+
+    syn::visit_mut::VisitMut::visit_expr_mut(
+        &mut TakeMatchingRead {
+            target_key,
+            replaced: false,
+        },
+        rhs,
+    );
+}
+
 fn is_named_numeric_alias(type_name: &str) -> bool {
     if !matches!(
         typeinfer::GoType::from_name(type_name),
@@ -6515,7 +6623,10 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         match fun {
-            ast::Expr::Ident(id) => env.get_func_params(id.name),
+            ast::Expr::Ident(id) => match env.get_var(id.name) {
+                Some(typeinfer::GoType::Func { params, .. }) => params,
+                _ => env.get_func_params(id.name),
+            },
             ast::Expr::SelectorExpr(sel) => {
                 if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
                     let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
@@ -8744,6 +8855,7 @@ fn type_from_param_expr(
                 syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
             }
         }
+        ast::Expr::FuncType(func_type) => impl_func_type_from_ast(func_type),
         _ => type_from_expr_ref(expr),
     }
 }
@@ -10419,7 +10531,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 }
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
                 let right_raw = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
-                let right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
+                let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
+                if !go_type_is_copy(&lhs_ty) {
+                    take_rhs_lvalue_reads(&lhs_ast, &mut right);
+                }
                 let left: syn::Expr = lhs_ast.into();
                 return Ok(vec![syn::parse_quote! { #left = #right; }]);
             }
