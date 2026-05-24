@@ -2037,7 +2037,8 @@ fn inject_post_prune_stdlib_helpers(
                         },
                         syn::parse_quote! {
                             #[allow(non_upper_case_globals)]
-                            pub static Stdout: File = File;
+                            pub static Stdout: std::sync::LazyLock<File> =
+                                std::sync::LazyLock::new(|| File);
                         },
                         syn::parse_quote! {
                             impl crate::io::Writer for File {
@@ -4842,6 +4843,18 @@ fn selector_type_env_name(sel: &ast::SelectorExpr) -> Option<String> {
     } else {
         None
     }
+}
+
+fn selector_top_level_var_type(sel: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
+    let key = selector_type_env_name(sel)?;
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if env.is_top_level_var(&key) && !env.is_const(&key) {
+            env.get_top_level_var(&key)
+        } else {
+            None
+        }
+    })
 }
 
 fn register_type_spec_in_env(ts: &ast::TypeSpec) {
@@ -7681,7 +7694,17 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     _ => false,
                 };
                 if is_package {
-                    Self::Path(selector_expr.into())
+                    let top_level_var_type = selector_top_level_var_type(&selector_expr);
+                    let path = Self::Path(selector_expr.into());
+                    if let Some(go_type) = top_level_var_type {
+                        if go_type_is_copy(&go_type) {
+                            syn::parse_quote! { *#path }
+                        } else {
+                            syn::parse_quote! { (*#path).clone() }
+                        }
+                    } else {
+                        path
+                    }
                 } else {
                     let base: syn::Expr = (*selector_expr.x).into();
                     let field: syn::Ident = selector_expr.sel.into();
