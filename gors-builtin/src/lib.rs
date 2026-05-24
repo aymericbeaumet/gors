@@ -1099,6 +1099,19 @@ pub fn println_value<T: std::fmt::Display>(value: T) {
     ::std::println!("{value}");
 }
 
+pub fn format_slice<T: std::fmt::Display>(values: &[T]) -> std::string::String {
+    let mut out = std::string::String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{value}");
+    }
+    out.push(']');
+    out
+}
+
 #[macro_export]
 macro_rules! print {
     () => {};

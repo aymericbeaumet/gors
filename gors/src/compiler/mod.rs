@@ -2005,6 +2005,7 @@ fn compile_program_impl(
     inject_post_prune_stdlib_helpers(&mut modules, &stdlib_imports);
     prune_generated_dead_code(&mut modules, has_main_fn);
     borrow_mutated_vec_params(&mut modules);
+    restore_vec_newtype_method_receivers(&mut modules);
     drop(dce_timer);
 
     prefix_final_module_paths(&mut modules);
@@ -2338,6 +2339,112 @@ fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
         return None;
     };
     path.path.get_ident().map(ToString::to_string)
+}
+
+fn restore_vec_newtype_method_receivers(modules: &mut BTreeMap<String, CompiledModule>) {
+    let vec_newtypes = collect_vec_newtypes(modules);
+    if vec_newtypes.is_empty() {
+        return;
+    }
+    for module in modules.values_mut() {
+        syn::visit_mut::VisitMut::visit_file_mut(
+            &mut RestoreVecNewtypeMethodReceivers {
+                module_name: module.mod_name.clone(),
+                vec_newtypes: &vec_newtypes,
+                counter: 0,
+            },
+            &mut module.file,
+        );
+    }
+}
+
+fn collect_vec_newtypes(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Struct(item_struct) = item else {
+                continue;
+            };
+            let syn::Fields::Unnamed(fields) = &item_struct.fields else {
+                continue;
+            };
+            let Some(field) = fields.unnamed.first() else {
+                continue;
+            };
+            if vec_type_inner(&field.ty).is_some() {
+                out.insert(format!("{}::{}", module.mod_name, item_struct.ident));
+            }
+        }
+    }
+    out
+}
+
+struct RestoreVecNewtypeMethodReceivers<'a> {
+    module_name: String,
+    vec_newtypes: &'a std::collections::HashSet<String>,
+    counter: usize,
+}
+
+impl syn::visit_mut::VisitMut for RestoreVecNewtypeMethodReceivers<'_> {
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        syn::visit_mut::visit_block_mut(self, block);
+        for stmt in &mut block.stmts {
+            if let Some(rewritten) = self.rewrite_stmt(stmt) {
+                *stmt = rewritten;
+            }
+        }
+    }
+}
+
+impl RestoreVecNewtypeMethodReceivers<'_> {
+    fn rewrite_stmt(&mut self, stmt: &syn::Stmt) -> Option<syn::Stmt> {
+        let syn::Stmt::Expr(syn::Expr::MethodCall(method_call), semi) = stmt else {
+            return None;
+        };
+        let syn::Expr::Call(receiver_call) = &*method_call.receiver else {
+            return None;
+        };
+        let type_key = from_call_vec_newtype_key(&receiver_call.func, &self.module_name)?;
+        if !self.vec_newtypes.contains(&type_key) {
+            return None;
+        }
+        let source_name = receiver_call.args.first().and_then(expr_path_ident)?;
+        if receiver_call.args.len() != 1 {
+            return None;
+        }
+
+        let temp = quote::format_ident!("__gors_vec_newtype_recv_{}", self.counter);
+        self.counter += 1;
+        let source = syn::Ident::new(&source_name, Span::mixed_site());
+        let from_func = receiver_call.func.clone();
+        let method = method_call.method.clone();
+        let args = method_call.args.iter().cloned().collect::<Vec<_>>();
+        let expr: syn::Expr = syn::parse_quote! {{
+            let mut #temp = #from_func(std::mem::take(&mut #source));
+            #temp.#method(#(#args),*);
+            #source = Vec::from(#temp);
+        }};
+        Some(syn::Stmt::Expr(expr, *semi))
+    }
+}
+
+fn from_call_vec_newtype_key(func: &syn::Expr, current_module: &str) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    let segments: Vec<_> = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [ty, from] if from == "from" => Some(format!("{current_module}::{ty}")),
+        [.., module, ty, from] if from == "from" => Some(format!("{module}::{ty}")),
+        _ => None,
+    }
 }
 
 fn prefix_final_module_paths(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -4695,6 +4802,52 @@ fn slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
     }
 }
 
+fn interface_mut_ref_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
+    let mut impl_methods = Vec::new();
+    for trait_item in trait_items {
+        let syn::TraitItem::Fn(trait_fn) = trait_item else {
+            continue;
+        };
+        let method = trait_fn.sig.ident.clone();
+        let arg_names = trait_fn
+            .sig
+            .inputs
+            .iter()
+            .skip(1)
+            .filter_map(|arg| {
+                let syn::FnArg::Typed(pat_type) = arg else {
+                    return None;
+                };
+                let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
+                    return None;
+                };
+                Some(pat_ident.ident.clone())
+            })
+            .collect::<Vec<_>>();
+        let sig = trait_fn.sig.clone();
+        let block = if matches!(sig.output, syn::ReturnType::Default) {
+            syn::parse_quote!({ (**self).#method(#(#arg_names),*); })
+        } else {
+            syn::parse_quote!({ (**self).#method(#(#arg_names),*) })
+        };
+        impl_methods.push(syn::ImplItemFn {
+            attrs: vec![],
+            vis: syn::Visibility::Inherited,
+            defaultness: None,
+            sig,
+            block,
+        });
+    }
+    if impl_methods.is_empty() {
+        return None;
+    }
+    Some(syn::parse_quote! {
+        impl<T: #ident + ?Sized> #ident for &mut T {
+            #(#impl_methods)*
+        }
+    })
+}
+
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts
         .name
@@ -4960,6 +5113,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let has_methods = !trait_items.is_empty();
             let has_supertraits = !supertraits.is_empty();
+            let mut_ref_impl = has_methods.then(|| interface_mut_ref_impl(&ident, &trait_items));
             let trait_item = syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
                 vis,
@@ -4975,6 +5129,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 items: trait_items,
             });
             let mut items = vec![trait_item];
+            if let Some(Some(mut_ref_impl)) = mut_ref_impl {
+                items.push(mut_ref_impl);
+            }
             if has_supertraits && !has_methods {
                 items.push(syn::parse_quote! {
                     impl<T> #ident for T where T: #supertraits {}
@@ -6105,6 +6262,13 @@ fn compile_variadic_any_arg(
             return syn::parse_quote! { (#expr).String() };
         }
     }
+    if matches!(
+        resolved_go_type(&inferred_type),
+        typeinfer::GoType::Slice(elem) if *elem != typeinfer::GoType::Uint8
+    ) {
+        let expr = compile_expr_with_expected(arg, None);
+        return syn::parse_quote! { crate::builtin::format_slice(&#expr) };
+    }
 
     match &arg {
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => {
@@ -6943,6 +7107,16 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
 
     if let Some(expected) = expected {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        if matches!(actual, typeinfer::GoType::Named(_))
+            && matches!(
+                resolved_go_type(expected),
+                typeinfer::GoType::Slice(elem) if *elem != typeinfer::GoType::Uint8
+            )
+            && resolved_go_type(&actual) == resolved_go_type(expected)
+        {
+            let compiled: syn::Expr = expr.into();
+            return syn::parse_quote! { (#compiled).to_vec() };
+        }
         if expr_should_clone_for_value_param(&expr, expected, &actual) {
             let compiled: syn::Expr = expr.into();
             return syn::parse_quote! { (#compiled).clone() };
