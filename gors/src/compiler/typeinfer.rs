@@ -270,7 +270,23 @@ impl GoType {
                     ast::Expr::SelectorExpr(sel) => {
                         if let ast::Expr::Ident(pkg) = &*sel.x {
                             let key = format!("{}.{}", pkg.name, sel.sel.name);
-                            env.get_func_return(&key)
+                            let package_return = env.get_func_return(&key);
+                            if !matches!(package_return, GoType::Unknown) {
+                                return package_return;
+                            }
+                            match env.get_var(pkg.name) {
+                                Some(GoType::Named(name)) => {
+                                    env.get_func_return(&format!("{name}.{}", sel.sel.name))
+                                }
+                                Some(GoType::Pointer(inner)) => {
+                                    if let GoType::Named(name) = *inner {
+                                        env.get_func_return(&format!("{name}.{}", sel.sel.name))
+                                    } else {
+                                        GoType::Unknown
+                                    }
+                                }
+                                _ => GoType::Unknown,
+                            }
                         } else {
                             GoType::Unknown
                         }
