@@ -175,7 +175,7 @@ impl GoType {
             "int8" => GoType::Int8,
             "int16" => GoType::Int16,
             "int32" => GoType::Int32,
-            "rune" => GoType::Uint32,
+            "rune" => GoType::Int32,
             "int64" => GoType::Int64,
             "uint" => GoType::Uint,
             "uint8" | "byte" => GoType::Uint8,
@@ -201,7 +201,7 @@ impl GoType {
                 token::Token::INT => GoType::Int,
                 token::Token::FLOAT => GoType::Float64,
                 token::Token::STRING => GoType::String,
-                token::Token::CHAR => GoType::Uint32,
+                token::Token::CHAR => GoType::Int32,
                 _ => GoType::Unknown,
             },
             ast::Expr::Ident(id) => match id.name {

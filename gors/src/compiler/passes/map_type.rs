@@ -21,7 +21,7 @@ impl VisitMut for MapType {
         let name = match segment.ident.to_string().as_str() {
             "bool" => "bool",
             "byte" => "u8",
-            "rune" => "u32",
+            "rune" => "i32",
             "string" => "String",
             "float32" => "f32",
             "float64" => "f64",

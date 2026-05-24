@@ -753,7 +753,7 @@ fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstVal
         "int8" => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
         "int16" => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
         "int32" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
-        "rune" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(32), 32)),
+        "rune" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
         "int64" => Some(ConstValue::Int(value.as_i128()? as i64 as i128)),
         "uint" | "uintptr" => Some(ConstValue::Uint(
             value.as_u128()? & mask_for_bits(usize::BITS),
@@ -953,7 +953,7 @@ fn const_eval_expr(
                 let inner = &raw[1..raw.len() - 1];
                 let interpreted = interpret_go_string_escapes(inner);
                 let value = interpreted.chars().next()? as u128;
-                Some(ConstValue::Uint(value, 32))
+                Some(ConstValue::Int(value as i32 as i128))
             }
             _ => None,
         },
@@ -1074,7 +1074,18 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
                 syn::parse_quote! { #type_ident }
             } else if let Some(value) = &evaluated {
-                value.rust_type()
+                TYPE_ENV.with(|env| {
+                    env.borrow()
+                        .get_var(name.name)
+                        .and_then(|ty| {
+                            if matches!(ty, typeinfer::GoType::String) {
+                                Some(syn::parse_quote! { &str })
+                            } else {
+                                rust_type_from_go_type(&ty)
+                            }
+                        })
+                        .unwrap_or_else(|| value.rust_type())
+                })
             } else if let Some(expr) = value_expr {
                 TYPE_ENV.with(|env| {
                     let go_type = typeinfer::GoType::infer_expr(expr, &env.borrow());
@@ -4239,7 +4250,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         ast::Expr::Ident(ident) if ident.name == "byte" || ident.name == "uint8" => {
             syn::parse_quote! { u8 }
         }
-        ast::Expr::Ident(ident) if ident.name == "rune" => syn::parse_quote! { u32 },
+        ast::Expr::Ident(ident) if ident.name == "rune" => syn::parse_quote! { i32 },
         ast::Expr::Ident(ident) if ident.name == "string" => syn::parse_quote! { String },
         ast::Expr::Ident(ident) if ident.name == "float32" => syn::parse_quote! { f32 },
         ast::Expr::Ident(ident) if ident.name == "float64" => syn::parse_quote! { f64 },
@@ -5395,7 +5406,7 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
         "complex128" => syn::parse_quote! { crate::builtin::to_complex128(#arg) },
         "any" => syn::parse_quote! { Box::new(#arg) as Box<dyn std::any::Any> },
         "[]byte" => syn::parse_quote! { (#arg).as_bytes().to_vec() },
-        "[]rune" => syn::parse_quote! { (#arg).chars().collect::<Vec<char>>() },
+        "[]rune" => syn::parse_quote! { (#arg).chars().map(|ch| ch as i32).collect::<Vec<i32>>() },
         _ => compile_error_expr(format!("unsupported type conversion: {kind}")),
     }
 }
@@ -5715,7 +5726,7 @@ fn compile_variadic_any_arg(
         }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::CHAR => {
             let expr: syn::Expr = arg.into();
-            syn::parse_quote! { (#expr as u32) }
+            syn::parse_quote! { (#expr as i32) }
         }
         ast::Expr::Ident(id) if id.name == "true" || id.name == "false" => arg.into(),
         _ => compile_expr_with_expected(arg, variadic_elem),
@@ -6767,13 +6778,79 @@ fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, body: syn::Block) -> Vec<s
     )]
 }
 
+fn set_range_binding(expr: Option<&ast::Expr>, ty: typeinfer::GoType) {
+    let Some(ast::Expr::Ident(ident)) = expr else {
+        return;
+    };
+    if ident.name == "_" {
+        return;
+    }
+    TYPE_ENV.with(|env| {
+        env.borrow_mut().set_var(ident.name, ty);
+    });
+}
+
+fn set_range_bindings(
+    key: Option<&ast::Expr>,
+    value: Option<&ast::Expr>,
+    inferred_range_type: &typeinfer::GoType,
+    is_string: bool,
+    is_int: bool,
+) {
+    if is_string {
+        set_range_binding(key, typeinfer::GoType::Int);
+        set_range_binding(value, typeinfer::GoType::Int32);
+        return;
+    }
+
+    if is_int {
+        set_range_binding(key, typeinfer::GoType::Int);
+        return;
+    }
+
+    let resolved = resolved_go_type(inferred_range_type);
+    match (key, value, resolved) {
+        (Some(key), Some(value), typeinfer::GoType::Slice(elem))
+        | (Some(key), Some(value), typeinfer::GoType::Array(elem)) => {
+            set_range_binding(Some(key), typeinfer::GoType::Int);
+            set_range_binding(Some(value), *elem);
+        }
+        (Some(key), None, typeinfer::GoType::Slice(_) | typeinfer::GoType::Array(_)) => {
+            set_range_binding(Some(key), typeinfer::GoType::Int);
+        }
+        (Some(key), Some(value), typeinfer::GoType::Map(key_ty, value_ty)) => {
+            set_range_binding(Some(key), *key_ty);
+            set_range_binding(Some(value), *value_ty);
+        }
+        (Some(key), None, typeinfer::GoType::Map(key_ty, _)) => {
+            set_range_binding(Some(key), *key_ty);
+        }
+        (Some(key), None, typeinfer::GoType::Chan(elem)) => {
+            set_range_binding(Some(key), *elem);
+        }
+        _ => {}
+    }
+}
+
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
     let is_string = is_string_literal(&range_stmt.x) || inferred_range_type.is_string();
     let is_int = is_integer_expr(&range_stmt.x);
+    let env_snapshot = TYPE_ENV.with(|env| env.borrow().clone());
+    set_range_bindings(
+        range_stmt.key.as_ref(),
+        range_stmt.value.as_ref(),
+        &inferred_range_type,
+        is_string,
+        is_int,
+    );
+    let body = range_stmt.body.try_into();
+    TYPE_ENV.with(|env| {
+        *env.borrow_mut() = env_snapshot;
+    });
+    let body: syn::Block = body?;
     let x: syn::Expr = range_stmt.x.into();
-    let body: syn::Block = range_stmt.body.try_into()?;
 
     match (range_stmt.key, range_stmt.value) {
         // for i, v := range x
@@ -6782,10 +6859,10 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             let val_pat = expr_to_pat(&val_expr);
             let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
             if is_string {
-                // range over string: iterate (byte_index, char)
+                // range over string: iterate (byte_index, rune)
                 Ok(make_for_loop(
                     pat,
-                    syn::parse_quote! { (#x).char_indices() },
+                    syn::parse_quote! { (#x).char_indices().map(|(i, ch)| (i as isize, ch as i32)) },
                     body,
                 ))
             } else if is_any_slice_range_type(&inferred_range_type) {
@@ -7071,8 +7148,8 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
                 let inner = &raw[1..raw.len() - 1];
                 let interpreted = interpret_go_string_escapes(inner);
                 let ch = interpreted.chars().next().unwrap_or(' ');
-                // Emit as integer (u32) since Go's rune is int32/u32, not Rust's char
-                let value = ch as u32;
+                // Emit as integer since Go's rune is int32, not Rust's char.
+                let value = ch as i32;
                 let lit_str = format!("{value}");
                 Self::Int(syn::LitInt::new(&lit_str, Span::mixed_site()))
             }
