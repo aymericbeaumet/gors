@@ -1,0 +1,2 @@
+module var_alias_from_later_static
+

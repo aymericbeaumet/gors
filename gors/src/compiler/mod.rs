@@ -8353,6 +8353,12 @@ fn infer_static_type_from_init(expr: &ast::Expr) -> Option<syn::Type> {
         ast::Expr::Ident(id) if id.name == "true" || id.name == "false" => {
             Some(syn::parse_quote! { bool })
         }
+        ast::Expr::Ident(id) => TYPE_ENV.with(|env| {
+            env.borrow()
+                .get_var(id.name)
+                .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+                .map(|ty| rust_type_from_inferred_go_type(&ty))
+        }),
         _ => None,
     }
 }
@@ -8690,6 +8696,19 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::parse_quote! { #other_expr == 0 }
             } else {
                 syn::parse_quote! { #other_expr != 0 }
+            };
+        }
+
+        if matches!(resolved_go_type(&other_ty), typeinfer::GoType::Pointer(_)) {
+            let other_expr = if left_nil {
+                syn::Expr::from(*binary_expr.y)
+            } else {
+                syn::Expr::from(*binary_expr.x)
+            };
+            return if is_eq {
+                syn::parse_quote! { #other_expr == Default::default() }
+            } else {
+                syn::parse_quote! { #other_expr != Default::default() }
             };
         }
     }
