@@ -44,6 +44,13 @@ thread_local! {
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
+    static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+#[derive(Clone)]
+struct EmbeddedInterfaceField {
+    field_ident: syn::Ident,
+    trait_path: syn::Path,
 }
 
 struct ProfileTimer {
@@ -77,6 +84,71 @@ impl Drop for ProfileTimer {
 
 fn is_type_interface(name: &str) -> bool {
     TYPE_ENV.with(|env| env.borrow().is_interface(name))
+}
+
+fn go_type_interface_name(go_type: &typeinfer::GoType) -> Option<String> {
+    match go_type {
+        typeinfer::GoType::Interface(name) => Some(name.clone()),
+        typeinfer::GoType::Named(name) if is_type_interface(name) => Some(name.clone()),
+        typeinfer::GoType::Named(name) if TYPE_ENV.with(|env| env.borrow().is_interface(name)) => {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+fn go_type_is_interface_like(go_type: &typeinfer::GoType) -> bool {
+    go_type.is_interface() || go_type_interface_name(go_type).is_some()
+}
+
+fn interface_trait_path_from_name(name: &str) -> syn::Path {
+    let mut segments = syn::punctuated::Punctuated::new();
+    for part in name.split('.') {
+        let ident = syn::Ident::new(&rust_safe_ident_name(part), Span::mixed_site());
+        segments.push(syn::PathSegment {
+            ident,
+            arguments: syn::PathArguments::None,
+        });
+    }
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
+fn interface_trait_path_from_expr(expr: &ast::Expr) -> Option<syn::Path> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => interface_trait_path_from_expr(&paren.x),
+        ast::Expr::Ident(ident) if is_type_interface(ident.name) => {
+            Some(interface_trait_path_from_name(ident.name))
+        }
+        ast::Expr::Ident(ident) if TYPE_ENV.with(|env| env.borrow().is_interface(ident.name)) => {
+            Some(interface_trait_path_from_name(ident.name))
+        }
+        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
+            .filter(|name| TYPE_ENV.with(|env| env.borrow().is_interface(name)))
+            .map(|_| {
+                let mut segments = syn::punctuated::Punctuated::new();
+                if let ast::Expr::Ident(pkg) = &*selector.x {
+                    segments.push(syn::PathSegment {
+                        ident: syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site()),
+                        arguments: syn::PathArguments::None,
+                    });
+                }
+                segments.push(syn::PathSegment {
+                    ident: syn::Ident::new(
+                        &rust_safe_ident_name(selector.sel.name),
+                        Span::mixed_site(),
+                    ),
+                    arguments: syn::PathArguments::None,
+                });
+                syn::Path {
+                    leading_colon: None,
+                    segments,
+                }
+            }),
+        _ => None,
+    }
 }
 
 fn get_func_returns(name: &str) -> Vec<typeinfer::GoType> {
@@ -2006,6 +2078,8 @@ fn compile_program_impl(
     prune_generated_dead_code(&mut modules, has_main_fn);
     borrow_mutated_vec_params(&mut modules);
     restore_vec_newtype_method_receivers(&mut modules);
+    borrow_mut_ref_call_args(&mut modules);
+    restore_vec_newtype_method_receivers(&mut modules);
     drop(dce_timer);
 
     prefix_final_module_paths(&mut modules);
@@ -2326,6 +2400,9 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
         return;
     }
     if let Some(name) = expr_path_ident(arg) {
+        if name == "self" {
+            return;
+        }
         let ident = syn::Ident::new(&name, Span::mixed_site());
         *arg = syn::parse_quote! { &mut #ident };
         return;
@@ -2339,6 +2416,80 @@ fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
         return None;
     };
     path.path.get_ident().map(ToString::to_string)
+}
+
+fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
+    let targets = collect_mut_ref_targets(modules);
+    if targets.is_empty() {
+        return;
+    }
+    for module in modules.values_mut() {
+        syn::visit_mut::VisitMut::visit_file_mut(
+            &mut BorrowMutRefCallArgs {
+                module_name: module.mod_name.clone(),
+                targets: &targets,
+            },
+            &mut module.file,
+        );
+    }
+}
+
+fn collect_mut_ref_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> BTreeMap<String, std::collections::HashSet<usize>> {
+    let mut targets = BTreeMap::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Fn(item_fn) = item else {
+                continue;
+            };
+            let indices = mut_ref_param_indices(&item_fn.sig);
+            if indices.is_empty() {
+                continue;
+            }
+            targets.insert(
+                format!("{}::{}", module.mod_name, item_fn.sig.ident),
+                indices,
+            );
+        }
+    }
+    targets
+}
+
+fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let syn::FnArg::Typed(pat_type) = input else {
+                return None;
+            };
+            matches!(&*pat_type.ty, syn::Type::Reference(reference) if reference.mutability.is_some())
+                .then_some(index)
+        })
+        .collect()
+}
+
+struct BorrowMutRefCallArgs<'a> {
+    module_name: String,
+    targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+}
+
+impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        syn::visit_mut::visit_expr_call_mut(self, call);
+        let Some(key) = call_target_key(&call.func, &self.module_name) else {
+            return;
+        };
+        let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                borrow_mut_vec_call_arg(arg);
+            }
+        }
+    }
 }
 
 fn restore_vec_newtype_method_receivers(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -2393,6 +2544,8 @@ impl syn::visit_mut::VisitMut for RestoreVecNewtypeMethodReceivers<'_> {
         for stmt in &mut block.stmts {
             if let Some(rewritten) = self.rewrite_stmt(stmt) {
                 *stmt = rewritten;
+            } else if let Some(rewritten) = self.rewrite_borrowed_newtype_calls(stmt) {
+                *stmt = rewritten;
             }
         }
     }
@@ -2427,6 +2580,96 @@ impl RestoreVecNewtypeMethodReceivers<'_> {
             #source = Vec::from(#temp);
         }};
         Some(syn::Stmt::Expr(expr, *semi))
+    }
+
+    fn rewrite_borrowed_newtype_calls(&mut self, stmt: &syn::Stmt) -> Option<syn::Stmt> {
+        let syn::Stmt::Expr(_, semi) = stmt else {
+            return None;
+        };
+        let mut stmt = stmt.clone();
+        let mut hoister = VecNewtypeBorrowHoister {
+            module_name: self.module_name.clone(),
+            vec_newtypes: self.vec_newtypes,
+            counter: &mut self.counter,
+            bindings: vec![],
+        };
+        syn::visit_mut::VisitMut::visit_stmt_mut(&mut hoister, &mut stmt);
+        if hoister.bindings.is_empty() {
+            return None;
+        }
+        let prelude = hoister
+            .bindings
+            .iter()
+            .map(|binding| {
+                let temp = &binding.temp;
+                let source = &binding.source;
+                let from_func = &binding.from_func;
+                syn::parse_quote! {
+                    let mut #temp = #from_func(std::mem::take(&mut #source));
+                }
+            })
+            .collect::<Vec<syn::Stmt>>();
+        let epilogue = hoister
+            .bindings
+            .iter()
+            .rev()
+            .map(|binding| {
+                let temp = &binding.temp;
+                let source = &binding.source;
+                syn::parse_quote! {
+                    #source = Vec::from(#temp);
+                }
+            })
+            .collect::<Vec<syn::Stmt>>();
+        let expr: syn::Expr = syn::parse_quote! {{
+            #(#prelude)*
+            #stmt
+            #(#epilogue)*
+        }};
+        Some(syn::Stmt::Expr(expr, *semi))
+    }
+}
+
+struct VecNewtypeBorrowBinding {
+    temp: syn::Ident,
+    source: syn::Ident,
+    from_func: syn::Expr,
+}
+
+struct VecNewtypeBorrowHoister<'a> {
+    module_name: String,
+    vec_newtypes: &'a std::collections::HashSet<String>,
+    counter: &'a mut usize,
+    bindings: Vec<VecNewtypeBorrowBinding>,
+}
+
+impl syn::visit_mut::VisitMut for VecNewtypeBorrowHoister<'_> {
+    fn visit_expr_reference_mut(&mut self, reference: &mut syn::ExprReference) {
+        syn::visit_mut::visit_expr_reference_mut(self, reference);
+        if reference.mutability.is_none() {
+            return;
+        }
+        let syn::Expr::Call(call) = &*reference.expr else {
+            return;
+        };
+        let Some(type_key) = from_call_vec_newtype_key(&call.func, &self.module_name) else {
+            return;
+        };
+        if !self.vec_newtypes.contains(&type_key) || call.args.len() != 1 {
+            return;
+        }
+        let Some(source_name) = call.args.first().and_then(expr_path_ident) else {
+            return;
+        };
+        let temp = quote::format_ident!("__gors_vec_newtype_arg_{}", *self.counter);
+        *self.counter += 1;
+        let source = syn::Ident::new(&source_name, Span::mixed_site());
+        self.bindings.push(VecNewtypeBorrowBinding {
+            temp: temp.clone(),
+            source,
+            from_func: (*call.func).clone(),
+        });
+        reference.expr = Box::new(syn::parse_quote! { #temp });
     }
 }
 
@@ -4848,21 +5091,182 @@ fn interface_mut_ref_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) ->
     })
 }
 
+fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
+    let mut impl_methods = Vec::new();
+    for trait_item in trait_items {
+        let syn::TraitItem::Fn(trait_fn) = trait_item else {
+            continue;
+        };
+        let method = trait_fn.sig.ident.clone();
+        let arg_names = trait_fn
+            .sig
+            .inputs
+            .iter()
+            .skip(1)
+            .filter_map(|arg| match arg {
+                syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                    syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                    _ => None,
+                },
+                syn::FnArg::Receiver(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let sig = trait_fn.sig.clone();
+        let block: syn::Block = if matches!(sig.output, syn::ReturnType::Default) {
+            syn::parse_quote!({ (**self).#method(#(#arg_names),*); })
+        } else {
+            syn::parse_quote!({ (**self).#method(#(#arg_names),*) })
+        };
+        impl_methods.push(syn::ImplItemFn {
+            attrs: vec![syn::parse_quote! { #[allow(dead_code)] }],
+            vis: syn::Visibility::Inherited,
+            defaultness: None,
+            sig,
+            block,
+        });
+    }
+    if impl_methods.is_empty() {
+        return None;
+    }
+    Some(syn::parse_quote! {
+        impl<T: #ident + ?Sized> #ident for Box<T> {
+            #(#impl_methods)*
+        }
+    })
+}
+
+fn collect_trait_method_fns(items: &[syn::Item]) -> BTreeMap<String, Vec<syn::TraitItemFn>> {
+    let mut traits = BTreeMap::new();
+    for item in items {
+        let syn::Item::Trait(item_trait) = item else {
+            continue;
+        };
+        let methods = item_trait
+            .items
+            .iter()
+            .filter_map(|trait_item| match trait_item {
+                syn::TraitItem::Fn(trait_fn) => Some(trait_fn.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !methods.is_empty() {
+            traits.insert(item_trait.ident.to_string(), methods);
+        }
+    }
+    traits
+}
+
+fn embedded_interface_impls(
+    items: &[syn::Item],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Vec<syn::Item> {
+    let trait_methods = collect_trait_method_fns(items);
+    let embedded_structs = BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().clone());
+    let mut out = vec![];
+
+    for (struct_name, fields) in embedded_structs {
+        let struct_ident = syn::Ident::new(&struct_name, Span::mixed_site());
+        for field in fields {
+            let Some(trait_ident) = field
+                .trait_path
+                .segments
+                .last()
+                .map(|segment| &segment.ident)
+            else {
+                continue;
+            };
+            let Some(required_methods) = trait_methods.get(&trait_ident.to_string()) else {
+                continue;
+            };
+            let mut impl_items = vec![];
+            for trait_fn in required_methods {
+                let method_name = trait_fn.sig.ident.to_string();
+                if let Some(method) = methods.get(&struct_name).and_then(|methods| {
+                    methods
+                        .iter()
+                        .find(|method| method.sig.ident == method_name)
+                }) {
+                    let mut method = method.clone();
+                    method.vis = syn::Visibility::Inherited;
+                    if let Some(syn::FnArg::Receiver(receiver)) = method.sig.inputs.first_mut() {
+                        receiver.mutability = Some(<Token![mut]>::default());
+                        receiver.ty = Box::new(syn::parse_quote! { &mut Self });
+                    }
+                    impl_items.push(syn::ImplItem::Fn(method));
+                    continue;
+                }
+
+                let mut sig = trait_fn.sig.clone();
+                if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+                    receiver.mutability = Some(<Token![mut]>::default());
+                    receiver.ty = Box::new(syn::parse_quote! { &mut Self });
+                }
+                let method_ident = sig.ident.clone();
+                let field_ident = field.field_ident.clone();
+                let arg_idents = sig
+                    .inputs
+                    .iter()
+                    .skip(1)
+                    .filter_map(|arg| match arg {
+                        syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                            syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                            _ => None,
+                        },
+                        syn::FnArg::Receiver(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                let block = if matches!(sig.output, syn::ReturnType::Default) {
+                    syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*); })
+                } else {
+                    syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*) })
+                };
+                impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
+                    attrs: vec![syn::parse_quote! { #[allow(dead_code)] }],
+                    vis: syn::Visibility::Inherited,
+                    defaultness: None,
+                    sig,
+                    block,
+                }));
+            }
+            if impl_items.is_empty() {
+                continue;
+            }
+            let trait_path = field.trait_path.clone();
+            out.push(syn::Item::Impl(syn::ItemImpl {
+                attrs: vec![],
+                defaultness: None,
+                unsafety: None,
+                impl_token: <Token![impl]>::default(),
+                generics: syn::parse_quote! { <'__gors> },
+                trait_: Some((None, trait_path, <Token![for]>::default())),
+                self_ty: Box::new(syn::parse_quote! { #struct_ident<'__gors> }),
+                brace_token: syn::token::Brace::default(),
+                items: impl_items,
+            }));
+        }
+    }
+
+    out
+}
+
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts
         .name
         .ok_or_else(|| CompilerError::UnsupportedConstruct("type spec has no name".to_string()))?;
     let vis: syn::Visibility = (&name).into();
     let ident: syn::Ident = name.into();
-    let generics = compile_go_type_params(ts.type_params);
+    let mut generics = compile_go_type_params(ts.type_params);
 
     match ts.type_ {
         ast::Expr::StructType(struct_type) => {
             let mut fields = syn::punctuated::Punctuated::new();
-            let mut embedded_types: Vec<(syn::Ident, syn::Type)> = vec![];
+            let mut embedded_types: Vec<(syn::Ident, syn::Type, Option<syn::Path>)> = vec![];
+            let mut embedded_interface_fields: Vec<EmbeddedInterfaceField> = vec![];
+            let mut has_borrowed_interface_field = false;
             let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
             let mut needs_manual_default = false;
             let mut cannot_derive_clone = false;
+            let mut cannot_default = false;
             let mut can_derive_copy = true;
             let mut blank_field_index = 0usize;
             if let Some(field_list) = struct_type.fields {
@@ -4870,16 +5274,24 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     let field_type = field.type_.ok_or_else(|| {
                         CompilerError::UnsupportedConstruct("struct field has no type".to_string())
                     })?;
+                    let interface_trait_path = interface_trait_path_from_expr(&field_type);
+                    has_borrowed_interface_field |= interface_trait_path.is_some();
                     let field_needs_manual_default =
                         contains_array_type(&field_type) || contains_func_type(&field_type);
-                    let field_cannot_derive_clone = contains_any_type(&field_type);
-                    let field_can_derive_copy =
-                        go_type_is_copy(&typeinfer::GoType::from_expr(&field_type));
+                    let field_cannot_derive_clone =
+                        contains_any_type(&field_type) || interface_trait_path.is_some();
+                    let field_cannot_default = interface_trait_path.is_some();
+                    let field_can_derive_copy = interface_trait_path.is_none()
+                        && go_type_is_copy(&typeinfer::GoType::from_expr(&field_type));
                     let field_default = default_expr_for_type(&field_type);
                     can_derive_copy &= field_can_derive_copy;
 
                     if let Some(names) = field.names {
-                        let rust_type: syn::Type = field_type.into();
+                        let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
+                            syn::parse_quote! { &'__gors mut dyn #trait_path }
+                        } else {
+                            field_type.into()
+                        };
                         for field_name in names {
                             let field_vis: syn::Visibility = (&field_name).into();
                             let field_ident: syn::Ident = if field_name.name == "_" {
@@ -4895,6 +5307,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             needs_manual_default |= field_needs_manual_default;
                             cannot_derive_clone |= field_cannot_derive_clone;
+                            cannot_default |= field_cannot_default;
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -4907,7 +5320,11 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     } else {
                         // Embedded field: type name becomes the field name
                         let embedded_name = extract_type_name(&field_type);
-                        let rust_type: syn::Type = field_type.into();
+                        let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
+                            syn::parse_quote! { &'__gors mut dyn #trait_path }
+                        } else {
+                            field_type.into()
+                        };
                         if let Some(name) = embedded_name {
                             let field_ident =
                                 syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
@@ -4917,10 +5334,21 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                                 } else {
                                     syn::Visibility::Inherited
                                 };
-                            embedded_types.push((field_ident.clone(), rust_type.clone()));
+                            if let Some(trait_path) = &interface_trait_path {
+                                embedded_interface_fields.push(EmbeddedInterfaceField {
+                                    field_ident: field_ident.clone(),
+                                    trait_path: trait_path.clone(),
+                                });
+                            }
+                            embedded_types.push((
+                                field_ident.clone(),
+                                rust_type.clone(),
+                                interface_trait_path.clone(),
+                            ));
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             needs_manual_default |= field_needs_manual_default;
                             cannot_derive_clone |= field_cannot_derive_clone;
+                            cannot_default |= field_cannot_default;
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -4932,6 +5360,21 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         }
                     }
                 }
+            }
+
+            if has_borrowed_interface_field {
+                let lifetime = syn::GenericParam::Lifetime(syn::LifetimeParam::new(
+                    syn::Lifetime::new("'__gors", Span::mixed_site()),
+                ));
+                let mut params = syn::punctuated::Punctuated::new();
+                params.push(lifetime);
+                params.extend(generics.params.clone());
+                generics.params = params;
+                BORROWED_INTERFACE_STRUCTS.with(|structs| {
+                    structs
+                        .borrow_mut()
+                        .insert(ident.to_string(), embedded_interface_fields.clone());
+                });
             }
 
             if !fields.empty_or_trailing() {
@@ -4965,7 +5408,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 semi_token: None,
             });
 
-            let default_impl = if needs_manual_default || cannot_derive_clone {
+            let default_impl = if !cannot_default && (needs_manual_default || cannot_derive_clone) {
                 let defaults = default_fields.iter().map(|(field_ident, default_expr)| {
                     quote::quote! { #field_ident: #default_expr }
                 });
@@ -4981,21 +5424,42 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 None
             };
-            if let Some((emb_field, emb_ty)) =
+            if let Some((emb_field, emb_ty, interface_trait_path)) =
                 embedded_types.first().filter(|_| embedded_types.len() == 1)
             {
-                let deref_impl: syn::Item = syn::parse_quote! {
-                    impl std::ops::Deref for #ident {
-                        type Target = #emb_ty;
-                        fn deref(&self) -> &#emb_ty {
-                            &self.#emb_field
+                let deref_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+                    syn::parse_quote! {
+                        impl #impl_generics std::ops::Deref for #ident #ty_generics #where_clause {
+                            type Target = dyn #trait_path + '__gors;
+                            fn deref(&self) -> &(dyn #trait_path + '__gors) {
+                                &*self.#emb_field
+                            }
+                        }
+                    }
+                } else {
+                    syn::parse_quote! {
+                        impl #impl_generics std::ops::Deref for #ident #ty_generics #where_clause {
+                            type Target = #emb_ty;
+                            fn deref(&self) -> &#emb_ty {
+                                &self.#emb_field
+                            }
                         }
                     }
                 };
-                let deref_mut_impl: syn::Item = syn::parse_quote! {
-                    impl std::ops::DerefMut for #ident {
-                        fn deref_mut(&mut self) -> &mut #emb_ty {
-                            &mut self.#emb_field
+                let deref_mut_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+                    syn::parse_quote! {
+                        impl #impl_generics std::ops::DerefMut for #ident #ty_generics #where_clause {
+                            fn deref_mut(&mut self) -> &mut (dyn #trait_path + '__gors) {
+                                self.#emb_field
+                            }
+                        }
+                    }
+                } else {
+                    syn::parse_quote! {
+                        impl #impl_generics std::ops::DerefMut for #ident #ty_generics #where_clause {
+                            fn deref_mut(&mut self) -> &mut #emb_ty {
+                                &mut self.#emb_field
+                            }
                         }
                     }
                 };
@@ -5114,6 +5578,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let has_methods = !trait_items.is_empty();
             let has_supertraits = !supertraits.is_empty();
             let mut_ref_impl = has_methods.then(|| interface_mut_ref_impl(&ident, &trait_items));
+            let box_impl = has_methods.then(|| interface_box_impl(&ident, &trait_items));
             let trait_item = syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
                 vis,
@@ -5131,6 +5596,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut items = vec![trait_item];
             if let Some(Some(mut_ref_impl)) = mut_ref_impl {
                 items.push(mut_ref_impl);
+            }
+            if let Some(Some(box_impl)) = box_impl {
+                items.push(box_impl);
             }
             if has_supertraits && !has_methods {
                 items.push(syn::parse_quote! {
@@ -5352,6 +5820,59 @@ fn compile_return_type(results: Option<ast::FieldList>) -> Result<syn::ReturnTyp
             ))
         }
     }
+}
+
+fn add_elided_lifetime_to_borrowed_interface_return(
+    output: &mut syn::ReturnType,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, Token![,]>,
+) {
+    let reference_inputs = inputs
+        .iter()
+        .filter(|input| match input {
+            syn::FnArg::Typed(pat_type) => matches!(&*pat_type.ty, syn::Type::Reference(_)),
+            syn::FnArg::Receiver(receiver) => receiver.reference.is_some(),
+        })
+        .count();
+    if reference_inputs != 1 {
+        return;
+    }
+    let syn::ReturnType::Type(_, ty) = output else {
+        return;
+    };
+    add_elided_lifetime_to_boxed_trait_object(ty);
+}
+
+fn add_elided_lifetime_to_boxed_trait_object(ty: &mut syn::Type) {
+    let syn::Type::Path(type_path) = ty else {
+        return;
+    };
+    let Some(segment) = type_path.path.segments.last_mut() else {
+        return;
+    };
+    if segment.ident != "Box" {
+        return;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments else {
+        return;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::TraitObject(trait_object))) =
+        args.args.first_mut()
+    else {
+        return;
+    };
+    if trait_object
+        .bounds
+        .iter()
+        .any(|bound| matches!(bound, syn::TypeParamBound::Lifetime(_)))
+    {
+        return;
+    }
+    trait_object
+        .bounds
+        .push(syn::TypeParamBound::Lifetime(syn::Lifetime::new(
+            "'_",
+            Span::mixed_site(),
+        )));
 }
 
 fn collect_return_go_types(results: Option<&ast::FieldList>) -> Vec<typeinfer::GoType> {
@@ -5618,9 +6139,11 @@ fn compile_method(
             typeinfer::GoType::Slice(_)
         )
     });
+    let has_borrowed_interface_field =
+        BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
     let type_args = receiver_type_args(&recv_type);
 
-    let self_arg: syn::FnArg = if is_pointer || is_slice_receiver {
+    let self_arg: syn::FnArg = if is_pointer || is_slice_receiver || has_borrowed_interface_field {
         syn::parse_quote! { &mut self }
     } else {
         syn::parse_quote! { &self }
@@ -5746,7 +6269,8 @@ fn compile_method(
         }
     }
 
-    let output = compile_return_type(func_decl.type_.results)?;
+    let mut output = compile_return_type(func_decl.type_.results)?;
+    add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
     let sig = syn::Signature {
         constness: None,
@@ -6633,6 +7157,10 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 } else if has_unnamed_field_values(&field_values) {
                     syn::parse_quote! { #type_ident::default() }
                 } else {
+                    let all_struct_fields_set = TYPE_ENV.with(|env| {
+                        let count = env.borrow().get_struct_fields(&type_name).len();
+                        count > 0 && field_values.len() == count
+                    });
                     let mut fields = syn::punctuated::Punctuated::new();
                     for fv in field_values {
                         fields.push(fv);
@@ -6646,8 +7174,9 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                         path: syn::parse_quote! { #type_ident },
                         brace_token: syn::token::Brace::default(),
                         fields,
-                        dot2_token: Some(<syn::Token![..]>::default()),
-                        rest: Some(Box::new(syn::parse_quote! { Default::default() })),
+                        dot2_token: (!all_struct_fields_set).then(<syn::Token![..]>::default),
+                        rest: (!all_struct_fields_set)
+                            .then(|| Box::new(syn::parse_quote! { Default::default() })),
                     })
                 }
             }
@@ -6662,6 +7191,12 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                     let p = &path.path;
                     syn::parse_quote! { #p::default() }
                 } else {
+                    let all_struct_fields_set = type_name.as_deref().is_some_and(|type_name| {
+                        TYPE_ENV.with(|env| {
+                            let count = env.borrow().get_struct_fields(type_name).len();
+                            count > 0 && field_values.len() == count
+                        })
+                    });
                     let mut fields = syn::punctuated::Punctuated::new();
                     for fv in field_values {
                         fields.push(fv);
@@ -6675,8 +7210,9 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                         path: path.path,
                         brace_token: syn::token::Brace::default(),
                         fields,
-                        dot2_token: Some(<syn::Token![..]>::default()),
-                        rest: Some(Box::new(syn::parse_quote! { Default::default() })),
+                        dot2_token: (!all_struct_fields_set).then(<syn::Token![..]>::default),
+                        rest: (!all_struct_fields_set)
+                            .then(|| Box::new(syn::parse_quote! { Default::default() })),
                     })
                 }
             }
@@ -7063,6 +7599,44 @@ fn expr_should_clone_for_value_param(
     !go_type_is_copy(&expected) && !go_type_is_copy(&actual)
 }
 
+fn compile_return_expr_with_expected(
+    expr: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> syn::Expr {
+    if let Some(expected) = expected
+        && let Some(interface_name) = go_type_interface_name(expected)
+    {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        let trait_path = interface_trait_path_from_name(&interface_name);
+        let compiled: syn::Expr = expr.into();
+        if go_type_is_interface_like(&actual) {
+            return compiled;
+        }
+        return if is_box_new_call(&compiled) {
+            syn::parse_quote! { #compiled as Box<dyn #trait_path + '_> }
+        } else {
+            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path + '_> }
+        };
+    }
+    compile_expr_with_expected(expr, expected)
+}
+
+fn is_box_new_call(expr: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    let syn::Expr::Path(path) = &*call.func else {
+        return false;
+    };
+    let segments: Vec<_> = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    matches!(segments.as_slice(), [box_name, new_name] if box_name == "Box" && new_name == "new")
+}
+
 fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
         return match expected {
@@ -7096,6 +7670,10 @@ fn compile_expr_with_expected(expr: ast::Expr, expected: Option<&typeinfer::GoTy
 
     if let Some(typeinfer::GoType::Named(name)) = expected {
         if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+            if go_type_is_interface_like(&actual) {
+                return expr.into();
+            }
             let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
             if needs_owned_temp {
@@ -8758,6 +9336,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             }
         });
+        BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
         set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
 
@@ -8940,8 +9519,22 @@ impl TryFrom<ast::File<'_>> for syn::File {
         for (type_name, method_list) in &methods {
             let type_ident = syn::Ident::new(type_name, Span::mixed_site());
             let type_args = method_generics.get(type_name).cloned().unwrap_or_default();
-            let generics = generics_for_idents(&type_args);
-            let self_ty: syn::Type = if type_args.is_empty() {
+            let has_borrowed_interface_field =
+                BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(type_name));
+            let mut generics = generics_for_idents(&type_args);
+            if has_borrowed_interface_field {
+                let mut params = syn::punctuated::Punctuated::new();
+                params.push(syn::GenericParam::Lifetime(syn::LifetimeParam::new(
+                    syn::Lifetime::new("'__gors", Span::mixed_site()),
+                )));
+                params.extend(generics.params.clone());
+                generics.params = params;
+            }
+            let self_ty: syn::Type = if has_borrowed_interface_field && type_args.is_empty() {
+                syn::parse_quote! { #type_ident<'__gors> }
+            } else if has_borrowed_interface_field {
+                syn::parse_quote! { #type_ident<'__gors, #(#type_args),*> }
+            } else if type_args.is_empty() {
                 syn::parse_quote! { #type_ident }
             } else {
                 syn::parse_quote! { #type_ident<#(#type_args),*> }
@@ -8995,19 +9588,35 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         defaultness: None,
                         unsafety: None,
                         impl_token: <Token![impl]>::default(),
-                        generics: syn::Generics::default(),
+                        generics: if BORROWED_INTERFACE_STRUCTS
+                            .with(|structs| structs.borrow().contains_key(struct_name))
+                        {
+                            syn::parse_quote! { <'__gors> }
+                        } else {
+                            syn::Generics::default()
+                        },
                         trait_: Some((
                             None,
                             syn::parse_quote! { #trait_ident },
                             <Token![for]>::default(),
                         )),
-                        self_ty: Box::new(syn::parse_quote! { #struct_ident }),
+                        self_ty: Box::new(
+                            if BORROWED_INTERFACE_STRUCTS
+                                .with(|structs| structs.borrow().contains_key(struct_name))
+                            {
+                                syn::parse_quote! { #struct_ident<'__gors> }
+                            } else {
+                                syn::parse_quote! { #struct_ident }
+                            },
+                        ),
                         brace_token: syn::token::Brace::default(),
                         items: impl_items,
                     }));
                 }
             }
         }
+
+        items.extend(embedded_interface_impls(&items, &methods));
 
         // Stringer pattern: generate `impl Display` for structs with String() string
         for struct_name in &struct_has_string_method {
@@ -9548,7 +10157,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
 
         let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
-        let output = compile_return_type(func_decl.type_.results)?;
+        let mut output = compile_return_type(func_decl.type_.results)?;
+        add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
         let previous_byte_seq_type_params = BYTE_SEQ_TYPE_PARAMS.with(|params| {
             std::mem::replace(
@@ -11187,7 +11797,7 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
         let expected_return_types = RETURN_TYPES.with(|types| types.borrow().clone());
         let expr = match return_stmt.results.len() {
             0 => None,
-            1 => Some(compile_expr_with_expected(
+            1 => Some(compile_return_expr_with_expected(
                 return_stmt.results.into_iter().next().unwrap_or_else(|| {
                     ast::Expr::Ident(ast::Ident {
                         name_pos: token::Position::default(),
@@ -11200,7 +11810,7 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
             _ => {
                 let mut elems = syn::punctuated::Punctuated::new();
                 for (idx, result) in return_stmt.results.into_iter().enumerate() {
-                    elems.push(compile_expr_with_expected(
+                    elems.push(compile_return_expr_with_expected(
                         result,
                         expected_return_types.get(idx),
                     ));

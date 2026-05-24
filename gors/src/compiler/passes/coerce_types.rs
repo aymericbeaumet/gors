@@ -863,16 +863,23 @@ fn is_owned_value_expr(expr: &syn::Expr) -> bool {
 }
 
 fn path_ident_name(expr: &syn::Expr) -> Option<String> {
-    let syn::Expr::Path(path) = expr else {
-        return None;
-    };
-    if path.qself.is_some() || path.path.segments.len() != 1 {
-        return None;
+    match expr {
+        syn::Expr::Path(path) => {
+            if path.qself.is_some() || path.path.segments.len() != 1 {
+                return None;
+            }
+            path.path
+                .segments
+                .first()
+                .map(|segment| segment.ident.to_string())
+        }
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            path_ident_name(&unary.expr)
+        }
+        syn::Expr::Paren(paren) => path_ident_name(&paren.expr),
+        syn::Expr::Group(group) => path_ident_name(&group.expr),
+        _ => None,
     }
-    path.path
-        .segments
-        .first()
-        .map(|segment| segment.ident.to_string())
 }
 
 fn is_path_call(func: &syn::Expr, segments: &[&str]) -> bool {
