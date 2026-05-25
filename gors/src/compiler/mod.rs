@@ -840,6 +840,7 @@ fn append_type_param_bounds(
 struct TypeParamInfo {
     names: std::collections::HashSet<String>,
     slice_aliases: BTreeMap<String, syn::Type>,
+    slice_alias_go_types: BTreeMap<String, typeinfer::GoType>,
     byte_seq_names: std::collections::HashSet<String>,
 }
 
@@ -866,10 +867,19 @@ fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInf
         let Some(elem) = field.type_.as_ref().and_then(slice_alias_element_type) else {
             continue;
         };
+        let go_type = field
+            .type_
+            .as_ref()
+            .and_then(slice_alias_element_go_type)
+            .map(|elem| typeinfer::GoType::Slice(Box::new(elem)));
         if let Some(names) = &field.names {
             for name in names {
                 info.slice_aliases
                     .insert(name.name.to_string(), elem.clone());
+                if let Some(go_type) = &go_type {
+                    info.slice_alias_go_types
+                        .insert(name.name.to_string(), go_type.clone());
+                }
             }
         }
     }
@@ -924,6 +934,18 @@ fn slice_alias_element_type(expr: &ast::Expr) -> Option<syn::Type> {
     }
 }
 
+fn slice_alias_element_go_type(expr: &ast::Expr) -> Option<typeinfer::GoType> {
+    match expr {
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
+            slice_alias_element_go_type(&unary.x)
+        }
+        ast::Expr::ArrayType(array) if array.len.is_none() => {
+            Some(typeinfer::GoType::from_expr(&array.elt))
+        }
+        _ => None,
+    }
+}
+
 fn generic_slice_param_element_type(expr: &ast::Expr, info: &TypeParamInfo) -> Option<syn::Type> {
     match expr {
         ast::Expr::Ident(ident) => info.slice_aliases.get(ident.name).cloned(),
@@ -931,6 +953,23 @@ fn generic_slice_param_element_type(expr: &ast::Expr, info: &TypeParamInfo) -> O
             if array.len.is_none() && type_expr_mentions_type_param(&array.elt, info) =>
         {
             rust_type_from_type_expr(&array.elt)
+        }
+        _ => None,
+    }
+}
+
+fn generic_slice_param_go_type(
+    expr: &ast::Expr,
+    info: &TypeParamInfo,
+) -> Option<typeinfer::GoType> {
+    match expr {
+        ast::Expr::Ident(ident) => info.slice_alias_go_types.get(ident.name).cloned(),
+        ast::Expr::ArrayType(array)
+            if array.len.is_none() && type_expr_mentions_type_param(&array.elt, info) =>
+        {
+            Some(typeinfer::GoType::Slice(Box::new(
+                typeinfer::GoType::from_expr(&array.elt),
+            )))
         }
         _ => None,
     }
@@ -5252,6 +5291,9 @@ fn collect_refs_from_item(
                 let first = segments.next();
                 let second = segments.next();
                 match (first.as_deref(), second.as_deref()) {
+                    (Some(module), None) if module_names.contains(module) => {
+                        Some(module.to_string())
+                    }
                     (Some("crate"), Some(module)) if module_names.contains(module) => {
                         Some(module.to_string())
                     }
@@ -5266,6 +5308,40 @@ fn collect_refs_from_item(
             }
             syn::Expr::Try(try_expr) => external_module_from_expr(&try_expr.expr, module_names),
             syn::Expr::Unary(unary) => external_module_from_expr(&unary.expr, module_names),
+            _ => None,
+        }
+    }
+
+    fn external_path_symbol_from_expr(
+        expr: &syn::Expr,
+        module_names: &std::collections::HashSet<String>,
+    ) -> Option<(String, String)> {
+        match expr {
+            syn::Expr::Field(field) => {
+                let syn::Member::Named(member) = &field.member else {
+                    return None;
+                };
+                external_module_from_expr(&field.base, module_names)
+                    .map(|module| (module, member.to_string()))
+            }
+            syn::Expr::Path(path) => {
+                let mut segments = path.path.segments.iter().map(|seg| seg.ident.to_string());
+                match (
+                    segments.next().as_deref(),
+                    segments.next().as_deref(),
+                    segments.next().as_deref(),
+                ) {
+                    (Some("crate"), Some(module), Some(symbol))
+                        if module_names.contains(module) =>
+                    {
+                        Some((module.to_string(), symbol.to_string()))
+                    }
+                    (Some(module), Some(symbol), _) if module_names.contains(module) => {
+                        Some((module.to_string(), symbol.to_string()))
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -5495,7 +5571,13 @@ fn collect_refs_from_item(
             } else if let Some(module) =
                 external_module_from_expr(&method.receiver, self.module_names)
             {
-                self.external_refs.entry(module).or_default().insert(name);
+                let entry = self.external_refs.entry(module.clone()).or_default();
+                entry.insert(name);
+                if let Some((_, symbol)) =
+                    external_path_symbol_from_expr(&method.receiver, self.module_names)
+                {
+                    entry.insert(symbol);
+                }
             } else if !self.top_level_names.contains(&name) {
                 self.local_names.insert(name);
             }
@@ -8865,6 +8947,14 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { #ident })
         }
         ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(pkg) = &*selector.x
+                && IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name))
+            {
+                let module = syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site());
+                let sel =
+                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+                return Some(syn::parse_quote! { #module::#sel });
+            }
             let base = lvalue_expr_from_ref(&selector.x)?;
             let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
             Some(syn::parse_quote! { #base.#sel })
@@ -11926,6 +12016,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         // Convert doc comments to Rust doc attributes
         let attrs = comment_group_to_attrs(&func_decl.doc);
 
+        let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
+
         // Register parameter types in the type environment
         TYPE_ENV.with(|env| {
             let mut e = env.borrow_mut();
@@ -11933,7 +12025,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 let ty = param
                     .type_
                     .as_ref()
-                    .map(typeinfer::GoType::from_expr)
+                    .map(|expr| {
+                        generic_slice_param_go_type(expr, &type_param_info)
+                            .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+                    })
                     .unwrap_or(typeinfer::GoType::Unknown);
                 if let Some(ref names) = param.names {
                     for name in names {
@@ -11945,7 +12040,6 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let borrow_pointer_params =
             pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
-        let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
             for arg in compile_field_to_fn_args_with_type_params(
@@ -14661,6 +14755,34 @@ func main() {
                     for (mut i, mut v) in (s).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) {
                         let mut x = i + v;
                     }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_range_index_for_generic_slice_alias() {
+        test(
+            r#"
+                package main
+
+                func Index[S ~[]E, E comparable](s S, v E) int {
+                    for i := range s {
+                        if v == s[i] {
+                            return i
+                        }
+                    }
+                    return -1
+                }
+            "#,
+            rust! {
+                pub fn Index<E: PartialEq + Clone>(mut s: &mut Vec<E>, mut v: E) -> isize {
+                    for mut i in 0..((crate::builtin::len(&s) as isize) as isize) {
+                        if v == s[(i) as usize] {
+                            return i
+                        }
+                    }
+                    -1
                 }
             },
         );
