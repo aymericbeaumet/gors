@@ -785,7 +785,7 @@ onDestroy(() => {
         <p class="eyebrow">Go compiler frontend, Rust backend</p>
         <h1>gors</h1>
         <p class="hero-subtitle">
-          gors is a Go-to-Rust compiler pipeline: it parses real Go source, resolves packages from a pinned Go SDK, lowers the AST into Rust, and prints normal Rust code.
+          gors is a Go-to-Rust compiler pipeline: it parses real Go source, resolves packages, lowers the AST into Rust, and prints normal Rust code.
         </p>
         <div class="hero-actions">
           <button class="install-command" class:copied={installCommandCopied} type="button" title="Copy install command" on:click={copyInstallCommand}>
