@@ -5810,7 +5810,7 @@ fn collect_refs_from_item(
             } else if let Some(module) =
                 external_module_from_expr(&method.receiver, self.module_names)
             {
-                let entry = self.external_refs.entry(module.clone()).or_default();
+                let entry = self.external_refs.entry(module).or_default();
                 entry.insert(name);
                 if let Some((_, symbol)) =
                     external_path_symbol_from_expr(&method.receiver, self.module_names)
@@ -10421,7 +10421,7 @@ fn compile_flat_binary_operands(
         expr = syn::Expr::Binary(syn::ExprBinary {
             attrs: vec![],
             left: Box::new(expr),
-            op: op.clone(),
+            op,
             right: Box::new(right),
         });
     }
