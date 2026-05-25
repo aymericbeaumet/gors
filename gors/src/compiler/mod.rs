@@ -7980,27 +7980,12 @@ fn call_func_key(fun: &ast::Expr) -> Option<String> {
     })
 }
 
-fn is_variadic_any_call(call_expr: &ast::CallExpr) -> Option<usize> {
+fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
     let key = call_func_key(&call_expr.fun)?;
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        let start = env.get_func_variadic_start(&key)?;
-        let params = env.get_func_params(&key);
-        match params.get(start) {
-            Some(typeinfer::GoType::Slice(inner))
-                if matches!(
-                    &**inner,
-                    typeinfer::GoType::Any | typeinfer::GoType::Interface(_)
-                ) =>
-            {
-                Some(start)
-            }
-            _ => None,
-        }
-    })
+    TYPE_ENV.with(|env| env.borrow().get_func_variadic_start(&key))
 }
 
-fn compile_variadic_any_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {
+fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {
     let param_types = call_param_types(&call_expr.fun);
     let fun_expr: syn::Expr = match *call_expr.fun {
         ast::Expr::Ident(ident) => syn::Expr::Path(ident.into()),
@@ -8019,6 +8004,10 @@ fn compile_variadic_any_call(call_expr: ast::CallExpr, variadic_start: usize) ->
         typeinfer::GoType::Slice(inner) => Some((**inner).clone()),
         _ => None,
     });
+    let variadic_is_any = matches!(
+        variadic_elem.as_ref().map(resolved_go_type),
+        Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+    );
     let raw_args: Vec<ast::Expr> = call_expr.args.unwrap_or_default().into_iter().collect();
     let has_variadic_spread = call_expr.ellipsis.is_some();
 
@@ -8035,17 +8024,21 @@ fn compile_variadic_any_call(call_expr: ast::CallExpr, variadic_start: usize) ->
     for (i, arg) in raw_args.into_iter().enumerate() {
         if i < variadic_start {
             final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
-        } else {
+        } else if variadic_is_any {
             let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
             final_args.push(syn::parse_quote! { Box::new(#arg.clone()) as Box<dyn std::any::Any> });
+        } else {
+            final_args.push(compile_expr_with_expected(arg, variadic_elem.as_ref()));
         }
     }
 
     let variadic_args: Vec<&syn::Expr> = final_args.iter().skip(variadic_start).collect();
     let fixed_args: Vec<&syn::Expr> = final_args.iter().take(variadic_start).collect();
 
-    let vec_expr: syn::Expr = if variadic_args.is_empty() {
+    let vec_expr: syn::Expr = if variadic_args.is_empty() && variadic_is_any {
         syn::parse_quote! { Vec::<Box<dyn std::any::Any>>::new() }
+    } else if variadic_args.is_empty() {
+        syn::parse_quote! { Vec::new() }
     } else {
         syn::parse_quote! { Vec::from([#(#variadic_args),*]) }
     };
@@ -8168,6 +8161,24 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
         }
         "append" => compile_append_builtin(raw_args, has_variadic_spread),
         "panic" => compile_panic_builtin(raw_args),
+        "copy" if raw_args.len() == 2 => {
+            let mut raw_args = raw_args.into_iter();
+            let Some(dst_raw) = raw_args.next() else {
+                return compile_error_expr("copy requires a destination argument");
+            };
+            let Some(src_raw) = raw_args.next() else {
+                return compile_error_expr("copy requires a source argument");
+            };
+            let src_ty =
+                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
+            let dst = compile_expr_with_expected(dst_raw, None);
+            let src = compile_expr_with_expected(src_raw, None);
+            if matches!(resolved_go_type(&src_ty), typeinfer::GoType::String) {
+                syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, (#src).as_bytes()) }
+            } else {
+                syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#src) }
+            }
+        }
         _ => {
             let ordered_expected_type = if matches!(name.as_str(), "max" | "min") {
                 ordered_builtin_arg_expected_type(&raw_args)
@@ -8184,9 +8195,6 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
                 "cap" if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::cap(&#x) }
-                }
-                "copy" if let [dst, src] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#src) }
                 }
                 "delete" if let [map, key] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::delete(&mut #map, &#key) }
@@ -10589,8 +10597,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     return compile_append_float_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call"));
                 }
-                if let Some(variadic_start) = is_variadic_any_call(&call_expr) {
-                    return compile_variadic_any_call(call_expr, variadic_start);
+                if let Some(variadic_start) = is_variadic_call(&call_expr) {
+                    return compile_variadic_call(call_expr, variadic_start);
                 }
                 if function_field_call_params(&call_expr.fun).is_some() {
                     return compile_function_field_call(call_expr)
