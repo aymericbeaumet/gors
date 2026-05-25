@@ -792,7 +792,7 @@ onDestroy(() => {
             <code>{BREW_INSTALL_COMMAND}</code>
             <span class="install-copy" aria-hidden="true">{installCommandCopied ? "Copied" : "Copy"}</span>
           </button>
-          <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
+          <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Try in Playground</a>
         </div>
       </div>
 

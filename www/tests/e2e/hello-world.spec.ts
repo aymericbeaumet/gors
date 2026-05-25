@@ -174,7 +174,7 @@ test("home page links to playground without rendering the console", async ({
 	await expect(page.locator(".site-footer")).toHaveCount(0);
 	await expect(page.getByText("Go source to Rust output")).toHaveCount(0);
 
-	await page.getByRole("link", { name: "Open playground" }).click();
+	await page.getByRole("link", { name: "Try in Playground" }).click();
 	await expect(page).toHaveURL(/\/playground$/);
 	await expect(page.locator(".console-section")).toBeVisible();
 	await expect(page.locator(".site-footer")).toHaveCount(0);
