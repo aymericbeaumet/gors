@@ -24,6 +24,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
       - name: Lint
         run: make rust-lint
 
@@ -39,6 +45,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
       - name: Build
         run: make rust-build
 
@@ -53,6 +65,12 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
       - name: Test unit
         run: make rust-test-unit
@@ -72,6 +90,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
       - name: Test integration lexer
         run: make rust-test-integration-lexer
 
@@ -90,6 +114,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
       - name: Test integration parser
         run: make rust-test-integration-parser
 
@@ -105,6 +135,12 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
       - name: Test integration run
         run: make rust-test-integration-run
@@ -134,6 +170,12 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
@@ -169,6 +211,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
         with:
@@ -192,6 +240,12 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6

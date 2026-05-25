@@ -119,6 +119,9 @@ symbol set. The resolver parses selected Go files only when the package is
 needed, filters unused top-level AST declarations before compiling, and caches
 type environments, transitive imports, and resolved token streams. Direct
 imports with no surviving references should not force module generation.
+Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
+stream, requested roots, and known module names; keep that key aligned with any
+future reachability input that can change the kept item set.
 
 ## Go toolchain
 
@@ -137,6 +140,9 @@ Integration tests must not call a system `go`. `tests/common.rs::go_command()`
 uses the extracted SDK `bin/go` from the `gors` build, with `GOTOOLCHAIN=local`,
 for both `go_oracle` and `go run` comparisons. CI should not install Go via
 `actions/setup-go`, as the pinned tarball is the source of truth.
+GitHub Actions caches `$CARGO_HOME/gors-cache` as `~/.cargo/gors-cache`, keyed
+by runner OS and root `.go-version`, so SDK download/extraction changes must keep
+that cache path and key source aligned.
 
 ## Testing
 
@@ -209,6 +215,15 @@ file can exhaust hosted CI memory before progress is reported.
 1. Create a directory in `tests/fixtures/go_programs/` (e.g., `my_feature/`)
 2. Add `main.go` (and optionally `go.mod` for multi-package programs)
 3. The test framework auto-discovers it and compares output with `go run`
+
+For broad stdlib API coverage, prefer grouping related checks into one package
+fixture such as `tests/fixtures/go_programs/stdlib/strings/main.go` rather than
+creating one runnable fixture per function; `rust-test-integration-run` pays a
+full transpile plus `rustc` execution cost per discovered program directory.
+The run harness caches generated-program binaries under
+`target/gors-integration-run/` using a key derived from the generated Rust
+source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
+compiler-sensitive inputs in that key if the harness starts skipping more work.
 
 ### Environment variables for test tuning
 

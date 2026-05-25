@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 
@@ -53,6 +54,16 @@ struct EmbeddedInterfaceField {
     field_ident: syn::Ident,
     trait_path: syn::Path,
 }
+
+#[derive(Clone)]
+struct ReachableItemsCacheEntry {
+    keep: std::collections::HashSet<usize>,
+    refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    names: std::collections::HashSet<String>,
+}
+
+static REACHABLE_ITEMS_CACHE: OnceLock<Mutex<BTreeMap<String, ReachableItemsCacheEntry>>> =
+    OnceLock::new();
 
 struct MainPackageVarModeGuard {
     previous: bool,
@@ -3963,6 +3974,15 @@ fn reachable_stdlib_items(
     std::collections::HashMap<String, std::collections::HashSet<String>>,
     std::collections::HashSet<String>,
 ) {
+    let cache_key = reachable_items_cache_key(items, roots, module_names);
+    if let Ok(cache) = REACHABLE_ITEMS_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        && let Some(entry) = cache.get(&cache_key)
+    {
+        return (entry.keep.clone(), entry.refs.clone(), entry.names.clone());
+    }
+
     let mut names = roots.clone();
     let mut keep = std::collections::HashSet::new();
     let mut external_refs = std::collections::HashMap::new();
@@ -4003,7 +4023,48 @@ fn reachable_stdlib_items(
         }
     }
 
-    (keep, external_refs, names)
+    let entry = ReachableItemsCacheEntry {
+        keep,
+        refs: external_refs,
+        names,
+    };
+    if let Ok(mut cache) = REACHABLE_ITEMS_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        cache.insert(cache_key, entry.clone());
+    }
+    (entry.keep, entry.refs, entry.names)
+}
+
+fn reachable_items_cache_key(
+    items: &[syn::Item],
+    roots: &std::collections::HashSet<String>,
+    module_names: &std::collections::HashSet<String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(b"\0reachable-items\0");
+    let mut sorted_roots: Vec<_> = roots.iter().map(String::as_str).collect();
+    sorted_roots.sort_unstable();
+    for root in sorted_roots {
+        hasher.update(root.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.update(b"\x1e");
+    let mut sorted_modules: Vec<_> = module_names.iter().map(String::as_str).collect();
+    sorted_modules.sort_unstable();
+    for module_name in sorted_modules {
+        hasher.update(module_name.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.update(b"\x1e");
+    for item in items {
+        hasher.update(item.to_token_stream().to_string().as_bytes());
+        hasher.update(b"\0");
+    }
+    let hash = hasher.finalize();
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<String> {

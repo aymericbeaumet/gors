@@ -5,14 +5,15 @@ mod common;
 
 use common::{TestConfig, discover_program_dirs, fixtures_dir, go_command};
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn program_name(dir: &Path) -> String {
     let programs_dir = fixtures_dir().join("go_programs");
@@ -29,6 +30,45 @@ struct ProgramRunResult {
     passed: bool,
     skipped: bool,
     error: Option<String>,
+}
+
+#[derive(Default)]
+struct RunMetrics {
+    go: AtomicU64,
+    parse: AtomicU64,
+    compile: AtomicU64,
+    print: AtomicU64,
+    write: AtomicU64,
+    rustc: AtomicU64,
+    rust_run: AtomicU64,
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+}
+
+impl RunMetrics {
+    fn add_duration(cell: &AtomicU64, duration: Duration) {
+        let nanos = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        cell.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    fn duration(cell: &AtomicU64) -> Duration {
+        Duration::from_nanos(cell.load(Ordering::Relaxed))
+    }
+
+    fn print(&self) {
+        eprintln!(
+            "Timings: go={:?}, parse={:?}, compile={:?}, print={:?}, write={:?}, rustc={:?}, run={:?}, rustc-cache={} hits/{} misses",
+            Self::duration(&self.go),
+            Self::duration(&self.parse),
+            Self::duration(&self.compile),
+            Self::duration(&self.print),
+            Self::duration(&self.write),
+            Self::duration(&self.rustc),
+            Self::duration(&self.rust_run),
+            self.cache_hits.load(Ordering::Relaxed),
+            self.cache_misses.load(Ordering::Relaxed),
+        );
+    }
 }
 
 fn command_output_abortable(
@@ -69,6 +109,7 @@ fn run_generated_rust_program(
     dir: &Path,
     config: &TestConfig,
     abort: &AtomicBool,
+    metrics: &RunMetrics,
 ) -> ProgramRunResult {
     let name = program_name(dir);
     if config.fail_fast && abort.load(Ordering::SeqCst) {
@@ -83,9 +124,7 @@ fn run_generated_rust_program(
         eprintln!("RUN  {name}");
     }
 
-    let mut go_cmd = go_command();
-    go_cmd.args(["run", "."]).current_dir(dir);
-    let go_out = command_output_abortable(go_cmd, abort);
+    let go_out = run_go_program(dir, abort, metrics);
     let go_stdout = match go_out {
         Ok(Some(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         Ok(None) => {
@@ -107,7 +146,7 @@ fn run_generated_rust_program(
         }
     };
 
-    let rust_out = match compile_and_run_generated_rust(dir, abort) {
+    let rust_out = match compile_and_run_generated_rust(dir, abort, metrics) {
         Ok(Some(output)) => output,
         Ok(None) => {
             return ProgramRunResult {
@@ -179,28 +218,63 @@ fn run_generated_rust_program(
     result
 }
 
+fn run_go_program(
+    dir: &Path,
+    abort: &AtomicBool,
+    metrics: &RunMetrics,
+) -> Result<Option<Output>, String> {
+    let mut go_cmd = go_command();
+    go_cmd.args(["run", "."]).current_dir(dir);
+    let before = Instant::now();
+    let output = command_output_abortable(go_cmd, abort);
+    RunMetrics::add_duration(&metrics.go, before.elapsed());
+    output
+}
+
 fn compile_and_run_generated_rust(
     dir: &Path,
     abort: &AtomicBool,
+    metrics: &RunMetrics,
 ) -> Result<Option<Output>, String> {
     let source_path = dir.to_string_lossy().into_owned();
+    let before = Instant::now();
     let program = gors::parser::parse_program_files(&[source_path])
         .map_err(|e| format!("parse failed: {e}"))?;
+    RunMetrics::add_duration(&metrics.parse, before.elapsed());
+
+    let before = Instant::now();
     let compiled = gors::compiler::compile_program_multi(program)
         .map_err(|e| format!("compile failed: {e}"))?;
+    RunMetrics::add_duration(&metrics.compile, before.elapsed());
+
+    let before = Instant::now();
     let output =
         gors::printer::generate_multi(compiled).map_err(|e| format!("print failed: {e}"))?;
+    RunMetrics::add_duration(&metrics.print, before.elapsed());
 
-    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-    write_generated_output(&output, temp_dir.path())?;
+    let build_dir = cached_generated_output_dir(&program_name(dir), &output)?;
+    let bin_path = build_dir.join("main");
+    let cache_ok_path = build_dir.join(".rustc-ok");
+    if bin_path.exists() && cache_ok_path.exists() {
+        metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+        let before = Instant::now();
+        let bin = Command::new(&bin_path);
+        let output = command_output_abortable(bin, abort);
+        RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
+        return output;
+    }
+    metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-    let src_path = temp_dir.path().join("main.rs");
+    let before = Instant::now();
+    write_generated_output(&output, &build_dir)?;
+    RunMetrics::add_duration(&metrics.write, before.elapsed());
+
+    let src_path = build_dir.join("main.rs");
     if !src_path.exists() {
         return Err("generated output did not include main.rs".to_string());
     }
 
-    let bin_path = temp_dir.path().join("main");
-    let incremental_path = temp_dir.path().join("rustc-incremental");
+    let incremental_path = build_dir.join("rustc-incremental");
     fs::create_dir_all(&incremental_path).map_err(|e| e.to_string())?;
     let incremental_arg = format!("incremental={}", incremental_path.display());
 
@@ -220,18 +294,24 @@ fn compile_and_run_generated_rust(
         .arg(&bin_path)
         .args(["-C", &incremental_arg]);
 
+    let before = Instant::now();
     let Some(rustc_out) = command_output_abortable(rustc, abort)? else {
         return Ok(None);
     };
+    RunMetrics::add_duration(&metrics.rustc, before.elapsed());
     if !rustc_out.status.success() {
         return Err(format!(
             "rustc failed:\n{}",
             String::from_utf8_lossy(&rustc_out.stderr)
         ));
     }
+    fs::write(&cache_ok_path, b"ok").map_err(|e| e.to_string())?;
 
+    let before = Instant::now();
     let bin = Command::new(&bin_path);
-    command_output_abortable(bin, abort)
+    let output = command_output_abortable(bin, abort);
+    RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
+    output
 }
 
 fn write_generated_output(
@@ -249,6 +329,63 @@ fn write_generated_output(
     Ok(())
 }
 
+fn cached_generated_output_dir(
+    program_name: &str,
+    output: &gors::printer::GeneratedOutput,
+) -> Result<PathBuf, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(program_name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(rustc_fingerprint().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(gors::STDLIB_VERSION.as_bytes());
+    hasher.update(b"\0rustc-flags:edition2024,deny-unused,overflow-checks-off");
+    hasher.update(b"\0");
+    for (filename, source) in &output.files {
+        hasher.update(filename.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(source.as_bytes());
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    let hash = hex_hash(&digest);
+    let dir = workspace_root()
+        .join("target")
+        .join("gors-integration-run")
+        .join(hash);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn rustc_fingerprint() -> &'static str {
+    static RUSTC_FINGERPRINT: OnceLock<String> = OnceLock::new();
+    RUSTC_FINGERPRINT.get_or_init(|| {
+        Command::new("rustc")
+            .arg("-vV")
+            .output()
+            .map(|output| {
+                let mut hasher = Sha256::new();
+                hasher.update(&output.stdout);
+                hasher.update(&output.stderr);
+                hasher.update([u8::from(output.status.success())]);
+                let digest = hasher.finalize();
+                hex_hash(&digest)
+            })
+            .unwrap_or_else(|error| format!("rustc-fingerprint-error:{error}"))
+    })
+}
+
+fn hex_hash(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("gors crate should live under workspace root")
+        .to_path_buf()
+}
+
 #[test]
 fn run_programs_generated_rust() {
     let config = TestConfig::from_env();
@@ -259,9 +396,10 @@ fn run_programs_generated_rust() {
     );
 
     let abort = Arc::new(AtomicBool::new(false));
+    let metrics = Arc::new(RunMetrics::default());
     let results: Vec<_> = dirs
         .par_iter()
-        .map(|dir| run_generated_rust_program(dir, &config, &abort))
+        .map(|dir| run_generated_rust_program(dir, &config, &abort, &metrics))
         .collect();
 
     let passed = results.iter().filter(|result| result.passed).count();
@@ -275,6 +413,7 @@ fn run_programs_generated_rust() {
         "\nResults: {passed}/{} passed, {skipped} skipped",
         passed + failed.len()
     );
+    metrics.print();
     if !failed.is_empty() {
         for (name, err) in &failed {
             eprintln!("  FAIL {name}: {}", err.lines().next().unwrap_or(""));
