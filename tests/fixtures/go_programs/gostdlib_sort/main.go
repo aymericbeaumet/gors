@@ -5,9 +5,30 @@ import (
 	"sort"
 )
 
+type pair struct {
+	Key  int
+	Name string
+}
+
+type byKey []pair
+
+func (p byKey) Len() int {
+	return len(p)
+}
+
+func (p byKey) Less(i int, j int) bool {
+	return p[i].Key < p[j].Key
+}
+
+func (p byKey) Swap(i int, j int) {
+	p[i], p[j] = p[j], p[i]
+}
+
 func main() {
 	fmt.Println("== sort/find ==")
 	case_sort_find()
+	fmt.Println("== sort/find_not_found ==")
+	case_sort_find_not_found()
 	fmt.Println("== sort/float64_slice_len ==")
 	case_sort_float64_slice_len()
 	fmt.Println("== sort/float64_slice_less ==")
@@ -58,6 +79,8 @@ func main() {
 	case_sort_sort()
 	fmt.Println("== sort/stable ==")
 	case_sort_stable()
+	fmt.Println("== sort/stable_custom ==")
+	case_sort_stable_custom()
 	fmt.Println("== sort/string_slice_len ==")
 	case_sort_string_slice_len()
 	fmt.Println("== sort/string_slice_less ==")
@@ -89,6 +112,22 @@ func case_sort_find_compareToFive(i int) int {
 
 func case_sort_find() {
 	idx, found := sort.Find(4, case_sort_find_compareToFive)
+	fmt.Println(idx, found)
+}
+
+func case_sort_find_compareToSix(i int) int {
+	values := []int{1, 3, 5, 7}
+	if 6 < values[i] {
+		return -1
+	}
+	if 6 > values[i] {
+		return 1
+	}
+	return 0
+}
+
+func case_sort_find_not_found() {
+	idx, found := sort.Find(4, case_sort_find_compareToSix)
 	fmt.Println(idx, found)
 }
 
@@ -201,6 +240,7 @@ func case_sort_search_atLeastSeven(i int) bool {
 
 func case_sort_search() {
 	fmt.Println(sort.Search(10, case_sort_search_atLeastSeven))
+	fmt.Println(sort.Search(0, case_sort_search_atLeastSeven))
 }
 
 func case_sort_search_float64s() {
@@ -251,12 +291,22 @@ func case_sort_sort() {
 	values := []int{3, 1, 2}
 	sort.Sort(sort.IntSlice(values))
 	fmt.Println(values)
+
+	records := byKey{{Key: 3, Name: "gamma"}, {Key: 1, Name: "alpha"}, {Key: 2, Name: "beta"}}
+	sort.Sort(records)
+	fmt.Println(records[0].Name, records[2].Name)
 }
 
 func case_sort_stable() {
 	values := []string{"gamma", "alpha", "beta"}
 	sort.Stable(sort.StringSlice(values))
 	fmt.Println(values)
+}
+
+func case_sort_stable_custom() {
+	records := byKey{{Key: 2, Name: "first"}, {Key: 1, Name: "middle"}, {Key: 2, Name: "second"}}
+	sort.Stable(records)
+	fmt.Println(records[0].Name, records[1].Name, records[2].Name)
 }
 
 func case_sort_string_slice_len() {

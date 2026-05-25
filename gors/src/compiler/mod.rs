@@ -151,6 +151,358 @@ fn interface_trait_path_from_name(name: &str) -> syn::Path {
     }
 }
 
+fn qualify_interface_param_name(
+    package_name: &str,
+    go_type: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> Option<String> {
+    match env.resolve_alias(go_type) {
+        typeinfer::GoType::Interface(name) | typeinfer::GoType::Named(name) => {
+            if env.is_interface(&name) {
+                Some(name)
+            } else if name.contains('.') {
+                None
+            } else {
+                let qualified = format!("{package_name}.{name}");
+                env.is_interface(&qualified).then_some(qualified)
+            }
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            qualify_interface_param_name(package_name, &inner, env)
+        }
+        _ => None,
+    }
+}
+
+fn collect_needed_imported_interface_method_sets<'src>(
+    decls: &[ast::Decl<'src>],
+) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        for decl in decls {
+            collect_decl_needed_imported_interface_method_sets(decl, &env, &mut out);
+        }
+    });
+    out
+}
+
+fn collect_decl_needed_imported_interface_method_sets(
+    decl: &ast::Decl<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    match decl {
+        ast::Decl::FuncDecl(func) => {
+            if let Some(body) = &func.body {
+                collect_block_needed_imported_interface_method_sets(body, env, out);
+            }
+        }
+        ast::Decl::GenDecl(gen_decl) => {
+            for spec in &gen_decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec {
+                    if let Some(values) = &value.values {
+                        for expr in values {
+                            collect_expr_needed_imported_interface_method_sets(expr, env, out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_block_needed_imported_interface_method_sets(
+    block: &ast::BlockStmt<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    for stmt in &block.list {
+        collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+    }
+}
+
+fn collect_stmt_needed_imported_interface_method_sets(
+    stmt: &ast::Stmt<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_expr_needed_imported_interface_method_sets(expr, env, out);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => {
+            collect_block_needed_imported_interface_method_sets(block, env, out);
+        }
+        ast::Stmt::CaseClause(case) => {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    collect_expr_needed_imported_interface_method_sets(expr, env, out);
+                }
+            }
+            for stmt in &case.body {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+            for stmt in &comm.body {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec {
+                    if let Some(values) = &value.values {
+                        for expr in values {
+                            collect_expr_needed_imported_interface_method_sets(expr, env, out);
+                        }
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => {
+            collect_call_needed_imported_interface_method_sets(&defer.call, env, out);
+        }
+        ast::Stmt::ExprStmt(expr) => {
+            collect_expr_needed_imported_interface_method_sets(&expr.x, env, out);
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_stmt_needed_imported_interface_method_sets(init, env, out);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_expr_needed_imported_interface_method_sets(cond, env, out);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_stmt_needed_imported_interface_method_sets(post, env, out);
+            }
+            collect_block_needed_imported_interface_method_sets(&for_stmt.body, env, out);
+        }
+        ast::Stmt::GoStmt(go) => {
+            collect_call_needed_imported_interface_method_sets(&go.call, env, out);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = &*if_stmt.init {
+                collect_stmt_needed_imported_interface_method_sets(init, env, out);
+            }
+            collect_expr_needed_imported_interface_method_sets(&if_stmt.cond, env, out);
+            collect_block_needed_imported_interface_method_sets(&if_stmt.body, env, out);
+            if let Some(else_stmt) = &*if_stmt.else_ {
+                collect_stmt_needed_imported_interface_method_sets(else_stmt, env, out);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_expr_needed_imported_interface_method_sets(&inc_dec.x, env, out);
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            collect_stmt_needed_imported_interface_method_sets(&labeled.stmt, env, out);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                collect_expr_needed_imported_interface_method_sets(key, env, out);
+            }
+            if let Some(value) = &range.value {
+                collect_expr_needed_imported_interface_method_sets(value, env, out);
+            }
+            collect_expr_needed_imported_interface_method_sets(&range.x, env, out);
+            collect_block_needed_imported_interface_method_sets(&range.body, env, out);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_expr_needed_imported_interface_method_sets(expr, env, out);
+            }
+        }
+        ast::Stmt::SelectStmt(select) => {
+            for stmt in &select.body.list {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_expr_needed_imported_interface_method_sets(&send.chan, env, out);
+            collect_expr_needed_imported_interface_method_sets(&send.value, env, out);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_stmt_needed_imported_interface_method_sets(init, env, out);
+            }
+            if let Some(tag) = &switch.tag {
+                collect_expr_needed_imported_interface_method_sets(tag, env, out);
+            }
+            for stmt in &switch.body.list {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_stmt_needed_imported_interface_method_sets(init, env, out);
+            }
+            collect_stmt_needed_imported_interface_method_sets(&type_switch.assign, env, out);
+            for stmt in &type_switch.body.list {
+                collect_stmt_needed_imported_interface_method_sets(stmt, env, out);
+            }
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+    }
+}
+
+fn collect_expr_needed_imported_interface_method_sets(
+    expr: &ast::Expr<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_expr_needed_imported_interface_method_sets(len, env, out);
+            }
+            collect_expr_needed_imported_interface_method_sets(&array.elt, env, out);
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            collect_expr_needed_imported_interface_method_sets(&binary.x, env, out);
+            collect_expr_needed_imported_interface_method_sets(&binary.y, env, out);
+        }
+        ast::Expr::CallExpr(call) => {
+            collect_call_needed_imported_interface_method_sets(call, env, out);
+        }
+        ast::Expr::ChanType(chan) => {
+            collect_expr_needed_imported_interface_method_sets(&chan.value, env, out);
+        }
+        ast::Expr::CompositeLit(lit) => {
+            if let Some(type_) = &lit.type_ {
+                collect_expr_needed_imported_interface_method_sets(type_, env, out);
+            }
+            if let Some(elts) = &lit.elts {
+                for elt in elts {
+                    collect_expr_needed_imported_interface_method_sets(elt, env, out);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_expr_needed_imported_interface_method_sets(elt, env, out);
+            }
+        }
+        ast::Expr::FuncLit(func) => {
+            collect_block_needed_imported_interface_method_sets(&func.body, env, out);
+        }
+        ast::Expr::FuncType(func) => {
+            for field in &func.params.list {
+                if let Some(type_) = &field.type_ {
+                    collect_expr_needed_imported_interface_method_sets(type_, env, out);
+                }
+            }
+            if let Some(results) = &func.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_expr_needed_imported_interface_method_sets(type_, env, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_expr_needed_imported_interface_method_sets(&index.x, env, out);
+            collect_expr_needed_imported_interface_method_sets(&index.index, env, out);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_expr_needed_imported_interface_method_sets(&index.x, env, out);
+            for expr in &index.indices {
+                collect_expr_needed_imported_interface_method_sets(expr, env, out);
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                for field in &methods.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_expr_needed_imported_interface_method_sets(type_, env, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(key_value) => {
+            collect_expr_needed_imported_interface_method_sets(&key_value.key, env, out);
+            collect_expr_needed_imported_interface_method_sets(&key_value.value, env, out);
+        }
+        ast::Expr::MapType(map) => {
+            collect_expr_needed_imported_interface_method_sets(&map.key, env, out);
+            collect_expr_needed_imported_interface_method_sets(&map.value, env, out);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_expr_needed_imported_interface_method_sets(&paren.x, env, out);
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            collect_expr_needed_imported_interface_method_sets(&selector.x, env, out);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_expr_needed_imported_interface_method_sets(&slice.x, env, out);
+            if let Some(low) = &slice.low {
+                collect_expr_needed_imported_interface_method_sets(low, env, out);
+            }
+            if let Some(high) = &slice.high {
+                collect_expr_needed_imported_interface_method_sets(high, env, out);
+            }
+            if let Some(max) = &slice.max {
+                collect_expr_needed_imported_interface_method_sets(max, env, out);
+            }
+        }
+        ast::Expr::StarExpr(star) => {
+            collect_expr_needed_imported_interface_method_sets(&star.x, env, out);
+        }
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                for field in &fields.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_expr_needed_imported_interface_method_sets(type_, env, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_expr_needed_imported_interface_method_sets(&assert.x, env, out);
+            if let Some(type_) = &assert.type_ {
+                collect_expr_needed_imported_interface_method_sets(type_, env, out);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            collect_expr_needed_imported_interface_method_sets(&unary.x, env, out);
+        }
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn collect_call_needed_imported_interface_method_sets(
+    call: &ast::CallExpr<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    if let ast::Expr::SelectorExpr(selector) = &*call.fun {
+        if let ast::Expr::Ident(package) = &*selector.x {
+            let function_name = format!("{}.{}", package.name, selector.sel.name);
+            for param in env.get_func_params(&function_name) {
+                if let Some(interface_name) =
+                    qualify_interface_param_name(package.name, &param, env)
+                {
+                    if let Some(methods) = env.get_interface_methods(&interface_name) {
+                        if !methods.is_empty() {
+                            out.entry(interface_name).or_insert(methods);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    collect_expr_needed_imported_interface_method_sets(&call.fun, env, out);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_expr_needed_imported_interface_method_sets(arg, env, out);
+        }
+    }
+}
+
 fn interface_trait_path_from_expr(expr: &ast::Expr) -> Option<syn::Path> {
     match expr {
         ast::Expr::ParenExpr(paren) => interface_trait_path_from_expr(&paren.x),
@@ -10664,6 +11016,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
         set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
+        let needed_imported_interface_methods = if is_main_package {
+            collect_needed_imported_interface_method_sets(&file.decls)
+        } else {
+            BTreeMap::new()
+        };
 
         let mut items = vec![];
         let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
@@ -10877,6 +11234,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }));
         }
 
+        if is_main_package {
+            for (trait_name, method_names) in needed_imported_interface_methods {
+                trait_methods.entry(trait_name).or_insert(method_names);
+            }
+        }
+
         // Interface satisfaction: check which structs satisfy which traits
         for (trait_name, required_methods) in &trait_methods {
             if required_methods.is_empty() {
@@ -10887,7 +11250,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     .iter()
                     .all(|m| struct_method_list.contains(m));
                 if satisfies {
-                    let trait_ident = syn::Ident::new(trait_name, Span::mixed_site());
+                    let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
 
                     // Get method implementations from the methods map
@@ -10920,11 +11283,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         } else {
                             syn::Generics::default()
                         },
-                        trait_: Some((
-                            None,
-                            syn::parse_quote! { #trait_ident },
-                            <Token![for]>::default(),
-                        )),
+                        trait_: Some((None, trait_path, <Token![for]>::default())),
                         self_ty: Box::new(
                             if BORROWED_INTERFACE_STRUCTS
                                 .with(|structs| structs.borrow().contains_key(struct_name))
@@ -12704,6 +13063,40 @@ fn index_expr_parts<'a, 'src>(
     Some((&index.x, &index.index))
 }
 
+fn map_index_types(expr: &ast::Expr) -> Option<(typeinfer::GoType, typeinfer::GoType)> {
+    let ast::Expr::IndexExpr(index) = expr else {
+        return None;
+    };
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        match env.resolve_alias(&typeinfer::GoType::infer_expr(&index.x, &env)) {
+            typeinfer::GoType::Map(key, value) => Some((*key, *value)),
+            _ => None,
+        }
+    })
+}
+
+fn compile_map_index_assignment(
+    lhs: ast::Expr,
+    rhs: ast::Expr,
+    key_ty: typeinfer::GoType,
+    value_ty: typeinfer::GoType,
+) -> Result<syn::Stmt, CompilerError> {
+    let ast::Expr::IndexExpr(index) = lhs else {
+        return Err(CompilerError::InvalidAssignment(
+            "map assignment without map index lhs".to_string(),
+        ));
+    };
+    let rhs_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&rhs, &env.borrow()));
+    let base = lvalue_expr_from_ref(&index.x).ok_or_else(|| {
+        CompilerError::InvalidAssignment("map assignment lhs is not addressable".to_string())
+    })?;
+    let key = compile_expr_with_expected(*index.index, Some(&key_ty));
+    let right_raw = compile_expr_with_expected(rhs, Some(&value_ty));
+    let right = coerce_assignment_expr(&value_ty, &rhs_ty, right_raw);
+    Ok(syn::parse_quote! { #base.insert(#key, #right); })
+}
+
 fn expr_shape_key(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Ident(ident) => Some(format!("id:{}", ident.name)),
@@ -13050,6 +13443,11 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if matches!(&lhs_ast, ast::Expr::Ident(ident) if ident.name == "_") {
                     let right: syn::Expr = rhs_ast.into();
                     return Ok(vec![syn::parse_quote! { let _ = #right; }]);
+                }
+                if let Some((key_ty, value_ty)) = map_index_types(&lhs_ast) {
+                    return Ok(vec![compile_map_index_assignment(
+                        lhs_ast, rhs_ast, key_ty, value_ty,
+                    )?]);
                 }
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
                 let right_raw = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
@@ -13920,6 +14318,26 @@ func main() {
                 }
                 impl std::ops::DerefMut for Dict {
                     fn deref_mut(&mut self) -> &mut std::collections::HashMap<String, isize> { &mut self.0 }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_map_index_assignment() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := make(map[string]int)
+                    m["a"] = 1
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::<String, isize>::new();
+                    m.insert("a".to_string(), 1);
                 }
             },
         );

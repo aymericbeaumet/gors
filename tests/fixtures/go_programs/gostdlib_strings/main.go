@@ -74,6 +74,8 @@ func main() {
 	case_strings_split_n()
 	fmt.Println("== strings/title ==")
 	case_strings_title()
+	fmt.Println("== strings/builder ==")
+	case_strings_builder()
 	fmt.Println("== strings/to_lower ==")
 	case_strings_to_lower()
 	fmt.Println("== strings/to_title ==")
@@ -265,6 +267,24 @@ func case_strings_split_n() {
 
 func case_strings_title() {
 	fmt.Println(strings.Title("hello world"))
+}
+
+func case_strings_builder() {
+	var builder strings.Builder
+	builder.Grow(8)
+	n, err := builder.WriteString("go")
+	fmt.Println(n, err == nil)
+	err = builder.WriteByte(':')
+	fmt.Println(err == nil)
+	n, err = builder.WriteRune('r')
+	fmt.Println(n, err == nil)
+	n, err = builder.Write([]byte("s"))
+	fmt.Println(n, err == nil)
+	fmt.Println(builder.String())
+	fmt.Println(builder.Len())
+	fmt.Println(builder.Cap() >= builder.Len())
+	builder.Reset()
+	fmt.Println(builder.String(), builder.Len())
 }
 
 func case_strings_to_lower() {

@@ -315,6 +315,7 @@ impl GoType {
                 match env.resolve_alias(&container) {
                     GoType::String => GoType::Uint8,
                     GoType::Slice(elem) | GoType::Array(elem) => *elem,
+                    GoType::Map(_, value) => *value,
                     _ => GoType::Unknown,
                 }
             }
@@ -393,6 +394,8 @@ pub struct TypeEnv {
     func_variadic_start: HashMap<std::string::String, usize>,
     /// Type name → kind (struct, interface, alias)
     type_kinds: HashMap<std::string::String, TypeKind>,
+    /// Interface name → required method names
+    interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
     /// Struct name → field types
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
     /// Package-level string constants emitted as owned-String functions.
@@ -408,6 +411,24 @@ pub enum TypeKind {
     Struct,
     Interface,
     Alias(GoType),
+}
+
+fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
+    let ast::Expr::InterfaceType(interface) = expr else {
+        return Vec::new();
+    };
+    interface
+        .methods
+        .as_ref()
+        .map(|methods| {
+            methods
+                .list
+                .iter()
+                .filter_map(|field| field.names.as_ref())
+                .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl TypeEnv {
@@ -477,6 +498,21 @@ impl TypeEnv {
 
     pub fn is_interface(&self, name: &str) -> bool {
         matches!(self.type_kinds.get(name), Some(TypeKind::Interface))
+    }
+
+    pub fn set_interface_methods(&mut self, name: &str, methods: Vec<std::string::String>) {
+        self.interface_methods.insert(name.to_string(), methods);
+    }
+
+    pub fn get_interface_methods(&self, name: &str) -> Option<Vec<std::string::String>> {
+        self.interface_methods.get(name).cloned()
+    }
+
+    pub fn interface_method_sets(&self) -> Vec<(std::string::String, Vec<std::string::String>)> {
+        self.interface_methods
+            .iter()
+            .map(|(name, methods)| (name.clone(), methods.clone()))
+            .collect()
     }
 
     pub fn resolve_alias(&self, ty: &GoType) -> GoType {
@@ -562,6 +598,9 @@ impl TypeEnv {
         for (name, kind) in &package_env.type_kinds {
             self.set_type_kind(&format!("{package_name}.{name}"), kind.clone());
         }
+        for (name, methods) in &package_env.interface_methods {
+            self.set_interface_methods(&format!("{package_name}.{name}"), methods.clone());
+        }
         for (name, fields) in &package_env.struct_fields {
             self.set_struct_fields(&format!("{package_name}.{name}"), fields.clone());
         }
@@ -641,6 +680,7 @@ impl TypeEnv {
             }
             ast::Expr::InterfaceType(_) => {
                 self.set_type_kind(name.name, TypeKind::Interface);
+                self.set_interface_methods(name.name, interface_method_names(&ts.type_));
             }
             other => {
                 let underlying = GoType::from_expr(other);

@@ -41,6 +41,8 @@ func main() {
 	case_fmt_print()
 	fmt.Println("== fmt/printf ==")
 	case_fmt_printf()
+	fmt.Println("== fmt/printf_formats ==")
+	case_fmt_printf_formats()
 	fmt.Println("== fmt/println ==")
 	case_fmt_println()
 	fmt.Println("== fmt/sprint ==")
@@ -109,6 +111,14 @@ func case_fmt_printf() {
 	fmt.Printf("%c\n", 65)
 	fmt.Printf("%c%c%c\n", 72, 105, 33)
 	fmt.Printf("%d is %c\n", 90, 90)
+}
+
+func case_fmt_printf_formats() {
+	fmt.Printf("%t %b %o %O %x %X\n", true, 10, 10, 10, 255, 255)
+	fmt.Printf("%q %U\n", 'A', 'A')
+	fmt.Printf("%s %q %x % X\n", []byte("go"), []byte("go"), []byte("go"), []byte("go"))
+	fmt.Println(fmt.Sprintf("%[2]d %[1]d", 11, 22))
+	fmt.Println(fmt.Sprintf("%08d %.3s", 42, "gopher"))
 }
 
 func case_fmt_println() {
