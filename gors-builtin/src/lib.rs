@@ -483,6 +483,22 @@ impl StringValue for &Vec<u8> {
     }
 }
 
+impl StringValue for Vec<i32> {
+    fn string_value(self) -> std::string::String {
+        self.into_iter()
+            .filter_map(|r| char::from_u32(r as u32))
+            .collect()
+    }
+}
+
+impl StringValue for &Vec<i32> {
+    fn string_value(self) -> std::string::String {
+        self.iter()
+            .filter_map(|&r| char::from_u32(r as u32))
+            .collect()
+    }
+}
+
 impl StringValue for std::string::String {
     fn string_value(self) -> std::string::String {
         self

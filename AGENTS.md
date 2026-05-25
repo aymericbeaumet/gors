@@ -361,6 +361,9 @@ generated-code warnings such as unused temporaries, redundant parentheses, and
 unreachable branches; one blank line separates the prelude from generated code.
 Dependency modules are emitted alphabetically by Rust module name, and generated
 items/methods are ordered with public functions before private functions.
+Preserve Go AST grouping when emitting nested binary expressions: Go and Rust
+operator precedence differ for shifts and bitwise operators, so child binary
+expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 

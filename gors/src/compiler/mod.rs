@@ -10111,6 +10111,76 @@ fn compile_binary_side(
     }
 }
 
+enum BinarySide {
+    Left,
+    Right,
+}
+
+fn rust_binary_precedence(op: token::Token) -> u8 {
+    match op {
+        token::Token::LOR => 1,
+        token::Token::LAND => 2,
+        token::Token::EQL
+        | token::Token::NEQ
+        | token::Token::LSS
+        | token::Token::LEQ
+        | token::Token::GTR
+        | token::Token::GEQ => 3,
+        token::Token::OR => 4,
+        token::Token::XOR => 5,
+        token::Token::AND | token::Token::AND_NOT => 6,
+        token::Token::SHL | token::Token::SHR => 7,
+        token::Token::ADD | token::Token::SUB => 8,
+        token::Token::MUL | token::Token::QUO | token::Token::REM => 9,
+        _ => 0,
+    }
+}
+
+fn parenthesize_expr(expr: syn::Expr) -> syn::Expr {
+    syn::Expr::Paren(syn::ExprParen {
+        attrs: vec![],
+        paren_token: syn::token::Paren::default(),
+        expr: Box::new(expr),
+    })
+}
+
+fn parenthesize_binary_child_if_needed(
+    compiled: syn::Expr,
+    child_op: Option<token::Token>,
+    parent_op: token::Token,
+    side: BinarySide,
+) -> syn::Expr {
+    let Some(child_op) = child_op else {
+        return compiled;
+    };
+    let child_precedence = rust_binary_precedence(child_op);
+    let parent_precedence = rust_binary_precedence(parent_op);
+    let needs_parens = match side {
+        BinarySide::Left => child_precedence < parent_precedence,
+        BinarySide::Right => child_precedence <= parent_precedence,
+    };
+    if needs_parens {
+        parenthesize_expr(compiled)
+    } else {
+        compiled
+    }
+}
+
+fn compile_binary_side_for_parent(
+    expr: ast::Expr,
+    expr_ty: &typeinfer::GoType,
+    other_ty: &typeinfer::GoType,
+    parent_op: token::Token,
+    side: BinarySide,
+) -> syn::Expr {
+    let child_op = match &expr {
+        ast::Expr::BinaryExpr(binary) => Some(binary.op),
+        _ => None,
+    };
+    let compiled = compile_binary_side(expr, expr_ty, other_ty);
+    parenthesize_binary_child_if_needed(compiled, child_op, parent_op, side)
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if let Some(compare) = detect_reflect_kind_compare(&binary_expr) {
@@ -10223,9 +10293,21 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let left = if is_shift {
         (*binary_expr.x).into()
     } else {
-        compile_binary_side(*binary_expr.x, &left_ty, &right_ty)
+        compile_binary_side_for_parent(
+            *binary_expr.x,
+            &left_ty,
+            &right_ty,
+            original_op,
+            BinarySide::Left,
+        )
     };
-    let right = compile_binary_side(*binary_expr.y, &right_ty, &left_ty);
+    let right = compile_binary_side_for_parent(
+        *binary_expr.y,
+        &right_ty,
+        &left_ty,
+        original_op,
+        BinarySide::Right,
+    );
     if original_op == token::Token::AND_NOT {
         let not_right = syn::Expr::Unary(syn::ExprUnary {
             attrs: vec![],
@@ -10275,12 +10357,26 @@ fn compile_numeric_binary_expr_with_expected(
         Err(binary_expr) => binary_expr,
     };
     let op = binary_expr.op;
-    let left = compile_expr_with_expected(*binary_expr.x, Some(expected));
+    let left_child_op = match &*binary_expr.x {
+        ast::Expr::BinaryExpr(binary) => Some(binary.op),
+        _ => None,
+    };
+    let right_child_op = match &*binary_expr.y {
+        ast::Expr::BinaryExpr(binary) => Some(binary.op),
+        _ => None,
+    };
+    let left = parenthesize_binary_child_if_needed(
+        compile_expr_with_expected(*binary_expr.x, Some(expected)),
+        left_child_op,
+        op,
+        BinarySide::Left,
+    );
     let right = if matches!(op, token::Token::SHL | token::Token::SHR) {
         syn::Expr::from(*binary_expr.y)
     } else {
         compile_expr_with_expected(*binary_expr.y, Some(expected))
     };
+    let right = parenthesize_binary_child_if_needed(right, right_child_op, op, BinarySide::Right);
     if op == token::Token::AND_NOT {
         let not_right: syn::Expr = syn::parse_quote! { !#right };
         return syn::parse_quote! { #left & #not_right };
