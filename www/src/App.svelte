@@ -264,8 +264,19 @@ async function doTranspile() {
 	conCmd("$ gors build -o main.rs main.go");
 	transpiling = true;
 	await tick();
-	const goResult = go2rust.compile(goCode);
+	const gen = pipelineGeneration;
+	let goResult;
+	try {
+		goResult = await go2rust.compile(goCode);
+	} catch (err) {
+		transpiling = false;
+		conErr(err instanceof Error ? err.message : String(err));
+		return null;
+	}
 	transpiling = false;
+	if (gen !== pipelineGeneration || goCode !== goEditor.getModel().getValue()) {
+		return null;
+	}
 
 	if (!goResult.success) {
 		const err = goResult.error;
@@ -601,6 +612,7 @@ let initialized = false;
 
 onDestroy(() => {
 	cancelScheduledPipeline();
+	go2rust.dispose();
 	if (resizeObserver) resizeObserver.disconnect();
 	if (term) term.dispose();
 });

@@ -1,20 +1,25 @@
 #![cfg(feature = "test_integration_parser")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use gors::test_support::{TestConfig, collect_go_files, fixtures_dir, test_files_parallel};
+mod common;
+
+use common::{TestConfig, collect_go_files, fixtures_dir, test_files_parallel};
 
 #[test]
 fn test_integration_parser() {
     let config = TestConfig::from_env();
-    let repos_dir = fixtures_dir().join("go_sources/repositories");
+    let files_dir = fixtures_dir().join("go_files");
+    let repos_dir = fixtures_dir().join("go_repositories");
 
-    if !repos_dir.exists() {
-        eprintln!("Skipping test_integration_parser: fixtures/go_sources/repositories not found");
+    if !files_dir.exists() && !repos_dir.exists() {
+        eprintln!("Skipping test_integration_parser: no Go file fixtures found");
         eprintln!("Run `make setup` to initialize test repositories");
         return;
     }
 
-    let files = collect_go_files(&repos_dir);
+    let mut files = collect_go_files(&files_dir);
+    files.extend(collect_go_files(&repos_dir));
+    files.sort();
     if files.is_empty() {
         eprintln!("Skipping test_integration_parser: no .go files found");
         eprintln!("Run `make setup` to initialize test repositories");

@@ -1,119 +1,119 @@
-[submodule "gors/tests/fixtures/go_sources/repositories/kubernetes"]
-	path = gors/tests/fixtures/go_sources/repositories/kubernetes
+[submodule "tests/fixtures/go_repositories/kubernetes"]
+	path = tests/fixtures/go_repositories/kubernetes
 	url = https://github.com/kubernetes/kubernetes.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/go"]
-	path = gors/tests/fixtures/go_sources/repositories/go
+[submodule "tests/fixtures/go_repositories/go"]
+	path = tests/fixtures/go_repositories/go
 	url = https://github.com/golang/go.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/prometheus"]
-	path = gors/tests/fixtures/go_sources/repositories/prometheus
+[submodule "tests/fixtures/go_repositories/prometheus"]
+	path = tests/fixtures/go_repositories/prometheus
 	url = https://github.com/prometheus/prometheus.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/minio"]
-	path = gors/tests/fixtures/go_sources/repositories/minio
+[submodule "tests/fixtures/go_repositories/minio"]
+	path = tests/fixtures/go_repositories/minio
 	url = https://github.com/minio/minio.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/go-ethereum"]
-	path = gors/tests/fixtures/go_sources/repositories/go-ethereum
+[submodule "tests/fixtures/go_repositories/go-ethereum"]
+	path = tests/fixtures/go_repositories/go-ethereum
 	url = https://github.com/ethereum/go-ethereum.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/traefik"]
-	path = gors/tests/fixtures/go_sources/repositories/traefik
+[submodule "tests/fixtures/go_repositories/traefik"]
+	path = tests/fixtures/go_repositories/traefik
 	url = https://github.com/traefik/traefik.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/syncthing"]
-	path = gors/tests/fixtures/go_sources/repositories/syncthing
+[submodule "tests/fixtures/go_repositories/syncthing"]
+	path = tests/fixtures/go_repositories/syncthing
 	url = https://github.com/syncthing/syncthing.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/caddy"]
-	path = gors/tests/fixtures/go_sources/repositories/caddy
+[submodule "tests/fixtures/go_repositories/caddy"]
+	path = tests/fixtures/go_repositories/caddy
 	url = https://github.com/caddyserver/caddy.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/gitea"]
-	path = gors/tests/fixtures/go_sources/repositories/gitea
+[submodule "tests/fixtures/go_repositories/gitea"]
+	path = tests/fixtures/go_repositories/gitea
 	url = https://github.com/go-gitea/gitea.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/gogs"]
-	path = gors/tests/fixtures/go_sources/repositories/gogs
+[submodule "tests/fixtures/go_repositories/gogs"]
+	path = tests/fixtures/go_repositories/gogs
 	url = https://github.com/gogs/gogs.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/terraform"]
-	path = gors/tests/fixtures/go_sources/repositories/terraform
+[submodule "tests/fixtures/go_repositories/terraform"]
+	path = tests/fixtures/go_repositories/terraform
 	url = https://github.com/hashicorp/terraform.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/consul"]
-	path = gors/tests/fixtures/go_sources/repositories/consul
+[submodule "tests/fixtures/go_repositories/consul"]
+	path = tests/fixtures/go_repositories/consul
 	url = https://github.com/hashicorp/consul.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/vault"]
-	path = gors/tests/fixtures/go_sources/repositories/vault
+[submodule "tests/fixtures/go_repositories/vault"]
+	path = tests/fixtures/go_repositories/vault
 	url = https://github.com/hashicorp/vault.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/nomad"]
-	path = gors/tests/fixtures/go_sources/repositories/nomad
+[submodule "tests/fixtures/go_repositories/nomad"]
+	path = tests/fixtures/go_repositories/nomad
 	url = https://github.com/hashicorp/nomad.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/influxdb"]
-	path = gors/tests/fixtures/go_sources/repositories/influxdb
+[submodule "tests/fixtures/go_repositories/influxdb"]
+	path = tests/fixtures/go_repositories/influxdb
 	url = https://github.com/influxdata/influxdb.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/istio"]
-	path = gors/tests/fixtures/go_sources/repositories/istio
+[submodule "tests/fixtures/go_repositories/istio"]
+	path = tests/fixtures/go_repositories/istio
 	url = https://github.com/istio/istio.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/linkerd2"]
-	path = gors/tests/fixtures/go_sources/repositories/linkerd2
+[submodule "tests/fixtures/go_repositories/linkerd2"]
+	path = tests/fixtures/go_repositories/linkerd2
 	url = https://github.com/linkerd/linkerd2.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/tidb"]
-	path = gors/tests/fixtures/go_sources/repositories/tidb
+[submodule "tests/fixtures/go_repositories/tidb"]
+	path = tests/fixtures/go_repositories/tidb
 	url = https://github.com/pingcap/tidb.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/beats"]
-	path = gors/tests/fixtures/go_sources/repositories/beats
+[submodule "tests/fixtures/go_repositories/beats"]
+	path = tests/fixtures/go_repositories/beats
 	url = https://github.com/elastic/beats.git
 	shallow = true
 	ignore = dirty
 
-[submodule "gors/tests/fixtures/go_sources/repositories/nats-server"]
-	path = gors/tests/fixtures/go_sources/repositories/nats-server
+[submodule "tests/fixtures/go_repositories/nats-server"]
+	path = tests/fixtures/go_repositories/nats-server
 	url = https://github.com/nats-io/nats-server.git
 	shallow = true
 	ignore = dirty

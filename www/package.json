@@ -1,12 +1,13 @@
 {
 	"name": "www",
 	"scripts": {
-		"build:wasm": "wasm-pack build --release wasm",
+		"build:wasm": "node scripts/normalize-wasm-package-json.mjs && wasm-pack build --release wasm && node scripts/normalize-wasm-package-json.mjs",
+		"build:wasm:dev": "node scripts/normalize-wasm-package-json.mjs && wasm-pack build --dev wasm && node scripts/normalize-wasm-package-json.mjs",
 		"build:v86": "bash v86/build-image.sh",
 		"build:bios": "bash v86/download-bios.sh",
 		"prebuild": "npm run build:wasm && npm run build:bios && npm run build:v86",
 		"build": "webpack --mode=production",
-		"predev": "wasm-pack build --dev wasm && npm run build:bios && npm run build:v86",
+		"predev": "npm run build:wasm:dev && npm run build:bios && npm run build:v86",
 		"dev": "webpack serve --mode=development",
 		"format": "biome format --write .",
 		"format:check": "biome format .",

@@ -1,89 +1,88 @@
-use flate2::read::GzDecoder;
+//! Go package resolver.
+//!
+//! This module resolves import paths to Go source packages, currently backed by
+//! build-time generated metadata from the embedded Go SDK.
+
 use quote::ToTokens;
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-static STDLIB_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/go_stdlib.tar.gz"));
-static STDLIB_INDEX: &str = include_str!(concat!(env!("OUT_DIR"), "/go_stdlib.index"));
+#[derive(Clone, Copy)]
+struct EmbeddedGoFile {
+    filename: &'static str,
+    content: &'static str,
+}
 
-type PackageFiles = Vec<(String, String)>;
+#[derive(Clone, Copy)]
+struct EmbeddedGoPackage {
+    import_path: &'static str,
+    files: &'static [EmbeddedGoFile],
+    direct_imports: &'static [&'static str],
+}
+
+include!(concat!(env!("OUT_DIR"), "/go_stdlib.rs"));
+
+type PackageFiles = Vec<(&'static str, &'static str)>;
 type TypeEnv = crate::compiler::typeinfer::TypeEnv;
-type TypeEnvCache = HashMap<String, Option<(String, TypeEnv)>>;
+type TypeEnvCell = Arc<OnceLock<Option<(String, TypeEnv)>>>;
+type PackageFilesCache = HashMap<String, Arc<OnceLock<Option<Arc<PackageFiles>>>>>;
+type TypeEnvCache = HashMap<String, TypeEnvCell>;
+type TransitiveImportsCache = HashMap<String, Arc<OnceLock<Vec<String>>>>;
+type ResolvedModuleCache = HashMap<String, Arc<RwLock<ResolvedModuleEntry>>>;
 
-static PACKAGE_INDEX: OnceLock<Vec<&'static str>> = OnceLock::new();
-static PACKAGE_FILES: OnceLock<Mutex<HashMap<String, Option<Arc<PackageFiles>>>>> = OnceLock::new();
-static TYPE_ENVS: OnceLock<Mutex<TypeEnvCache>> = OnceLock::new();
-static TRANSITIVE_IMPORTS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+enum ResolvedModuleEntry {
+    Vacant,
+    Missing,
+    Source(String),
+    Uncacheable,
+}
+
+static PACKAGE_FILES: OnceLock<RwLock<PackageFilesCache>> = OnceLock::new();
+static TYPE_ENVS: OnceLock<RwLock<TypeEnvCache>> = OnceLock::new();
+static TRANSITIVE_IMPORTS: OnceLock<RwLock<TransitiveImportsCache>> = OnceLock::new();
+static RESOLVED_MODULES: OnceLock<RwLock<ResolvedModuleCache>> = OnceLock::new();
+static RESOLVED_IMPORTS: OnceLock<RwLock<HashMap<String, Vec<String>>>> = OnceLock::new();
 static PANIC_HOOK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-thread_local! {
-    static RESOLVED_MODULES: RefCell<HashMap<String, Option<syn::ItemMod>>> = RefCell::new(HashMap::new());
-}
-
-fn package_index() -> &'static Vec<&'static str> {
-    PACKAGE_INDEX.get_or_init(|| {
-        let mut packages: Vec<_> = STDLIB_INDEX
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        packages.sort_unstable();
-        packages.dedup();
-        packages
-    })
-}
-
-fn package_file_cache() -> &'static Mutex<HashMap<String, Option<Arc<PackageFiles>>>> {
-    PACKAGE_FILES.get_or_init(|| Mutex::new(HashMap::new()))
+fn package_file_cache() -> &'static RwLock<PackageFilesCache> {
+    PACKAGE_FILES.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn load_package_files(import_path: &str) -> Option<Arc<PackageFiles>> {
-    let decoder = GzDecoder::new(STDLIB_ARCHIVE);
-    let mut archive = tar::Archive::new(decoder);
-    let mut files: PackageFiles = Vec::new();
-
-    let Ok(entries) = archive.entries() else {
-        return None;
-    };
-
-    for entry in entries.flatten() {
-        let mut entry = entry;
-        let path = match entry.path() {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => continue,
-        };
-
-        if !path.ends_with(".go") {
-            continue;
-        }
-
-        let filename = match path.rsplit_once('/') {
-            Some((dir, file)) if dir == import_path => file.to_string(),
-            Some(_) => continue,
-            None => continue,
-        };
-
-        let mut content = String::new();
-        if entry.read_to_string(&mut content).is_ok() && should_compile_file(&filename, &content) {
-            files.push((filename, content));
-        }
-    }
-
-    if files.is_empty() {
+    let package = embedded_package(import_path)?;
+    if package.files.is_empty() {
         return None;
     }
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    Some(Arc::new(files))
+    Some(Arc::new(
+        package
+            .files
+            .iter()
+            .map(|file| (file.filename, file.content))
+            .collect(),
+    ))
 }
 
-fn type_envs() -> &'static Mutex<HashMap<String, Option<(String, TypeEnv)>>> {
-    TYPE_ENVS.get_or_init(|| Mutex::new(HashMap::new()))
+fn type_envs() -> &'static RwLock<TypeEnvCache> {
+    TYPE_ENVS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn transitive_imports() -> &'static Mutex<HashMap<String, Vec<String>>> {
-    TRANSITIVE_IMPORTS.get_or_init(|| Mutex::new(HashMap::new()))
+fn transitive_imports() -> &'static RwLock<TransitiveImportsCache> {
+    TRANSITIVE_IMPORTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn resolved_modules() -> &'static RwLock<ResolvedModuleCache> {
+    RESOLVED_MODULES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn resolved_imports() -> &'static RwLock<HashMap<String, Vec<String>>> {
+    RESOLVED_IMPORTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn embedded_package(import_path: &str) -> Option<&'static EmbeddedGoPackage> {
+    EMBEDDED_PACKAGES
+        .binary_search_by(|package| package.import_path.cmp(import_path))
+        .ok()
+        .map(|idx| &EMBEDDED_PACKAGES[idx])
 }
 
 pub fn is_known(import_path: &str) -> bool {
@@ -91,32 +90,42 @@ pub fn is_known(import_path: &str) -> bool {
 }
 
 pub fn package_exists(import_path: &str) -> bool {
-    package_index()
-        .binary_search_by(|candidate| candidate.cmp(&import_path))
-        .is_ok()
+    embedded_package(import_path).is_some()
 }
 
 pub fn package_files(import_path: &str) -> Option<Arc<PackageFiles>> {
     if !package_exists(import_path) {
         return None;
     }
-    if let Ok(cache) = package_file_cache().lock()
-        && let Some(files) = cache.get(import_path)
+
+    let Some(cell) = package_file_cell(import_path) else {
+        return load_package_files(import_path);
+    };
+    cell.get_or_init(|| load_package_files(import_path)).clone()
+}
+
+fn package_file_cell(import_path: &str) -> Option<Arc<OnceLock<Option<Arc<PackageFiles>>>>> {
+    if let Ok(cache) = package_file_cache().read()
+        && let Some(cell) = cache.get(import_path)
     {
-        return files.clone();
+        return Some(cell.clone());
     }
 
-    let files = load_package_files(import_path);
-    if let Ok(mut cache) = package_file_cache().lock() {
-        cache.insert(import_path.to_string(), files.clone());
-    }
-    files
+    let Ok(mut cache) = package_file_cache().write() else {
+        return None;
+    };
+    Some(
+        cache
+            .entry(import_path.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone(),
+    )
 }
 
 pub fn list_packages() -> Vec<String> {
-    package_index()
+    EMBEDDED_PACKAGES
         .iter()
-        .map(|package| (*package).to_string())
+        .map(|package| package.import_path.to_string())
         .collect()
 }
 
@@ -158,15 +167,92 @@ pub fn resolve_with_roots(import_path: &str, roots: &HashSet<String>) -> Option<
 
 fn resolve_cached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let cache_key = resolve_cache_key(import_path, roots);
-    if let Some(cached) = RESOLVED_MODULES.with(|cache| cache.borrow().get(&cache_key).cloned()) {
-        return cached;
+    let Some(cell) = resolved_module_cell(&cache_key) else {
+        return resolve_uncached(import_path, roots);
+    };
+
+    if let Ok(entry) = cell.read() {
+        match &*entry {
+            ResolvedModuleEntry::Missing => return None,
+            ResolvedModuleEntry::Source(source) => {
+                if let Some(module) = parse_cached_module(import_path, source) {
+                    return Some(module);
+                }
+            }
+            ResolvedModuleEntry::Vacant | ResolvedModuleEntry::Uncacheable => {}
+        }
+    }
+
+    let Ok(mut entry) = cell.write() else {
+        return resolve_uncached(import_path, roots);
+    };
+    match &*entry {
+        ResolvedModuleEntry::Missing => return None,
+        ResolvedModuleEntry::Source(source) => {
+            if let Some(module) = parse_cached_module(import_path, source) {
+                return Some(module);
+            }
+        }
+        ResolvedModuleEntry::Vacant | ResolvedModuleEntry::Uncacheable => {}
     }
 
     let resolved = resolve_uncached(import_path, roots);
-    RESOLVED_MODULES.with(|cache| {
-        cache.borrow_mut().insert(cache_key, resolved.clone());
-    });
+    match &resolved {
+        None => {
+            *entry = ResolvedModuleEntry::Missing;
+        }
+        Some(module) => {
+            let source = module_content_cache_source(module);
+            if parse_cached_module(import_path, &source).is_some() {
+                *entry = ResolvedModuleEntry::Source(source);
+            } else {
+                *entry = ResolvedModuleEntry::Uncacheable;
+            }
+        }
+    }
     resolved
+}
+
+fn resolved_module_cell(cache_key: &str) -> Option<Arc<RwLock<ResolvedModuleEntry>>> {
+    if let Ok(cache) = resolved_modules().read()
+        && let Some(cell) = cache.get(cache_key)
+    {
+        return Some(cell.clone());
+    }
+
+    let Ok(mut cache) = resolved_modules().write() else {
+        return None;
+    };
+    Some(
+        cache
+            .entry(cache_key.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(ResolvedModuleEntry::Vacant)))
+            .clone(),
+    )
+}
+
+fn parse_cached_module(import_path: &str, source: &str) -> Option<syn::ItemMod> {
+    syn::parse_str::<syn::File>(source)
+        .inspect_err(|error| {
+            log_skip(format_args!(
+                "[gors] skip resolved module cache for {import_path}: {error}"
+            ));
+        })
+        .ok()
+        .map(|file| item_mod_for(import_path, file.items))
+}
+
+fn module_content_cache_source(module: &syn::ItemMod) -> String {
+    let items = module
+        .content
+        .as_ref()
+        .map(|(_, items)| items.clone())
+        .unwrap_or_default();
+    prettyplease::unparse(&syn::File {
+        shebang: None,
+        attrs: vec![],
+        items,
+    })
 }
 
 fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> String {
@@ -180,7 +266,6 @@ fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> Stri
 
 fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let files = package_files(import_path)?;
-    let mod_name = module_name(import_path);
 
     let mut parsed_files = Vec::new();
     for (filename, content) in files.iter() {
@@ -193,12 +278,12 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
                 continue;
             }
         };
-        parsed_files.push((filename.as_str(), ast));
+        parsed_files.push((*filename, ast));
     }
 
     let reachable_names = roots.map(|roots| reachable_package_names(&parsed_files, roots));
     if roots.is_some() && reachable_names.as_ref().is_none_or(HashSet::is_empty) {
-        cache_transitive_imports(import_path, Vec::new());
+        cache_resolved_imports(import_path, roots, Vec::new());
         return None;
     }
 
@@ -214,7 +299,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         .collect();
 
     if parsed_files.is_empty() {
-        cache_transitive_imports(import_path, Vec::new());
+        cache_resolved_imports(import_path, roots, Vec::new());
         return None;
     }
 
@@ -282,7 +367,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     crate::compiler::clear_borrow_pointer_arg_indices();
 
     if all_items.is_empty() {
-        cache_transitive_imports(import_path, Vec::new());
+        cache_resolved_imports(import_path, roots, Vec::new());
         return None;
     }
 
@@ -296,20 +381,24 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
 
     dedupe_use_items(&mut all_items);
     let used_imports = used_imports_from_items(&mut all_items, &import_path_by_module);
-    cache_transitive_imports(import_path, used_imports.clone());
+    cache_resolved_imports(import_path, roots, used_imports.clone());
     let module_refs: HashSet<String> = used_imports.iter().map(|path| module_name(path)).collect();
     inject_structural_helpers(&mut all_items);
     prefix_crate_paths(&mut all_items, &module_refs);
 
-    Some(syn::ItemMod {
+    Some(item_mod_for(import_path, all_items))
+}
+
+fn item_mod_for(import_path: &str, items: Vec<syn::Item>) -> syn::ItemMod {
+    syn::ItemMod {
         attrs: vec![],
         vis: syn::Visibility::Inherited,
         unsafety: None,
         mod_token: <syn::Token![mod]>::default(),
-        ident: syn::Ident::new(&mod_name, proc_macro2::Span::mixed_site()),
-        content: Some((syn::token::Brace::default(), all_items)),
+        ident: syn::Ident::new(&module_name(import_path), proc_macro2::Span::mixed_site()),
+        content: Some((syn::token::Brace::default(), items)),
         semi: None,
-    })
+    }
 }
 
 fn dedupe_use_items(items: &mut Vec<syn::Item>) {
@@ -345,17 +434,29 @@ fn log_skip(args: std::fmt::Arguments<'_>) {
 }
 
 pub fn scan_type_env(import_path: &str) -> Option<(String, TypeEnv)> {
-    if let Ok(cache) = type_envs().lock() {
-        if let Some(cached) = cache.get(import_path) {
-            return cached.clone();
-        }
+    let Some(cell) = type_env_cell(import_path) else {
+        return scan_type_env_uncached(import_path);
+    };
+    cell.get_or_init(|| scan_type_env_uncached(import_path))
+        .clone()
+}
+
+fn type_env_cell(import_path: &str) -> Option<TypeEnvCell> {
+    if let Ok(cache) = type_envs().read()
+        && let Some(cell) = cache.get(import_path)
+    {
+        return Some(cell.clone());
     }
 
-    let scanned = scan_type_env_uncached(import_path);
-    if let Ok(mut cache) = type_envs().lock() {
-        cache.insert(import_path.to_string(), scanned.clone());
-    }
-    scanned
+    let Ok(mut cache) = type_envs().write() else {
+        return None;
+    };
+    Some(
+        cache
+            .entry(import_path.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone(),
+    )
 }
 
 fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
@@ -377,50 +478,63 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
 }
 
 pub fn collect_transitive_imports(import_path: &str) -> Vec<String> {
-    if let Ok(cache) = transitive_imports().lock() {
-        if let Some(cached) = cache.get(import_path) {
-            return cached.clone();
-        }
-    }
-
-    let imports = collect_transitive_imports_uncached(import_path);
-    cache_transitive_imports(import_path, imports.clone());
-    imports
+    let Some(cell) = transitive_imports_cell(import_path) else {
+        return collect_transitive_imports_uncached(import_path);
+    };
+    cell.get_or_init(|| collect_transitive_imports_uncached(import_path))
+        .clone()
 }
 
-fn cache_transitive_imports(import_path: &str, imports: Vec<String>) {
-    if let Ok(mut cache) = transitive_imports().lock() {
-        cache.insert(import_path.to_string(), imports);
+fn transitive_imports_cell(import_path: &str) -> Option<Arc<OnceLock<Vec<String>>>> {
+    if let Ok(cache) = transitive_imports().read()
+        && let Some(cell) = cache.get(import_path)
+    {
+        return Some(cell.clone());
+    }
+
+    let Ok(mut cache) = transitive_imports().write() else {
+        return None;
+    };
+    Some(
+        cache
+            .entry(import_path.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone(),
+    )
+}
+
+pub fn collect_resolved_imports(import_path: &str, roots: &HashSet<String>) -> Vec<String> {
+    let cache_key = resolve_cache_key(import_path, Some(roots));
+    if let Ok(cache) = resolved_imports().read()
+        && let Some(cached) = cache.get(&cache_key)
+    {
+        return cached.clone();
+    }
+    collect_transitive_imports(import_path)
+}
+
+fn cache_resolved_imports(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    imports: Vec<String>,
+) {
+    let cache_key = resolve_cache_key(import_path, roots);
+    if let Ok(mut cache) = resolved_imports().write() {
+        cache.entry(cache_key).or_insert(imports);
     }
 }
 
 fn collect_transitive_imports_uncached(import_path: &str) -> Vec<String> {
-    let Some(files) = package_files(import_path) else {
-        return vec![];
+    let Some(package) = embedded_package(import_path) else {
+        return Vec::new();
     };
-
-    let mut imports = HashSet::new();
-    for (filename, content) in files.iter() {
-        if let Ok(ast) = crate::parser::parse_file(filename, content) {
-            for import in ast.imports() {
-                let path = import.path.value.trim_matches('"');
-                if is_known(path) && path != import_path {
-                    imports.insert(path.to_string());
-                }
-            }
-            continue;
-        }
-
-        for path in import_paths_from_source(content) {
-            if is_known(&path) && path != import_path {
-                imports.insert(path);
-            }
-        }
-    }
-
-    let mut imports: Vec<_> = imports.into_iter().collect();
-    imports.sort();
-    imports
+    package
+        .direct_imports
+        .iter()
+        .copied()
+        .filter(|path| *path != import_path && is_known(path))
+        .map(str::to_string)
+        .collect()
 }
 
 fn reachable_package_names(
@@ -904,32 +1018,6 @@ fn import_local_name(import: &crate::ast::ImportSpec<'_>) -> Option<String> {
         .or_else(|| import_path.rsplit('/').next().map(str::to_string))
 }
 
-fn import_paths_from_source(content: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut in_import_block = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import (") {
-            in_import_block = true;
-            continue;
-        }
-        if in_import_block && trimmed == ")" {
-            in_import_block = false;
-            continue;
-        }
-        if trimmed.starts_with("import ") || in_import_block {
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start + 1..].find('"') {
-                    paths.push(trimmed[start + 1..start + 1 + end].to_string());
-                }
-            }
-        }
-    }
-
-    paths
-}
-
 fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
     let has_formatter = has_trait(items, "Formatter");
     let has_stringer = has_trait(items, "Stringer");
@@ -1145,238 +1233,6 @@ fn prefix_crate_paths(items: &mut [syn::Item], module_refs: &HashSet<String>) {
     for item in items.iter_mut() {
         prefixer.visit_item_mut(item);
     }
-}
-
-fn should_compile_file(filename: &str, content: &str) -> bool {
-    file_name_matches_target(filename) && build_constraint_matches(content)
-}
-
-fn file_name_matches_target(filename: &str) -> bool {
-    let Some(stem) = filename.strip_suffix(".go") else {
-        return false;
-    };
-    let parts: Vec<&str> = stem.split('_').collect();
-    let Some(last) = parts.last().copied() else {
-        return true;
-    };
-
-    if is_go_arch(last) {
-        if last != go_arch() {
-            return false;
-        }
-        if let Some(os_part) = parts.get(parts.len().saturating_sub(2)) {
-            if is_go_os(os_part) && *os_part != go_os() {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    !is_go_os(last) || last == go_os()
-}
-
-fn build_constraint_matches(content: &str) -> bool {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(expr) = trimmed.strip_prefix("//go:build ") {
-            return BuildExprParser::new(expr).parse();
-        }
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        break;
-    }
-    true
-}
-
-struct BuildExprParser<'a> {
-    tokens: Vec<&'a str>,
-    pos: usize,
-}
-
-impl<'a> BuildExprParser<'a> {
-    fn new(expr: &'a str) -> Self {
-        Self {
-            tokens: tokenize_build_expr(expr),
-            pos: 0,
-        }
-    }
-
-    fn parse(&mut self) -> bool {
-        self.parse_or()
-    }
-
-    fn parse_or(&mut self) -> bool {
-        let mut value = self.parse_and();
-        while self.peek() == Some("||") {
-            self.pos += 1;
-            value = self.parse_and() || value;
-        }
-        value
-    }
-
-    fn parse_and(&mut self) -> bool {
-        let mut value = self.parse_unary();
-        while self.peek() == Some("&&") {
-            self.pos += 1;
-            value = self.parse_unary() && value;
-        }
-        value
-    }
-
-    fn parse_unary(&mut self) -> bool {
-        if self.peek() == Some("!") {
-            self.pos += 1;
-            return !self.parse_unary();
-        }
-        self.parse_primary()
-    }
-
-    fn parse_primary(&mut self) -> bool {
-        match self.next() {
-            Some("(") => {
-                let value = self.parse_or();
-                if self.peek() == Some(")") {
-                    self.pos += 1;
-                }
-                value
-            }
-            Some(tag) => build_tag_matches(tag),
-            None => true,
-        }
-    }
-
-    fn peek(&self) -> Option<&'a str> {
-        self.tokens.get(self.pos).copied()
-    }
-
-    fn next(&mut self) -> Option<&'a str> {
-        let token = self.peek()?;
-        self.pos += 1;
-        Some(token)
-    }
-}
-
-fn tokenize_build_expr(expr: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut start = None;
-
-    for (idx, ch) in expr.char_indices() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-            if start.is_none() {
-                start = Some(idx);
-            }
-            continue;
-        }
-
-        if let Some(s) = start.take() {
-            tokens.push(&expr[s..idx]);
-        }
-
-        match ch {
-            '!' | '(' | ')' => tokens.push(&expr[idx..idx + ch.len_utf8()]),
-            '&' | '|' => {
-                let end = idx + 2;
-                if expr.get(idx..end) == Some("&&") || expr.get(idx..end) == Some("||") {
-                    tokens.push(&expr[idx..end]);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(s) = start {
-        tokens.push(&expr[s..]);
-    }
-
-    tokens
-}
-
-fn build_tag_matches(tag: &str) -> bool {
-    if tag == go_os() || tag == go_arch() {
-        return true;
-    }
-    if tag == "unix" {
-        return is_unix_goos(go_os());
-    }
-    if let Some(version) = tag.strip_prefix("go1.") {
-        return version.parse::<u32>().is_ok_and(|minor| minor <= 24);
-    }
-    matches!(tag, "gc")
-}
-
-fn go_os() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "darwin",
-        "linux" => "linux",
-        "windows" => "windows",
-        other => other,
-    }
-}
-
-fn go_arch() -> &'static str {
-    "gors"
-}
-
-fn is_go_os(value: &str) -> bool {
-    matches!(
-        value,
-        "aix"
-            | "android"
-            | "darwin"
-            | "dragonfly"
-            | "freebsd"
-            | "hurd"
-            | "illumos"
-            | "ios"
-            | "js"
-            | "linux"
-            | "netbsd"
-            | "openbsd"
-            | "plan9"
-            | "solaris"
-            | "wasip1"
-            | "windows"
-    )
-}
-
-fn is_go_arch(value: &str) -> bool {
-    matches!(
-        value,
-        "386"
-            | "amd64"
-            | "arm"
-            | "arm64"
-            | "loong64"
-            | "mips"
-            | "mips64"
-            | "mips64le"
-            | "mipsle"
-            | "ppc64"
-            | "ppc64le"
-            | "riscv64"
-            | "s390x"
-            | "sparc64"
-            | "wasm"
-    )
-}
-
-fn is_unix_goos(value: &str) -> bool {
-    matches!(
-        value,
-        "aix"
-            | "android"
-            | "darwin"
-            | "dragonfly"
-            | "freebsd"
-            | "hurd"
-            | "illumos"
-            | "ios"
-            | "linux"
-            | "netbsd"
-            | "openbsd"
-            | "solaris"
-    )
 }
 
 fn is_rust_keyword(value: &str) -> bool {

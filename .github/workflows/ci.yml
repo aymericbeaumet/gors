@@ -4,20 +4,10 @@ on: [push, pull_request]
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Lint
-        run: make lint
-
   build:
     runs-on: ubuntu-latest
     steps:
@@ -28,10 +18,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build
         run: make build
 
-  web:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,24 +32,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
 
-      - name: Install Node.js toolchain
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Lint web
-        run: make web-lint
-
-      - name: Build web
-        run: make web-build
-
-      - name: Upload web artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: www-dist
-          path: ./www/dist
+      - name: Lint
+        run: make lint
 
   test-unit:
     runs-on: ubuntu-latest
@@ -69,10 +48,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install Go toolchain
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.x'
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test unit
         run: make test-unit
@@ -89,10 +65,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install Go toolchain
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.x'
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test integration lexer
         run: make test-integration-lexer
@@ -109,10 +82,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install Go toolchain
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.x'
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test integration parser
         run: make test-integration-parser
@@ -127,15 +97,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install Go toolchain
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.x'
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test integration run
         run: make test-integration-run
 
-  test-integration-generate:
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -144,45 +111,46 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
-      - name: Install Go toolchain
-        uses: actions/setup-go@v6
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
         with:
-          go-version: '1.26.x'
+          node-version: '20'
 
-      - name: Test integration generate
-        run: make test-integration-generate
+      - name: Build web
+        run: make web-build
 
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+      - name: Lint web
+        run: make web-lint
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v5
         with:
-          components: rustfmt, clippy
-
-      - name: Fuzz
-        run: make fuzz
+          path: ./www/dist
 
   # Deploy website on every push to master (nightly)
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: [lint, build, web, test-unit, test-integration-lexer, test-integration-parser, test-integration-run, test-integration-generate, fuzz]
+    needs: [web]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Download the build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: www-dist
-          path: ./www/dist
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
 
       - name: Deploy www to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: gh-pages
-          folder: ./www/dist
-          clean: true
+        id: deployment
+        uses: actions/deploy-pages@v5

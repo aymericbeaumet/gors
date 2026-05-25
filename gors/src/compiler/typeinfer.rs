@@ -300,7 +300,14 @@ impl GoType {
                             GoType::Unknown
                         }
                     }
-                    _ => GoType::Unknown,
+                    other => {
+                        let converted = GoType::from_expr(other);
+                        if matches!(converted, GoType::Unknown) {
+                            GoType::Unknown
+                        } else {
+                            converted
+                        }
+                    }
                 }
             }
             ast::Expr::IndexExpr(index) => {

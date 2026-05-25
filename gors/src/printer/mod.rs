@@ -702,4 +702,48 @@ mod tests {
         let single = super::generate_single(program).unwrap();
         assert!(single.find("mod alpha").unwrap() < single.find("mod zeta").unwrap());
     }
+
+    #[test]
+    fn generated_multi_files_have_header_lints_and_blank_line() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            compiled_module(
+                "main",
+                "main.rs",
+                syn::parse_quote! {
+                    pub fn main() {}
+                },
+                true,
+            ),
+        );
+        modules.insert(
+            "dependency".to_string(),
+            compiled_module(
+                "dependency",
+                "dependency.rs",
+                syn::parse_quote! {
+                    pub fn Used() {}
+                },
+                false,
+            ),
+        );
+        let program = crate::compiler::CompiledProgram {
+            modules,
+            has_main: true,
+        };
+        let output = super::generate_multi(program).unwrap();
+        let expected_prefix = format!("{}{}\n\n", super::GENERATED_HEADER, super::GENERATED_LINTS);
+
+        for (filename, source) in &output.files {
+            assert!(
+                source.starts_with(&expected_prefix),
+                "{filename} should start with the generated header and lint prelude"
+            );
+            assert!(
+                !source.contains("allow(dead_code)"),
+                "{filename} should keep dead-code denial enabled"
+            );
+        }
+    }
 }

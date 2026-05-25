@@ -79,6 +79,41 @@ impl BuildResult {
             .unwrap_or_default()
     }
 
+    /// Get source-map tokens as structured-clone friendly JSON.
+    ///
+    /// Each entry is [output_line, output_col, go_line, go_col, name], with
+    /// lines and columns stored as 0-based values.
+    #[wasm_bindgen]
+    pub fn get_mappings_json(&self) -> String {
+        let Some(ref sm) = self.source_map else {
+            return "[]".to_string();
+        };
+
+        let mut out = String::from("[");
+        for i in 0..sm.get_token_count() {
+            let Some(token) = sm.get_token(i as usize) else {
+                continue;
+            };
+
+            if out.len() > 1 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&token.get_dst_line().to_string());
+            out.push(',');
+            out.push_str(&token.get_dst_col().to_string());
+            out.push(',');
+            out.push_str(&token.get_src_line().to_string());
+            out.push(',');
+            out.push_str(&token.get_src_col().to_string());
+            out.push(',');
+            push_json_string(&mut out, token.get_name().unwrap_or(""));
+            out.push(']');
+        }
+        out.push(']');
+        out
+    }
+
     /// Look up original (Go) position for a generated (Rust) position.
     /// Returns [orig_line, orig_col] (0-based) or empty array if not found.
     #[wasm_bindgen]
@@ -327,6 +362,28 @@ fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<Strin
 
     // For other tokens (operators, etc.), return single char
     Some(start_char.to_string())
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch <= '\u{1f}' => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let n = ch as usize;
+                out.push_str("\\u00");
+                out.push(HEX[(n >> 4) & 0xf] as char);
+                out.push(HEX[n & 0xf] as char);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
 }
 
 fn collect_comments(ast: &gors::ast::File<'_>) -> Vec<CommentInfo> {

@@ -1,6 +1,6 @@
 // Clippy lints are configured at workspace level in the root Cargo.toml
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,8 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match opts.subcmd {
         SubCommand::Ast(cmd) => ast(cmd),
         SubCommand::Build(cmd) => build(cmd),
+        SubCommand::Help(cmd) => help(cmd),
         SubCommand::Run(cmd) => run(cmd),
         SubCommand::Tokens(cmd) => tokens(cmd),
+        SubCommand::Version => version(),
     }
 }
 
@@ -55,12 +57,28 @@ impl Drop for ProfileTimer {
     }
 }
 
+const ROOT_HELP_TEMPLATE: &str = "\
+{before-help}{about-with-newline}
+{usage-heading} {usage}
+
+\x1b[1mCommands:\x1b[0m
+{subcommands}
+
+\x1b[1mAdvanced Commands:\x1b[0m
+  \x1b[1mast\x1b[0m     Parse the named Go file and print the AST
+  \x1b[1mtokens\x1b[0m  Scan the named Go file and print the tokens
+
+\x1b[1mOptions:\x1b[0m
+{options}{after-help}";
+
 #[derive(Parser)]
 #[command(
-    version = "1.0",
     name = "gors",
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
-    about = "gors is a go toolbelt written in rust; providing a parser and rust transpiler"
+    about = "gors is a go toolbelt written in rust; providing a parser and rust transpiler",
+    disable_help_subcommand = true,
+    disable_version_flag = true,
+    help_template = ROOT_HELP_TEMPLATE
 )]
 struct Opts {
     #[command(subcommand)]
@@ -70,19 +88,30 @@ struct Opts {
 #[derive(Parser)]
 enum SubCommand {
     /// Parse the named Go file and print the AST
+    #[command(hide = true)]
     Ast(Ast),
-    /// Compile the named Go source file or directory to Rust
+    /// Transpile Go source to Rust files, writing to cache or --output
+    #[command(display_order = 0)]
     Build(Build),
-    /// Compile and run the named Go source file or directory
+    /// Print this message or the help of the given command(s)
+    #[command(display_order = 0)]
+    Help(Help),
+    /// Transpile, compile, and run Go source path(s)
+    #[command(display_order = 0)]
     Run(Run),
     /// Scan the named Go file and print the tokens
+    #[command(hide = true)]
     Tokens(Tokens),
+    /// Print gors version
+    #[command(display_order = 0)]
+    Version,
 }
 
 #[derive(Parser)]
 struct Ast {
-    /// The file to parse
-    file: String,
+    /// The files to parse
+    #[arg(required = true)]
+    files: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -111,28 +140,56 @@ struct Run {
 }
 
 #[derive(Parser)]
+struct Help {
+    /// Print help for the command(s)
+    #[arg(value_name = "COMMAND", num_args = 0.., trailing_var_arg = true)]
+    commands: Vec<String>,
+}
+
+#[derive(Parser)]
 struct Tokens {
-    /// The file to lex
-    file: String,
+    /// The files to lex
+    #[arg(required = true)]
+    files: Vec<String>,
 }
 
 fn ast(cmd: Ast) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let buffer = std::fs::read_to_string(&cmd.file)?;
-    let ast = match gors::parser::parse_file(&cmd.file, &buffer) {
+    match cmd.files.as_slice() {
+        [file] => ast_single(file, &mut w)?,
+        files => {
+            for file in files {
+                write_file_result(&mut w, file, ast_output(file))?;
+            }
+        }
+    }
+    w.flush()?;
+
+    Ok(())
+}
+
+fn ast_single(file: &str, w: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
+    let buffer = std::fs::read_to_string(file)?;
+    let ast = match gors::parser::parse_file(file, &buffer) {
         Ok(ast) => ast,
         Err(err) => {
-            let diagnostic = Diagnostic::from_parser_error(&err, &cmd.file, &buffer);
+            let diagnostic = Diagnostic::from_parser_error(&err, file, &buffer);
             print_error(&diagnostic);
             std::process::exit(1);
         }
     };
-    gors::ast::fprint(&mut w, ast)?;
-    w.flush()?;
-
+    gors::ast::fprint(w, ast)?;
     Ok(())
+}
+
+fn ast_output(file: &str) -> Result<Vec<u8>, String> {
+    let buffer = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+    let ast = gors::parser::parse_file(file, &buffer).map_err(|e| e.to_string())?;
+    let mut output = Vec::new();
+    gors::ast::fprint(&mut output, ast).map_err(|e| e.to_string())?;
+    Ok(output)
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
@@ -463,23 +520,118 @@ fn tokens(cmd: Tokens) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(8192, stdout.lock());
 
-    let buffer = std::fs::read_to_string(&cmd.file)?;
-    for step in gors::scanner::Scanner::new(&cmd.file, &buffer) {
-        match step {
-            Ok(s) => {
-                serde_json::to_writer(&mut w, &s)?;
-                w.write_all(b"\n")?;
-            }
-            Err(err) => {
-                let diagnostic = Diagnostic::from_scanner_error(&err, &cmd.file, &buffer);
-                print_error(&diagnostic);
-                std::process::exit(1);
+    match cmd.files.as_slice() {
+        [file] => tokens_single(file, &mut w)?,
+        files => {
+            for file in files {
+                write_file_result(&mut w, file, tokens_output(file))?;
             }
         }
     }
     w.flush()?;
 
     Ok(())
+}
+
+fn tokens_single(file: &str, w: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
+    let buffer = std::fs::read_to_string(file)?;
+    for step in gors::scanner::Scanner::new(file, &buffer) {
+        match step {
+            Ok(s) => {
+                serde_json::to_writer(&mut *w, &s)?;
+                w.write_all(b"\n")?;
+            }
+            Err(err) => {
+                let diagnostic = Diagnostic::from_scanner_error(&err, file, &buffer);
+                print_error(&diagnostic);
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tokens_output(file: &str) -> Result<Vec<u8>, String> {
+    let buffer = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+    let mut output = Vec::new();
+    for step in gors::scanner::Scanner::new(file, &buffer) {
+        let token = step.map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut output, &token).map_err(|e| e.to_string())?;
+        output.write_all(b"\n").map_err(|e| e.to_string())?;
+    }
+    Ok(output)
+}
+
+fn write_file_result(
+    w: &mut impl Write,
+    path: &str,
+    result: Result<Vec<u8>, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match result {
+        Ok(stdout) => serde_json::to_writer(
+            &mut *w,
+            &serde_json::json!({
+                "path": path,
+                "ok": true,
+                "stdout": String::from_utf8_lossy(&stdout),
+            }),
+        )?,
+        Err(stderr) => serde_json::to_writer(
+            &mut *w,
+            &serde_json::json!({
+                "path": path,
+                "ok": false,
+                "stderr": stderr,
+            }),
+        )?,
+    }
+    w.write_all(b"\n")?;
+    Ok(())
+}
+
+fn help(cmd: Help) -> Result<(), Box<dyn std::error::Error>> {
+    let mut root = Opts::command();
+    let mut current = &mut root;
+    for command in &cmd.commands {
+        let Some(next) = current.find_subcommand_mut(command) else {
+            eprintln!("error: unknown command '{command}'");
+            std::process::exit(2);
+        };
+        current = next;
+    }
+    if !cmd.commands.is_empty() {
+        current.set_bin_name(format!("gors {}", cmd.commands.join(" ")));
+    }
+    current.print_help()?;
+    println!();
+    Ok(())
+}
+
+fn version() -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "gors version gors{} {} {}/{}",
+        env!("CARGO_PKG_VERSION"),
+        gors::STDLIB_VERSION,
+        go_target_os(),
+        go_target_arch()
+    );
+    Ok(())
+}
+
+fn go_target_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    }
+}
+
+fn go_target_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86" => "386",
+        "x86_64" => "amd64",
+        arch => arch,
+    }
 }
 
 struct RustcArgs<'a> {
@@ -534,5 +686,68 @@ impl<'a> IntoIterator for RustcArgs<'a> {
 
     fn into_iter(self) -> Self::IntoIter {
         Vec::from(self).into_iter()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn split_run_args_keeps_single_file_as_source() {
+        let (sources, program_args) = split_run_args(&args(&["main.go", "--", "arg"]));
+        assert_eq!(sources, args(&["main.go"]));
+        assert_eq!(program_args, args(&["--", "arg"]));
+    }
+
+    #[test]
+    fn split_run_args_groups_leading_go_files() {
+        let (sources, program_args) = split_run_args(&args(&["main.go", "helpers.go", "--flag"]));
+        assert_eq!(sources, args(&["main.go", "helpers.go"]));
+        assert_eq!(program_args, args(&["--flag"]));
+    }
+
+    #[test]
+    fn split_run_args_treats_directory_as_single_source() {
+        let (sources, program_args) = split_run_args(&args(&[".", "--flag", "value"]));
+        assert_eq!(sources, args(&["."]));
+        assert_eq!(program_args, args(&["--flag", "value"]));
+    }
+
+    #[test]
+    fn split_run_args_treats_package_path_as_single_source() {
+        let (sources, program_args) = split_run_args(&args(&["./cmd/myapp", "arg"]));
+        assert_eq!(sources, args(&["./cmd/myapp"]));
+        assert_eq!(program_args, args(&["arg"]));
+    }
+
+    #[test]
+    fn write_generated_output_removes_files_missing_from_new_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut first_files = BTreeMap::new();
+        first_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
+        first_files.insert("stale.rs".to_string(), "fn stale() {}\n".to_string());
+        let first = gors::printer::GeneratedOutput { files: first_files };
+        let first_stats = write_generated_output(&first, tmp.path()).unwrap();
+        assert_eq!(first_stats.written, 2);
+        assert!(tmp.path().join("stale.rs").exists());
+
+        let mut second_files = BTreeMap::new();
+        second_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
+        let second = gors::printer::GeneratedOutput {
+            files: second_files,
+        };
+        let second_stats = write_generated_output(&second, tmp.path()).unwrap();
+
+        assert_eq!(second_stats.skipped, 1);
+        assert_eq!(second_stats.removed, 1);
+        assert!(!tmp.path().join("stale.rs").exists());
     }
 }

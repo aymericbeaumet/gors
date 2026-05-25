@@ -24,19 +24,23 @@ gors/
       passes/      # Post-compilation Rust→Rust AST transforms
       manifest.rs  # Build manifest for incremental compilation
     printer/       # syn AST → formatted Rust source via prettyplease
+    resolve/       # Import-path resolution for embedded Go SDK packages
     toolchain/     # Hermetic Go toolchain download and management
     mapping/       # Source map tracking (Go ↔ Rust position mapping)
     token/         # Go token types
     error.rs       # Diagnostic formatting
     lib.rs         # Library entrypoint
   tests/
-    run.rs         # Program execution tests (compile Go → run Rust, compare output)
-    lexer.rs       # Lexer conformance vs Go reference
-    parser.rs      # Parser conformance vs Go reference
-    common.rs      # Shared test infrastructure
+    test_integration_run.rs      # Program execution integration tests
+    test_integration_lexer.rs    # Lexer conformance vs Go oracle
+    test_integration_parser.rs   # Parser conformance vs Go oracle
+    common.rs                    # Shared integration test infrastructure
     fixtures/
-      go_programs/ # Test programs (auto-discovered, each dir = one test)
-      go_sources/  # Go source files for lexer/parser conformance
+      go_programs/     # Runnable Go programs (auto-discovered, each dir = one test)
+      go_files/        # Standalone Go source files for lexer/parser conformance
+      go_repositories/ # Go repository submodules for lexer/parser conformance
+    tools/
+      go_oracle/ # Small Go helper that emits reference scanner/parser output
 gors-cli/
   src/main.rs      # CLI: ast, build, run, tokens subcommands
 gors-builtin/
@@ -52,8 +56,8 @@ gors-builtin/
 - Naming: `import_path.replace('/', "__")` + `.rs` (e.g., `example/math` → `example__math.rs`)
 - `lib.rs` declares all modules with `#[path]` attributes
 - `main.rs` includes `lib.rs` and contains main function items
-- Stdlib modules are resolved lazily from the embedded Go SDK archive and
-  filtered to reachable root symbols before being compiled to Rust. Do not add
+- Stdlib modules are resolved lazily from build-time generated Go SDK metadata
+  and filtered to reachable root symbols before being compiled to Rust. Do not add
   package-specific or function-specific Rust replacements for Go stdlib APIs;
   treat stdlib packages as ordinary Go code and fix the generic transpilation
   path when they fail. Runtime support is allowed only for language/runtime
@@ -86,8 +90,9 @@ gors-builtin/
 
 ## Stdlib system
 
-Go stdlib imports are resolved from the embedded Go SDK archive through
-`gors/src/go_stdlib.rs`; the old handwritten stdlib modules have been removed.
+Go stdlib imports are resolved as ordinary Go packages through the resolver in
+`gors/src/resolve/mod.rs`, backed by build-time generated metadata from the
+embedded Go SDK. The old handwritten stdlib modules have been removed.
 Import-path-to-module naming is generic (`unicode/utf8` → `unicode__utf8`, Rust
 keywords get a trailing `_`).
 
@@ -117,10 +122,21 @@ imports with no surviving references should not force module generation.
 
 ## Go toolchain
 
-gors downloads its own Go toolchain to `~/.local/share/gors/toolchains/` (or
-platform equivalent via `dirs` crate). Pinned version in
-`gors/src/toolchain/mod.rs::DEFAULT_GO_VERSION`. Called via `toolchain::ensure()` at
-the start of `build` and `run` commands.
+The pinned Go SDK version lives in the repository root `.go-version` file. Do
+not hardcode the Go version elsewhere unless the target format cannot reference
+that file; when that happens, keep the duplicated value aligned.
+
+`gors/build.rs` reads `.go-version`, downloads the matching Go SDK tarball,
+verifies its `.sha256`, extracts it once under `$CARGO_HOME/gors-cache/`, and
+uses that extracted SDK as the source for generated `go_stdlib.rs` metadata and
+copied `go_stdlib_src/` files under Cargo `OUT_DIR`. The build exports
+`gors::GO_VERSION` and `gors::STDLIB_VERSION` (`gostdlibx.y.z`) so generated
+output manifests and `gors version` change when the embedded stdlib changes.
+
+Integration tests must not call a system `go`. `tests/common.rs::go_command()`
+uses the extracted SDK `bin/go` from the `gors` build, with `GOTOOLCHAIN=local`,
+for both `go_oracle` and `go run` comparisons. CI should not install Go via
+`actions/setup-go`, as the pinned tarball is the source of truth.
 
 ## Testing
 
@@ -135,13 +151,15 @@ features. Compiler/printer/generator regression tests live inside the `gors`
 crate as unit tests attached to the modules they cover, such as
 `gors/src/printer/mod.rs` and `gors/src/compiler/manifest.rs`. Unit tests assert
 in-process contracts only; they must not invoke `go`, `gors`, or `rustc`.
-Shared test harness code lives in `gors/src/test_support.rs`, so `gors/tests/`
-is reserved for integration test entrypoints.
+Shared integration test harness code lives in root `tests/common.rs`.
+Integration test entrypoints live in root `tests/` and are wired into the
+`gors` crate through explicit `[[test]]` entries in `gors/Cargo.toml`;
+integration fixtures remain under `tests/fixtures/`.
 
-`make test` is the local full-suite convenience command. It runs one workspace
-`cargo test` invocation with all integration-test features enabled and a bounded
-fuzz smoke pass, so Cargo can schedule the suite directly. CI should call the
-split `make test-*` targets below for clearer job boundaries and failure output.
+`make test` is the local full-suite convenience command. It depends on the split
+unit and integration targets below and should not redefine its own combined
+Cargo command. CI should call the split `make test-*` targets below for clearer
+job boundaries and failure output.
 
 ### Integration tests
 
@@ -149,28 +167,29 @@ split `make test-*` targets below for clearer job boundaries and failure output.
 make test-integration-lexer
 make test-integration-parser
 make test-integration-run
-make test-integration-generate
 ```
 
 Integration tests use matching Make targets and Cargo feature gates:
 `test-integration-lexer` → `test_integration_lexer`,
 `test-integration-parser` → `test_integration_parser`, and
-`test-integration-run` → `test_integration_run`,
-`test-integration-generate` → `test_integration_generate`. Their
-integration-test binary names match the feature gates, so the Make targets do
-not need extra test-name filters.
+`test-integration-run` → `test_integration_run`. Their integration-test binary
+names match the feature gates and are declared in `gors/Cargo.toml`, so the
+Make targets do not need extra test-name filters.
 
-The integration binaries in `gors/tests/` are feature-gated as whole files:
+The integration binaries in root `tests/` are feature-gated as whole files:
 lexer/parser integration targets scan the reference repositories from git
-submodules, while `test-integration-run` runs Go programs and compares gors
-output with `go run`. `test-integration-generate` owns fixture-driven
-compiler/printer/generator coverage because those tests can transitively invoke
-stdlib/gors/rustc paths. Keep `make test-unit` to in-process unit contracts
-only; it should not invoke `go`, `gors`, or `rustc`.
+submodules, while `test-integration-run` compares in-process generated Rust
+program output with the pinned Go SDK's `go run`. Lexer/parser integration may
+execute the batched Go fixture runner for reference output, but that runner must
+be built with `tests/common.rs::go_command()` rather than system `go`; the gors
+side should use library APIs in-process rather than spawning the `gors` CLI. CLI
+argument and output-file writer contracts belong in `gors-cli` unit tests.
+Compiler/printer/generator coverage belongs in module-local unit tests under
+`gors/src/` unless it must execute generated Rust or compare against Go.
 
 ### Adding a test program
 
-1. Create a directory in `gors/tests/fixtures/go_programs/` (e.g., `my_feature/`)
+1. Create a directory in `tests/fixtures/go_programs/` (e.g., `my_feature/`)
 2. Add `main.go` (and optionally `go.mod` for multi-package programs)
 3. The test framework auto-discovers it and compares output with `go run`
 
@@ -179,9 +198,14 @@ only; it should not invoke `go`, `gors`, or `rustc`.
 - `GORS_TEST_LIMIT=N` — cap number of files tested
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
-- `GORS_TEST_FAIL_FAST=1` — cancel queued/running generated-Rust program tests after the first failure
+- `GORS_TEST_FAIL_FAST=1` — cancel queued/running integration work after the first failure where supported
 
 ## Run patterns
+
+From the workspace root, `cargo run -- ...` defaults to the `gors` CLI binary.
+The root manifest uses `workspace.default-members` to keep the fuzz helper
+binaries out of implicit default selection; use explicit `--workspace` or
+`--package=fuzz` commands when checks need to include fuzz targets.
 
 `gors run` supports the same invocation styles as `go run`:
 
@@ -199,9 +223,23 @@ When the first argument ends with `.go`, all leading `.go` arguments are treated
 source files. Otherwise, the first argument is a directory/package path.
 
 Key differences from `go run`:
-- Uses `GORSPATH` (`~/.local/share/gors/toolchains/`) instead of `GOPATH`
-- The Go toolchain is hermetically downloaded (pinned version in `gors/src/toolchain/mod.rs`)
+- Uses `GORSPATH` instead of `GOPATH`
+- The embedded Go stdlib comes from the hermetically downloaded SDK pinned in `.go-version`
 - Transpiles Go → Rust and compiles with `rustc`, not `go build`
+
+## Web UI (`www/`)
+
+The browser demo must not call the wasm compiler directly on the main thread.
+`www/go2rust-compiler.js` owns the async API and delegates transpilation to
+`www/go2rust-worker.js`; keep source-map data structured-cloneable and hydrate
+UI lookup helpers on the main thread.
+
+CI deploys `www/dist` with native GitHub Pages artifacts
+(`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by
+force-pushing a generated `gh-pages` branch. The v86 root filesystem makes the
+published site hundreds of MB, so branch-based deploys can fail during `git
+push` with HTTP 408/timeouts. The repository Pages source must be set to
+GitHub Actions (`build_type: workflow`) for this deploy path.
 
 ## Type inference
 
@@ -220,6 +258,10 @@ cross-package string-constant set for identifier lowering.
 Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
 not `vec![..]` macros, so dependency discovery and later AST passes can see
 module references inside variadic arguments.
+
+Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
+rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
+path from crashing inside Syn's type parser.
 
 ## Compiler passes (in order)
 
@@ -244,17 +286,21 @@ simplify_return, flatten_block.
 ## Stdlib system — embedded Go source
 
 Go stdlib is embedded in the `gors` crate binary data via `gors/build.rs`, which
-downloads Go 1.24.3 SDK and packs `go/src/**/*.go` (excluding tests, vendor,
-cmd) into `go_stdlib.tar.gz`.
-All stdlib/internal packages in the archive are available through the generic
-resolver. GOOS filtering follows the host target, but GOARCH filtering uses a
-synthetic non-native `gors` architecture so assembly-backed native stdlib files
-fall back to pure Go generic implementations before parsing.
+downloads the SDK pinned in `.go-version`, extracts it under
+`$CARGO_HOME/gors-cache/`, filters `go/src/**/*.go` (excluding tests, vendor,
+cmd), copies selected files into `OUT_DIR/go_stdlib_src/`, and generates a
+static `OUT_DIR/go_stdlib.rs` package table with per-package file lists and
+direct stdlib imports. All stdlib/internal packages in that table are available
+through the generic resolver. GOOS filtering follows the Rust target OS, but
+GOARCH filtering uses a synthetic non-native `gors` architecture so
+assembly-backed native stdlib files fall back to pure Go generic implementations
+before parsing.
 
-The resolver caches parsed package selection, type environments, transitive
-imports, and root-specific resolved module token streams. Per-file stdlib
-parser/compiler skips are quiet by default; set `GORS_STDLIB_TRACE=1` to see
-resolver decisions and skipped files.
+The resolver caches package file selection, type environments, transitive
+imports, and root-specific resolved modules through shared `RwLock`/per-key
+initialization state so parallel integration tests can reuse stdlib work.
+Per-file stdlib parser/compiler skips are quiet by default; set
+`GORS_STDLIB_TRACE=1` to see resolver decisions and skipped files.
 
 Stdlib output is pruned at item level from roots such as `crate::fmt::Println`.
 Direct imports with no surviving references should be pruned rather than

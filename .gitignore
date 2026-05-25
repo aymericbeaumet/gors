@@ -3,6 +3,5 @@
 /main*
 pkg/
 target/
-tests/fixtures/go_runner/gors-go
-gors/tests/fixtures/go_runner/gors-go
+tests/tools/go_oracle/go-oracle*
 gors_output/

@@ -1804,7 +1804,7 @@ pub fn compile_program(program: crate::parser::ParsedProgram) -> Result<syn::Fil
     let mut all_items: Vec<syn::Item> = Vec::new();
 
     for stdlib_path in &program.stdlib_imports {
-        if let Some(stdlib_mod) = crate::go_stdlib::resolve(stdlib_path) {
+        if let Some(stdlib_mod) = crate::resolve::resolve(stdlib_path) {
             all_items.push(syn::Item::Mod(stdlib_mod));
         }
     }
@@ -1817,7 +1817,7 @@ pub fn compile_program(program: crate::parser::ParsedProgram) -> Result<syn::Fil
             program
                 .stdlib_imports
                 .iter()
-                .map(|path| crate::go_stdlib::module_name(path)),
+                .map(|path| crate::resolve::module_name(path)),
         )
         .collect();
 
@@ -1881,7 +1881,7 @@ fn import_path_to_mod_name(import_path: &str) -> String {
 fn collect_known_stdlib_imports(file: &ast::File<'_>, stdlib_imports: &mut Vec<String>) {
     for import_spec in file.imports() {
         let import_path = import_spec.path.value.trim_matches('"');
-        if crate::go_stdlib::is_known(import_path)
+        if crate::resolve::is_known(import_path)
             && !stdlib_imports.contains(&import_path.to_string())
         {
             stdlib_imports.push(import_path.to_string());
@@ -1960,14 +1960,14 @@ fn compile_program_impl(
 
     let mut stdlib_type_env_paths = stdlib_imports.clone();
     for stdlib_path in &stdlib_imports {
-        for transitive_import in crate::go_stdlib::collect_transitive_imports(stdlib_path) {
+        for transitive_import in crate::resolve::collect_transitive_imports(stdlib_path) {
             if !stdlib_type_env_paths.contains(&transitive_import) {
                 stdlib_type_env_paths.push(transitive_import);
             }
         }
     }
     for stdlib_path in &stdlib_type_env_paths {
-        if let Some((package_name, env)) = crate::go_stdlib::scan_type_env(stdlib_path) {
+        if let Some((package_name, env)) = crate::resolve::scan_type_env(stdlib_path) {
             stdlib_type_envs.insert(stdlib_path.clone(), (package_name, env));
         }
     }
@@ -1975,14 +1975,14 @@ fn compile_program_impl(
     let stdlib_mod_names: std::collections::HashSet<String> =
         std::iter::once("builtin".to_string())
             .chain(
-                crate::go_stdlib::list_packages()
+                crate::resolve::list_packages()
                     .into_iter()
-                    .map(|path| crate::go_stdlib::module_name(&path)),
+                    .map(|path| crate::resolve::module_name(&path)),
             )
             .chain(
                 stdlib_imports
                     .iter()
-                    .map(|path| crate::go_stdlib::module_name(path)),
+                    .map(|path| crate::resolve::module_name(path)),
             )
             .collect();
     let local_module_names: BTreeMap<String, String> = program
@@ -1999,7 +1999,7 @@ fn compile_program_impl(
         .collect();
     let stdlib_module_names: BTreeMap<String, String> = stdlib_imports
         .iter()
-        .map(|path| (path.clone(), crate::go_stdlib::module_name(path)))
+        .map(|path| (path.clone(), crate::resolve::module_name(path)))
         .collect();
     let pkg_names: std::collections::HashSet<String> = local_module_names
         .values()
@@ -2185,7 +2185,7 @@ fn inject_post_prune_stdlib_helpers(
         }
     }
     let mut preserved = std::collections::HashSet::from(["builtin".to_string()]);
-    preserved.extend(roots.iter().map(|root| crate::go_stdlib::module_name(root)));
+    preserved.extend(roots.iter().map(|root| crate::resolve::module_name(root)));
     prune_unreferenced_stdlib_modules(modules, &preserved);
 }
 
@@ -3658,14 +3658,14 @@ fn resolve_required_stdlib_modules(
 ) {
     use std::collections::{HashMap, HashSet};
 
-    let mut import_path_by_module: HashMap<String, String> = crate::go_stdlib::list_packages()
+    let mut import_path_by_module: HashMap<String, String> = crate::resolve::list_packages()
         .into_iter()
-        .map(|path| (crate::go_stdlib::module_name(&path), path))
+        .map(|path| (crate::resolve::module_name(&path), path))
         .collect();
     import_path_by_module.remove("builtin");
     for path in roots {
         import_path_by_module
-            .entry(crate::go_stdlib::module_name(path))
+            .entry(crate::resolve::module_name(path))
             .or_insert_with(|| path.clone());
     }
     let mut stdlib_mod_names: HashSet<String> = import_path_by_module.keys().cloned().collect();
@@ -3676,7 +3676,7 @@ fn resolve_required_stdlib_modules(
     let mut required: HashMap<String, HashSet<String>> = HashMap::new();
     for path in roots {
         required
-            .entry(crate::go_stdlib::module_name(path))
+            .entry(crate::resolve::module_name(path))
             .or_default();
     }
     for module in modules.values().filter(|module| !module.is_stdlib) {
@@ -3721,7 +3721,7 @@ fn resolve_required_stdlib_modules(
             ));
             let required_roots = required.get(&module_name).cloned().unwrap_or_default();
             let items = if let Some(stdlib_mod) =
-                crate::go_stdlib::resolve_with_roots(&import_path, &required_roots)
+                crate::resolve::resolve_with_roots(&import_path, &required_roots)
             {
                 match stdlib_mod.content {
                     Some((_, items)) => items,
@@ -3735,13 +3735,13 @@ fn resolve_required_stdlib_modules(
                 continue;
             };
 
-            for dep in crate::go_stdlib::collect_transitive_imports(&import_path) {
-                let dep_module = crate::go_stdlib::module_name(&dep);
+            for dep in crate::resolve::collect_resolved_imports(&import_path, &required_roots) {
+                let dep_module = crate::resolve::module_name(&dep);
                 stdlib_mod_names.insert(dep_module.clone());
                 import_path_by_module.entry(dep_module).or_insert(dep);
             }
 
-            let filename = format!("{}.rs", crate::go_stdlib::module_name(&import_path));
+            let filename = format!("{}.rs", crate::resolve::module_name(&import_path));
             let loaded_module_name = module_name.clone();
             modules.insert(
                 import_path.clone(),
@@ -7406,33 +7406,19 @@ fn is_unsafe_pointer_bitcast_expr(expr: &ast::Expr) -> bool {
         && selector.sel.name == "Pointer"
 }
 
-fn rust_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
-    match go_type {
-        typeinfer::GoType::Bool => Some(syn::parse_quote! { bool }),
-        typeinfer::GoType::Int => Some(syn::parse_quote! { isize }),
-        typeinfer::GoType::Int8 => Some(syn::parse_quote! { i8 }),
-        typeinfer::GoType::Int16 => Some(syn::parse_quote! { i16 }),
-        typeinfer::GoType::Int32 => Some(syn::parse_quote! { i32 }),
-        typeinfer::GoType::Int64 => Some(syn::parse_quote! { i64 }),
-        typeinfer::GoType::Uint => Some(syn::parse_quote! { usize }),
-        typeinfer::GoType::Uint8 => Some(syn::parse_quote! { u8 }),
-        typeinfer::GoType::Uint16 => Some(syn::parse_quote! { u16 }),
-        typeinfer::GoType::Uint32 => Some(syn::parse_quote! { u32 }),
-        typeinfer::GoType::Uint64 => Some(syn::parse_quote! { u64 }),
-        typeinfer::GoType::Uintptr => Some(syn::parse_quote! { usize }),
-        typeinfer::GoType::Float32 => Some(syn::parse_quote! { f32 }),
-        typeinfer::GoType::Float64 => Some(syn::parse_quote! { f64 }),
-        typeinfer::GoType::Complex64 => Some(syn::parse_quote! { crate::builtin::Complex64 }),
-        typeinfer::GoType::Complex128 => Some(syn::parse_quote! { crate::builtin::Complex128 }),
-        _ => None,
-    }
-}
-
-fn named_go_type_path(name: &str) -> syn::Type {
+fn rust_type_path_from_segments<'a>(
+    path_segments: impl IntoIterator<Item = &'a str>,
+    safe_idents: bool,
+) -> syn::Type {
     let mut segments = syn::punctuated::Punctuated::new();
-    for segment in name.split('.') {
+    for segment in path_segments {
+        let ident = if safe_idents {
+            syn::Ident::new(&rust_safe_ident_name(segment), Span::mixed_site())
+        } else {
+            syn::Ident::new(segment, Span::mixed_site())
+        };
         segments.push(syn::PathSegment {
-            ident: syn::Ident::new(&rust_safe_ident_name(segment), Span::mixed_site()),
+            ident,
             arguments: syn::PathArguments::None,
         });
     }
@@ -7443,6 +7429,46 @@ fn named_go_type_path(name: &str) -> syn::Type {
             segments,
         },
     })
+}
+
+fn rust_type_path_from_rust_segments<'a>(
+    path_segments: impl IntoIterator<Item = &'a str>,
+) -> syn::Type {
+    rust_type_path_from_segments(path_segments, false)
+}
+
+fn rust_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
+    match go_type {
+        typeinfer::GoType::Bool => Some(rust_type_path_from_rust_segments(["bool"])),
+        typeinfer::GoType::Int => Some(rust_type_path_from_rust_segments(["isize"])),
+        typeinfer::GoType::Int8 => Some(rust_type_path_from_rust_segments(["i8"])),
+        typeinfer::GoType::Int16 => Some(rust_type_path_from_rust_segments(["i16"])),
+        typeinfer::GoType::Int32 => Some(rust_type_path_from_rust_segments(["i32"])),
+        typeinfer::GoType::Int64 => Some(rust_type_path_from_rust_segments(["i64"])),
+        typeinfer::GoType::Uint => Some(rust_type_path_from_rust_segments(["usize"])),
+        typeinfer::GoType::Uint8 => Some(rust_type_path_from_rust_segments(["u8"])),
+        typeinfer::GoType::Uint16 => Some(rust_type_path_from_rust_segments(["u16"])),
+        typeinfer::GoType::Uint32 => Some(rust_type_path_from_rust_segments(["u32"])),
+        typeinfer::GoType::Uint64 => Some(rust_type_path_from_rust_segments(["u64"])),
+        typeinfer::GoType::Uintptr => Some(rust_type_path_from_rust_segments(["usize"])),
+        typeinfer::GoType::Float32 => Some(rust_type_path_from_rust_segments(["f32"])),
+        typeinfer::GoType::Float64 => Some(rust_type_path_from_rust_segments(["f64"])),
+        typeinfer::GoType::Complex64 => Some(rust_type_path_from_rust_segments([
+            "crate",
+            "builtin",
+            "Complex64",
+        ])),
+        typeinfer::GoType::Complex128 => Some(rust_type_path_from_rust_segments([
+            "crate",
+            "builtin",
+            "Complex128",
+        ])),
+        _ => None,
+    }
+}
+
+fn named_go_type_path(name: &str) -> syn::Type {
+    rust_type_path_from_segments(name.split('.'), true)
 }
 
 fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
@@ -8742,12 +8768,19 @@ fn compile_expr_with_expected(
             let compiled: syn::Expr = expr.into();
             return syn::parse_quote! { (#compiled).clone() };
         }
-        let compiled = if numeric_cast_type(expected).is_some() && is_const_like_expr(&expr) {
+        let numeric_const_like = numeric_cast_type(expected).is_some() && is_const_like_expr(&expr);
+        let compiled = if numeric_const_like {
             const_eval_expr(&expr, 0, &BTreeMap::new())
                 .map_or_else(|| expr.into(), |value| value.to_expr())
         } else {
             expr.into()
         };
+        if numeric_const_like
+            && matches!(resolved_go_type(&actual), typeinfer::GoType::Unknown)
+            && let Some(target_ty) = numeric_cast_type(expected)
+        {
+            return syn::parse_quote! { (#compiled as #target_ty) };
+        }
         return coerce_numeric_expr(expected, &actual, compiled);
     }
 
@@ -9105,7 +9138,9 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
     let inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
     let is_string = is_string_literal(&range_stmt.x) || inferred_range_type.is_string();
-    let is_int = is_integer_expr(&range_stmt.x);
+    let is_int = is_integer_expr(&range_stmt.x)
+        || inferred_range_type.is_integer()
+        || matches!(inferred_range_type, typeinfer::GoType::Uintptr);
     let env_snapshot = TYPE_ENV.with(|env| env.borrow().clone());
     set_range_bindings(
         range_stmt.key.as_ref(),
@@ -13046,6 +13081,7 @@ mod tests {
     use crate::parser::parse_file;
     use crate::printer;
     use quote::quote;
+    use std::path::Path;
     use syn::parse_quote as rust;
 
     fn test(go_input: &str, expected: syn::File) {
@@ -13054,6 +13090,34 @@ mod tests {
         let output = (quote! {#compiled}).to_string();
         let expected = (quote! {#expected}).to_string();
         assert_eq!(output, expected);
+    }
+
+    fn write_fixture_file(path: &Path, source: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, source).unwrap();
+    }
+
+    fn compile_temp_program(dir: &Path) -> printer::GeneratedOutput {
+        let program = crate::parser::parse_program(dir.to_str().unwrap()).unwrap();
+        let compiled = super::compile_program_multi(program).unwrap();
+        printer::generate_multi(compiled).unwrap()
+    }
+
+    #[test]
+    fn rust_type_from_go_type_builds_path_types() {
+        let int_ty = super::rust_type_from_go_type(&super::typeinfer::GoType::Int).unwrap();
+        let complex_ty =
+            super::rust_type_from_go_type(&super::typeinfer::GoType::Complex64).unwrap();
+        let named_crate_ty = super::named_go_type_path("crate");
+
+        assert_eq!(quote! { #int_ty }.to_string(), "isize");
+        assert_eq!(
+            quote! { #complex_ty }.to_string(),
+            "crate :: builtin :: Complex64"
+        );
+        assert_eq!(quote! { #named_crate_ty }.to_string(), "crate_");
     }
 
     #[test]
@@ -13277,6 +13341,196 @@ func main() {
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod builtin"));
         assert!(!lib_rs.contains("pub mod fmt"));
+    }
+
+    #[test]
+    fn compile_program_multi_emits_referenced_local_package_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/greet"
+
+func main() {
+	greet.Hello()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("greet/greet.go").as_path(),
+            r#"
+package greet
+
+func Hello() {}
+"#,
+        );
+
+        let program = crate::parser::parse_program(tmp.path().to_str().unwrap()).unwrap();
+        let compiled = super::compile_program_multi(program).unwrap();
+
+        assert!(compiled.has_main);
+        assert!(compiled.modules.values().any(|m| m.mod_name == "greet"));
+        let greet = compiled
+            .modules
+            .values()
+            .find(|m| m.mod_name == "greet")
+            .unwrap();
+        assert_eq!(greet.filename, "example__greet.rs");
+        assert!(!greet.content_hash.is_empty());
+    }
+
+    #[test]
+    fn generated_output_prunes_unreachable_items_and_builtin_helpers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "fmt"
+
+const deadConst = 42
+
+type deadStruct struct {
+	value int
+}
+
+func deadLocal() {
+	fmt.Println("dead")
+}
+
+func main() {
+	fmt.Println("live")
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(!main_rs.contains("deadConst"), "{main_rs}");
+        assert!(!main_rs.contains("deadStruct"), "{main_rs}");
+        assert!(!main_rs.contains("deadLocal"), "{main_rs}");
+
+        let builtin_rs = output.files.get("builtin.rs").unwrap();
+        assert!(!builtin_rs.contains("Chan"), "{builtin_rs}");
+        assert!(!builtin_rs.contains("make_chan"), "{builtin_rs}");
+    }
+
+    #[test]
+    fn generated_output_prunes_unreferenced_imported_package_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import (
+	"example/dead"
+	"example/live"
+)
+
+func main() {
+	live.Hello()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("dead/dead.go").as_path(),
+            r#"
+package dead
+
+func Dead() {}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("live/live.go").as_path(),
+            r#"
+package live
+
+func Hello() {}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        assert!(output.files.contains_key("example__live.rs"));
+        assert!(!output.files.contains_key("example__dead.rs"));
+        assert!(
+            !output
+                .files
+                .get("lib.rs")
+                .unwrap()
+                .contains("example__dead")
+        );
+    }
+
+    #[test]
+    fn generated_output_prunes_lowered_away_errors_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "errors"
+
+func main() {
+	_ = errors.New("boom")
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        assert!(!output.files.contains_key("errors.rs"));
+        assert!(!output.files.get("lib.rs").unwrap().contains("errors"));
+    }
+
+    #[test]
+    fn compile_program_multi_retains_referenced_stdlib_imports() {
+        let go_source = r#"package main
+
+import "fmt"
+import "errors"
+import "strconv"
+
+func main() {
+	fmt.Println("hello")
+	e := errors.New("fail")
+	s := strconv.Itoa(42)
+}
+"#;
+        let ast = crate::parser::parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec![
+                "errors".to_string(),
+                "fmt".to_string(),
+                "strconv".to_string(),
+            ],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        assert!(compiled.modules.contains_key("fmt"));
+        assert!(compiled.modules.contains_key("strconv"));
+        assert!(!compiled.modules.contains_key("errors"));
+        let output = printer::generate_multi(compiled).unwrap();
+        assert!(output.files.contains_key("fmt.rs"));
+        assert!(output.files.contains_key("strconv.rs"));
+        assert!(!output.files.contains_key("errors.rs"));
+        let lib_rs = output.files.get("lib.rs").unwrap();
+        assert!(lib_rs.contains("pub mod fmt"));
+        assert!(lib_rs.contains("pub mod strconv"));
+        assert!(!lib_rs.contains("pub mod errors"));
     }
 
     #[test]

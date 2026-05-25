@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::STDLIB_VERSION;
+
 const MANIFEST_FILENAME: &str = ".gors_manifest.json";
 const MANIFEST_VERSION: u32 = 2;
-const STDLIB_VERSION: &str = "go1.24.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BuildManifest {

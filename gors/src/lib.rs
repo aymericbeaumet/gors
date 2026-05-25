@@ -40,6 +40,20 @@
 
 // Lints are configured at workspace level in the root Cargo.toml.
 
+/// Go SDK version pinned by the repository-level `.go-version` file.
+pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
+
+/// Version label for the embedded Go stdlib archive compiled into gors.
+pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
+
+#[cfg(any(
+    feature = "test_integration_lexer",
+    feature = "test_integration_parser",
+    feature = "test_integration_run"
+))]
+/// Extracted Go SDK path used by integration tests for Go oracle/runtime checks.
+pub const GO_SDK_PATH: &str = env!("GORS_BUILT_GO_SDK_PATH");
+
 /// Go Abstract Syntax Tree data structures.
 ///
 /// This module contains the AST node types based on the
@@ -80,24 +94,14 @@ pub mod scanner;
 /// positions in Go source code and generated Rust output.
 pub mod mapping;
 
-/// Embedded Go standard library source packages.
+/// Go package resolution.
 ///
-/// Provides Go SDK source files that are transpiled into Rust modules on demand
-/// during compilation.
-pub mod go_stdlib;
+/// Resolves Go packages, including embedded Go SDK source packages, into Rust
+/// modules on demand during compilation.
+pub mod resolve;
 
 /// Go token definitions and source positions.
 ///
 /// Contains token types matching the Go specification and
 /// position tracking for source locations.
 pub mod token;
-
-#[cfg(any(
-    test,
-    feature = "test_integration_lexer",
-    feature = "test_integration_parser",
-    feature = "test_integration_run",
-    feature = "test_integration_generate"
-))]
-#[doc(hidden)]
-pub mod test_support;
