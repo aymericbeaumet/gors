@@ -276,6 +276,12 @@ worker back to the `wasm/pkg/gors.js` bundler entry without rechecking Chromium:
 webpack's top-level async wasm module path can stall before the worker message
 handler is installed.
 
+`www/` is currently a webpack-hosted Svelte SPA, not SvelteKit. The wasm/v86
+asset pipeline is wired through webpack, and app routes such as `/coverage` are
+served by history fallback plus emitted static fallback HTML
+(`coverage/index.html` and `404.html`). Treat a SvelteKit migration as a larger
+asset-pipeline migration rather than a routing-only change.
+
 The first-party browser/runtime code in `www/` is TypeScript. `make web-lint`
 includes both ESLint and TypeScript/Svelte type checking, while
 `make web-test-unit` runs Vitest and `make web-test-integration` runs the

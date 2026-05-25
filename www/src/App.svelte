@@ -18,22 +18,11 @@ import { parseRustcErrors } from "./rustc-errors";
 import type { SourceMapIndex } from "./source-map-index";
 import MonacoEditor from "./MonacoEditor.svelte";
 import CopyButton from "./CopyButton.svelte";
-import {
-	gostdlibCoverage,
-	gostdlibCoverageSummary,
-	type GostdlibCoveragePackage,
-	type GostdlibCoverageSymbol,
-} from "./gostdlib-coverage";
+import CoveragePage from "./CoveragePage.svelte";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
-type RunMode = "autorun" | "autocompile" | "autotranspile" | "manual";
-type AppView = "playground" | "stdlib-report";
-
-interface ModeOption {
-	value: RunMode;
-	label: string;
-}
+type AppRoute = "home" | "coverage";
 
 interface PipelineCache {
 	goSource: string | null;
@@ -52,67 +41,45 @@ const STATE_TITLES = {
 	[State.ERROR]: "VM error",
 };
 
-const MODES: ModeOption[] = [
-	{ value: "autorun", label: "Transpile + Compile + Run" },
-	{ value: "autocompile", label: "Transpile + Compile" },
-	{ value: "autotranspile", label: "Transpile" },
-	{ value: "manual", label: "Noop" },
-];
 const PIPELINE_DEBOUNCE_MS = 350;
 
-let activeView: AppView = "playground";
-let stdlibFilter = "";
-
-function coverageMatchesFilter(
-	item: GostdlibCoveragePackage,
-	query: string,
-): boolean {
-	if (!query) return true;
-	const packageStatus = item.tested ? "tested" : "not tested untested";
-	return (
-		item.packagePath.toLowerCase().includes(query) ||
-		packageStatus.includes(query) ||
-		item.fixtures.some((fixture) => fixture.toLowerCase().includes(query)) ||
-		item.symbols.some(
-			(symbol) =>
-				symbol.name.toLowerCase().includes(query) ||
-				symbol.kind.includes(query) ||
-				(symbol.tested ? "tested" : "not tested untested").includes(query) ||
-				symbol.fixtures.some((fixture) =>
-					fixture.toLowerCase().includes(query),
-				),
-		)
-	);
+function routeFromPath(pathname: string): AppRoute {
+	return pathname.replace(/\/+$/, "") === "/coverage" ? "coverage" : "home";
 }
 
-function symbolCoverageTitle(symbol: GostdlibCoverageSymbol): string {
-	if (!symbol.tested) return `${symbol.kind}; not tested`;
-	return `${symbol.kind}; tested by ${symbol.fixtures.join(", ")}`;
+function pathForRoute(nextRoute: AppRoute): string {
+	return nextRoute === "coverage" ? "/coverage" : "/";
 }
 
-$: stdlibQuery = stdlibFilter.trim().toLowerCase();
-$: filteredGostdlibCoverage = gostdlibCoverage.filter((item) =>
-	coverageMatchesFilter(item, stdlibQuery),
-);
-$: visibleStdlibSymbolCount = filteredGostdlibCoverage.reduce(
-	(total, item) => total + item.symbols.length,
-	0,
-);
-$: visibleStdlibTestedSymbolCount = filteredGostdlibCoverage.reduce(
-	(total, item) => total + item.testedSymbolCount,
-	0,
-);
-$: visibleStdlibUntestedSymbolCount =
-	visibleStdlibSymbolCount - visibleStdlibTestedSymbolCount;
-
-function storedRunMode(): RunMode {
-	const value = localStorage.getItem("gors:runMode");
-	return MODES.some((mode) => mode.value === value)
-		? (value as RunMode)
-		: "autorun";
+function layoutPlayground() {
+	tick().then(() => {
+		goEditor?.layout();
+		rustEditor?.layout();
+	});
 }
 
-let runMode: RunMode = storedRunMode();
+let route: AppRoute = routeFromPath(window.location.pathname);
+
+function navigateTo(nextRoute: AppRoute, event?: MouseEvent) {
+	event?.preventDefault();
+	const nextPath = pathForRoute(nextRoute);
+	if (window.location.pathname !== nextPath) {
+		window.history.pushState({}, "", nextPath);
+	}
+	route = nextRoute;
+	if (route === "home") layoutPlayground();
+}
+
+function scrollToPlayground(event: MouseEvent) {
+	event.preventDefault();
+	navigateTo("home");
+	tick().then(() => {
+		document
+			.getElementById("playground")
+			?.scrollIntoView({ behavior: "smooth", block: "start" });
+	});
+}
+
 let vmState: VmState = State.INITIALIZING;
 let vmOverlayVisible = false;
 let consoleLines: ConsoleLine[] = [];
@@ -158,30 +125,21 @@ $: if (vmOverlayVisible && vmStarted) {
 		term.focus();
 	});
 }
-let prevRunMode = runMode;
-$: if (runMode !== prevRunMode) {
-	prevRunMode = runMode;
-	localStorage.setItem("gors:runMode", runMode);
-	if (initialized) {
-		pipelineGeneration++;
-		schedulePipeline(0);
-	}
-}
-let prevActiveView: AppView = activeView;
-$: if (activeView !== prevActiveView) {
-	prevActiveView = activeView;
-	if (activeView === "playground") {
-		tick().then(() => {
-			goEditor?.layout();
-			rustEditor?.layout();
-		});
-	}
+let prevRoute: AppRoute = route;
+$: if (route !== prevRoute) {
+	prevRoute = route;
+	if (route === "home") layoutPlayground();
 }
 $: pipelineBusy = activePipelines > 0;
-$: transpileDisabled = runMode !== "manual" || pipelineBusy;
-$: compileDisabled =
-	runMode === "autocompile" || runMode === "autorun" || pipelineBusy;
-$: runDisabled = runMode === "autorun" || pipelineBusy;
+$: runDisabled = pipelineBusy || !cache.compiled || !cache.jobId;
+$: compileStatus =
+	vmState === State.RUNNING
+		? "Running"
+		: pipelineBusy
+			? "Auto compiling"
+			: cache.compiled
+				? "Ready to run"
+				: "Waiting for changes";
 
 // Console helpers
 function conClear() {
@@ -273,7 +231,7 @@ function cancelScheduledPipeline() {
 
 function schedulePipeline(delay = PIPELINE_DEBOUNCE_MS) {
 	cancelScheduledPipeline();
-	if (!initialized || runMode === "manual") return;
+	if (!initialized) return;
 	pipelineDebounceTimer = setTimeout(() => {
 		pipelineDebounceTimer = null;
 		runPipeline();
@@ -436,7 +394,6 @@ async function doRun(jobId: string) {
 }
 
 async function runPipeline() {
-	if (runMode === "manual") return;
 	if (activePipelines > 0) {
 		queuedPipeline = true;
 		return;
@@ -446,12 +403,7 @@ async function runPipeline() {
 		conClear();
 		const rustCode = await doTranspile();
 		if (!rustCode) return;
-		if (runMode === "autorun") {
-			const jobId = await doCompile(rustCode);
-			if (jobId) await doRun(jobId);
-		} else if (runMode === "autocompile") {
-			await doCompile(rustCode);
-		}
+		await doCompile(rustCode);
 	} finally {
 		activePipelines--;
 		if (queuedPipeline) {
@@ -463,48 +415,26 @@ async function runPipeline() {
 
 function onGoChanged() {
 	pipelineGeneration++;
+	cache = { ...cache, jobId: null, compiled: false };
 	if (activePipelines > 0) {
 		go2rust.cancelActive("compiler input changed");
 	}
 	schedulePipeline();
 }
 
-async function handleTranspile() {
-	cancelScheduledPipeline();
-	pipelineGeneration++;
-	activePipelines++;
-	try {
-		conClear();
-		await doTranspile();
-	} finally {
-		activePipelines--;
-	}
-}
-async function handleCompile() {
-	cancelScheduledPipeline();
-	pipelineGeneration++;
-	activePipelines++;
-	try {
-		conClear();
-		const rustCode = await doTranspile();
-		if (rustCode) await doCompile(rustCode);
-	} finally {
-		activePipelines--;
-	}
-}
 async function handleRun() {
 	cancelScheduledPipeline();
-	pipelineGeneration++;
+	if (!cache.jobId || !cache.compiled || activePipelines > 0) return;
 	activePipelines++;
 	try {
 		conClear();
-		const rustCode = await doTranspile();
-		if (!rustCode) return;
-		const jobId = await doCompile(rustCode);
-		if (!jobId) return;
-		await doRun(jobId);
+		await doRun(cache.jobId);
 	} finally {
 		activePipelines--;
+		if (queuedPipeline) {
+			queuedPipeline = false;
+			schedulePipeline(0);
+		}
 	}
 }
 
@@ -561,8 +491,16 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 let resizeObserver: ResizeObserver | null = null;
+let removePopStateListener: (() => void) | null = null;
 
 onMount(() => {
+	const onPopState = () => {
+		route = routeFromPath(window.location.pathname);
+	};
+	window.addEventListener("popstate", onPopState);
+	removePopStateListener = () =>
+		window.removeEventListener("popstate", onPopState);
+
 	// xterm
 	term = new Terminal({
 		fontSize: 12,
@@ -671,7 +609,7 @@ $: if (rustEditor && !rustEditorReady) {
 
 $: if (goEditor && rustEditor && !initialized) {
 	initialized = true;
-	goEditor.focus();
+	if (route === "home") goEditor.focus();
 	goEditor
 		.getModel()
 		?.setValue(
@@ -686,12 +624,14 @@ $: if (goEditor && rustEditor && !initialized) {
 			].join("\n"),
 		);
 	goEditor.setPosition({ lineNumber: 6, column: 2 });
+	schedulePipeline(0);
 }
 
 let initialized = false;
 
 onDestroy(() => {
 	cancelScheduledPipeline();
+	removePopStateListener?.();
 	go2rust.dispose();
 	resizeObserver?.disconnect();
 	term?.dispose();
@@ -700,23 +640,16 @@ onDestroy(() => {
 
 <svelte:window on:keydown={onKeydown} />
 
-<main>
-  <header>
-    <h1><a href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener">gors</a></h1>
-    <p class="subtitle">Go toolchain written in Rust (parser, compiler, sandbox)</p>
-    <nav class="view-switch" aria-label="App view">
-      <button type="button" class:active={activeView === "playground"} aria-pressed={activeView === "playground"} on:click={() => activeView = "playground"}>Playground</button>
-      <button type="button" class:active={activeView === "stdlib-report"} aria-pressed={activeView === "stdlib-report"} on:click={() => activeView = "stdlib-report"}>Stdlib report</button>
+<main class="site-shell">
+  <header class="site-header">
+    <a class="brand" href="/" on:click={(event) => navigateTo("home", event)}>gors</a>
+    <p class="subtitle">Go to Rust transpilation, in your browser</p>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="/" class:active={route === "home"} on:click={(event) => navigateTo("home", event)}>Playground</a>
+      <a href="/coverage" class:active={route === "coverage"} on:click={(event) => navigateTo("coverage", event)}>Coverage</a>
+      <a href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener">GitHub</a>
     </nav>
     <div class="spacer"></div>
-    <div class="mode-group">
-      <span class="mode-label">Mode:</span>
-      <select bind:value={runMode} class="run-mode-select" title="Pipeline mode">
-        {#each MODES as mode}
-          <option value={mode.value}>{mode.label}</option>
-        {/each}
-      </select>
-    </div>
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <div
       class="vm-status"
@@ -731,136 +664,117 @@ onDestroy(() => {
     </div>
   </header>
 
-  <div class="content" class:hidden={activeView !== "playground"} aria-hidden={activeView !== "playground"}>
-    <div class="editors" bind:this={editorsEl} style="flex: {editorsFlex}">
-      <div class="editor-container go">
-        <div class="editor-header">
-          <div class="label"><span class="dot"></span><span>main.go</span></div>
-          <div class="actions">
-            <button class="action-button" title="Transpile with gors" on:click={handleTranspile} disabled={transpileDisabled}>
-              {#if transpiling}
-                <span class="btn-spinner"></span>
-              {:else}
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm-1 4l6 6v10c0 1.1-.9 2-2 2H7.99C6.89 21 6 20.1 6 19l.01-14c0-1.1.89-2 1.99-2h7zm-1 7h5.5L14 6.5V12z"/>
-                </svg>
-              {/if}
-              <span>Transpile</span>
-            </button>
-            <CopyButton getContent={() => goEditor?.getModel()?.getValue()} title="Copy Go code" />
+  <div class="home-route" class:hidden={route !== "home"} aria-hidden={route !== "home"}>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Go compiler frontend, Rust backend</p>
+        <h1>gors</h1>
+        <p class="hero-subtitle">
+          gors parses Go source, resolves real Go packages, lowers the program into Rust syntax, and runs the generated binary in a browser-hosted Linux VM.
+        </p>
+        <div class="hero-actions">
+          <a href="#playground" class="primary-link" on:click={scrollToPlayground}>Try the playground</a>
+          <a href="/coverage" class="secondary-link" on:click={(event) => navigateTo("coverage", event)}>View stdlib coverage</a>
+        </div>
+      </div>
+      <div class="hero-visual" aria-label="gors compiler pipeline">
+        <div class="pipeline-stage">
+          <span>Go source</span>
+          <code>fmt.Println("Hello")</code>
+        </div>
+        <div class="pipeline-stage">
+          <span>Rust output</span>
+          <code>println!("Hello");</code>
+        </div>
+        <div class="pipeline-stage">
+          <span>Browser VM</span>
+          <code>rustc -o main main.rs</code>
+        </div>
+      </div>
+    </section>
+
+    <section class="info-grid" aria-label="About gors">
+      <article>
+        <h2>Real compiler path</h2>
+        <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup all run through the same pipeline used by the CLI.</p>
+      </article>
+      <article>
+        <h2>Hermetic Go stdlib</h2>
+        <p>The embedded Go SDK is pinned from the repository version file, and stdlib packages are resolved as Go source rather than handwritten browser shims.</p>
+      </article>
+      <article>
+        <h2>Executable feedback</h2>
+        <p>The playground auto-transpiles and auto-compiles after edits. Running is explicit, so output reflects the compiled program you choose to execute.</p>
+      </article>
+    </section>
+
+    <section id="playground" class="playground-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Live playground</p>
+          <h2>Go in, Rust out</h2>
+        </div>
+        <span class="compile-status" class:ready={cache.compiled} class:busy={pipelineBusy}>{compileStatus}</span>
+      </div>
+
+      <div class="content playground-content">
+        <div class="editors" bind:this={editorsEl} style="flex: {editorsFlex}">
+          <div class="editor-container go">
+            <div class="editor-header">
+              <div class="label"><span class="dot"></span><span>main.go</span></div>
+              <div class="actions">
+                <CopyButton getContent={() => goEditor?.getModel()?.getValue()} title="Copy Go code" />
+              </div>
+            </div>
+            <div class="editor-wrapper">
+              <MonacoEditor language="go" bind:editor={goEditor} on:change={onGoChanged} />
+            </div>
+          </div>
+
+          <div class="editor-container rust">
+            <div class="editor-header">
+              <div class="label"><span class="dot"></span><span>main.rs</span></div>
+              <div class="actions">
+                <button class="action-button run-button" title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
+                  {#if vmState === State.RUNNING}
+                    <span class="btn-spinner"></span>
+                  {:else}
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  {/if}
+                  <span>Run</span>
+                </button>
+                <CopyButton getContent={() => rustEditor?.getModel()?.getValue()} title="Copy Rust code" />
+              </div>
+            </div>
+            <div class="editor-wrapper">
+              <MonacoEditor language="rust" bind:editor={rustEditor} />
+            </div>
           </div>
         </div>
-        <div class="editor-wrapper">
-          <MonacoEditor language="go" bind:editor={goEditor} on:change={onGoChanged} />
-        </div>
-      </div>
 
-      <div class="editor-container rust">
-        <div class="editor-header">
-          <div class="label"><span class="dot"></span><span>main.rs</span></div>
-          <div class="actions">
-            <button class="action-button" title="Compile with rustc (in the Linux VM)" on:click={handleCompile} disabled={compileDisabled}>
-              {#if vmState === State.COMPILING}
-                <span class="btn-spinner"></span>
-              {:else}
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
-                </svg>
-              {/if}
-              <span>Compile</span>
-            </button>
-            <button class="action-button" title="Run (in the Linux VM)" on:click={handleRun} disabled={runDisabled}>
-              {#if vmState === State.RUNNING}
-                <span class="btn-spinner"></span>
-              {:else}
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              {/if}
-              <span>Run</span>
-            </button>
-            <CopyButton getContent={() => rustEditor?.getModel()?.getValue()} title="Copy Rust code" />
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="resize-handle" on:mousedown={onResizeMousedown}></div>
+
+        <div class="console-section" bind:this={consoleSectionEl}>
+          <div class="console-header">
+            <div class="console-left">
+              <div class="console-title"><span class="dot"></span><span>Console</span></div>
+            </div>
+            <div class="console-right">
+              <CopyButton getContent={getConsoleText} title="Copy console output" />
+            </div>
           </div>
-        </div>
-        <div class="editor-wrapper">
-          <MonacoEditor language="rust" bind:editor={rustEditor} />
+          <pre class="console-content">{#each consoleLines as line}<span class={line.type}>{@html formatConsoleLine(line)}</span>{'\n'}{/each}</pre>
         </div>
       </div>
-    </div>
-
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
-    <div class="resize-handle" on:mousedown={onResizeMousedown}></div>
-
-    <div class="console-section" bind:this={consoleSectionEl}>
-      <div class="console-header">
-        <div class="console-left">
-          <div class="console-title"><span class="dot"></span><span>Console</span></div>
-        </div>
-        <div class="console-right">
-          <CopyButton getContent={getConsoleText} title="Copy console output" />
-        </div>
-      </div>
-      <pre class="console-content">{#each consoleLines as line}<span class={line.type}>{@html formatConsoleLine(line)}</span>{'\n'}{/each}</pre>
-    </div>
+    </section>
   </div>
 
-  <section class="content stdlib-report-view" class:hidden={activeView !== "stdlib-report"} aria-hidden={activeView !== "stdlib-report"}>
-    <div class="report-summary">
-      <div class="report-metric">
-        <strong>{gostdlibCoverageSummary.fixtureCount}</strong>
-        <span>fixtures</span>
-      </div>
-      <div class="report-metric">
-        <strong>{gostdlibCoverageSummary.testedPackageCount}/{gostdlibCoverageSummary.packageCount}</strong>
-        <span>packages tested</span>
-      </div>
-      <div class="report-metric">
-        <strong>{gostdlibCoverageSummary.testedSymbolCount}/{gostdlibCoverageSummary.symbolCount}</strong>
-        <span>symbols tested</span>
-      </div>
-      <div class="report-metric">
-        <strong>{visibleStdlibUntestedSymbolCount}</strong>
-        <span>visible untested</span>
-      </div>
-      <label class="report-filter">
-        <span>Filter</span>
-        <input bind:value={stdlibFilter} type="search" placeholder="package, function, fixture, tested" autocomplete="off" />
-      </label>
-    </div>
-
-    <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
-      <div class="report-list-head" role="row">
-        <span role="columnheader">Package</span>
-        <span role="columnheader">Functions / symbols</span>
-        <span role="columnheader">Fixtures</span>
-      </div>
-      <div class="report-list-body">
-        {#each filteredGostdlibCoverage as item}
-          <div class="coverage-row" role="row">
-            <div class="package-cell" role="cell">
-              <code>{item.packagePath}</code>
-              <span class:tested={item.tested} class:untested={!item.tested}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
-            </div>
-            <div class="symbol-cell" role="cell">
-              {#each item.symbols as symbol}
-                <span class="symbol-token" class:tested={symbol.tested} class:untested={!symbol.tested} title={symbolCoverageTitle(symbol)}>
-                  <span>{symbol.name}</span>
-                  <small>{symbol.kind}</small>
-                </span>
-              {/each}
-            </div>
-            <div class="fixture-cell" role="cell">
-              {#each item.fixtures as fixture}
-                <code>{fixture}</code>
-              {/each}
-            </div>
-          </div>
-        {:else}
-          <div class="report-empty">No matching coverage</div>
-        {/each}
-      </div>
-    </div>
-  </section>
+  <div class="coverage-route" class:hidden={route !== "coverage"} aria-hidden={route !== "coverage"}>
+    <CoveragePage />
+  </div>
 </main>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -885,417 +799,764 @@ onDestroy(() => {
 </div>
 
 <style>
-  :global(*) { box-sizing: border-box; }
-  :global(html), :global(body), :global(#app) { height: 100%; overflow: hidden; }
+  :global(*) {
+    box-sizing: border-box;
+  }
+
+  :global(html),
+  :global(body),
+  :global(#app) {
+    min-height: 100%;
+  }
+
   :global(body) {
-    margin: 0; padding: 0;
+    margin: 0;
+    padding: 0;
+    background: #f5f7fb;
+    color: #1f2328;
     font-family: system-ui, -apple-system, sans-serif;
-    background: #0d1117; color: #c9d1d9;
   }
+
   :global(.source-map-highlight) {
-    background-color: rgba(88, 166, 255, 0.2);
     border-radius: 2px;
-  }
-  :global(.monaco-editor .lines-content) { padding-left: 5px; }
-  :global(.monaco-editor .editor-widget) { z-index: 50; }
-
-  main {
-    height: 100%;
-    display: flex; flex-direction: column;
+    background-color: rgba(9, 105, 218, 0.18);
   }
 
-  header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 8px 16px; flex-shrink: 0;
-    border-bottom: 1px solid #30363d;
+  :global(.monaco-editor .lines-content) {
+    padding-left: 5px;
+  }
+
+  :global(.monaco-editor .editor-widget) {
+    z-index: 50;
+  }
+
+  .site-shell {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+  }
+
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 20px;
+    border-bottom: 1px solid #d0d7de;
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(12px);
+  }
+
+  .brand {
+    color: #1f2328;
+    font-size: 17px;
+    font-weight: 760;
+    text-decoration: none;
+  }
+
+  .brand:hover {
+    color: #0969da;
+  }
+
+  .subtitle {
+    margin: 0;
+    color: #57606a;
+    font-size: 13px;
+  }
+
+  .site-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .site-nav a {
+    min-height: 30px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    color: #57606a;
+    font-size: 13px;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .site-nav a:hover,
+  .site-nav a.active {
+    background: #eaeef2;
+    color: #0969da;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  .hidden {
+    display: none !important;
+  }
+
+  .home-route {
+    flex: 1;
+  }
+
+  .coverage-route {
+    display: flex;
+    flex: 1;
+    min-height: calc(100vh - 51px);
+    flex-direction: column;
+  }
+
+  .hero {
+    display: grid;
+    min-height: 520px;
+    grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
+    align-items: center;
+    gap: 48px;
+    padding: 56px 48px 40px;
+    background:
+      linear-gradient(135deg, rgba(45, 164, 78, 0.12), transparent 42%),
+      linear-gradient(45deg, rgba(255, 200, 50, 0.16), transparent 38%),
+      #f5f7fb;
+  }
+
+  .hero-copy {
+    max-width: 680px;
+  }
+
+  .eyebrow {
+    margin: 0 0 8px;
+    color: #57606a;
+    font-size: 12px;
+    font-weight: 760;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .hero h1 {
+    margin: 0;
+    color: #1f2328;
+    font-size: clamp(56px, 9vw, 112px);
+    line-height: 0.92;
+  }
+
+  .hero-subtitle {
+    max-width: 620px;
+    margin: 18px 0 0;
+    color: #424a53;
+    font-size: 20px;
+    line-height: 1.45;
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 28px;
+  }
+
+  .primary-link,
+  .secondary-link {
+    display: inline-flex;
+    min-height: 38px;
+    align-items: center;
+    padding: 8px 13px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .primary-link {
+    border: 1px solid #1f2328;
+    background: #1f2328;
+    color: #ffffff;
+  }
+
+  .primary-link:hover {
+    background: #0969da;
+    border-color: #0969da;
+  }
+
+  .secondary-link {
+    border: 1px solid #d0d7de;
+    background: #ffffff;
+    color: #0969da;
+  }
+
+  .secondary-link:hover {
+    border-color: #0969da;
+  }
+
+  .hero-visual {
+    display: grid;
+    gap: 12px;
+    padding: 18px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    background: #0d1117;
+    box-shadow: 0 18px 48px rgba(31, 35, 40, 0.22);
+  }
+
+  .pipeline-stage {
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding: 13px;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    background: #161b22;
+  }
+
+  .pipeline-stage span {
+    color: #8b949e;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .pipeline-stage code {
+    overflow: hidden;
+    color: #c9d1d9;
+    font-family: "Fira Code Variable", "Fira Code", monospace;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    border-top: 1px solid #d0d7de;
+    border-bottom: 1px solid #d0d7de;
+    background: #d0d7de;
+  }
+
+  .info-grid article {
+    min-height: 172px;
+    padding: 24px;
+    background: #ffffff;
+  }
+
+  .info-grid h2 {
+    margin: 0;
+    color: #1f2328;
+    font-size: 18px;
+  }
+
+  .info-grid p {
+    margin: 10px 0 0;
+    color: #57606a;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .playground-section {
+    display: flex;
+    min-height: 820px;
+    flex-direction: column;
+    padding: 28px 24px 24px;
+    background: #11151c;
+    color: #c9d1d9;
+  }
+
+  .section-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    max-width: 1680px;
+    width: 100%;
+    margin: 0 auto 16px;
+  }
+
+  .section-heading .eyebrow {
+    color: #8b949e;
+  }
+
+  .section-heading h2 {
+    margin: 0;
+    color: #f0f6fc;
+    font-size: 28px;
+    line-height: 1.05;
+  }
+
+  .compile-status {
+    min-height: 28px;
+    padding: 6px 10px;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #8b949e;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .compile-status.ready {
+    border-color: #2ea043;
+    color: #3fb950;
+  }
+
+  .compile-status.busy {
+    border-color: #1f6feb;
+    color: #58a6ff;
   }
 
   .content {
-    flex: 1; display: flex; flex-direction: column;
-    padding: 16px; min-height: 0;
-  }
-  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
-  header h1 a { color: #c9d1d9; text-decoration: none; }
-  header h1 a:hover { color: #58a6ff; }
-  .subtitle { margin: 0; font-size: 13px; color: #8b949e; }
-  .spacer { flex: 1; }
-
-  .view-switch {
-    display: flex; align-items: center; gap: 2px;
-    padding: 2px; border: 1px solid #30363d; border-radius: 6px;
-    background: #0d1117;
-  }
-  .view-switch button {
-    min-width: 96px; height: 26px; padding: 0 10px;
-    border: 0; border-radius: 4px; background: transparent;
-    color: #8b949e; font: inherit; font-size: 12px;
-    cursor: pointer;
-  }
-  .view-switch button:hover { color: #c9d1d9; background: #21262d; }
-  .view-switch button.active { color: #0d1117; background: #58a6ff; }
-
-  .hidden { display: none !important; }
-
-  .run-mode-select {
-    padding: 4px 8px; background: transparent;
-    border: 1px solid #30363d; border-radius: 4px;
-    color: #8b949e; font-size: 11px; font-family: inherit;
-    cursor: pointer; transition: all 0.15s ease; appearance: auto;
-  }
-  .run-mode-select:hover { background: #21262d; border-color: #8b949e; color: #c9d1d9; }
-  .run-mode-select:focus { outline: none; border-color: #58a6ff; }
-  .run-mode-select option { background: #161b22; color: #c9d1d9; }
-
-  .vm-status {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 8px; border-radius: 4px; font-size: 11px;
-    user-select: none; transition: all 0.15s ease;
-    border: 1px solid transparent; font-weight: 400; font-family: inherit;
-    cursor: pointer;
-  }
-  .vm-status:hover { border-color: #30363d; }
-
-  .vm-dot {
-    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  }
-  [data-state="initializing"] > .vm-dot,
-  [data-state="downloading"] > .vm-dot { background: #d29922; }
-  [data-state="booting"] > .vm-dot { background: #d29922; animation: pulse 1.5s ease-in-out infinite; }
-  [data-state="ready"] > .vm-dot { background: #3fb950; }
-  [data-state="compiling"] > .vm-dot,
-  [data-state="running"] > .vm-dot { background: #58a6ff; animation: pulse 0.8s ease-in-out infinite; }
-  [data-state="error"] > .vm-dot { background: #f85149; }
-
-  [data-state="initializing"] > .vm-label,
-  [data-state="downloading"] > .vm-label { color: #d29922; }
-  [data-state="booting"] > .vm-label { color: #d29922; }
-  [data-state="ready"] > .vm-label { color: #3fb950; }
-  [data-state="compiling"] > .vm-label,
-  [data-state="running"] > .vm-label { color: #58a6ff; }
-  [data-state="error"] > .vm-label { color: #f85149; }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
   }
 
-  .editors { display: flex; gap: 16px; min-height: 200px; }
+  .playground-content {
+    width: 100%;
+    max-width: 1680px;
+    margin: 0 auto;
+  }
 
-  .mode-group { display: flex; align-items: center; gap: 6px; }
-  .mode-label { font-size: 11px; color: #8b949e; }
+  .editors {
+    display: flex;
+    min-height: 300px;
+    gap: 16px;
+  }
 
   .editor-container {
-    flex: 1; display: flex; flex-direction: column; min-width: 0;
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
   }
 
   .editor-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 12px; background: #161b22;
-    border-radius: 8px 8px 0 0; font-size: 12px; font-weight: 600; height: 36px;
+    display: flex;
+    height: 36px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 8px 8px 0 0;
+    background: #161b22;
+    font-size: 12px;
+    font-weight: 650;
   }
 
-  .editor-header .label { display: flex; align-items: center; gap: 8px; }
+  .editor-header .label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 
-  .editor-header .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .go .dot { background: #00ADD8; }
-  .rust .dot { background: #FFC832; }
+  .editor-header .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
 
-  .actions { display: flex; align-items: center; gap: 8px; }
+  .go .dot {
+    background: #00add8;
+  }
+
+  .rust .dot {
+    background: #ffc832;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 
   .editor-wrapper {
-    flex: 1; position: relative;
-    border: 2px solid; border-top: none; border-radius: 0 0 8px 8px; overflow: visible;
+    position: relative;
+    flex: 1;
+    overflow: visible;
+    border: 2px solid;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
   }
-  .go .editor-wrapper { border-color: #00ADD8; }
-  .rust .editor-wrapper { border-color: #FFC832; }
+
+  .go .editor-wrapper {
+    border-color: #00add8;
+  }
+
+  .rust .editor-wrapper {
+    border-color: #ffc832;
+  }
 
   .action-button {
-    padding: 4px 8px; background: transparent;
-    border: 1px solid #30363d; border-radius: 4px;
-    color: #8b949e; font-size: 11px; font-family: inherit;
-    cursor: pointer; display: flex; align-items: center; gap: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    background: transparent;
+    color: #8b949e;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
     transition: all 0.15s ease;
   }
-  .action-button:hover:not(:disabled) { background: #21262d; border-color: #8b949e; color: #c9d1d9; }
-  .action-button:disabled { opacity: 0.35; cursor: not-allowed; }
-  .action-button svg { width: 12px; height: 12px; fill: currentColor; }
+
+  .action-button:hover:not(:disabled) {
+    border-color: #8b949e;
+    background: #21262d;
+    color: #c9d1d9;
+  }
+
+  .action-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+  }
+
+  .action-button svg {
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+  }
+
+  .run-button:not(:disabled) {
+    border-color: #2ea043;
+    color: #3fb950;
+  }
+
   .btn-spinner {
-    width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
-    border: 2px solid #30363d; border-top-color: #8b949e;
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border: 2px solid #30363d;
+    border-top-color: #8b949e;
+    border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
 
   .resize-handle {
-    height: 6px; margin: 5px 0; cursor: row-resize;
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0; user-select: none;
+    display: flex;
+    height: 6px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    margin: 5px 0;
+    cursor: row-resize;
+    user-select: none;
   }
+
   .resize-handle::after {
-    content: ''; width: 40px; height: 3px; border-radius: 2px;
-    background: #30363d; transition: background 0.15s;
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background: #30363d;
+    content: "";
+    transition: background 0.15s;
   }
-  .resize-handle:hover::after { background: #484f58; }
+
+  .resize-handle:hover::after {
+    background: #484f58;
+  }
 
   .console-section {
-    border: 2px solid #30363d; border-radius: 8px; overflow: hidden;
-    flex: 1; min-height: 200px; display: flex; flex-direction: column;
+    display: flex;
+    min-height: 220px;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+    border: 2px solid #30363d;
+    border-radius: 8px;
   }
 
   .console-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 12px; background: #161b22;
-    font-size: 12px; font-weight: 600; height: 36px; flex-shrink: 0;
-  }
-  .console-left { display: flex; align-items: center; gap: 12px; }
-  .console-right { display: flex; align-items: center; gap: 8px; }
-  .console-title { display: flex; align-items: center; gap: 8px; }
-  .console-title .dot { width: 8px; height: 8px; border-radius: 50%; background: #c9d1d9; }
-
-  .console-content {
-    flex: 1; margin: 12px; background: #0d1117;
-    font-family: 'Fira Code Variable', 'Fira Code', monospace;
-    font-size: 13px; line-height: 1.5; overflow-y: auto;
-    white-space: pre-wrap; word-break: break-all; color: #c9d1d9;
-  }
-  .console-content :global(.cmd) { color: #c9d1d9; }
-  .console-content :global(.err) { color: #f85149; }
-  .console-content :global(.out) { color: #c9d1d9; }
-  .console-content :global(a) { color: #58a6ff; text-decoration: none; }
-  .console-content :global(a:hover) { text-decoration: underline; }
-
-  .stdlib-report-view {
-    gap: 14px;
-  }
-
-  .report-summary {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(120px, 170px)) minmax(260px, 1fr);
-    gap: 12px;
-    flex-shrink: 0;
-  }
-
-  .report-metric,
-  .report-filter {
-    min-height: 58px;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    background: #161b22;
-  }
-
-  .report-metric {
     display: flex;
-    flex-direction: column;
-    justify-content: center;
+    height: 36px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
     padding: 8px 12px;
-  }
-
-  .report-metric strong {
-    font-size: 22px;
-    line-height: 1;
-    color: #c9d1d9;
+    background: #161b22;
+    font-size: 12px;
     font-weight: 650;
   }
 
-  .report-metric span,
-  .report-filter span {
-    margin-top: 4px;
-    color: #8b949e;
-    font-size: 12px;
-  }
-
-  .report-filter {
+  .console-left,
+  .console-right,
+  .console-title {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
   }
 
-  .report-filter span {
-    margin: 0;
+  .console-title .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #c9d1d9;
+  }
+
+  .console-content {
+    flex: 1;
+    margin: 12px;
+    overflow-y: auto;
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: "Fira Code Variable", "Fira Code", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .console-content :global(.cmd),
+  .console-content :global(.out) {
+    color: #c9d1d9;
+  }
+
+  .console-content :global(.err) {
+    color: #f85149;
+  }
+
+  .console-content :global(a) {
+    color: #58a6ff;
+    text-decoration: none;
+  }
+
+  .console-content :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .vm-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    transition: all 0.15s ease;
+    user-select: none;
+  }
+
+  .vm-status:hover {
+    border-color: #d0d7de;
+    background: #f6f8fa;
+  }
+
+  .vm-dot {
+    width: 6px;
+    height: 6px;
     flex-shrink: 0;
+    border-radius: 50%;
   }
 
-  .report-filter input {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid #30363d;
-    border-radius: 4px;
-    background: #0d1117;
-    color: #c9d1d9;
-    font: inherit;
-    font-size: 13px;
+  [data-state="initializing"] > .vm-dot,
+  [data-state="downloading"] > .vm-dot,
+  [data-state="booting"] > .vm-dot {
+    background: #bf8700;
   }
 
-  .report-filter input:focus {
-    outline: none;
-    border-color: #58a6ff;
+  [data-state="booting"] > .vm-dot,
+  [data-state="compiling"] > .vm-dot,
+  [data-state="running"] > .vm-dot {
+    animation: pulse 1.2s ease-in-out infinite;
   }
 
-  .report-list {
-    flex: 1;
-    min-height: 0;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    overflow: hidden;
-    background: #0d1117;
-    display: flex;
-    flex-direction: column;
+  [data-state="ready"] > .vm-dot {
+    background: #1a7f37;
   }
 
-  .report-list-head,
-  .coverage-row {
-    display: grid;
-    grid-template-columns: minmax(180px, 0.8fr) minmax(320px, 2fr) minmax(200px, 1fr);
-    column-gap: 16px;
-    align-items: start;
+  [data-state="compiling"] > .vm-dot,
+  [data-state="running"] > .vm-dot {
+    background: #0969da;
   }
 
-  .report-list-head {
-    padding: 10px 14px;
-    background: #161b22;
-    color: #8b949e;
-    font-size: 12px;
-    font-weight: 600;
-    border-bottom: 1px solid #30363d;
+  [data-state="error"] > .vm-dot {
+    background: #cf222e;
   }
 
-  .report-list-body {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
+  [data-state="initializing"] > .vm-label,
+  [data-state="downloading"] > .vm-label,
+  [data-state="booting"] > .vm-label {
+    color: #9a6700;
   }
 
-  .coverage-row {
-    padding: 12px 14px;
-    border-bottom: 1px solid #21262d;
+  [data-state="ready"] > .vm-label {
+    color: #1a7f37;
   }
 
-  .coverage-row:last-child { border-bottom: 0; }
-
-  .package-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
+  [data-state="compiling"] > .vm-label,
+  [data-state="running"] > .vm-label {
+    color: #0969da;
   }
 
-  .package-cell code {
-    color: #7ee787;
-    font-family: 'Fira Code Variable', 'Fira Code', monospace;
-    font-size: 13px;
-    word-break: break-word;
-  }
-
-  .package-cell span {
-    color: #8b949e;
-    font-size: 12px;
-  }
-
-  .package-cell span.tested { color: #3fb950; }
-  .package-cell span.untested { color: #f85149; }
-
-  .symbol-cell,
-  .fixture-cell {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .symbol-token,
-  .fixture-cell code {
-    max-width: 100%;
-    padding: 3px 7px;
-    border: 1px solid #30363d;
-    border-radius: 4px;
-    background: #161b22;
-    color: #c9d1d9;
-    font-family: 'Fira Code Variable', 'Fira Code', monospace;
-    font-size: 12px;
-    line-height: 1.35;
-    overflow-wrap: anywhere;
-  }
-
-  .symbol-token {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .symbol-token.tested {
-    border-color: #2ea043;
-    background: rgba(46, 160, 67, 0.12);
-  }
-  .symbol-token.untested {
-    border-color: #3d444d;
-    color: #8b949e;
-  }
-  .symbol-token small {
-    color: inherit;
-    opacity: 0.7;
-    font-size: 10px;
-    line-height: 1;
-  }
-  .fixture-cell code { color: #d2a8ff; }
-
-  .report-empty {
-    padding: 28px 14px;
-    color: #8b949e;
-    font-size: 13px;
+  [data-state="error"] > .vm-label {
+    color: #cf222e;
   }
 
   .vm-terminal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
     display: none;
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
+    background: rgba(31, 35, 40, 0.55);
   }
+
   .vm-terminal-overlay.visible {
-    display: flex; align-items: center; justify-content: center; padding: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px;
   }
+
   .vm-terminal-panel {
-    width: 800px; height: 600px; background: #0d1117;
-    border: 1px solid #30363d; border-radius: 12px; overflow: hidden;
-    display: flex; flex-direction: column;
+    display: flex;
+    width: 800px;
+    height: 600px;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    background: #0d1117;
   }
+
   .vm-terminal-header {
-    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-    padding: 10px 12px; background: #161b22; border-bottom: 1px solid #21262d;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid #21262d;
+    background: #161b22;
   }
-  .vm-terminal-left { min-width: 0; }
-  .vm-terminal-title { font-size: 13px; font-weight: 600; text-align: center; }
-  .vm-terminal-right { display: flex; justify-content: flex-end; }
+
+  .vm-terminal-left {
+    min-width: 0;
+  }
+
+  .vm-terminal-title {
+    color: #c9d1d9;
+    font-size: 13px;
+    font-weight: 650;
+    text-align: center;
+  }
+
+  .vm-terminal-right {
+    display: flex;
+    justify-content: flex-end;
+  }
+
   .vm-terminal-close {
-    padding: 4px 8px; background: transparent; border: none;
-    color: #8b949e; font-size: 16px; cursor: pointer; border-radius: 4px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #8b949e;
+    cursor: pointer;
+    font-size: 16px;
   }
-  .vm-terminal-close:hover { background: #21262d; color: #c9d1d9; }
-  .vm-terminal-body { flex: 1; overflow: hidden; padding: 8px; }
+
+  .vm-terminal-close:hover {
+    background: #21262d;
+    color: #c9d1d9;
+  }
+
+  .vm-terminal-body {
+    flex: 1;
+    overflow: hidden;
+    padding: 8px;
+  }
 
   .vm-spinner-container {
-    flex: 1; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 16px;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
   }
+
   .vm-spinner {
-    width: 32px; height: 32px; border-radius: 50%;
-    border: 3px solid #30363d; border-top-color: #58a6ff;
+    width: 32px;
+    height: 32px;
+    border: 3px solid #30363d;
+    border-top-color: #58a6ff;
+    border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
-  .vm-spinner-label { font-size: 13px; color: #8b949e; }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
-  @media (max-width: 900px) {
-    :global(html), :global(body), :global(#app) { overflow: auto; }
-    header { flex-wrap: wrap; }
-    .subtitle { display: none; }
-    .spacer { display: none; }
-    .content { min-height: calc(100vh - 88px); }
-    .editors { flex-direction: column; }
-    .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .report-filter { grid-column: 1 / -1; }
-    .report-list-head { display: none; }
-    .coverage-row {
+  .vm-spinner-label {
+    color: #8b949e;
+    font-size: 13px;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (max-width: 980px) {
+    .site-header {
+      flex-wrap: wrap;
+    }
+
+    .subtitle {
+      display: none;
+    }
+
+    .spacer {
+      display: none;
+    }
+
+    .hero {
+      min-height: auto;
       grid-template-columns: 1fr;
-      gap: 10px;
+      gap: 28px;
+      padding: 36px 18px 28px;
+    }
+
+    .hero-visual {
+      order: -1;
+    }
+
+    .pipeline-stage {
+      grid-template-columns: 1fr;
+    }
+
+    .info-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .playground-section {
+      min-height: 980px;
+      padding: 20px 14px;
+    }
+
+    .section-heading {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .editors {
+      flex-direction: column;
+    }
+
+    .vm-terminal-overlay.visible {
+      padding: 16px;
+    }
+
+    .vm-terminal-panel {
+      width: 100%;
+      height: min(680px, 90vh);
     }
   }
 </style>

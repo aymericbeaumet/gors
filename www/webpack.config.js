@@ -126,7 +126,12 @@ module.exports = (_, argv) => {
 			new CopyWebpackPlugin({ patterns: copyPatterns }),
 			new AssetManifestPlugin(),
 			new FaviconsWebpackPlugin("./favicon.png"),
-			new HtmlWebpackPlugin({ template: "index.html" }),
+			new HtmlWebpackPlugin({ template: "index.html", filename: "index.html" }),
+			new HtmlWebpackPlugin({
+				template: "index.html",
+				filename: "coverage/index.html",
+			}),
+			new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
 			new MonacoWebpackPlugin(),
 		],
 		devServer: {
@@ -139,6 +144,7 @@ module.exports = (_, argv) => {
 				"Cross-Origin-Opener-Policy": "same-origin",
 				"Cross-Origin-Embedder-Policy": "require-corp",
 			},
+			historyApiFallback: true,
 			hot: true,
 		},
 		experiments: {

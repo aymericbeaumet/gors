@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("default hello world transpiles, compiles, and runs", async ({ page }) => {
+test("default hello world auto-compiles and runs manually", async ({
+	page,
+}) => {
 	const pageErrors: string[] = [];
 	const consoleErrors: string[] = [];
 
@@ -23,6 +25,10 @@ test("default hello world transpiles, compiles, and runs", async ({ page }) => {
 	await expect(consoleOutput).toContainText("$ rustc -o main main.rs", {
 		timeout: 7 * 60 * 1000,
 	});
+	await expect(page.getByText("Ready to run")).toBeVisible({
+		timeout: 8 * 60 * 1000,
+	});
+	await page.getByRole("button", { name: "Run" }).click();
 	await expect(consoleOutput).toContainText("$ ./main", {
 		timeout: 9 * 60 * 1000,
 	});
@@ -32,4 +38,20 @@ test("default hello world transpiles, compiles, and runs", async ({ page }) => {
 
 	expect(pageErrors).toEqual([]);
 	expect(consoleErrors).toEqual([]);
+});
+
+test("coverage route shows stdlib package and symbol coverage", async ({
+	page,
+}) => {
+	await page.goto("/coverage");
+
+	await expect(
+		page.getByRole("heading", { name: "Go stdlib coverage" }),
+	).toBeVisible();
+	await expect(page.getByText("51/353")).toBeVisible();
+	await expect(page.getByText("294/12599")).toBeVisible();
+
+	await page.getByRole("searchbox").fill("fmt");
+	await expect(page.getByText("fmt", { exact: true })).toBeVisible();
+	await expect(page.getByText("Println", { exact: true })).toBeVisible();
 });
