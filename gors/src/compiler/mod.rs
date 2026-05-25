@@ -644,6 +644,19 @@ fn is_active_string_const_fn(name: &str) -> bool {
     is_string_const_fn(name) && TYPE_ENV.with(|env| env.borrow().is_const(name))
 }
 
+fn selector_string_const_key(selector_expr: &ast::SelectorExpr) -> Option<String> {
+    let ast::Expr::Ident(package) = &*selector_expr.x else {
+        return None;
+    };
+    Some(format!("{}.{}", package.name, selector_expr.sel.name))
+}
+
+fn is_active_selector_string_const_fn(selector_expr: &ast::SelectorExpr) -> bool {
+    selector_string_const_key(selector_expr)
+        .as_deref()
+        .is_some_and(is_active_string_const_fn)
+}
+
 /// Record a mapping if tracking is enabled.
 fn record_mapping(pos: &token::Position, name: Option<&str>) {
     TRACKER.with(|t| {
@@ -11007,6 +11020,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 };
                 if is_package {
                     let top_level_var_type = selector_top_level_var_type(&selector_expr);
+                    if is_active_selector_string_const_fn(&selector_expr) {
+                        let path = selector_path_from_ref(&selector_expr);
+                        return syn::parse_quote! { #path() };
+                    }
                     let path = Self::Path(selector_expr.into());
                     if let Some(go_type) = top_level_var_type {
                         top_level_var_read_expr(path, &go_type)
@@ -14374,6 +14391,40 @@ func Hello() {}
                 .unwrap()
                 .contains("example__dead")
         );
+    }
+
+    #[test]
+    fn imported_string_constants_are_called_as_functions() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/config"
+
+func main() {
+	_ = len(config.Header)
+	_ = config.Header[:5]
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("config/config.go").as_path(),
+            r#"
+package config
+
+const Header = "hello, world"
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("config::Header()"), "{main_rs}");
+        assert!(main_rs.contains("&config::Header()"), "{main_rs}");
+        assert!(main_rs.contains("config::Header()[.."), "{main_rs}");
+        assert!(!main_rs.contains("config::Header[.."), "{main_rs}");
     }
 
     #[test]
