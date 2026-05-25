@@ -769,11 +769,7 @@ onDestroy(() => {
       </div>
     </section>
 
-    <section class="home-details" aria-label="Why gors">
-      <div class="details-heading">
-        <p class="eyebrow">Why gors</p>
-        <h2>Transparent compiler work, backed by executable checks.</h2>
-      </div>
+    <section class="home-details" aria-label="gors benefits">
       <article>
         <span>01</span>
         <h3>Inspect the generated Rust</h3>
@@ -793,6 +789,16 @@ onDestroy(() => {
         <span>04</span>
         <h3>Audit what is proven</h3>
         <p>Integration tests compare generated Rust behavior with the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
+      </article>
+      <article>
+        <span>05</span>
+        <h3>Keep source maps visible</h3>
+        <p>Hovering generated Rust can map back to the Go source locations that produced it.</p>
+      </article>
+      <article>
+        <span>06</span>
+        <h3>Run only when ready</h3>
+        <p>The playground transpiles automatically, while compiling and running stay behind the explicit Run button.</p>
       </article>
     </section>
 
@@ -1035,6 +1041,12 @@ onDestroy(() => {
 
   .home-route {
     flex: 1;
+    display: grid;
+    height: calc(100vh - 51px);
+    max-height: calc(100vh - 51px);
+    min-height: calc(100vh - 51px);
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: hidden;
   }
 
   .editor-route {
@@ -1062,11 +1074,11 @@ onDestroy(() => {
 
   .hero {
     display: grid;
-    min-height: 560px;
-    grid-template-columns: minmax(0, 0.9fr) minmax(420px, 0.85fr);
+    min-height: 0;
+    grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
     align-items: center;
-    gap: 46px;
-    padding: 58px 48px 44px;
+    gap: 36px;
+    padding: 34px 48px 28px;
     background:
       linear-gradient(135deg, rgba(45, 164, 78, 0.12), transparent 45%),
       linear-gradient(45deg, rgba(255, 200, 50, 0.18), transparent 38%),
@@ -1074,7 +1086,7 @@ onDestroy(() => {
   }
 
   .hero-copy {
-    max-width: 760px;
+    max-width: 520px;
   }
 
   .eyebrow {
@@ -1094,7 +1106,7 @@ onDestroy(() => {
   }
 
   .hero-subtitle {
-    max-width: 700px;
+    max-width: 520px;
     margin: 18px 0 0;
     color: #424a53;
     font-size: 21px;
@@ -1153,7 +1165,7 @@ onDestroy(() => {
   }
 
   .compiler-card h2 {
-    max-width: 560px;
+    max-width: 720px;
     margin: 0;
     color: #f0f6fc;
     font-size: 28px;
@@ -1258,54 +1270,78 @@ onDestroy(() => {
 
   .home-details {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-self: end;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
     gap: 1px;
     padding: 0;
     border-top: 1px solid #d0d7de;
     background: #d0d7de;
   }
 
-  .home-details article,
-  .details-heading {
+  .home-details article {
     min-width: 0;
-    padding: 28px;
+    padding: 16px 20px;
     background: #ffffff;
   }
 
-  .details-heading {
-    grid-column: span 2;
-    background: #f6f8fa;
+  .home-details article {
+    min-height: 96px;
   }
 
-  .details-heading h2,
+  .home-details article:nth-of-type(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .home-details article:nth-of-type(2) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .home-details article:nth-of-type(3) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .home-details article:nth-of-type(4) {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .home-details article:nth-of-type(5) {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .home-details article:nth-of-type(6) {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
   .home-details h3 {
     margin: 0;
     color: #1f2328;
     line-height: 1.15;
   }
 
-  .details-heading h2 {
-    max-width: 560px;
-    font-size: 28px;
-  }
-
   .home-details h3 {
-    font-size: 18px;
+    font-size: 16px;
   }
 
   .home-details article span {
     display: block;
-    margin-bottom: 18px;
+    margin-bottom: 8px;
     color: #0969da;
     font-size: 12px;
     font-weight: 760;
   }
 
   .home-details p:last-child {
-    margin: 12px 0 0;
+    margin: 7px 0 0;
     color: #57606a;
-    font-size: 14px;
-    line-height: 1.45;
+    font-size: 13px;
+    line-height: 1.35;
   }
 
   .home-details a {
@@ -1796,10 +1832,19 @@ onDestroy(() => {
 
     .home-details {
       grid-template-columns: 1fr;
+      grid-template-rows: auto;
+      overflow: visible;
     }
 
-    .details-heading {
+    .home-details article:nth-of-type(1),
+    .home-details article:nth-of-type(2),
+    .home-details article:nth-of-type(3),
+    .home-details article:nth-of-type(4),
+    .home-details article:nth-of-type(5),
+    .home-details article:nth-of-type(6) {
       grid-column: auto;
+      grid-row: auto;
+      min-height: 0;
     }
 
     .playground-section {

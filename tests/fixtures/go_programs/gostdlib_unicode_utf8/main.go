@@ -8,6 +8,8 @@ import (
 func main() {
 	fmt.Println("== utf8/append_rune ==")
 	case_utf8_append_rune()
+	fmt.Println("== utf8/constants ==")
+	case_utf8_constants()
 	fmt.Println("== utf8/decode_last_rune ==")
 	case_utf8_decode_last_rune()
 	fmt.Println("== utf8/decode_last_rune_in_string ==")
@@ -16,6 +18,8 @@ func main() {
 	case_utf8_decode_rune()
 	fmt.Println("== utf8/decode_rune_in_string ==")
 	case_utf8_decode_rune_in_string()
+	fmt.Println("== utf8/encode_rune ==")
+	case_utf8_encode_rune()
 	fmt.Println("== utf8/full_rune ==")
 	case_utf8_full_rune()
 	fmt.Println("== utf8/full_rune_in_string ==")
@@ -39,6 +43,10 @@ func main() {
 func case_utf8_append_rune() {
 	out := utf8.AppendRune([]byte("go:"), 'λ')
 	fmt.Println(string(out))
+}
+
+func case_utf8_constants() {
+	fmt.Println(utf8.MaxRune, utf8.RuneError, utf8.RuneSelf, utf8.UTFMax)
 }
 
 func case_utf8_decode_last_rune() {
@@ -65,6 +73,14 @@ func case_utf8_decode_rune() {
 func case_utf8_decode_rune_in_string() {
 	r, size := utf8.DecodeRuneInString("λgo")
 	fmt.Println(r, size)
+}
+
+func case_utf8_encode_rune() {
+	buf := []byte{0, 0, 0, 0}
+	n := utf8.EncodeRune(buf, 'λ')
+	fmt.Println(n, buf)
+	n = utf8.EncodeRune(buf, utf8.MaxRune+1)
+	fmt.Println(n, buf)
 }
 
 func case_utf8_full_rune() {

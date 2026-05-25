@@ -6,6 +6,8 @@ import (
 )
 
 func main() {
+	fmt.Println("== utf16/append_rune ==")
+	case_utf16_append_rune()
 	fmt.Println("== utf16/decode ==")
 	case_utf16_decode()
 	fmt.Println("== utf16/decode_rune ==")
@@ -18,6 +20,13 @@ func main() {
 	case_utf16_is_surrogate()
 	fmt.Println("== utf16/rune_len ==")
 	case_utf16_rune_len()
+}
+
+func case_utf16_append_rune() {
+	out := utf16.AppendRune([]uint16{'g', 'o'}, '😀')
+	fmt.Println(out)
+	out = utf16.AppendRune(out, -1)
+	fmt.Println(out)
 }
 
 func case_utf16_decode() {
