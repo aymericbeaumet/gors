@@ -797,7 +797,7 @@ onDestroy(() => {
       </div>
 
       <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
-        <h2>The same compiler stages power the CLI, playground, and integration checks.</h2>
+        <h2>Backed by a powerful compiler.</h2>
         <div class="pipeline-flow" aria-hidden="true">
           <div class="flow-node go-node"><span>Go source</span></div>
           <span class="flow-arrow"></span>
