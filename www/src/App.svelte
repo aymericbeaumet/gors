@@ -750,19 +750,19 @@ onDestroy(() => {
         <h2>Go source moves through a real compiler pipeline.</h2>
         <div class="pipeline-flow" aria-hidden="true">
           <div class="flow-node go-node"><span>Go source</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node"><span>Scanner</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node"><span>Parser</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node ast-node"><span>Go AST</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node"><span>Lowering</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node ast-node"><span>Rust AST</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node"><span>Passes</span></div>
-          <span class="flow-arrow">-></span>
+          <span class="flow-arrow"></span>
           <div class="flow-node rust-node"><span>Rust source</span></div>
           <i class="flow-pulse"></i>
         </div>
@@ -1212,13 +1212,21 @@ onDestroy(() => {
   .flow-arrow {
     position: relative;
     z-index: 1;
-    color: #8b949e;
-    font-family: "Fira Code Variable", "Fira Code", monospace;
+    display: flex;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
     min-width: 0;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    text-align: center;
+  }
+
+  .flow-arrow::before {
+    display: block;
+    width: 7px;
+    height: 7px;
+    border-top: 2px solid #8b949e;
+    border-right: 2px solid #8b949e;
+    content: "";
+    transform: rotate(45deg);
   }
 
   .go-node {
