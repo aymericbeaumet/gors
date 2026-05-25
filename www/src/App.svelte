@@ -79,11 +79,7 @@ function navigateTo(nextRoute: AppRoute, event?: MouseEvent) {
 	route = nextRoute;
 	if (route === "playground") layoutEditors();
 	if (route === "coverage") scrollPageToTop();
-	if (
-		route === "playground" &&
-		initialized &&
-		(!cache.rustCode || !cache.compiled)
-	)
+	if (route === "playground" && initialized && !cache.rustCode)
 		schedulePipeline(0);
 }
 
@@ -91,11 +87,12 @@ let vmState: VmState = State.INITIALIZING;
 let vmOverlayVisible = false;
 let consoleLines: ConsoleLine[] = [];
 let vmStartRequested = false;
+const DEFAULT_EDITOR_CONSOLE_RATIO = 1.61803398875;
 
 let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio") ?? "");
 let editorsFlex =
 	isNaN(storedRatio) || storedRatio <= 0
-		? 1.35
+		? DEFAULT_EDITOR_CONSOLE_RATIO
 		: Math.min(Math.max(storedRatio, 0.7), 2.6);
 let editorPaneHeight: number | null = null;
 let consolePaneHeight: number | null = null;
@@ -147,19 +144,7 @@ $: if (route !== prevRoute) {
 	if (route === "playground") layoutEditors();
 }
 $: pipelineBusy = activePipelines > 0;
-$: runDisabled = pipelineBusy || !cache.compiled || !cache.jobId;
-$: compileStatus =
-	vmState === State.RUNNING
-		? "Running"
-		: cache.compiled
-			? "Compiled"
-			: cache.rustCode
-				? route === "playground"
-					? "Rust output ready"
-					: "Rust ready"
-				: pipelineBusy
-					? "Transpiling"
-					: "Waiting for changes";
+$: runDisabled = pipelineBusy || !cache.rustCode;
 
 // Console helpers
 function conClear() {
@@ -480,7 +465,6 @@ async function runPipeline() {
 		const rustCode = await doTranspile();
 		if (!rustCode) return;
 		await tick();
-		if (route === "playground") await doCompile(rustCode);
 	} finally {
 		activePipelines--;
 		if (queuedPipeline) {
@@ -502,11 +486,12 @@ function onGoChanged() {
 
 async function handleRun() {
 	cancelScheduledPipeline();
-	if (!cache.jobId || !cache.compiled || activePipelines > 0) return;
+	if (!cache.rustCode || activePipelines > 0) return;
 	activePipelines++;
 	try {
 		conClear();
-		await doRun(cache.jobId);
+		const jobId = await doCompile(cache.rustCode);
+		if (jobId) await doRun(jobId);
 	} finally {
 		activePipelines--;
 		if (queuedPipeline) {
@@ -578,11 +563,7 @@ onMount(() => {
 	const onPopState = () => {
 		route = routeFromPath(window.location.pathname);
 		if (route === "coverage") scrollPageToTop();
-		if (
-			route === "playground" &&
-			initialized &&
-			(!cache.rustCode || !cache.compiled)
-		)
+		if (route === "playground" && initialized && !cache.rustCode)
 			schedulePipeline(0);
 	};
 	window.addEventListener("popstate", onPopState);
@@ -766,7 +747,6 @@ onDestroy(() => {
       </div>
 
       <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
-        <p class="compiler-card-kicker">Same path as the CLI</p>
         <h2>Go source moves through a real compiler pipeline.</h2>
         <div class="pipeline-flow" aria-hidden="true">
           <div class="flow-node go-node"><span>Go source</span></div>
@@ -784,73 +764,44 @@ onDestroy(() => {
           <div class="flow-node"><span>Passes</span></div>
           <span class="flow-arrow">-></span>
           <div class="flow-node rust-node"><span>Rust source</span></div>
-          <i class="flow-pulse pulse-one"></i>
-          <i class="flow-pulse pulse-two"></i>
-        </div>
-        <div class="compiler-card-footer">
-          <code>gors build main.go</code>
-          <span>main.rs</span>
+          <i class="flow-pulse"></i>
         </div>
       </div>
     </section>
 
-    <section class="home-details" aria-label="Project details">
-      <div>
-        <p class="eyebrow">Less guesswork</p>
-        <h2>See the Rust a Go program becomes</h2>
-        <p>The playground keeps the generated Rust visible, so compiler behavior can be inspected directly instead of hidden behind a black-box run button.</p>
+    <section class="home-details" aria-label="Why gors">
+      <div class="details-heading">
+        <p class="eyebrow">Why gors</p>
+        <h2>Transparent compiler work, backed by executable checks.</h2>
       </div>
-      <div>
-        <p class="eyebrow">Real inputs</p>
-        <h2>Exercise ordinary Go packages</h2>
-        <p>Stdlib packages are resolved from the pinned Go SDK as source files, which keeps progress tied to generic compiler support rather than custom package rewrites.</p>
-      </div>
-      <div>
-        <p class="eyebrow">Proof surface</p>
-        <h2>Coverage you can audit</h2>
-        <p>Generated Rust behavior is checked against the pinned Go SDK, and the coverage report shows which packages and symbols are backed by integration tests.</p>
-      </div>
-    </section>
-
-    <section class="info-grid" aria-label="About gors">
       <article>
-        <h2>Real compiler path</h2>
-        <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup are shared with the CLI path.</p>
+        <span>01</span>
+        <h3>Inspect the generated Rust</h3>
+        <p>The playground keeps Go input and Rust output side by side, so lowering choices are visible before anything is run.</p>
       </article>
       <article>
-        <h2>Go stdlib as source</h2>
-        <p>The embedded SDK is pinned from the repository version file, and stdlib packages are resolved as Go files instead of handwritten Rust shims.</p>
+        <span>02</span>
+        <h3>Follow real compiler stages</h3>
+        <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup use the same path as the CLI.</p>
       </article>
       <article>
-        <h2>Runnable checks</h2>
-        <p>Integration tests compare generated Rust programs against the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
+        <span>03</span>
+        <h3>Use the pinned Go SDK</h3>
+        <p>Stdlib packages are resolved from SDK source files, keeping progress tied to generic compiler support instead of handwritten replacements.</p>
+      </article>
+      <article>
+        <span>04</span>
+        <h3>Audit what is proven</h3>
+        <p>Integration tests compare generated Rust behavior with the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
       </article>
     </section>
 
-    <footer class="site-footer">
-      <div>
-        <p class="eyebrow">Try gors</p>
-        <strong>Inspect the generated Rust path</strong>
-        <span>Use the browser playground for small programs, or review coverage to see which stdlib symbols are exercised by integration tests.</span>
-      </div>
-      <div class="footer-actions">
-        <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
-      </div>
-    </footer>
   </div>
   {/if}
 
   {#if route === "playground"}
   <div class="editor-route">
     <section id="playground" class="playground-section">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Live playground</p>
-          <h2>Go in, Rust out, run it</h2>
-        </div>
-        <span class="compile-status" class:ready={cache.compiled || !!cache.rustCode} class:busy={pipelineBusy}>{compileStatus}</span>
-      </div>
-
       <div class="content playground-content" bind:this={playgroundContentEl}>
         <div
           class="editors"
@@ -1201,18 +1152,9 @@ onDestroy(() => {
     box-shadow: 0 24px 70px rgba(31, 35, 40, 0.24);
   }
 
-  .compiler-card-kicker {
-    margin: 0;
-    color: #8b949e;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: uppercase;
-  }
-
   .compiler-card h2 {
     max-width: 560px;
-    margin: 10px 0 0;
+    margin: 0;
     color: #f0f6fc;
     font-size: 28px;
     line-height: 1.18;
@@ -1220,9 +1162,13 @@ onDestroy(() => {
 
   .pipeline-flow {
     position: relative;
-    display: flex;
+    display: grid;
+    grid-template-columns:
+      minmax(54px, 1.2fr) 10px minmax(46px, 1fr) 10px minmax(42px, 0.9fr)
+      10px minmax(42px, 0.9fr) 10px minmax(48px, 1fr) 10px minmax(44px, 0.95fr)
+      10px minmax(42px, 0.9fr) 10px minmax(58px, 1.2fr);
     align-items: center;
-    gap: 8px;
+    gap: 4px;
     margin-top: 28px;
     padding: 6px 0;
   }
@@ -1243,10 +1189,11 @@ onDestroy(() => {
     position: relative;
     z-index: 1;
     display: flex;
-    min-height: 48px;
+    min-width: 0;
+    min-height: 42px;
     align-items: center;
     justify-content: center;
-    padding: 9px 10px;
+    padding: 8px 5px;
     border: 1px solid #30363d;
     border-radius: 6px;
     background: rgba(22, 27, 34, 0.96);
@@ -1255,7 +1202,8 @@ onDestroy(() => {
 
   .flow-node span {
     color: #c9d1d9;
-    font-size: 12px;
+    overflow: hidden;
+    font-size: 11px;
     font-weight: 700;
     text-align: center;
     white-space: nowrap;
@@ -1266,9 +1214,11 @@ onDestroy(() => {
     z-index: 1;
     color: #8b949e;
     font-family: "Fira Code Variable", "Fira Code", monospace;
-    font-size: 13px;
+    min-width: 0;
+    font-size: 11px;
     font-weight: 700;
     line-height: 1;
+    text-align: center;
   }
 
   .go-node {
@@ -1298,134 +1248,62 @@ onDestroy(() => {
     animation: flow-pulse 5.5s linear infinite;
   }
 
-  .pulse-two {
-    animation-delay: 2.75s;
-  }
-
-  .compiler-card-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 24px;
-    padding-top: 18px;
-    border-top: 1px solid #30363d;
-    color: #8b949e;
-    font-size: 13px;
-  }
-
-  .compiler-card-footer code {
-    color: #ffc832;
-    font-family: "Fira Code Variable", "Fira Code", monospace;
-  }
-
-  .info-grid {
+  .home-details {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1px;
-    overflow: hidden;
+    padding: 0;
     border-top: 1px solid #d0d7de;
     background: #d0d7de;
   }
 
-  .info-grid article {
-    min-height: 172px;
-    padding: 24px;
+  .home-details article,
+  .details-heading {
+    min-width: 0;
+    padding: 28px;
     background: #ffffff;
   }
 
-  .info-grid h2 {
+  .details-heading {
+    grid-column: span 2;
+    background: #f6f8fa;
+  }
+
+  .details-heading h2,
+  .home-details h3 {
     margin: 0;
     color: #1f2328;
+    line-height: 1.15;
+  }
+
+  .details-heading h2 {
+    max-width: 560px;
+    font-size: 28px;
+  }
+
+  .home-details h3 {
     font-size: 18px;
   }
 
-  .info-grid p {
-    margin: 10px 0 0;
-    color: #57606a;
-    font-size: 14px;
-    line-height: 1.5;
-  }
-
-  .info-grid a {
+  .home-details article span {
+    display: block;
+    margin-bottom: 18px;
     color: #0969da;
-    font-weight: 650;
-    text-decoration: none;
-  }
-
-  .info-grid a:hover {
-    text-decoration: underline;
-  }
-
-  .home-details {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 24px;
-    padding: 40px 48px 48px;
-    border-top: 1px solid #d0d7de;
-    background: #ffffff;
-  }
-
-  .home-details div {
-    min-width: 0;
-  }
-
-  .home-details h2 {
-    margin: 0;
-    color: #1f2328;
-    font-size: 24px;
-    line-height: 1.15;
+    font-size: 12px;
+    font-weight: 760;
   }
 
   .home-details p:last-child {
     margin: 12px 0 0;
     color: #57606a;
-    font-size: 15px;
-    line-height: 1.55;
-  }
-
-  .site-footer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 24px;
-    padding: 34px 48px;
-    border-top: 1px solid #d0d7de;
-    background: #f6f8fa;
-  }
-
-  .site-footer div {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-  }
-
-  .site-footer strong {
-    color: #1f2328;
-    font-size: 24px;
-    line-height: 1.15;
-  }
-
-  .site-footer span {
-    color: #57606a;
     font-size: 14px;
     line-height: 1.45;
   }
 
-  .site-footer p {
-    max-width: 720px;
-    margin: 0;
-    color: #424a53;
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  .footer-actions {
-    align-items: center;
-    flex-direction: row;
-    justify-content: flex-end;
+  .home-details a {
+    color: #0969da;
+    font-weight: 650;
+    text-decoration: none;
   }
 
   .playground-section {
@@ -1438,47 +1316,6 @@ onDestroy(() => {
     padding: 18px 18px 16px;
     background: #11151c;
     color: #c9d1d9;
-  }
-
-  .section-heading {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 16px;
-    max-width: 1680px;
-    width: 100%;
-    margin: 0 auto 12px;
-  }
-
-  .section-heading .eyebrow {
-    color: #8b949e;
-  }
-
-  .section-heading h2 {
-    margin: 0;
-    color: #f0f6fc;
-    font-size: 24px;
-    line-height: 1.05;
-  }
-
-  .compile-status {
-    min-height: 28px;
-    padding: 6px 10px;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    color: #8b949e;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .compile-status.ready {
-    border-color: #2ea043;
-    color: #3fb950;
-  }
-
-  .compile-status.busy {
-    border-color: #1f6feb;
-    color: #58a6ff;
   }
 
   .content {
@@ -1506,6 +1343,8 @@ onDestroy(() => {
 
   .editor-container {
     display: flex;
+    height: 100%;
+    min-height: 0;
     min-width: 0;
     flex: 1;
     flex-direction: column;
@@ -1552,7 +1391,8 @@ onDestroy(() => {
   .editor-wrapper {
     position: relative;
     flex: 1;
-    overflow: visible;
+    min-height: 0;
+    overflow: hidden;
     border: 2px solid;
     border-top: none;
     border-radius: 0 0 8px 8px;
@@ -1946,37 +1786,17 @@ onDestroy(() => {
       display: none;
     }
 
-    .compiler-card-footer {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .info-grid {
-      grid-template-columns: 1fr;
-    }
-
     .home-details {
       grid-template-columns: 1fr;
-      padding: 28px 18px 32px;
     }
 
-    .site-footer {
-      grid-template-columns: 1fr;
-      padding: 22px 18px;
-    }
-
-    .footer-actions {
-      flex-direction: row;
+    .details-heading {
+      grid-column: auto;
     }
 
     .playground-section {
       min-height: 0;
       padding: 14px 10px;
-    }
-
-    .section-heading {
-      align-items: flex-start;
-      flex-direction: column;
     }
 
     .editors {

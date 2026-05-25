@@ -22,15 +22,15 @@ test("default hello world auto-compiles and runs manually", async ({
 		/(ready|compiling|running)/,
 		{ timeout: 5 * 60 * 1000 },
 	);
+	await expect(consoleOutput).toContainText("gors transpiled", {
+		timeout: 8 * 60 * 1000,
+	});
+	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
+	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
+	await page.getByRole("button", { name: "Run" }).click();
 	await expect(consoleOutput).toContainText("$ rustc -o main main.rs", {
 		timeout: 7 * 60 * 1000,
 	});
-	await expect(page.getByText("Compiled")).toBeVisible({
-		timeout: 8 * 60 * 1000,
-	});
-	await expect(page.getByText("Compiling")).not.toBeVisible();
-	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
-	await page.getByRole("button", { name: "Run" }).click();
 	await expect(consoleOutput).toContainText("$ ./main", {
 		timeout: 9 * 60 * 1000,
 	});
@@ -51,13 +51,13 @@ test("default hello world auto-compiles and runs manually", async ({
 			"}",
 		].join("\n"),
 	);
-	await expect(page.getByText("Compiled")).not.toBeVisible();
+	await expect(consoleOutput).toContainText("gors transpiled", {
+		timeout: 8 * 60 * 1000,
+	});
+	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
 	await expect(page.locator(".rust .monaco-editor")).not.toContainText(
 		"Hello, World!",
 	);
-	await expect(page.getByText("Compiled")).toBeVisible({
-		timeout: 8 * 60 * 1000,
-	});
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
 
 	expect(pageErrors).toEqual([]);
@@ -116,7 +116,7 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 	await page.getByRole("searchbox").fill("");
 	await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
 	await page.getByRole("link", { name: "gors" }).click();
-	await page.getByRole("link", { name: "Coverage" }).click();
+	await page.getByRole("link", { name: "View coverage" }).click();
 	await expect.poll(() => page.evaluate("window.scrollY")).toBe(0);
 });
 
@@ -129,7 +129,7 @@ test("home page links to playground without rendering the console", async ({
 	await expect(page.getByRole("link", { name: "Playground" })).toBeVisible();
 	await expect(page.locator(".console-section")).toHaveCount(0);
 	await expect(page.locator(".editor-route")).toHaveCount(0);
-	await expect(page.locator(".site-footer")).toBeVisible();
+	await expect(page.locator(".site-footer")).toHaveCount(0);
 	await expect(page.getByText("Go source to Rust output")).toHaveCount(0);
 
 	await page.getByRole("link", { name: "Open playground" }).click();
