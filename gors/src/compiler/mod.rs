@@ -3550,6 +3550,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                     prune_unneeded_builtin_traits(&mut module.file.items, &builtin_roots);
                 }
             }
+            prune_display_impls_without_string_method(&mut module.file.items);
             if has_main {
                 prune_unused_struct_fields(&mut module.file.items);
             }
@@ -3578,6 +3579,41 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             break;
         }
     }
+}
+
+fn prune_display_impls_without_string_method(items: &mut Vec<syn::Item>) {
+    let stringer_types: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return None;
+            };
+            if item_impl.trait_.is_some()
+                || !item_impl.items.iter().any(|impl_item| {
+                    matches!(impl_item, syn::ImplItem::Fn(func) if func.sig.ident == "String")
+                })
+            {
+                return None;
+            }
+            named_self_type(&item_impl.self_ty)
+        })
+        .collect();
+
+    items.retain(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return true;
+        };
+        let is_display_impl = item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+            path.segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Display")
+        });
+        if !is_display_impl {
+            return true;
+        }
+        named_self_type(&item_impl.self_ty)
+            .is_none_or(|self_name| stringer_types.contains(&self_name))
+    });
 }
 
 fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
@@ -14425,6 +14461,46 @@ const Header = "hello, world"
         assert!(main_rs.contains("&config::Header()"), "{main_rs}");
         assert!(main_rs.contains("config::Header()[.."), "{main_rs}");
         assert!(!main_rs.contains("config::Header[.."), "{main_rs}");
+    }
+
+    #[test]
+    fn dce_prunes_display_impl_when_string_method_is_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/level"
+
+func main() {
+	_ = level.Debug == level.Debug
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("level/level.go").as_path(),
+            r#"
+package level
+
+type Level int
+
+const Debug Level = -4
+
+func (l Level) String() string {
+	return "debug"
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let level_rs = output.files.get("example__level.rs").unwrap();
+        assert!(!level_rs.contains("fn String"), "{level_rs}");
+        assert!(
+            !level_rs.contains("impl std::fmt::Display for Level"),
+            "{level_rs}"
+        );
     }
 
     #[test]
