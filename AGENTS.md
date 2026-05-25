@@ -162,6 +162,10 @@ integration fixtures remain under `tests/fixtures/`.
 commands as CI. GitHub-only artifact upload and Pages deploy steps are
 intentionally not represented locally.
 
+CI runs on `pull_request` for PR branches and on `push` only for `master`.
+Do not re-enable feature-branch push CI unless the duplicate PR/push checks are
+actually needed.
+
 `make rust-test` is the local full-suite test convenience command. It depends on
 the split unit and integration targets below and should not redefine its own
 combined Cargo command. CI should call the split `make rust-test-*` targets
