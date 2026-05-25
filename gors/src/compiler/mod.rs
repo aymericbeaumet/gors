@@ -1521,6 +1521,135 @@ fn const_eval_expr(
     }
 }
 
+fn const_basic_lit_expr(lit: &ast::BasicLit, target: Option<&syn::Type>) -> Option<syn::Expr> {
+    match lit.kind {
+        token::Token::INT => {
+            let value = parse_go_int_literal(lit.value)?;
+            if target.is_some()
+                && let Some(unsigned) = value.as_u128()
+                && unsigned > isize::MAX as u128
+            {
+                let lit = syn::LitInt::new(&format!("{unsigned}u128"), Span::mixed_site());
+                return Some(syn::parse_quote! { #lit });
+            }
+            Some(value.to_expr())
+        }
+        token::Token::FLOAT => {
+            let value = parse_go_float_literal(lit.value)
+                .map_or_else(|| lit.value.to_string(), |value| format!("{value:e}"));
+            let lit = syn::LitFloat::new(&value, Span::mixed_site());
+            Some(syn::parse_quote! { #lit })
+        }
+        token::Token::STRING => {
+            let raw = lit.value;
+            let inner = &raw[1..raw.len() - 1];
+            let interpreted = if raw.starts_with('`') {
+                inner.to_string()
+            } else {
+                interpret_go_string_escapes(inner)
+            };
+            let lit = syn::LitStr::new(&interpreted, Span::mixed_site());
+            Some(syn::parse_quote! { #lit })
+        }
+        token::Token::CHAR => {
+            let raw = lit.value;
+            let inner = &raw[1..raw.len() - 1];
+            let interpreted = interpret_go_string_escapes(inner);
+            let value = interpreted.chars().next()? as i32;
+            Some(syn::parse_quote! { #value })
+        }
+        _ => None,
+    }
+}
+
+fn const_numeric_cast_type_from_rust_type(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let ident = path.path.get_ident()?.to_string();
+    matches!(
+        ident.as_str(),
+        "isize"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "f32"
+            | "f64"
+    )
+    .then(|| ty.clone())
+}
+
+fn cast_const_numeric_expr(expr: syn::Expr, target: Option<&syn::Type>) -> syn::Expr {
+    if let Some(target) = target {
+        syn::parse_quote! { (#expr as #target) }
+    } else {
+        expr
+    }
+}
+
+fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::BasicLit(lit) => Some(cast_const_numeric_expr(
+            const_basic_lit_expr(lit, target)?,
+            target,
+        )),
+        ast::Expr::Ident(ident) if ident.name == "true" => Some(syn::parse_quote! { true }),
+        ast::Expr::Ident(ident) if ident.name == "false" => Some(syn::parse_quote! { false }),
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&import_rust_name(ident.name), Span::mixed_site());
+            Some(cast_const_numeric_expr(
+                syn::parse_quote! { #ident },
+                target,
+            ))
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let left = const_expr_to_rust_expr(&binary.x, target)?;
+            let right = const_expr_to_rust_expr(&binary.y, target)?;
+            let op: syn::BinOp = binary.op.into();
+            Some(syn::Expr::Binary(syn::ExprBinary {
+                attrs: vec![],
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            }))
+        }
+        ast::Expr::ParenExpr(paren) => {
+            let expr = const_expr_to_rust_expr(&paren.x, target)?;
+            Some(syn::Expr::Paren(syn::ExprParen {
+                attrs: vec![],
+                paren_token: syn::token::Paren::default(),
+                expr: Box::new(expr),
+            }))
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            let expr = const_expr_to_rust_expr(&unary.x, target)?;
+            match unary.op {
+                token::Token::ADD => Some(expr),
+                token::Token::SUB => Some(syn::Expr::Unary(syn::ExprUnary {
+                    attrs: vec![],
+                    op: syn::UnOp::Neg(<Token![-]>::default()),
+                    expr: Box::new(expr),
+                })),
+                token::Token::NOT | token::Token::XOR => Some(syn::Expr::Unary(syn::ExprUnary {
+                    attrs: vec![],
+                    op: syn::UnOp::Not(<Token![!]>::default()),
+                    expr: Box::new(expr),
+                })),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Compile a top-level const GenDecl into a list of `syn::Item::Const` items.
 /// Handles iota, expression inheritance, and typed constants.
 fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, CompilerError> {
@@ -1650,6 +1779,10 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                             }
                         }
                     }
+                } else if is_const_like_expr(expr) {
+                    let target = const_numeric_cast_type_from_rust_type(&rust_type);
+                    const_expr_to_rust_expr(expr, target.as_ref())
+                        .unwrap_or_else(|| syn::parse_quote! { 0 })
                 } else {
                     syn::parse_quote! { 0 }
                 }
@@ -15201,6 +15334,36 @@ func main() {
             rust! {
                 pub const KB: isize = 1024;
                 pub const MB: isize = 1048576;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_preserve_const_exprs_with_forward_refs() {
+        test(
+            r#"
+                package main
+
+                const (
+                    Mask = 1 << -Ident
+                    Combo = Mask | Other
+                )
+
+                const (
+                    EOF = -(iota + 1)
+                    Ident
+                    Other
+                )
+
+                func main() {}
+            "#,
+            rust! {
+                pub const Mask: isize = (1 as isize) << -(Ident as isize);
+                pub const Combo: isize = (Mask as isize) | (Other as isize);
+                pub const EOF: isize = -1;
+                pub const Ident: isize = -2;
+                pub const Other: isize = -3;
                 pub fn main() {}
             },
         )
