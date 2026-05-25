@@ -166,9 +166,6 @@ intentionally not represented locally.
 the split unit and integration targets below and should not redefine its own
 combined Cargo command. CI should call the split `make rust-test-*` targets
 below for clearer job boundaries and failure output.
-Compatibility aliases such as `make test`, `make test-unit`, and
-`make test-integration-parser` remain available, but new wiring should use the
-explicit `rust-*` target names.
 
 ### Integration tests
 

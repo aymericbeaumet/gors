@@ -66,28 +66,6 @@ web-test-integration: web-install
 dev: web-install
 	npm --prefix www run dev
 
-#########################
-# compatibility aliases #
-#########################
-
-format: rust-format
-
-lint: rust-lint
-
-build: rust-build
-
-test: rust-test
-
-test-unit: rust-test-unit
-
-test-integration-lexer: rust-test-integration-lexer
-
-test-integration-parser: rust-test-integration-parser
-
-test-integration-run: rust-test-integration-run
-
-web-dev: dev
-
 ########
 # fuzz #
 ########
@@ -109,7 +87,7 @@ fuzz-roundtrip:
 	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo +nightly fuzz run roundtrip
 
 # .phony
-.PHONY: all dev format lint build test test-unit test-integration-lexer test-integration-parser test-integration-run web-dev
+.PHONY: all dev
 .PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-integration rust-test-integration-lexer rust-test-integration-parser rust-test-integration-run
 .PHONY: web-all web-build web-format web-install web-lint web-test web-test-unit web-test-integration
 .PHONY: fuzz-all fuzz-scanner fuzz-parser fuzz-roundtrip
