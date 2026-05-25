@@ -186,6 +186,10 @@ Integration tests use matching Make targets and Cargo feature gates:
 binary names match the feature gates and are declared in `gors/Cargo.toml`, so
 the Make targets do not need extra test-name filters.
 
+CI runs lexer and parser integration tests as single unsharded jobs with a
+15-minute job timeout. Do not split them into shard targets unless the test
+contract changes again.
+
 The integration binaries in root `tests/` are feature-gated as whole files:
 lexer/parser integration targets scan the reference repositories from git
 submodules, while `rust-test-integration-run` compares in-process generated Rust

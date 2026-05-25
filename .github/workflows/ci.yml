@@ -59,6 +59,7 @@ jobs:
 
   rust-test-integration-lexer:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -76,6 +77,7 @@ jobs:
 
   rust-test-integration-parser:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
