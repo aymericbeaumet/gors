@@ -223,7 +223,7 @@ jobs:
           node-version: '20'
 
       - name: Test integration
-        run: make web-test-integration
+        run: make web-test-integration PLAYWRIGHT_INSTALL_ARGS="--with-deps chromium"
 
   # Upload GitHub Pages artifact from web-build
   upload-pages:

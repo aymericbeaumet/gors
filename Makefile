@@ -36,6 +36,8 @@ rust-test-integration-run:
 # web #
 #######
 
+PLAYWRIGHT_INSTALL_ARGS ?= chromium
+
 web-all: web-lint web-build web-test
 
 web-install:
@@ -57,6 +59,7 @@ web-test-unit: web-install
 	npm --prefix www run test:unit
 
 web-test-integration: web-install
+	npm --prefix www exec playwright install $(PLAYWRIGHT_INSTALL_ARGS)
 	npm --prefix www run test:integration
 
 #######

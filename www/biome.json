@@ -4,6 +4,8 @@
 			"**",
 			"!dist/**",
 			"!node_modules/**",
+			"!playwright-report/**",
+			"!test-results/**",
 			"!v86/**",
 			"!wasm/pkg/**",
 			"!wasm/target/**"

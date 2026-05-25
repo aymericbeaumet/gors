@@ -1,0 +1,9 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"types": ["node", "vitest/globals"],
+		"lib": ["ES2022"],
+		"noEmit": true
+	},
+	"include": ["playwright.config.ts", "vitest.config.ts", "tests/**/*.ts"]
+}

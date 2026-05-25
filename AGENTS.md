@@ -262,9 +262,23 @@ Key differences from `go run`:
 ## Web UI (`www/`)
 
 The browser demo must not call the wasm compiler directly on the main thread.
-`www/go2rust-compiler.js` owns the async API and delegates transpilation to
-`www/go2rust-worker.js`; keep source-map data structured-cloneable and hydrate
-UI lookup helpers on the main thread.
+`www/go2rust-compiler.ts` owns the async API and delegates transpilation to
+`www/go2rust-worker.ts`; keep source-map data structured-cloneable and hydrate
+UI lookup helpers on the main thread. The worker loads wasm through
+`www/gors-wasm-loader.ts`, which instantiates `gors_bg.wasm` as an explicit
+asset before wiring it into wasm-bindgen's generated JS glue. Do not switch the
+worker back to the `wasm/pkg/gors.js` bundler entry without rechecking Chromium:
+webpack's top-level async wasm module path can stall before the worker message
+handler is installed.
+
+The first-party browser/runtime code in `www/` is TypeScript. `make web-lint`
+includes both ESLint and TypeScript/Svelte type checking, while
+`make web-test-unit` runs Vitest and `make web-test-integration` runs the
+Playwright browser test against the real default app pipeline, including VM
+startup, Rust compilation, and program execution. `make web-test-integration`
+installs Chromium by default; CI passes
+`PLAYWRIGHT_INSTALL_ARGS="--with-deps chromium"` so browser system
+dependencies are installed after `web-install`.
 
 CI deploys `www/dist` with native GitHub Pages artifacts
 (`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by

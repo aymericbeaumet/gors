@@ -1,9 +1,19 @@
 import js from "@eslint/js";
+import tseslint from "typescript-eslint";
 
 export default [
 	js.configs.recommended,
+	...tseslint.configs.recommended,
 	{
-		ignores: ["dist/", "wasm/pkg/", "wasm/target/", "v86/", "src/*.svelte"],
+		ignores: [
+			"dist/",
+			"playwright-report/",
+			"test-results/",
+			"wasm/pkg/",
+			"wasm/target/",
+			"v86/",
+			"src/*.svelte",
+		],
 	},
 	{
 		files: ["webpack.config.js"],
@@ -16,6 +26,19 @@ export default [
 				__dirname: "readonly",
 				__filename: "readonly",
 				process: "readonly",
+			},
+		},
+		rules: {
+			"@typescript-eslint/no-require-imports": "off",
+		},
+	},
+	{
+		files: ["*.config.ts", "scripts/**/*.mjs"],
+		languageOptions: {
+			globals: {
+				process: "readonly",
+				console: "readonly",
+				URL: "readonly",
 			},
 		},
 	},
@@ -61,6 +84,7 @@ export default [
 				crypto: "readonly",
 				TextEncoder: "readonly",
 				Uint8Array: "readonly",
+				ArrayBuffer: "readonly",
 			},
 		},
 		rules: {
@@ -72,6 +96,18 @@ export default [
 				"error",
 				{ argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
 			],
+		},
+	},
+	{
+		files: ["**/*.ts"],
+		rules: {
+			"no-unused-vars": "off",
+			"@typescript-eslint/no-unused-vars": [
+				"error",
+				{ argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+			],
+			"@typescript-eslint/no-explicit-any": "off",
+			"@typescript-eslint/no-empty-object-type": "off",
 		},
 	},
 ];

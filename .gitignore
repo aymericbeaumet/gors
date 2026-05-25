@@ -5,3 +5,5 @@ pkg/
 target/
 tests/tools/go_oracle/go-oracle*
 gors_output/
+www/playwright-report/
+www/test-results/

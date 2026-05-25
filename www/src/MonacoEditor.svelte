@@ -1,15 +1,15 @@
-<script>
+<script lang="ts">
 import { onMount, onDestroy, createEventDispatcher } from "svelte";
 import * as monaco from "monaco-editor";
 
 export let language = "plaintext";
-export let editor = null;
+export let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 
 const dispatch = createEventDispatcher();
-let container;
-let disposable;
+let container: HTMLDivElement;
+let disposable: monaco.IDisposable | null = null;
 
-const options = {
+const options: monaco.editor.IStandaloneEditorConstructionOptions = {
 	cursorSurroundingLines: 5,
 	folding: true,
 	fontSize: 13,
@@ -23,13 +23,11 @@ const options = {
 	occurrencesHighlight: "off",
 	overviewRulerLanes: 0,
 	renderFinalNewline: "off",
-	renderIndentGuides: false,
 	renderLineHighlight: "none",
 	scrollBeyondLastLine: false,
 	selectionHighlight: false,
 	theme: "vs-dark",
 	automaticLayout: true,
-	lightbulb: { enabled: "off" },
 	quickSuggestions: false,
 	contextmenu: false,
 	hover: { enabled: true, delay: 200 },
@@ -37,9 +35,10 @@ const options = {
 
 onMount(() => {
 	editor = monaco.editor.create(container, { ...options, language });
-	disposable = editor.getModel().onDidChangeContent(() => {
-		dispatch("change", editor.getModel().getValue());
-	});
+	disposable =
+		editor.getModel()?.onDidChangeContent(() => {
+			dispatch("change", editor?.getModel()?.getValue() || "");
+		}) ?? null;
 });
 
 onDestroy(() => {

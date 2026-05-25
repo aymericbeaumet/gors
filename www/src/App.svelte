@@ -1,14 +1,39 @@
-<script>
+<script lang="ts">
 import { onMount, onDestroy, tick } from "svelte";
 import * as monaco from "monaco-editor";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Go2RustCompiler } from "../go2rust-compiler.js";
-import { RustRunner, State } from "../rust-runner.js";
+import {
+	CompilerCancelledError,
+	Go2RustCompiler,
+	type CompileResult,
+} from "../go2rust-compiler";
+import { RustRunner, State, type State as VmState } from "../rust-runner";
+import {
+	formatConsoleLine,
+	type ConsoleLine,
+	type ConsoleLineType,
+} from "./console-format";
+import { parseRustcErrors } from "./rustc-errors";
+import type { SourceMapIndex } from "./source-map-index";
 import MonacoEditor from "./MonacoEditor.svelte";
 import CopyButton from "./CopyButton.svelte";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+type RunMode = "autorun" | "autocompile" | "autotranspile" | "manual";
+
+interface ModeOption {
+	value: RunMode;
+	label: string;
+}
+
+interface PipelineCache {
+	goSource: string | null;
+	rustCode: string | null;
+	jobId: string | null;
+	compiled: boolean;
+}
 
 const STATE_TITLES = {
 	[State.INITIALIZING]: "VM initializing...",
@@ -20,7 +45,7 @@ const STATE_TITLES = {
 	[State.ERROR]: "VM error",
 };
 
-const MODES = [
+const MODES: ModeOption[] = [
 	{ value: "autorun", label: "Transpile + Compile + Run" },
 	{ value: "autocompile", label: "Transpile + Compile" },
 	{ value: "autotranspile", label: "Transpile" },
@@ -28,30 +53,37 @@ const MODES = [
 ];
 const PIPELINE_DEBOUNCE_MS = 350;
 
-let runMode = localStorage.getItem("gors:runMode") || "autorun";
-let vmState = State.INITIALIZING;
-let vmOverlayVisible = false;
-let consoleLines = [];
+function storedRunMode(): RunMode {
+	const value = localStorage.getItem("gors:runMode");
+	return MODES.some((mode) => mode.value === value)
+		? (value as RunMode)
+		: "autorun";
+}
 
-let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio"));
+let runMode: RunMode = storedRunMode();
+let vmState: VmState = State.INITIALIZING;
+let vmOverlayVisible = false;
+let consoleLines: ConsoleLine[] = [];
+
+let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio") ?? "");
 let editorsFlex = isNaN(storedRatio) || storedRatio <= 0 ? 1.618 : storedRatio;
 
-let goEditor = null;
-let rustEditor = null;
+let goEditor: monaco.editor.IStandaloneCodeEditor | null = null;
+let rustEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 
-let editorsEl;
-let consoleSectionEl;
-let vmTerminalEl;
+let editorsEl: HTMLDivElement;
+let consoleSectionEl: HTMLDivElement;
+let vmTerminalEl: HTMLDivElement;
 
 const go2rust = new Go2RustCompiler();
 const runner = new RustRunner();
 let pipelineGeneration = 0;
-let pipelineDebounceTimer = null;
+let pipelineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPipeline = false;
 
-let sourceMap = null;
-let goDecorations = [];
-let rustDecorations = [];
+let sourceMap: SourceMapIndex | null = null;
+let goDecorations: string[] = [];
+let rustDecorations: string[] = [];
 
 // Read-only enforcement for rust editor
 let rustExpectedValue = "";
@@ -60,8 +92,8 @@ let transpiling = false;
 let activePipelines = 0;
 
 // xterm
-let term;
-let fitAddon;
+let term: Terminal;
+let fitAddon: FitAddon;
 
 $: vmTitle = STATE_TITLES[vmState] || vmState;
 $: vmStarted =
@@ -93,75 +125,32 @@ $: runDisabled = runMode === "autorun" || pipelineBusy;
 function conClear() {
 	consoleLines = [];
 }
-function conCmd(text) {
-	consoleLines = [...consoleLines, { type: "cmd", text }];
+function conLine(type: ConsoleLineType, text: string) {
+	consoleLines = [...consoleLines, { type, text }];
 }
-function conOut(text) {
-	if (text) consoleLines = [...consoleLines, { type: "out", text }];
+function conCmd(text: string) {
+	conLine("cmd", text);
 }
-function conErr(text) {
+function conOut(text: string) {
+	if (text) conLine("out", text);
+}
+function conErr(text: string) {
 	if (!text) return;
 	const clean = text.replace(ANSI_RE, "");
-	consoleLines = [...consoleLines, { type: "err", text: clean }];
+	conLine("err", clean);
 }
 function getConsoleText() {
 	return consoleLines.map((l) => l.text).join("\n");
 }
 
-function escapeHtml(s) {
-	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function linkifyRustErrors(html) {
-	return html.replace(
-		/rustc --explain (E\d{4})/g,
-		'<a href="https://doc.rust-lang.org/error_codes/$1.html" target="_blank" rel="noopener">rustc --explain $1</a>',
-	);
-}
-
-function formatConsoleLine(line) {
-	if (line.type === "err") return linkifyRustErrors(escapeHtml(line.text));
-	return escapeHtml(line.text);
-}
-
-// Rustc error parsing
-function parseRustcErrors(text) {
-	const markers = [];
-	const clean = text.replace(ANSI_RE, "");
-	const re =
-		/^(error|warning)(?:\[([A-Z]\d+)\])?: (.+)\n\s*--> [^:]+:(\d+):(\d+)/gm;
-	let m;
-	while ((m = re.exec(clean)) !== null) {
-		const severity =
-			m[1] === "warning"
-				? monaco.MarkerSeverity.Warning
-				: monaco.MarkerSeverity.Error;
-		const code = m[2] || "";
-		const message = m[3];
-		const line = parseInt(m[4], 10);
-		const col = parseInt(m[5], 10);
-		const after = clean.substring(
-			m.index + m[0].length,
-			m.index + m[0].length + 500,
-		);
-		const ul = after.match(/^\s*\|?\s*(\^+)/m);
-		const endCol = ul ? col + ul[1].length : col + 1;
-		markers.push({
-			severity,
-			message: code ? `${code}: ${message}` : message,
-			startLineNumber: line,
-			startColumn: col,
-			endLineNumber: line,
-			endColumn: endCol,
-			source: "rustc",
-			code,
-		});
-	}
-	return markers;
+function formatDuration(durationMs: number): string {
+	return durationMs < 1000
+		? `${Math.round(durationMs)}ms`
+		: `${(durationMs / 1000).toFixed(2)}s`;
 }
 
 // Source map highlighting
-function highlightFromGo(line, column) {
+function highlightFromGo(line: number, column: number) {
 	if (!sourceMap || !sourceMap.success || !rustEditor) {
 		clearRustHighlight();
 		return;
@@ -179,7 +168,7 @@ function highlightFromGo(line, column) {
 	}
 }
 
-function highlightFromRust(line, column) {
+function highlightFromRust(line: number, column: number) {
 	if (!sourceMap || !sourceMap.success || !goEditor) {
 		clearGoHighlight();
 		return;
@@ -206,7 +195,12 @@ function clearRustHighlight() {
 }
 
 // Pipeline – each step caches its result and is skipped when inputs haven't changed
-let cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
+let cache: PipelineCache = {
+	goSource: null,
+	rustCode: null,
+	jobId: null,
+	compiled: false,
+};
 
 function cancelScheduledPipeline() {
 	if (pipelineDebounceTimer) {
@@ -224,9 +218,9 @@ function schedulePipeline(delay = PIPELINE_DEBOUNCE_MS) {
 	}, delay);
 }
 
-function setRustValue(v) {
-	rustExpectedValue = v;
-	if (rustEditor) rustEditor.getModel().setValue(v);
+function setRustValue(value: string) {
+	rustExpectedValue = value;
+	rustEditor?.getModel()?.setValue(value);
 }
 
 async function waitForVM() {
@@ -235,7 +229,9 @@ async function waitForVM() {
 		runner.state !== State.COMPILING &&
 		runner.state !== State.RUNNING
 	) {
-		await new Promise((resolve) => {
+		const startedAt = performance.now();
+		conOut("waiting for VM...");
+		await new Promise<void>((resolve) => {
 			const unsub = runner.onStateChange((state) => {
 				if (state === State.READY) {
 					unsub();
@@ -243,11 +239,15 @@ async function waitForVM() {
 				}
 			});
 		});
+		conOut(`VM ready in ${formatDuration(performance.now() - startedAt)}`);
 	}
 }
 
 async function doTranspile() {
-	const goCode = goEditor.getModel().getValue();
+	if (!goEditor || !rustEditor) return null;
+	const activeGoModel = goEditor.getModel();
+	if (!activeGoModel) return null;
+	const goCode = activeGoModel.getValue();
 	if (cache.goSource === goCode && cache.rustCode !== null)
 		return cache.rustCode;
 
@@ -255,6 +255,7 @@ async function doTranspile() {
 	++pipelineGeneration;
 	const goModel = goEditor.getModel();
 	const rustModel = rustEditor.getModel();
+	if (!goModel || !rustModel) return null;
 
 	setRustValue("");
 	monaco.editor.setModelMarkers(goModel, "gors", []);
@@ -265,16 +266,17 @@ async function doTranspile() {
 	transpiling = true;
 	await tick();
 	const gen = pipelineGeneration;
-	let goResult;
+	let goResult: CompileResult;
 	try {
 		goResult = await go2rust.compile(goCode);
 	} catch (err) {
 		transpiling = false;
+		if (err instanceof CompilerCancelledError) return null;
 		conErr(err instanceof Error ? err.message : String(err));
 		return null;
 	}
 	transpiling = false;
-	if (gen !== pipelineGeneration || goCode !== goEditor.getModel().getValue()) {
+	if (gen !== pipelineGeneration || goCode !== activeGoModel.getValue()) {
 		return null;
 	}
 
@@ -303,6 +305,11 @@ async function doTranspile() {
 		return null;
 	}
 
+	conOut(
+		`gors transpiled in ${formatDuration(goResult.durationMs)}${
+			goResult.cacheHit ? " (cached)" : ""
+		}`,
+	);
 	setRustValue(goResult.rustCode);
 	sourceMap = goResult.sourceMap;
 	cache = {
@@ -314,7 +321,8 @@ async function doTranspile() {
 	return goResult.rustCode;
 }
 
-async function doCompile(rustCode) {
+async function doCompile(rustCode: string) {
+	if (!rustEditor) return null;
 	if (cache.compiled && cache.jobId) return cache.jobId;
 
 	const gen = pipelineGeneration;
@@ -322,11 +330,14 @@ async function doCompile(rustCode) {
 	if (gen !== pipelineGeneration) return null;
 
 	conCmd("$ rustc -o main main.rs");
+	const startedAt = performance.now();
 	const result = await runner.compile(rustCode);
 	if (gen !== pipelineGeneration) return null;
 	if (result.cancelled) return null;
+	if (typeof result.jobId !== "string") return null;
 
 	const rustModel = rustEditor.getModel();
+	if (!rustModel) return null;
 	monaco.editor.setModelMarkers(rustModel, "rustc", []);
 
 	if (!result.compile.success) {
@@ -334,28 +345,32 @@ async function doCompile(rustCode) {
 		monaco.editor.setModelMarkers(
 			rustModel,
 			"rustc",
-			parseRustcErrors(result.compile.stderr),
+			parseRustcErrors(result.compile.stderr, monaco.MarkerSeverity),
 		);
 		return null;
 	}
 
+	conOut(`rustc finished in ${formatDuration(performance.now() - startedAt)}`);
 	cache.compiled = true;
 	cache.jobId = result.jobId;
 	return result.jobId;
 }
 
-async function doRun(jobId) {
+async function doRun(jobId: string) {
 	const gen = pipelineGeneration;
 	conCmd("$ ./main");
+	const startedAt = performance.now();
 	const result = await runner.runJob(jobId);
 	if (gen !== pipelineGeneration) return;
 	if (result.cancelled) return;
+	if (!result.run) return;
 
 	conOut(result.run.stdout);
 	conErr(result.run.stderr);
 	if (result.run.exitCode !== 0 && !result.run.stderr) {
 		conErr(`program exited with code ${result.run.exitCode}`);
 	}
+	conOut(`run finished in ${formatDuration(performance.now() - startedAt)}`);
 }
 
 async function runPipeline() {
@@ -377,7 +392,7 @@ async function runPipeline() {
 		}
 	} finally {
 		activePipelines--;
-		if (queuedPipeline && runMode !== "manual") {
+		if (queuedPipeline) {
 			queuedPipeline = false;
 			schedulePipeline(0);
 		}
@@ -386,6 +401,9 @@ async function runPipeline() {
 
 function onGoChanged() {
 	pipelineGeneration++;
+	if (activePipelines > 0) {
+		go2rust.cancelActive("compiler input changed");
+	}
 	schedulePipeline();
 }
 
@@ -429,7 +447,7 @@ async function handleRun() {
 }
 
 // Resize
-function onResizeMousedown(e) {
+function onResizeMousedown(e: MouseEvent) {
 	e.preventDefault();
 	const startY = e.clientY;
 	const startEH = editorsEl.offsetHeight;
@@ -439,7 +457,7 @@ function onResizeMousedown(e) {
 	consoleSectionEl.style.flex = "none";
 	editorsEl.style.height = startEH + "px";
 	consoleSectionEl.style.height = startCH + "px";
-	function onMove(ev) {
+	function onMove(ev: MouseEvent) {
 		const h = Math.min(
 			total - 200,
 			Math.max(200, startEH + ev.clientY - startY),
@@ -472,15 +490,15 @@ function closeVmOverlay() {
 	vmOverlayVisible = false;
 }
 
-function onOverlayClick(e) {
+function onOverlayClick(e: MouseEvent) {
 	if (e.target === e.currentTarget) closeVmOverlay();
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
 	if (e.key === "Escape" && vmOverlayVisible) closeVmOverlay();
 }
 
-let resizeObserver;
+let resizeObserver: ResizeObserver | null = null;
 
 onMount(() => {
 	// xterm
@@ -496,12 +514,10 @@ onMount(() => {
 	fitAddon = new FitAddon();
 	term.loadAddon(fitAddon);
 	term.open(vmTerminalEl);
-	term.onData((data) => {
-		if (runner._emulator) runner._emulator.serial0_send(data);
-	});
+	term.onData((data) => runner.sendSerial(data));
 
-	let serialByteQueue = [];
-	let serialFlushTimer = null;
+	let serialByteQueue: number[] = [];
+	let serialFlushTimer: ReturnType<typeof setTimeout> | null = null;
 	runner.onSerialByte((byte) => {
 		serialByteQueue.push(byte);
 		if (!serialFlushTimer) {
@@ -561,7 +577,7 @@ let rustEditorReady = false;
 
 $: if (goEditor && !goEditorReady) {
 	goEditorReady = true;
-	goEditor.onMouseMove((e) => {
+	goEditor.onMouseMove((e: monaco.editor.IEditorMouseEvent) => {
 		if (e.target.position)
 			highlightFromGo(e.target.position.lineNumber, e.target.position.column);
 	});
@@ -570,21 +586,23 @@ $: if (goEditor && !goEditorReady) {
 
 $: if (rustEditor && !rustEditorReady) {
 	rustEditorReady = true;
-	rustEditor.onMouseMove((e) => {
+	rustEditor.onMouseMove((e: monaco.editor.IEditorMouseEvent) => {
 		if (e.target.position)
 			highlightFromRust(e.target.position.lineNumber, e.target.position.column);
 	});
 	rustEditor.onMouseLeave(() => clearGoHighlight());
 
 	// Read-only enforcement
-	rustEditor.getModel().onDidChangeContent(() => {
-		const current = rustEditor.getModel().getValue();
+	rustEditor.getModel()?.onDidChangeContent(() => {
+		const model = rustEditor?.getModel();
+		if (!model) return;
+		const current = model.getValue();
 		if (current !== rustExpectedValue) {
 			const markers = monaco.editor.getModelMarkers({
-				resource: rustEditor.getModel().uri,
+				resource: model.uri,
 			});
-			rustEditor.getModel().setValue(rustExpectedValue);
-			monaco.editor.setModelMarkers(rustEditor.getModel(), "rustc", markers);
+			model.setValue(rustExpectedValue);
+			monaco.editor.setModelMarkers(model, "rustc", markers);
 		}
 	});
 }
@@ -594,7 +612,7 @@ $: if (goEditor && rustEditor && !initialized) {
 	goEditor.focus();
 	goEditor
 		.getModel()
-		.setValue(
+		?.setValue(
 			[
 				"package main",
 				"",
@@ -613,8 +631,8 @@ let initialized = false;
 onDestroy(() => {
 	cancelScheduledPipeline();
 	go2rust.dispose();
-	if (resizeObserver) resizeObserver.disconnect();
-	if (term) term.dispose();
+	resizeObserver?.disconnect();
+	term?.dispose();
 });
 </script>
 
@@ -663,7 +681,7 @@ onDestroy(() => {
               {/if}
               <span>Transpile</span>
             </button>
-            <CopyButton getContent={() => goEditor?.getModel().getValue()} title="Copy Go code" />
+            <CopyButton getContent={() => goEditor?.getModel()?.getValue()} title="Copy Go code" />
           </div>
         </div>
         <div class="editor-wrapper">
@@ -695,7 +713,7 @@ onDestroy(() => {
               {/if}
               <span>Run</span>
             </button>
-            <CopyButton getContent={() => rustEditor?.getModel().getValue()} title="Copy Rust code" />
+            <CopyButton getContent={() => rustEditor?.getModel()?.getValue()} title="Copy Rust code" />
           </div>
         </div>
         <div class="editor-wrapper">

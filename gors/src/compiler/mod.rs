@@ -9655,6 +9655,90 @@ fn is_const_like_expr(expr: &ast::Expr) -> bool {
     }
 }
 
+fn is_flattenable_binary_op(op: token::Token) -> bool {
+    matches!(
+        op,
+        token::Token::ADD
+            | token::Token::MUL
+            | token::Token::AND
+            | token::Token::OR
+            | token::Token::XOR
+            | token::Token::LAND
+            | token::Token::LOR
+    )
+}
+
+fn flatten_same_binary_operands(
+    binary_expr: ast::BinaryExpr,
+) -> Result<(token::Token, Vec<ast::Expr>), ast::BinaryExpr> {
+    let op = binary_expr.op;
+    if !is_flattenable_binary_op(op) {
+        return Err(binary_expr);
+    }
+
+    let mut operands = Vec::new();
+    let mut stack = vec![ast::Expr::BinaryExpr(binary_expr)];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            ast::Expr::BinaryExpr(binary) if binary.op == op => {
+                stack.push(*binary.y);
+                stack.push(*binary.x);
+            }
+            other => operands.push(other),
+        }
+    }
+
+    if operands.len() <= 16 {
+        let mut iter = operands.into_iter();
+        let Some(mut expr) = iter.next() else {
+            return Ok((op, Vec::new()));
+        };
+        for right in iter {
+            expr = ast::Expr::BinaryExpr(ast::BinaryExpr {
+                x: Box::new(expr),
+                op_pos: token::Position::default(),
+                op,
+                y: Box::new(right),
+            });
+        }
+        let ast::Expr::BinaryExpr(binary) = expr else {
+            return Ok((op, vec![expr]));
+        };
+        return Err(binary);
+    }
+
+    Ok((op, operands))
+}
+
+fn compile_flat_binary_operands(
+    op: token::Token,
+    operands: Vec<ast::Expr>,
+    expected: Option<&typeinfer::GoType>,
+) -> syn::Expr {
+    let mut iter = operands.into_iter();
+    let Some(first) = iter.next() else {
+        return syn::parse_quote! { Default::default() };
+    };
+    let mut expr = match expected {
+        Some(expected) => compile_expr_with_expected(first, Some(expected)),
+        None => syn::Expr::from(first),
+    };
+    let op: syn::BinOp = op.into();
+    for operand in iter {
+        let right = match expected {
+            Some(expected) => compile_expr_with_expected(operand, Some(expected)),
+            None => syn::Expr::from(operand),
+        };
+        expr = syn::Expr::Binary(syn::ExprBinary {
+            attrs: vec![],
+            left: Box::new(expr),
+            op: op.clone(),
+            right: Box::new(right),
+        });
+    }
+    expr
+}
+
 fn compile_binary_side(
     expr: ast::Expr,
     expr_ty: &typeinfer::GoType,
@@ -9765,6 +9849,11 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         }
     }
 
+    let binary_expr = match flatten_same_binary_operands(binary_expr) {
+        Ok((op, operands)) => return compile_flat_binary_operands(op, operands, None),
+        Err(binary_expr) => binary_expr,
+    };
+
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
     let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
@@ -9819,6 +9908,12 @@ fn compile_numeric_binary_expr_with_expected(
     binary_expr: ast::BinaryExpr,
     expected: &typeinfer::GoType,
 ) -> syn::Expr {
+    let binary_expr = match flatten_same_binary_operands(binary_expr) {
+        Ok((op, operands)) => {
+            return compile_flat_binary_operands(op, operands, Some(expected));
+        }
+        Err(binary_expr) => binary_expr,
+    };
     let op = binary_expr.op;
     let left = compile_expr_with_expected(*binary_expr.x, Some(expected));
     let right = if matches!(op, token::Token::SHL | token::Token::SHR) {
@@ -13199,6 +13294,29 @@ mod tests {
                 }
             },
         )
+    }
+
+    #[test]
+    fn it_should_compile_deep_binary_chains_iteratively() {
+        let expr = (0..128)
+            .map(|idx| (idx + 1).to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let go_source = format!(
+            r#"
+                package main;
+
+                func main() {{
+                    x := {expr};
+                    println(x);
+                }}
+            "#
+        );
+        let parsed = parse_file("test.go", &go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("println_value"));
     }
 
     #[test]

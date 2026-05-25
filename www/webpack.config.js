@@ -6,6 +6,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const FaviconsWebpackPlugin = require("favicons-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
+const sveltePreprocess = require("svelte-preprocess");
 
 function contentHash(filePath) {
 	const data = fs.readFileSync(filePath);
@@ -69,14 +70,14 @@ module.exports = (_, argv) => {
 	const isDev = argv.mode === "development";
 
 	return {
-		entry: "./src/main.js",
+		entry: "./src/main.ts",
 		output: {
 			filename: "bundle-[contenthash:16].js",
 			path: path.resolve(__dirname, "dist"),
 			clean: true,
 		},
 		resolve: {
-			extensions: [".mjs", ".js", ".svelte"],
+			extensions: [".mjs", ".ts", ".js", ".svelte"],
 			mainFields: ["svelte", "browser", "module", "main"],
 			conditionNames: ["svelte", "browser", "import"],
 			fallback: {
@@ -87,12 +88,23 @@ module.exports = (_, argv) => {
 		module: {
 			rules: [
 				{
+					test: /\.ts$/,
+					exclude: /node_modules/,
+					use: {
+						loader: "ts-loader",
+						options: {
+							transpileOnly: true,
+						},
+					},
+				},
+				{
 					test: /\.svelte$/,
 					use: {
 						loader: "svelte-loader",
 						options: {
 							emitCss: false,
 							hotReload: isDev,
+							preprocess: sveltePreprocess(),
 						},
 					},
 				},
