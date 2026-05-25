@@ -78,9 +78,9 @@ func case_utf8_decode_rune_in_string() {
 func case_utf8_encode_rune() {
 	buf := []byte{0, 0, 0, 0}
 	n := utf8.EncodeRune(buf, 'λ')
-	fmt.Println(n, buf)
+	fmt.Println(n, buf[0], buf[1], buf[2], buf[3])
 	n = utf8.EncodeRune(buf, utf8.MaxRune+1)
-	fmt.Println(n, buf)
+	fmt.Println(n, buf[0], buf[1], buf[2], buf[3])
 }
 
 func case_utf8_full_rune() {

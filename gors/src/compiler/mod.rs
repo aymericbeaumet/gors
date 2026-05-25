@@ -2848,19 +2848,76 @@ fn mutated_vec_param_indices(
                 return None;
             };
             let inner = vec_type_inner(&pat_type.ty)?;
-            body_mut_borrows_ident(block, &pat_ident.ident)
+            body_mutates_vec_param(block, &pat_ident.ident)
                 .then(|| (index, pat_ident.ident.clone(), inner))
         })
         .collect()
 }
 
-fn body_mut_borrows_ident(block: &syn::Block, ident: &syn::Ident) -> bool {
+fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     struct Finder<'a> {
         ident: &'a syn::Ident,
         found: bool,
     }
 
+    fn lhs_mutates_vec_param(expr: &syn::Expr, ident: &syn::Ident) -> bool {
+        match expr {
+            syn::Expr::Field(field) => lhs_mutates_vec_param(&field.base, ident),
+            syn::Expr::Index(index) => {
+                expr_base_is_ident(&index.expr, ident) || lhs_mutates_vec_param(&index.expr, ident)
+            }
+            syn::Expr::Paren(paren) => lhs_mutates_vec_param(&paren.expr, ident),
+            syn::Expr::Tuple(tuple) => tuple
+                .elems
+                .iter()
+                .any(|elem| lhs_mutates_vec_param(elem, ident)),
+            _ => false,
+        }
+    }
+
+    fn expr_base_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
+        match expr {
+            syn::Expr::Path(path) => path.path.is_ident(ident),
+            syn::Expr::Field(field) => expr_base_is_ident(&field.base, ident),
+            syn::Expr::Index(index) => expr_base_is_ident(&index.expr, ident),
+            syn::Expr::Paren(paren) => expr_base_is_ident(&paren.expr, ident),
+            _ => false,
+        }
+    }
+
+    fn is_assign_binop(op: &syn::BinOp) -> bool {
+        matches!(
+            op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        )
+    }
+
     impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_assign(&mut self, assign: &syn::ExprAssign) {
+            if lhs_mutates_vec_param(&assign.left, self.ident) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_assign(self, assign);
+        }
+
+        fn visit_expr_binary(&mut self, binary: &syn::ExprBinary) {
+            if is_assign_binop(&binary.op) && lhs_mutates_vec_param(&binary.left, self.ident) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_binary(self, binary);
+        }
+
         fn visit_expr_reference(&mut self, reference: &syn::ExprReference) {
             if reference.mutability.is_some()
                 && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident(self.ident))
@@ -14976,6 +15033,37 @@ func main() {
                 }
             },
         );
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_slice_params_written_by_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func writeByte(p []byte) int {
+	p[0] = 7
+	p[0] += 1
+	return len(p)
+}
+
+func main() {
+	buf := []byte{0}
+	writeByte(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("fn writeByte(mut p: &mut Vec<u8>) -> isize"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("writeByte(&mut buf);"), "{main_rs}");
+        assert!(!main_rs.contains("writeByte(buf.clone());"), "{main_rs}");
     }
 
     #[test]

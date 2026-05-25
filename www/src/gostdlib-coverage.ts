@@ -79236,13 +79236,15 @@ export const gostdlibCoverage = [
 			"gostdlib_unicode_utf16"
 		],
 		"symbolCount": 7,
-		"testedSymbolCount": 6,
+		"testedSymbolCount": 7,
 		"symbols": [
 			{
 				"name": "AppendRune",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_unicode_utf16"
+				]
 			},
 			{
 				"name": "Decode",
@@ -79301,7 +79303,7 @@ export const gostdlibCoverage = [
 			"gostdlib_unicode_utf8"
 		],
 		"symbolCount": 19,
-		"testedSymbolCount": 15,
+		"testedSymbolCount": 19,
 		"symbols": [
 			{
 				"name": "AppendRune",
@@ -79346,8 +79348,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "EncodeRune",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_unicode_utf8"
+				]
 			},
 			{
 				"name": "FullRune",
@@ -79368,8 +79372,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "MaxRune",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_unicode_utf8"
+				]
 			},
 			{
 				"name": "RuneCount",
@@ -79406,8 +79412,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "RuneSelf",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_unicode_utf8"
+				]
 			},
 			{
 				"name": "RuneStart",
@@ -79420,8 +79428,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "UTFMax",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_unicode_utf8"
+				]
 			},
 			{
 				"name": "Valid",
@@ -79586,6 +79596,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 51,
 	"untestedPackageCount": 302,
 	"symbolCount": 12599,
-	"testedSymbolCount": 294,
-	"untestedSymbolCount": 12305
+	"testedSymbolCount": 299,
+	"untestedSymbolCount": 12300
 } as const;

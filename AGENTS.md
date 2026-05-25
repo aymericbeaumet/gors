@@ -320,6 +320,13 @@ Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
 
+Go slice parameters map to `Vec<T>` values unless the compiled body mutates the
+slice's backing storage. The post-compile multi-module pass rewrites parameters
+written through by index, or passed to another mutable slice parameter, to
+`&mut Vec<T>` and rewrites call sites to borrow the caller's buffer. Do not apply
+that rewrite to functions returning a slice; those need Go's returned slice
+value semantics.
+
 ## Compiler passes (in order)
 
 Main package (`pass()`):
