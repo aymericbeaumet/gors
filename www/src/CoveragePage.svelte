@@ -9,29 +9,38 @@ import {
 const FIXTURE_GITHUB_BASE =
 	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs";
 
-let stdlibFilter = "";
+type CoverageStatusFilter = "all" | "green" | "yellow" | "red";
 
-function coverageMatchesFilter(
-	item: GostdlibCoveragePackage,
-	query: string,
-): boolean {
-	if (!query) return true;
-	const packageStatus = item.tested ? "tested" : "not tested untested";
-	return (
-		item.packagePath.toLowerCase().includes(query) ||
-		packageStatus.includes(query) ||
-		item.fixtures.some((fixture) => fixture.toLowerCase().includes(query)) ||
-		item.symbols.some(
-			(symbol) =>
-				symbol.name.toLowerCase().includes(query) ||
-				symbol.kind.includes(query) ||
-				(symbol.tested ? "tested" : "not tested untested").includes(query) ||
-				symbol.fixtures.some((fixture) =>
-					fixture.toLowerCase().includes(query),
-				),
-		)
-	);
+const STATUS_FILTERS: {
+	readonly value: CoverageStatusFilter;
+	readonly label: string;
+	readonly className: string;
+}[] = [
+	{ value: "all", label: "All", className: "all" },
+	{ value: "green", label: "Green", className: "tested" },
+	{ value: "yellow", label: "Yellow", className: "partial" },
+	{ value: "red", label: "Red", className: "none" },
+];
+
+function normalizeStatusFilter(value: string | null): CoverageStatusFilter {
+	if (value === "green" || value === "yellow" || value === "red") return value;
+	return "all";
 }
+
+function readUrlFilters(): {
+	readonly query: string;
+	readonly status: CoverageStatusFilter;
+} {
+	const params = new URLSearchParams(window.location.search);
+	return {
+		query: params.get("q") ?? "",
+		status: normalizeStatusFilter(params.get("color")),
+	};
+}
+
+const initialFilters = readUrlFilters();
+let stdlibFilter = initialFilters.query;
+let statusFilter: CoverageStatusFilter = initialFilters.status;
 
 function symbolCoverageTitle(symbol: GostdlibCoverageSymbol): string {
 	if (!symbol.tested) return `${symbol.kind}; not tested`;
@@ -44,14 +53,64 @@ function packageCoverageClass(item: GostdlibCoveragePackage): string {
 	return "partial";
 }
 
+function packageCoverageColor(
+	item: GostdlibCoveragePackage,
+): CoverageStatusFilter {
+	const coverageClass = packageCoverageClass(item);
+	if (coverageClass === "tested") return "green";
+	if (coverageClass === "partial") return "yellow";
+	return "red";
+}
+
 function fixtureGithubUrl(fixture: string): string {
 	return `${FIXTURE_GITHUB_BASE}/${fixture}`;
 }
 
+const coverageSearchIndex = gostdlibCoverage.map((item) => {
+	const color = packageCoverageColor(item);
+	const packageStatus =
+		color === "green"
+			? "green tested all tested"
+			: color === "yellow"
+				? "yellow partial partially tested"
+				: "red none not tested untested";
+	const searchText = [
+		item.packagePath,
+		packageStatus,
+		...item.fixtures,
+		...item.symbols.flatMap((symbol) => [
+			symbol.name,
+			symbol.kind,
+			symbol.tested ? "tested" : "not tested untested",
+			...symbol.fixtures,
+		]),
+	]
+		.join(" ")
+		.toLowerCase();
+	return { item, color, searchText };
+});
+
+function syncFiltersToUrl(query: string, status: CoverageStatusFilter): void {
+	const url = new URL(window.location.href);
+	const trimmedQuery = query.trim();
+	if (trimmedQuery) url.searchParams.set("q", trimmedQuery);
+	else url.searchParams.delete("q");
+	if (status === "all") url.searchParams.delete("color");
+	else url.searchParams.set("color", status);
+	const next = `${url.pathname}${url.search}${url.hash}`;
+	const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+	if (next !== current) window.history.replaceState({}, "", next);
+}
+
 $: stdlibQuery = stdlibFilter.trim().toLowerCase();
-$: filteredGostdlibCoverage = gostdlibCoverage.filter((item) =>
-	coverageMatchesFilter(item, stdlibQuery),
-);
+$: filteredGostdlibCoverage = coverageSearchIndex
+	.filter(
+		(entry) =>
+			(statusFilter === "all" || entry.color === statusFilter) &&
+			(!stdlibQuery || entry.searchText.includes(stdlibQuery)),
+	)
+	.map((entry) => entry.item);
+$: syncFiltersToUrl(stdlibFilter, statusFilter);
 $: visibleStdlibSymbolCount = filteredGostdlibCoverage.reduce(
 	(total, item) => total + item.symbols.length,
 	0,
@@ -97,6 +156,19 @@ $: visibleStdlibUntestedSymbolCount =
       <span>Filter</span>
       <input bind:value={stdlibFilter} type="search" placeholder="package, function, fixture, tested" autocomplete="off" />
     </label>
+    <div class="status-filter" role="group" aria-label="Coverage status filter">
+      {#each STATUS_FILTERS as filter}
+        <button
+          type="button"
+          class={filter.className}
+          class:active={statusFilter === filter.value}
+          on:click={() => (statusFilter = filter.value)}
+          aria-pressed={statusFilter === filter.value}
+        >
+          {filter.label}
+        </button>
+      {/each}
+    </div>
   </div>
 
   <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
@@ -183,14 +255,17 @@ $: visibleStdlibUntestedSymbolCount =
 
   .report-summary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(110px, 170px)) minmax(220px, 1fr);
+    grid-template-columns:
+      repeat(4, minmax(110px, 160px)) minmax(220px, 1fr)
+      minmax(220px, auto);
     gap: 12px;
     flex-shrink: 0;
     min-width: 0;
   }
 
   .report-metric,
-  .report-filter {
+  .report-filter,
+  .status-filter {
     min-height: 58px;
     border: 1px solid #d0d7de;
     border-radius: 8px;
@@ -246,6 +321,51 @@ $: visibleStdlibUntestedSymbolCount =
   .report-filter input:focus {
     outline: none;
     border-color: #0969da;
+  }
+
+  .status-filter {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .status-filter button {
+    min-width: 0;
+    border: 1px solid #d0d7de;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #57606a;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .status-filter button:hover,
+  .status-filter button.active {
+    color: #1f2328;
+  }
+
+  .status-filter button.tested:hover,
+  .status-filter button.tested.active {
+    border-color: #2da44e;
+    background: #dafbe1;
+    color: #1a7f37;
+  }
+
+  .status-filter button.partial:hover,
+  .status-filter button.partial.active {
+    border-color: #d4a72c;
+    background: #fff8c5;
+    color: #9a6700;
+  }
+
+  .status-filter button.none:hover,
+  .status-filter button.none.active {
+    border-color: #cf222e;
+    background: #ffebe9;
+    color: #cf222e;
   }
 
   .report-list {
@@ -421,7 +541,8 @@ $: visibleStdlibUntestedSymbolCount =
       min-width: 0;
     }
 
-    .report-filter {
+    .report-filter,
+    .status-filter {
       grid-column: 1 / -1;
     }
 

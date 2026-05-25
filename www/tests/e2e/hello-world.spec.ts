@@ -14,14 +14,10 @@ test("default hello world auto-compiles and runs manually", async ({
 	await page.goto("/playground");
 
 	const consoleOutput = page.locator(".console-content");
+	await expect(page.getByRole("button", { name: "gors" })).toBeVisible();
 	await expect(consoleOutput).toContainText("$ gors build", {
 		timeout: 2 * 60 * 1000,
 	});
-	await expect(page.locator(".vm-status")).toHaveAttribute(
-		"data-state",
-		/(ready|compiling|running)/,
-		{ timeout: 5 * 60 * 1000 },
-	);
 	await expect(consoleOutput).toContainText("gors transpiled", {
 		timeout: 8 * 60 * 1000,
 	});
@@ -37,6 +33,18 @@ test("default hello world auto-compiles and runs manually", async ({
 	await expect(consoleOutput).toContainText("Hello, World!", {
 		timeout: 10 * 60 * 1000,
 	});
+	await expect
+		.poll(() =>
+			consoleOutput.evaluate((node) => {
+				const text = node.textContent ?? "";
+				return (
+					text.indexOf("$ gors build") <
+						text.indexOf("$ rustc -o main main.rs") &&
+					text.indexOf("$ rustc -o main main.rs") < text.indexOf("$ ./main")
+				);
+			}),
+		)
+		.toBe(true);
 
 	await page.locator(".go .monaco-editor textarea").click();
 	await page.keyboard.press("ControlOrMeta+A");
@@ -59,6 +67,8 @@ test("default hello world auto-compiles and runs manually", async ({
 		"Hello, World!",
 	);
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
+	await expect(consoleOutput).not.toContainText("waiting for VM");
+	await expect(consoleOutput).not.toContainText("VM ready in");
 
 	expect(pageErrors).toEqual([]);
 	expect(consoleErrors).toEqual([]);
@@ -73,7 +83,7 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 		page.getByRole("heading", { name: "Go stdlib coverage" }),
 	).toBeVisible();
 	await expect(page.getByText("51/353")).toBeVisible();
-	await expect(page.getByText("294/12599")).toBeVisible();
+	await expect(page.getByText("299/12599")).toBeVisible();
 
 	await page.getByRole("searchbox").fill("fmt");
 	await expect(
@@ -114,6 +124,36 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 		)
 		.toBe(true);
 	await page.getByRole("searchbox").fill("");
+	await page.getByRole("button", { name: "Yellow" }).click();
+	await expect(page).toHaveURL(/color=yellow/);
+	await expect(
+		page.locator(".package-cell code").filter({ hasText: /^fmt$/ }),
+	).toBeVisible();
+	await expect(
+		page.locator(".package-cell code").filter({ hasText: /^container\/list$/ }),
+	).toHaveCount(0);
+	await page.getByRole("button", { name: "Red" }).click();
+	await expect(page).toHaveURL(/color=red/);
+	await expect(
+		page.locator(".package-cell code").filter({ hasText: /^container\/list$/ }),
+	).toBeVisible();
+	await expect(
+		page.locator(".package-cell code").filter({ hasText: /^fmt$/ }),
+	).toHaveCount(0);
+	await page.getByRole("button", { name: "Green" }).click();
+	await expect(page).toHaveURL(/color=green/);
+	await expect(
+		page.locator(".package-cell code").filter({ hasText: /^structs$/ }),
+	).toBeVisible();
+	await page.getByRole("searchbox").fill("fmt");
+	await expect(page).toHaveURL(/q=fmt/);
+	await page.goto("/coverage?q=fmt&color=yellow");
+	await expect(page.getByRole("searchbox")).toHaveValue("fmt");
+	await expect(page.getByRole("button", { name: "Yellow" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+	await page.getByRole("searchbox").fill("");
 	await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
 	await page.getByRole("link", { name: "gors" }).click();
 	await page.getByRole("link", { name: "View coverage" }).click();
@@ -126,7 +166,9 @@ test("home page links to playground without rendering the console", async ({
 	await page.goto("/");
 
 	await expect(page.getByRole("heading", { name: "gors" })).toBeVisible();
-	await expect(page.getByRole("link", { name: "Playground" })).toBeVisible();
+	await expect(
+		page.getByRole("link", { name: "Playground", exact: true }),
+	).toBeVisible();
 	await expect(page.locator(".console-section")).toHaveCount(0);
 	await expect(page.locator(".editor-route")).toHaveCount(0);
 	await expect(page.locator(".site-footer")).toHaveCount(0);

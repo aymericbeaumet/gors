@@ -21,8 +21,10 @@ import CopyButton from "./CopyButton.svelte";
 import CoveragePage from "./CoveragePage.svelte";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const BREW_INSTALL_COMMAND = "brew install aymericbeaumet/tap/gors";
 
 type AppRoute = "home" | "playground" | "coverage";
+type PipelineStage = "idle" | "gors" | "rustc" | "main";
 
 interface PipelineCache {
 	goSource: string | null;
@@ -87,6 +89,8 @@ let vmState: VmState = State.INITIALIZING;
 let vmOverlayVisible = false;
 let consoleLines: ConsoleLine[] = [];
 let vmStartRequested = false;
+let installCommandCopied = false;
+let installCommandTimer: ReturnType<typeof setTimeout> | null = null;
 const DEFAULT_EDITOR_CONSOLE_RATIO = 1.61803398875;
 
 let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio") ?? "");
@@ -122,6 +126,7 @@ let rustExpectedValue = "";
 
 let transpiling = false;
 let activePipelines = 0;
+let pipelineStage: PipelineStage = "idle";
 
 // xterm
 let term: Terminal;
@@ -145,6 +150,15 @@ $: if (route !== prevRoute) {
 }
 $: pipelineBusy = activePipelines > 0;
 $: runDisabled = pipelineBusy || !cache.rustCode;
+$: runButtonLabel =
+	pipelineStage === "gors"
+		? "gors"
+		: pipelineStage === "rustc"
+			? "rustc"
+			: pipelineStage === "main"
+				? "main"
+				: "Run";
+$: runButtonBusy = pipelineStage !== "idle";
 
 // Console helpers
 function conClear() {
@@ -166,6 +180,19 @@ function conErr(text: string) {
 }
 function getConsoleText() {
 	return consoleLines.map((l) => l.text).join("\n");
+}
+
+async function copyInstallCommand() {
+	try {
+		await navigator.clipboard.writeText(BREW_INSTALL_COMMAND);
+		installCommandCopied = true;
+		if (installCommandTimer) clearTimeout(installCommandTimer);
+		installCommandTimer = setTimeout(() => {
+			installCommandCopied = false;
+		}, 2000);
+	} catch {
+		/* ignore */
+	}
 }
 
 function formatDuration(durationMs: number): string {
@@ -310,8 +337,6 @@ async function waitForVM() {
 		runner.state !== State.COMPILING &&
 		runner.state !== State.RUNNING
 	) {
-		const startedAt = performance.now();
-		conOut("waiting for VM...");
 		await new Promise<void>((resolve) => {
 			const unsub = runner.onStateChange((state) => {
 				if (state === State.READY) {
@@ -320,7 +345,6 @@ async function waitForVM() {
 				}
 			});
 		});
-		conOut(`VM ready in ${formatDuration(performance.now() - startedAt)}`);
 	}
 }
 
@@ -344,6 +368,7 @@ async function doTranspile() {
 	sourceMap = null;
 
 	conCmd("$ gors build -o main.rs main.go");
+	pipelineStage = "gors";
 	transpiling = true;
 	await tick();
 	const gen = pipelineGeneration;
@@ -352,11 +377,13 @@ async function doTranspile() {
 		goResult = await go2rust.compile(goCode);
 	} catch (err) {
 		transpiling = false;
+		pipelineStage = "idle";
 		if (err instanceof CompilerCancelledError) return null;
 		conErr(err instanceof Error ? err.message : String(err));
 		return null;
 	}
 	transpiling = false;
+	pipelineStage = "idle";
 	if (gen !== pipelineGeneration || goCode !== activeGoModel.getValue()) {
 		return null;
 	}
@@ -407,18 +434,30 @@ async function doCompile(rustCode: string) {
 	if (cache.compiled && cache.jobId) return cache.jobId;
 
 	const gen = pipelineGeneration;
-	await waitForVM();
-	if (gen !== pipelineGeneration) return null;
-
+	pipelineStage = "rustc";
 	conCmd("$ rustc -o main main.rs");
+	await waitForVM();
+	if (gen !== pipelineGeneration) {
+		pipelineStage = "idle";
+		return null;
+	}
+
 	const startedAt = performance.now();
 	const result = await runner.compile(rustCode);
-	if (gen !== pipelineGeneration) return null;
-	if (result.cancelled) return null;
-	if (typeof result.jobId !== "string") return null;
+	if (gen !== pipelineGeneration || result.cancelled) {
+		pipelineStage = "idle";
+		return null;
+	}
+	if (typeof result.jobId !== "string") {
+		pipelineStage = "idle";
+		return null;
+	}
 
 	const rustModel = rustEditor.getModel();
-	if (!rustModel) return null;
+	if (!rustModel) {
+		pipelineStage = "idle";
+		return null;
+	}
 	monaco.editor.setModelMarkers(rustModel, "rustc", []);
 
 	if (!result.compile.success) {
@@ -428,10 +467,12 @@ async function doCompile(rustCode: string) {
 			"rustc",
 			parseRustcErrors(result.compile.stderr, monaco.MarkerSeverity),
 		);
+		pipelineStage = "idle";
 		return null;
 	}
 
 	conOut(`rustc finished in ${formatDuration(performance.now() - startedAt)}`);
+	pipelineStage = "idle";
 	cache.compiled = true;
 	cache.jobId = result.jobId;
 	return result.jobId;
@@ -439,12 +480,14 @@ async function doCompile(rustCode: string) {
 
 async function doRun(jobId: string) {
 	const gen = pipelineGeneration;
+	pipelineStage = "main";
 	conCmd("$ ./main");
 	const startedAt = performance.now();
 	const result = await runner.runJob(jobId);
-	if (gen !== pipelineGeneration) return;
-	if (result.cancelled) return;
-	if (!result.run) return;
+	if (gen !== pipelineGeneration || result.cancelled || !result.run) {
+		pipelineStage = "idle";
+		return;
+	}
 
 	conOut(result.run.stdout);
 	conErr(result.run.stderr);
@@ -452,6 +495,7 @@ async function doRun(jobId: string) {
 		conErr(`program exited with code ${result.run.exitCode}`);
 	}
 	conOut(`run finished in ${formatDuration(performance.now() - startedAt)}`);
+	pipelineStage = "idle";
 }
 
 async function runPipeline() {
@@ -466,6 +510,7 @@ async function runPipeline() {
 		if (!rustCode) return;
 		await tick();
 	} finally {
+		pipelineStage = "idle";
 		activePipelines--;
 		if (queuedPipeline) {
 			queuedPipeline = false;
@@ -489,10 +534,10 @@ async function handleRun() {
 	if (!cache.rustCode || activePipelines > 0) return;
 	activePipelines++;
 	try {
-		conClear();
 		const jobId = await doCompile(cache.rustCode);
 		if (jobId) await doRun(jobId);
 	} finally {
+		pipelineStage = "idle";
 		activePipelines--;
 		if (queuedPipeline) {
 			queuedPipeline = false;
@@ -707,6 +752,7 @@ let initialized = false;
 
 onDestroy(() => {
 	cancelScheduledPipeline();
+	if (installCommandTimer) clearTimeout(installCommandTimer);
 	removePopStateListener?.();
 	go2rust.dispose();
 	resizeObserver?.disconnect();
@@ -742,12 +788,16 @@ onDestroy(() => {
           gors is a Go-to-Rust compiler pipeline: it parses real Go source, resolves packages from a pinned Go SDK, lowers the AST into Rust, and prints normal Rust code.
         </p>
         <div class="hero-actions">
+          <button class="install-command" class:copied={installCommandCopied} type="button" title="Copy install command" on:click={copyInstallCommand}>
+            <code>{BREW_INSTALL_COMMAND}</code>
+            <span class="install-copy" aria-hidden="true">{installCommandCopied ? "Copied" : "Copy"}</span>
+          </button>
           <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
         </div>
       </div>
 
       <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
-        <h2>Go source moves through a real compiler pipeline.</h2>
+        <h2>The same compiler stages power the CLI, playground, and integration checks.</h2>
         <div class="pipeline-flow" aria-hidden="true">
           <div class="flow-node go-node"><span>Go source</span></div>
           <span class="flow-arrow"></span>
@@ -755,11 +805,11 @@ onDestroy(() => {
           <span class="flow-arrow"></span>
           <div class="flow-node"><span>Parser</span></div>
           <span class="flow-arrow"></span>
-          <div class="flow-node ast-node"><span>Go AST</span></div>
+          <div class="flow-node go-ast-node"><span>Go AST</span></div>
           <span class="flow-arrow"></span>
           <div class="flow-node"><span>Lowering</span></div>
           <span class="flow-arrow"></span>
-          <div class="flow-node ast-node"><span>Rust AST</span></div>
+          <div class="flow-node rust-ast-node"><span>Rust AST</span></div>
           <span class="flow-arrow"></span>
           <div class="flow-node"><span>Passes</span></div>
           <span class="flow-arrow"></span>
@@ -771,34 +821,28 @@ onDestroy(() => {
 
     <section class="home-details" aria-label="gors benefits">
       <article>
-        <span>01</span>
-        <h3>Inspect the generated Rust</h3>
-        <p>The playground keeps Go input and Rust output side by side, so lowering choices are visible before anything is run.</p>
+        <h3>Try the pipeline quickly</h3>
+        <p>The <a href="/playground" on:click={(event) => navigateTo("playground", event)}>playground</a> is a convenient way to inspect generated Rust for small programs.</p>
       </article>
       <article>
-        <span>02</span>
-        <h3>Follow real compiler stages</h3>
+        <h3>Shared compiler path</h3>
         <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup use the same path as the CLI.</p>
       </article>
       <article>
-        <span>03</span>
-        <h3>Use the pinned Go SDK</h3>
+        <h3>Pinned SDK inputs</h3>
         <p>Stdlib packages are resolved from SDK source files, keeping progress tied to generic compiler support instead of handwritten replacements.</p>
       </article>
       <article>
-        <span>04</span>
-        <h3>Audit what is proven</h3>
+        <h3>Executable checks</h3>
         <p>Integration tests compare generated Rust behavior with the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
       </article>
       <article>
-        <span>05</span>
-        <h3>Keep source maps visible</h3>
-        <p>Hovering generated Rust can map back to the Go source locations that produced it.</p>
+        <h3>Generic stdlib progress</h3>
+        <p>Stdlib failures are treated as compiler gaps, so fixes improve parsing, inference, lowering, or runtime primitives for ordinary Go code.</p>
       </article>
       <article>
-        <span>06</span>
-        <h3>Run only when ready</h3>
-        <p>The playground transpiles automatically, while compiling and running stay behind the explicit Run button.</p>
+        <h3>Hermetic comparisons</h3>
+        <p>The test harness uses the repository-pinned Go SDK instead of whatever Go version happens to be installed locally.</p>
       </article>
     </section>
 
@@ -832,14 +876,14 @@ onDestroy(() => {
               <div class="label"><span class="dot"></span><span>main.rs</span></div>
               <div class="actions">
                 <button class="action-button run-button" title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
-                  {#if vmState === State.RUNNING}
+                  {#if runButtonBusy}
                     <span class="btn-spinner"></span>
                   {:else}
                     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                       <path d="M8 5v14l11-7z"/>
                     </svg>
                   {/if}
-                  <span>Run</span>
+                  <span>{runButtonLabel}</span>
                 </button>
                 <CopyButton getContent={() => rustEditor?.getModel()?.getValue()} title="Copy Rust code" />
               </div>
@@ -1120,6 +1164,7 @@ onDestroy(() => {
     margin-top: 28px;
   }
 
+  .install-command,
   .primary-link,
   .secondary-link {
     display: inline-flex;
@@ -1130,6 +1175,35 @@ onDestroy(() => {
     font-size: 14px;
     font-weight: 700;
     text-decoration: none;
+  }
+
+  .install-command {
+    gap: 10px;
+    border: 1px solid #d0d7de;
+    background: #ffffff;
+    color: #1f2328;
+    cursor: pointer;
+    font-family: "Fira Code Variable", "Fira Code", monospace;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .install-command:hover,
+  .install-command.copied {
+    border-color: #0969da;
+  }
+
+  .install-command code {
+    font: inherit;
+  }
+
+  .install-copy {
+    padding-left: 10px;
+    border-left: 1px solid #d0d7de;
+    color: #0969da;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 760;
   }
 
   .primary-link {
@@ -1174,6 +1248,8 @@ onDestroy(() => {
 
   .pipeline-flow {
     position: relative;
+    isolation: isolate;
+    --flow-line: #58a6ff;
     display: grid;
     grid-template-columns:
       minmax(54px, 1.2fr) 10px minmax(46px, 1fr) 10px minmax(42px, 0.9fr)
@@ -1187,19 +1263,20 @@ onDestroy(() => {
 
   .pipeline-flow::before {
     position: absolute;
+    z-index: 0;
     top: 50%;
     right: 8px;
     left: 8px;
     height: 2px;
-    background: linear-gradient(90deg, #00add8, #ffc832, #2da44e);
-    opacity: 0.42;
+    background: var(--flow-line);
+    opacity: 0.48;
     transform: translateY(-50%);
     content: "";
   }
 
   .flow-node {
     position: relative;
-    z-index: 1;
+    z-index: 2;
     display: flex;
     min-width: 0;
     min-height: 42px;
@@ -1210,6 +1287,7 @@ onDestroy(() => {
     border-radius: 6px;
     background: rgba(22, 27, 34, 0.96);
     box-shadow: 0 10px 24px rgba(1, 4, 9, 0.24);
+    animation: flow-node-glow 5.5s linear infinite;
   }
 
   .flow-node span {
@@ -1229,34 +1307,71 @@ onDestroy(() => {
     align-items: center;
     justify-content: center;
     min-width: 0;
+    opacity: 0.48;
   }
 
   .flow-arrow::before {
     display: block;
     width: 7px;
     height: 7px;
-    border-top: 2px solid #8b949e;
-    border-right: 2px solid #8b949e;
+    border-top: 2px solid var(--flow-line);
+    border-right: 2px solid var(--flow-line);
     content: "";
     transform: rotate(45deg);
   }
 
   .go-node {
-    border-color: rgba(0, 173, 216, 0.8);
+    border-color: rgba(0, 173, 216, 0.95);
   }
 
-  .ast-node {
-    border-color: rgba(255, 200, 50, 0.75);
+  .go-ast-node {
+    border-color: rgba(0, 173, 216, 0.95);
+  }
+
+  .rust-ast-node {
+    border-color: rgba(222, 165, 132, 0.95);
   }
 
   .rust-node {
-    border-color: rgba(45, 164, 78, 0.75);
+    border-color: rgba(222, 165, 132, 0.95);
+  }
+
+  .flow-node:nth-of-type(1) {
+    animation-delay: 0.2s;
+  }
+
+  .flow-node:nth-of-type(2) {
+    animation-delay: 0.85s;
+  }
+
+  .flow-node:nth-of-type(3) {
+    animation-delay: 1.5s;
+  }
+
+  .flow-node:nth-of-type(4) {
+    animation-delay: 2.15s;
+  }
+
+  .flow-node:nth-of-type(5) {
+    animation-delay: 2.8s;
+  }
+
+  .flow-node:nth-of-type(6) {
+    animation-delay: 3.45s;
+  }
+
+  .flow-node:nth-of-type(7) {
+    animation-delay: 4.1s;
+  }
+
+  .flow-node:nth-of-type(8) {
+    animation-delay: 4.75s;
   }
 
   .flow-pulse {
     position: absolute;
     top: 50%;
-    z-index: 2;
+    z-index: 1;
     width: 12px;
     height: 12px;
     border-radius: 50%;
@@ -1327,14 +1442,6 @@ onDestroy(() => {
 
   .home-details h3 {
     font-size: 16px;
-  }
-
-  .home-details article span {
-    display: block;
-    margin-bottom: 8px;
-    color: #0969da;
-    font-size: 12px;
-    font-weight: 760;
   }
 
   .home-details p:last-child {
@@ -1607,8 +1714,8 @@ onDestroy(() => {
   }
 
   .vm-status:hover {
-    border-color: #d0d7de;
-    background: #f6f8fa;
+    border-color: #30363d;
+    background: #161b22;
   }
 
   .vm-dot {
@@ -1781,6 +1888,22 @@ onDestroy(() => {
     100% {
       left: 96%;
       opacity: 0;
+    }
+  }
+
+  @keyframes flow-node-glow {
+    0%,
+    12%,
+    100% {
+      box-shadow: 0 10px 24px rgba(1, 4, 9, 0.24);
+      filter: none;
+    }
+    4% {
+      box-shadow:
+        0 10px 24px rgba(1, 4, 9, 0.24),
+        0 0 0 1px rgba(88, 166, 255, 0.65),
+        0 0 20px rgba(88, 166, 255, 0.65);
+      filter: brightness(1.16);
     }
   }
 
