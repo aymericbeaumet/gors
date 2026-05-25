@@ -34,55 +34,71 @@ export const gostdlibCoverage = [
 			"gostdlib_archive_tar"
 		],
 		"symbolCount": 40,
-		"testedSymbolCount": 3,
+		"testedSymbolCount": 31,
 		"symbols": [
 			{
 				"name": "ErrFieldTooLong",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "ErrHeader",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "ErrInsecurePath",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "ErrWriteAfterClose",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "ErrWriteTooLong",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "FileInfoHeader",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "FileInfoNames",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Format",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Format.String",
@@ -93,32 +109,42 @@ export const gostdlibCoverage = [
 			{
 				"name": "FormatGNU",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "FormatPAX",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "FormatUnknown",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "FormatUSTAR",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Header",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Header.FileInfo",
@@ -129,20 +155,26 @@ export const gostdlibCoverage = [
 			{
 				"name": "NewReader",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "NewWriter",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Reader",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Reader.Next",
@@ -159,20 +191,26 @@ export const gostdlibCoverage = [
 			{
 				"name": "TypeBlock",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeChar",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeCont",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeDir",
@@ -185,32 +223,42 @@ export const gostdlibCoverage = [
 			{
 				"name": "TypeFifo",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeGNULongLink",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeGNULongName",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeGNUSparse",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeLink",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeReg",
@@ -223,8 +271,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "TypeRegA",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeSymlink",
@@ -237,20 +287,26 @@ export const gostdlibCoverage = [
 			{
 				"name": "TypeXGlobalHeader",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "TypeXHeader",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Writer",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_tar"
+				]
 			},
 			{
 				"name": "Writer.AddFS",
@@ -291,19 +347,23 @@ export const gostdlibCoverage = [
 			"gostdlib_archive_zip"
 		],
 		"symbolCount": 40,
-		"testedSymbolCount": 2,
+		"testedSymbolCount": 19,
 		"symbols": [
 			{
 				"name": "Compressor",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "Decompressor",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "Deflate",
@@ -316,32 +376,42 @@ export const gostdlibCoverage = [
 			{
 				"name": "ErrAlgorithm",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "ErrChecksum",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "ErrFormat",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "ErrInsecurePath",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "File",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "File.DataOffset",
@@ -364,8 +434,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "FileHeader",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "FileHeader.FileInfo",
@@ -400,32 +472,42 @@ export const gostdlibCoverage = [
 			{
 				"name": "FileInfoHeader",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "NewReader",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "NewWriter",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "OpenReader",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "ReadCloser",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "ReadCloser.Close",
@@ -436,8 +518,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "Reader",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "Reader.Open",
@@ -454,14 +538,18 @@ export const gostdlibCoverage = [
 			{
 				"name": "RegisterCompressor",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "RegisterDecompressor",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "Store",
@@ -474,8 +562,10 @@ export const gostdlibCoverage = [
 			{
 				"name": "Writer",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_archive_zip"
+				]
 			},
 			{
 				"name": "Writer.AddFS",
@@ -79596,6 +79686,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 51,
 	"untestedPackageCount": 302,
 	"symbolCount": 12599,
-	"testedSymbolCount": 299,
-	"untestedSymbolCount": 12300
+	"testedSymbolCount": 344,
+	"untestedSymbolCount": 12255
 } as const;

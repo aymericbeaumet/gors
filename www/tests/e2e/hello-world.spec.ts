@@ -83,7 +83,7 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 		page.getByRole("heading", { name: "Go stdlib coverage" }),
 	).toBeVisible();
 	await expect(page.getByText("51/353")).toBeVisible();
-	await expect(page.getByText("299/12599")).toBeVisible();
+	await expect(page.getByText("344/12599")).toBeVisible();
 
 	await page.getByRole("searchbox").fill("fmt");
 	await expect(
@@ -99,6 +99,14 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 		"href",
 		"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs/gostdlib_fmt",
 	);
+
+	await page.getByRole("searchbox").fill("archive/tar");
+	await expect(
+		page.locator(".symbol-token").filter({ hasText: "Format.String" }),
+	).toHaveClass(/(^|\s)untested(\s|$)/);
+	await expect(
+		page.locator(".symbol-token").filter({ hasText: "FileInfoHeader" }),
+	).toHaveClass(/(^|\s)tested(\s|$)/);
 
 	await page.getByRole("searchbox").fill("container/list");
 	await expect(

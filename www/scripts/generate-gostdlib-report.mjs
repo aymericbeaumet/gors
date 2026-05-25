@@ -368,6 +368,32 @@ function addImportedPackageUsage(
 	imports,
 ) {
 	for (const item of imports) {
+		const pointerMethodPattern = new RegExp(
+			`\\(\\s*\\*\\s*${escapeRegExp(item.name)}\\.([A-Z][A-Za-z0-9_]*)\\s*\\)\\.([A-Z][A-Za-z0-9_]*)\\s*\\(`,
+			"g",
+		);
+		for (const match of source.matchAll(pointerMethodPattern)) {
+			markTested(
+				symbolsByPackage,
+				item.path,
+				`${match[1]}.${match[2]}`,
+				fixtureName,
+			);
+		}
+
+		const valueMethodPattern = new RegExp(
+			`\\b${escapeRegExp(item.name)}\\.([A-Z][A-Za-z0-9_]*)\\.([A-Z][A-Za-z0-9_]*)\\s*\\(`,
+			"g",
+		);
+		for (const match of source.matchAll(valueMethodPattern)) {
+			markTested(
+				symbolsByPackage,
+				item.path,
+				`${match[1]}.${match[2]}`,
+				fixtureName,
+			);
+		}
+
 		const selectorPattern = new RegExp(
 			`\\b${escapeRegExp(item.name)}\\.([A-Za-z_][A-Za-z0-9_]*)\\b`,
 			"g",
