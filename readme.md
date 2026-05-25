@@ -100,6 +100,9 @@ test oracle.
 ### Building and Testing
 
 ```bash
+# Run the same local build/test/check commands as CI
+make all
+
 # Lint
 cargo clippy --workspace -- -D warnings
 
@@ -107,12 +110,12 @@ cargo clippy --workspace -- -D warnings
 cargo build --workspace
 
 # Run unit tests
-make test-unit
+make rust-test-unit
 
 # Run integration suites
-make test-integration-lexer
-make test-integration-parser
-make test-integration-run
+make rust-test-integration-lexer
+make rust-test-integration-parser
+make rust-test-integration-run
 
 # Fuzz testing
 cargo +nightly fuzz run scanner

@@ -421,6 +421,7 @@ struct GoOracleOutput {
 }
 
 const GO_BATCH_SIZE: usize = 1024;
+const FILE_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn go_oracle_outputs(
     command: &str,
@@ -733,6 +734,19 @@ fn test_must_error_file(file: &Path, go_oracle: Option<&GoOracleOutput>) -> File
 /// Test files with the given command, running in parallel.
 /// Returns a summary with all results.
 pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig) -> TestSummary {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .stack_size(FILE_TEST_STACK_SIZE)
+        .build()
+        .expect("failed to build file test thread pool");
+
+    pool.install(|| test_files_parallel_in_pool(command, files, config))
+}
+
+fn test_files_parallel_in_pool(
+    command: &str,
+    files: &[PathBuf],
+    config: &TestConfig,
+) -> TestSummary {
     // Apply filters
     let mut files_to_test: Vec<_> = files
         .iter()

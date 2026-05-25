@@ -82,7 +82,7 @@ fn embedded_package(import_path: &str) -> Option<&'static EmbeddedGoPackage> {
     EMBEDDED_PACKAGES
         .binary_search_by(|package| package.import_path.cmp(import_path))
         .ok()
-        .map(|idx| &EMBEDDED_PACKAGES[idx])
+        .and_then(|idx| EMBEDDED_PACKAGES.get(idx))
 }
 
 pub fn is_known(import_path: &str) -> bool {

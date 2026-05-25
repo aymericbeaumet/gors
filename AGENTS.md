@@ -143,10 +143,10 @@ for both `go_oracle` and `go run` comparisons. CI should not install Go via
 ### Unit tests
 
 ```bash
-make test-unit
+make rust-test-unit
 ```
 
-`make test-unit` runs the normal workspace test suite without integration
+`make rust-test-unit` runs the normal workspace test suite without integration
 features. Compiler/printer/generator regression tests live inside the `gors`
 crate as unit tests attached to the modules they cover, such as
 `gors/src/printer/mod.rs` and `gors/src/compiler/manifest.rs`. Unit tests assert
@@ -156,29 +156,38 @@ Integration test entrypoints live in root `tests/` and are wired into the
 `gors` crate through explicit `[[test]]` entries in `gors/Cargo.toml`;
 integration fixtures remain under `tests/fixtures/`.
 
-`make test` is the local full-suite convenience command. It depends on the split
-unit and integration targets below and should not redefine its own combined
-Cargo command. CI should call the split `make test-*` targets below for clearer
-job boundaries and failure output.
+`make all` is the local CI-parity gate. It depends on `make rust-build`,
+`make rust-lint`, `make rust-test`, `make web-build`, `make web-lint`, and
+`make web-test`, so a successful local run covers the same build/test/check
+commands as CI. GitHub-only artifact upload and Pages deploy steps are
+intentionally not represented locally.
+
+`make rust-test` is the local full-suite test convenience command. It depends on
+the split unit and integration targets below and should not redefine its own
+combined Cargo command. CI should call the split `make rust-test-*` targets
+below for clearer job boundaries and failure output.
+Compatibility aliases such as `make test`, `make test-unit`, and
+`make test-integration-parser` remain available, but new wiring should use the
+explicit `rust-*` target names.
 
 ### Integration tests
 
 ```bash
-make test-integration-lexer
-make test-integration-parser
-make test-integration-run
+make rust-test-integration-lexer
+make rust-test-integration-parser
+make rust-test-integration-run
 ```
 
 Integration tests use matching Make targets and Cargo feature gates:
-`test-integration-lexer` → `test_integration_lexer`,
-`test-integration-parser` → `test_integration_parser`, and
-`test-integration-run` → `test_integration_run`. Their integration-test binary
-names match the feature gates and are declared in `gors/Cargo.toml`, so the
-Make targets do not need extra test-name filters.
+`rust-test-integration-lexer` → `test_integration_lexer`,
+`rust-test-integration-parser` → `test_integration_parser`, and
+`rust-test-integration-run` → `test_integration_run`. Their integration-test
+binary names match the feature gates and are declared in `gors/Cargo.toml`, so
+the Make targets do not need extra test-name filters.
 
 The integration binaries in root `tests/` are feature-gated as whole files:
 lexer/parser integration targets scan the reference repositories from git
-submodules, while `test-integration-run` compares in-process generated Rust
+submodules, while `rust-test-integration-run` compares in-process generated Rust
 program output with the pinned Go SDK's `go run`. Lexer/parser integration may
 execute the batched Go fixture runner for reference output, but that runner must
 be built with `tests/common.rs::go_command()` rather than system `go`; the gors

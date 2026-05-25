@@ -8,22 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: make build
-
-  lint:
+  rust-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -36,9 +21,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Lint
-        run: make lint
+        run: make rust-lint
 
-  test-unit:
+  rust-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: make rust-build
+
+  rust-test-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -51,9 +51,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test unit
-        run: make test-unit
+        run: make rust-test-unit
 
-  test-integration-lexer:
+  rust-test-integration-lexer:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -68,9 +68,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test integration lexer
-        run: make test-integration-lexer
+        run: make rust-test-integration-lexer
 
-  test-integration-parser:
+  rust-test-integration-parser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -85,9 +85,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test integration parser
-        run: make test-integration-parser
+        run: make rust-test-integration-parser
 
-  test-integration-run:
+  rust-test-integration-run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -100,9 +100,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test integration run
-        run: make test-integration-run
+        run: make rust-test-integration-run
 
-  web:
+  web-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Lint web
+        run: make web-lint
+
+  web-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -123,20 +136,73 @@ jobs:
       - name: Build web
         run: make web-build
 
-      - name: Lint web
-        run: make web-lint
+  web-test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Test unit
+        run: make web-test-unit
+
+  web-test-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Test integration
+        run: make web-test-integration
+
+  # Upload GitHub Pages artifact from web-build
+  upload-pages:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    needs: [web-build]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Build web
+        run: make web-build
 
       - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5
         with:
           path: ./www/dist
 
-  # Deploy website on every push to master (nightly)
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    needs: [web]
+    needs: [upload-pages]
     permissions:
       contents: read
       pages: write

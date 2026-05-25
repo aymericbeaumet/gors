@@ -1,62 +1,115 @@
-.PHONY: all build format lint test test-unit test-integration-lexer test-integration-parser test-integration-run fuzz
-.PHONY: web-install web-build web-format web-lint web-dev
+all: rust-all web-all
+
+########
+# rust #
+########
+
+rust-all: rust-lint rust-build rust-test
+
+rust-format:
+	cargo fmt --all
+
+rust-lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+rust-build:
+	cargo build --workspace
+
+rust-test: rust-test-unit rust-test-integration
+
+rust-test-unit:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --workspace --lib --bins --examples -- --nocapture
+
+rust-test-integration: rust-test-integration-lexer rust-test-integration-parser rust-test-integration-run
+
+rust-test-integration-lexer:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_lexer --test test_integration_lexer -- --nocapture
+
+rust-test-integration-parser:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_parser --test test_integration_parser -- --nocapture
+
+rust-test-integration-run:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_run --test test_integration_run -- --nocapture
+
+#######
+# web #
+#######
+
+web-all: web-lint web-build web-test
+
+web-install:
+	npm --prefix www ci --no-audit --fund=false --loglevel=error
+
+web-format: web-install
+	npm --prefix www run format
+
+web-lint: web-install
+	npm --prefix www run format:check
+	npm --prefix www run lint
+
+web-build: web-install
+	npm --prefix www run build
+
+web-test: web-test-unit web-test-integration
+
+web-test-unit: web-install
+	npm --prefix www run test:unit
+
+web-test-integration: web-install
+	npm --prefix www run test:integration
+
+#######
+# dev #
+#######
+
+dev: web-install
+	npm --prefix www run dev
+
+#########################
+# compatibility aliases #
+#########################
+
+format: rust-format
+
+lint: rust-lint
+
+build: rust-build
+
+test: rust-test
+
+test-unit: rust-test-unit
+
+test-integration-lexer: rust-test-integration-lexer
+
+test-integration-parser: rust-test-integration-parser
+
+test-integration-run: rust-test-integration-run
+
+web-dev: dev
+
+########
+# fuzz #
+########
 
 FUZZ_CASES ?= 128
 FUZZ_EDGE_CASES ?= 32
 FUZZ_SMOKE_CASES ?= 1
 FUZZ_SMOKE_EDGE_CASES ?= 1
 
-########
-# rust #
-########
+fuzz-all: fuzz-scanner fuzz-parser fuzz-roundtrip
 
-all: build lint test
+fuzz-scanner:
+	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo +nightly fuzz run scanner
 
-build:
-	cargo build --workspace
+fuzz-parser:
+	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo +nightly fuzz run parser
 
-lint:
-	cargo fmt --all -- --check
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+fuzz-roundtrip:
+	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo +nightly fuzz run roundtrip
 
-test: test-unit test-integration-lexer test-integration-parser test-integration-run
-
-test-unit:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --workspace --lib --bins --examples -- --nocapture
-
-test-integration-lexer:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_lexer --test test_integration_lexer -- --nocapture
-
-test-integration-parser:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_parser --test test_integration_parser -- --nocapture
-
-test-integration-run:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_run --test test_integration_run -- --nocapture
-
-format:
-	cargo fmt --all
-
-fuzz:
-	GORS_FUZZ_CASES=$(FUZZ_CASES) GORS_FUZZ_EDGE_CASES=$(FUZZ_EDGE_CASES) cargo test --package=fuzz --test proptest -- --nocapture
-
-#######
-# web #
-#######
-
-web-all: web-install web-build web-lint
-
-web-install:
-	npm --prefix www ci --no-audit --fund=false --loglevel=error
-
-web-build: web-install
-	npm --prefix www run build
-
-web-lint: web-install
-	npm --prefix www run format:check
-	npm --prefix www run lint
-
-web-dev: web-install
-	npm --prefix www run dev
-
-web-format: web-install
-	npm --prefix www run format
+# .phony
+.PHONY: all dev format lint build test test-unit test-integration-lexer test-integration-parser test-integration-run web-dev
+.PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-integration rust-test-integration-lexer rust-test-integration-parser rust-test-integration-run
+.PHONY: web-all web-build web-format web-install web-lint web-test web-test-unit web-test-integration
+.PHONY: fuzz-all fuzz-scanner fuzz-parser fuzz-roundtrip
