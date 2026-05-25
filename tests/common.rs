@@ -420,25 +420,8 @@ struct GoOracleOutput {
     duration: Duration,
 }
 
-const GO_BATCH_SIZE: usize = 1024;
+const FILE_TEST_BATCH_SIZE: usize = 256;
 const FILE_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
-
-fn go_oracle_outputs(
-    command: &str,
-    files: &[&PathBuf],
-) -> Result<BTreeMap<PathBuf, GoOracleOutput>, String> {
-    let go_bin = go_oracle_bin();
-    let chunk_results: Vec<Result<BTreeMap<PathBuf, GoOracleOutput>, String>> = files
-        .par_chunks(GO_BATCH_SIZE)
-        .map(|chunk| go_oracle_chunk(go_bin, command, chunk))
-        .collect();
-
-    let mut all = BTreeMap::new();
-    for chunk in chunk_results {
-        all.extend(chunk?);
-    }
-    Ok(all)
-}
 
 fn go_oracle_chunk(
     go_bin: &Path,
@@ -731,6 +714,109 @@ fn test_must_error_file(file: &Path, go_oracle: Option<&GoOracleOutput>) -> File
     }
 }
 
+fn summarize_file_results(results: Vec<FileTestResult>) -> TestSummary {
+    let mut summary = TestSummary::new();
+
+    for result in results {
+        record_file_result(&mut summary, result);
+    }
+
+    summary
+}
+
+fn record_file_result(summary: &mut TestSummary, result: FileTestResult) {
+    summary.total_go_time += result.go_duration;
+    summary.total_gors_time += result.gors_duration;
+    if result.skipped {
+        summary.skipped += 1;
+    } else if result.passed {
+        summary.passed += 1;
+    } else {
+        summary.failed += 1;
+        summary.failures.push(result);
+    }
+}
+
+fn skipped_file_summary(files: &[&PathBuf]) -> TestSummary {
+    let mut summary = TestSummary::new();
+    summary.skipped = files.len();
+    summary
+}
+
+fn record_progress(config: &TestConfig, processed: &AtomicUsize, total_files: usize) {
+    if config.verbose {
+        let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(100) {
+            eprintln!("  Progress: {}/{}", count, total_files);
+        }
+    }
+}
+
+fn test_normal_file_batch(
+    go_bin: &Path,
+    command: &str,
+    files: &[&PathBuf],
+    config: &TestConfig,
+    processed: &AtomicUsize,
+    abort: &AtomicBool,
+    total_files: usize,
+) -> TestSummary {
+    if config.fail_fast && abort.load(Ordering::SeqCst) {
+        return skipped_file_summary(files);
+    }
+
+    let go_oracles = go_oracle_chunk(go_bin, command, files)
+        .unwrap_or_else(|e| panic!("failed to collect Go oracle output: {e}"));
+    let results = files
+        .par_iter()
+        .map(|file| {
+            if config.fail_fast && abort.load(Ordering::SeqCst) {
+                return skipped_file_result(file);
+            }
+            let result = test_single_file(command, file, go_oracles.get(file.as_path()));
+            if config.fail_fast && !result.passed && !result.skipped {
+                abort.store(true, Ordering::SeqCst);
+            }
+            record_progress(config, processed, total_files);
+            result
+        })
+        .collect();
+
+    summarize_file_results(results)
+}
+
+fn test_must_error_file_batch(
+    go_bin: &Path,
+    files: &[&PathBuf],
+    config: &TestConfig,
+    processed: &AtomicUsize,
+    abort: &AtomicBool,
+    total_files: usize,
+) -> TestSummary {
+    if config.fail_fast && abort.load(Ordering::SeqCst) {
+        return skipped_file_summary(files);
+    }
+
+    let go_oracles = go_oracle_chunk(go_bin, "ast", files)
+        .unwrap_or_else(|e| panic!("failed to collect Go must-error output: {e}"));
+    let results = files
+        .par_iter()
+        .map(|file| {
+            if config.fail_fast && abort.load(Ordering::SeqCst) {
+                return skipped_file_result(file);
+            }
+            let result = test_must_error_file(file, go_oracles.get(file.as_path()));
+            if config.fail_fast && !result.passed && !result.skipped {
+                abort.store(true, Ordering::SeqCst);
+            }
+            record_progress(config, processed, total_files);
+            result
+        })
+        .collect();
+
+    summarize_file_results(results)
+}
+
 /// Test files with the given command, running in parallel.
 /// Returns a summary with all results.
 pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig) -> TestSummary {
@@ -780,88 +866,38 @@ fn test_files_parallel_in_pool(
         );
     }
 
-    let go_oracles = go_oracle_outputs(command, &normal_files)
-        .unwrap_or_else(|e| panic!("failed to collect Go oracle output: {e}"));
-    let go_must_error_references = if command == "ast" {
-        go_oracle_outputs(command, &must_error_files)
-            .unwrap_or_else(|e| panic!("failed to collect Go must-error output: {e}"))
-    } else {
-        BTreeMap::new()
-    };
+    let mut summary = TestSummary::new();
+    let go_bin = go_oracle_bin();
 
-    // Test normal files in parallel
-    let normal_results: Vec<FileTestResult> = normal_files
-        .par_iter()
-        .map(|file| {
-            if config.fail_fast && abort.load(Ordering::SeqCst) {
-                return skipped_file_result(file);
-            }
-            let result = test_single_file(command, file, go_oracles.get(file.as_path()));
-            if config.fail_fast && !result.passed && !result.skipped {
-                abort.store(true, Ordering::SeqCst);
-            }
-            if config.verbose {
-                let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                if count.is_multiple_of(100) {
-                    eprintln!("  Progress: {}/{}", count, total_files);
-                }
-            }
-            result
+    // Keep oracle AST output bounded; storing the full repository corpus can
+    // exhaust hosted CI memory before any gors-side progress is reported.
+    let normal_summaries: Vec<TestSummary> = normal_files
+        .par_chunks(FILE_TEST_BATCH_SIZE)
+        .map(|chunk| {
+            test_normal_file_batch(
+                go_bin,
+                command,
+                chunk,
+                config,
+                &processed,
+                &abort,
+                total_files,
+            )
         })
         .collect();
-
-    // Test must-error files in parallel (only for parser)
-    let must_error_results: Vec<FileTestResult> = if command == "ast" {
-        must_error_files
-            .par_iter()
-            .map(|file| {
-                if config.fail_fast && abort.load(Ordering::SeqCst) {
-                    return skipped_file_result(file);
-                }
-                let result =
-                    test_must_error_file(file, go_must_error_references.get(file.as_path()));
-                if config.fail_fast && !result.passed && !result.skipped {
-                    abort.store(true, Ordering::SeqCst);
-                }
-                if config.verbose {
-                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if count.is_multiple_of(100) {
-                        eprintln!("  Progress: {}/{}", count, total_files);
-                    }
-                }
-                result
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // Build summary
-    let mut summary = TestSummary::new();
-
-    for result in normal_results {
-        summary.total_go_time += result.go_duration;
-        summary.total_gors_time += result.gors_duration;
-        if result.skipped {
-            summary.skipped += 1;
-        } else if result.passed {
-            summary.passed += 1;
-        } else {
-            summary.failed += 1;
-            summary.failures.push(result);
-        }
+    for batch_summary in normal_summaries {
+        summary.merge(batch_summary);
     }
 
-    for result in must_error_results {
-        summary.total_go_time += result.go_duration;
-        summary.total_gors_time += result.gors_duration;
-        if result.skipped {
-            summary.skipped += 1;
-        } else if result.passed {
-            summary.passed += 1;
-        } else {
-            summary.failed += 1;
-            summary.failures.push(result);
+    if command == "ast" {
+        let must_error_summaries: Vec<TestSummary> = must_error_files
+            .par_chunks(FILE_TEST_BATCH_SIZE)
+            .map(|chunk| {
+                test_must_error_file_batch(go_bin, chunk, config, &processed, &abort, total_files)
+            })
+            .collect();
+        for batch_summary in must_error_summaries {
+            summary.merge(batch_summary);
         }
     }
 

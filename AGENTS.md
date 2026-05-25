@@ -200,6 +200,9 @@ side should use library APIs in-process rather than spawning the `gors` CLI. CLI
 argument and output-file writer contracts belong in `gors-cli` unit tests.
 Compiler/printer/generator coverage belongs in module-local unit tests under
 `gors/src/` unless it must execute generated Rust or compare against Go.
+Lexer/parser corpus tests must compare files in bounded batches and discard Go
+oracle output batch-by-batch; precollecting oracle output for every repository
+file can exhaust hosted CI memory before progress is reported.
 
 ### Adding a test program
 
