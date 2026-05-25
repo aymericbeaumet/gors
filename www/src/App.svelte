@@ -18,10 +18,17 @@ import { parseRustcErrors } from "./rustc-errors";
 import type { SourceMapIndex } from "./source-map-index";
 import MonacoEditor from "./MonacoEditor.svelte";
 import CopyButton from "./CopyButton.svelte";
+import {
+	gostdlibCoverage,
+	gostdlibCoverageSummary,
+	type GostdlibCoveragePackage,
+	type GostdlibCoverageSymbol,
+} from "./gostdlib-coverage";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 type RunMode = "autorun" | "autocompile" | "autotranspile" | "manual";
+type AppView = "playground" | "stdlib-report";
 
 interface ModeOption {
 	value: RunMode;
@@ -52,6 +59,51 @@ const MODES: ModeOption[] = [
 	{ value: "manual", label: "Noop" },
 ];
 const PIPELINE_DEBOUNCE_MS = 350;
+
+let activeView: AppView = "playground";
+let stdlibFilter = "";
+
+function coverageMatchesFilter(
+	item: GostdlibCoveragePackage,
+	query: string,
+): boolean {
+	if (!query) return true;
+	const packageStatus = item.tested ? "tested" : "not tested untested";
+	return (
+		item.packagePath.toLowerCase().includes(query) ||
+		packageStatus.includes(query) ||
+		item.fixtures.some((fixture) => fixture.toLowerCase().includes(query)) ||
+		item.symbols.some(
+			(symbol) =>
+				symbol.name.toLowerCase().includes(query) ||
+				symbol.kind.includes(query) ||
+				(symbol.tested ? "tested" : "not tested untested").includes(query) ||
+				symbol.fixtures.some((fixture) =>
+					fixture.toLowerCase().includes(query),
+				),
+		)
+	);
+}
+
+function symbolCoverageTitle(symbol: GostdlibCoverageSymbol): string {
+	if (!symbol.tested) return `${symbol.kind}; not tested`;
+	return `${symbol.kind}; tested by ${symbol.fixtures.join(", ")}`;
+}
+
+$: stdlibQuery = stdlibFilter.trim().toLowerCase();
+$: filteredGostdlibCoverage = gostdlibCoverage.filter((item) =>
+	coverageMatchesFilter(item, stdlibQuery),
+);
+$: visibleStdlibSymbolCount = filteredGostdlibCoverage.reduce(
+	(total, item) => total + item.symbols.length,
+	0,
+);
+$: visibleStdlibTestedSymbolCount = filteredGostdlibCoverage.reduce(
+	(total, item) => total + item.testedSymbolCount,
+	0,
+);
+$: visibleStdlibUntestedSymbolCount =
+	visibleStdlibSymbolCount - visibleStdlibTestedSymbolCount;
 
 function storedRunMode(): RunMode {
 	const value = localStorage.getItem("gors:runMode");
@@ -113,6 +165,16 @@ $: if (runMode !== prevRunMode) {
 	if (initialized) {
 		pipelineGeneration++;
 		schedulePipeline(0);
+	}
+}
+let prevActiveView: AppView = activeView;
+$: if (activeView !== prevActiveView) {
+	prevActiveView = activeView;
+	if (activeView === "playground") {
+		tick().then(() => {
+			goEditor?.layout();
+			rustEditor?.layout();
+		});
 	}
 }
 $: pipelineBusy = activePipelines > 0;
@@ -642,6 +704,10 @@ onDestroy(() => {
   <header>
     <h1><a href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener">gors</a></h1>
     <p class="subtitle">Go toolchain written in Rust (parser, compiler, sandbox)</p>
+    <nav class="view-switch" aria-label="App view">
+      <button type="button" class:active={activeView === "playground"} aria-pressed={activeView === "playground"} on:click={() => activeView = "playground"}>Playground</button>
+      <button type="button" class:active={activeView === "stdlib-report"} aria-pressed={activeView === "stdlib-report"} on:click={() => activeView = "stdlib-report"}>Stdlib report</button>
+    </nav>
     <div class="spacer"></div>
     <div class="mode-group">
       <span class="mode-label">Mode:</span>
@@ -665,7 +731,7 @@ onDestroy(() => {
     </div>
   </header>
 
-  <div class="content">
+  <div class="content" class:hidden={activeView !== "playground"} aria-hidden={activeView !== "playground"}>
     <div class="editors" bind:this={editorsEl} style="flex: {editorsFlex}">
       <div class="editor-container go">
         <div class="editor-header">
@@ -737,6 +803,64 @@ onDestroy(() => {
       <pre class="console-content">{#each consoleLines as line}<span class={line.type}>{@html formatConsoleLine(line)}</span>{'\n'}{/each}</pre>
     </div>
   </div>
+
+  <section class="content stdlib-report-view" class:hidden={activeView !== "stdlib-report"} aria-hidden={activeView !== "stdlib-report"}>
+    <div class="report-summary">
+      <div class="report-metric">
+        <strong>{gostdlibCoverageSummary.fixtureCount}</strong>
+        <span>fixtures</span>
+      </div>
+      <div class="report-metric">
+        <strong>{gostdlibCoverageSummary.testedPackageCount}/{gostdlibCoverageSummary.packageCount}</strong>
+        <span>packages tested</span>
+      </div>
+      <div class="report-metric">
+        <strong>{gostdlibCoverageSummary.testedSymbolCount}/{gostdlibCoverageSummary.symbolCount}</strong>
+        <span>symbols tested</span>
+      </div>
+      <div class="report-metric">
+        <strong>{visibleStdlibUntestedSymbolCount}</strong>
+        <span>visible untested</span>
+      </div>
+      <label class="report-filter">
+        <span>Filter</span>
+        <input bind:value={stdlibFilter} type="search" placeholder="package, function, fixture, tested" autocomplete="off" />
+      </label>
+    </div>
+
+    <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
+      <div class="report-list-head" role="row">
+        <span role="columnheader">Package</span>
+        <span role="columnheader">Functions / symbols</span>
+        <span role="columnheader">Fixtures</span>
+      </div>
+      <div class="report-list-body">
+        {#each filteredGostdlibCoverage as item}
+          <div class="coverage-row" role="row">
+            <div class="package-cell" role="cell">
+              <code>{item.packagePath}</code>
+              <span class:tested={item.tested} class:untested={!item.tested}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
+            </div>
+            <div class="symbol-cell" role="cell">
+              {#each item.symbols as symbol}
+                <span class="symbol-token" class:tested={symbol.tested} class:untested={!symbol.tested} title={symbolCoverageTitle(symbol)}>
+                  <span>{symbol.name}</span>
+                  <small>{symbol.kind}</small>
+                </span>
+              {/each}
+            </div>
+            <div class="fixture-cell" role="cell">
+              {#each item.fixtures as fixture}
+                <code>{fixture}</code>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <div class="report-empty">No matching coverage</div>
+        {/each}
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -795,6 +919,22 @@ onDestroy(() => {
   header h1 a:hover { color: #58a6ff; }
   .subtitle { margin: 0; font-size: 13px; color: #8b949e; }
   .spacer { flex: 1; }
+
+  .view-switch {
+    display: flex; align-items: center; gap: 2px;
+    padding: 2px; border: 1px solid #30363d; border-radius: 6px;
+    background: #0d1117;
+  }
+  .view-switch button {
+    min-width: 96px; height: 26px; padding: 0 10px;
+    border: 0; border-radius: 4px; background: transparent;
+    color: #8b949e; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  .view-switch button:hover { color: #c9d1d9; background: #21262d; }
+  .view-switch button.active { color: #0d1117; background: #58a6ff; }
+
+  .hidden { display: none !important; }
 
   .run-mode-select {
     padding: 4px 8px; background: transparent;
@@ -923,6 +1063,188 @@ onDestroy(() => {
   .console-content :global(a) { color: #58a6ff; text-decoration: none; }
   .console-content :global(a:hover) { text-decoration: underline; }
 
+  .stdlib-report-view {
+    gap: 14px;
+  }
+
+  .report-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 170px)) minmax(260px, 1fr);
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .report-metric,
+  .report-filter {
+    min-height: 58px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    background: #161b22;
+  }
+
+  .report-metric {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px 12px;
+  }
+
+  .report-metric strong {
+    font-size: 22px;
+    line-height: 1;
+    color: #c9d1d9;
+    font-weight: 650;
+  }
+
+  .report-metric span,
+  .report-filter span {
+    margin-top: 4px;
+    color: #8b949e;
+    font-size: 12px;
+  }
+
+  .report-filter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .report-filter span {
+    margin: 0;
+    flex-shrink: 0;
+  }
+
+  .report-filter input {
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    background: #0d1117;
+    color: #c9d1d9;
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .report-filter input:focus {
+    outline: none;
+    border-color: #58a6ff;
+  }
+
+  .report-list {
+    flex: 1;
+    min-height: 0;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #0d1117;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .report-list-head,
+  .coverage-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 0.8fr) minmax(320px, 2fr) minmax(200px, 1fr);
+    column-gap: 16px;
+    align-items: start;
+  }
+
+  .report-list-head {
+    padding: 10px 14px;
+    background: #161b22;
+    color: #8b949e;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 1px solid #30363d;
+  }
+
+  .report-list-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .coverage-row {
+    padding: 12px 14px;
+    border-bottom: 1px solid #21262d;
+  }
+
+  .coverage-row:last-child { border-bottom: 0; }
+
+  .package-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .package-cell code {
+    color: #7ee787;
+    font-family: 'Fira Code Variable', 'Fira Code', monospace;
+    font-size: 13px;
+    word-break: break-word;
+  }
+
+  .package-cell span {
+    color: #8b949e;
+    font-size: 12px;
+  }
+
+  .package-cell span.tested { color: #3fb950; }
+  .package-cell span.untested { color: #f85149; }
+
+  .symbol-cell,
+  .fixture-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .symbol-token,
+  .fixture-cell code {
+    max-width: 100%;
+    padding: 3px 7px;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    background: #161b22;
+    color: #c9d1d9;
+    font-family: 'Fira Code Variable', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .symbol-token {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .symbol-token.tested {
+    border-color: #2ea043;
+    background: rgba(46, 160, 67, 0.12);
+  }
+  .symbol-token.untested {
+    border-color: #3d444d;
+    color: #8b949e;
+  }
+  .symbol-token small {
+    color: inherit;
+    opacity: 0.7;
+    font-size: 10px;
+    line-height: 1;
+  }
+  .fixture-cell code { color: #d2a8ff; }
+
+  .report-empty {
+    padding: 28px 14px;
+    color: #8b949e;
+    font-size: 13px;
+  }
+
   .vm-terminal-overlay {
     display: none;
     position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
@@ -960,4 +1282,20 @@ onDestroy(() => {
   }
   .vm-spinner-label { font-size: 13px; color: #8b949e; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 900px) {
+    :global(html), :global(body), :global(#app) { overflow: auto; }
+    header { flex-wrap: wrap; }
+    .subtitle { display: none; }
+    .spacer { display: none; }
+    .content { min-height: calc(100vh - 88px); }
+    .editors { flex-direction: column; }
+    .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .report-filter { grid-column: 1 / -1; }
+    .report-list-head { display: none; }
+    .coverage-row {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+  }
 </style>

@@ -220,6 +220,11 @@ For broad stdlib API coverage, prefer grouping related checks into one package
 fixture such as `tests/fixtures/go_programs/stdlib/strings/main.go` rather than
 creating one runnable fixture per function; `rust-test-integration-run` pays a
 full transpile plus `rustc` execution cost per discovered program directory.
+After adding or changing `gostdlib_` fixtures, run
+`npm --prefix www run generate:gostdlib-report` from the repository root to
+refresh the Svelte app's stdlib coverage report. The generator marks fixture-used
+selectors as tested and derives untested package/symbol rows from the embedded
+Go stdlib source copied to `go_stdlib_src` by the `gors` build.
 The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
