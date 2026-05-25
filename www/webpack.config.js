@@ -66,9 +66,7 @@ class AssetManifestPlugin {
 	}
 }
 
-module.exports = (_, argv) => {
-	const isDev = argv.mode === "development";
-
+module.exports = () => {
 	return {
 		entry: "./src/main.ts",
 		output: {
@@ -103,7 +101,7 @@ module.exports = (_, argv) => {
 						loader: "svelte-loader",
 						options: {
 							emitCss: false,
-							hotReload: isDev,
+							hotReload: false,
 							preprocess: sveltePreprocess(),
 						},
 					},
@@ -137,6 +135,7 @@ module.exports = (_, argv) => {
 		devServer: {
 			static: {
 				directory: path.resolve(__dirname, "dist"),
+				watch: true,
 			},
 			compress: true,
 			port: 8080,
@@ -145,7 +144,9 @@ module.exports = (_, argv) => {
 				"Cross-Origin-Embedder-Policy": "require-corp",
 			},
 			historyApiFallback: true,
-			hot: true,
+			hot: false,
+			liveReload: true,
+			watchFiles: ["src/**/*", "index.html"],
 		},
 		experiments: {
 			asyncWebAssembly: true,

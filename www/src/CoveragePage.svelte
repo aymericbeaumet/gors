@@ -6,6 +6,9 @@ import {
 	type GostdlibCoverageSymbol,
 } from "./gostdlib-coverage";
 
+const FIXTURE_GITHUB_BASE =
+	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs";
+
 let stdlibFilter = "";
 
 function coverageMatchesFilter(
@@ -35,6 +38,16 @@ function symbolCoverageTitle(symbol: GostdlibCoverageSymbol): string {
 	return `${symbol.kind}; tested by ${symbol.fixtures.join(", ")}`;
 }
 
+function packageCoverageClass(item: GostdlibCoveragePackage): string {
+	if (item.testedSymbolCount === 0) return "none";
+	if (item.testedSymbolCount === item.symbolCount) return "tested";
+	return "partial";
+}
+
+function fixtureGithubUrl(fixture: string): string {
+	return `${FIXTURE_GITHUB_BASE}/${fixture}`;
+}
+
 $: stdlibQuery = stdlibFilter.trim().toLowerCase();
 $: filteredGostdlibCoverage = gostdlibCoverage.filter((item) =>
 	coverageMatchesFilter(item, stdlibQuery),
@@ -61,7 +74,6 @@ $: visibleStdlibUntestedSymbolCount =
         the embedded stdlib symbol list used by the compiler.
       </p>
     </div>
-    <a href="/" class="secondary-link">Back to playground</a>
   </div>
 
   <div class="report-summary">
@@ -97,8 +109,8 @@ $: visibleStdlibUntestedSymbolCount =
       {#each filteredGostdlibCoverage as item}
         <div class="coverage-row" role="row">
           <div class="package-cell" role="cell">
-            <code>{item.packagePath}</code>
-            <span class:tested={item.tested} class:untested={!item.tested}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
+            <code class={packageCoverageClass(item)}>{item.packagePath}</code>
+            <span class={packageCoverageClass(item)}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
           </div>
           <div class="symbol-cell" role="cell">
             {#each item.symbols as symbol}
@@ -110,7 +122,9 @@ $: visibleStdlibUntestedSymbolCount =
           </div>
           <div class="fixture-cell" role="cell">
             {#each item.fixtures as fixture}
-              <code>{fixture}</code>
+              <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
+                <code>{fixture}</code>
+              </a>
             {/each}
           </div>
         </div>
@@ -125,9 +139,11 @@ $: visibleStdlibUntestedSymbolCount =
   .coverage-page {
     display: flex;
     flex: 1;
+    max-width: 100%;
     min-height: 0;
     flex-direction: column;
     gap: 16px;
+    overflow-x: clip;
     padding: 24px;
     background: #f5f7fb;
     color: #1f2328;
@@ -165,28 +181,12 @@ $: visibleStdlibUntestedSymbolCount =
     line-height: 1.45;
   }
 
-  .secondary-link {
-    min-height: 34px;
-    padding: 8px 12px;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
-    color: #0969da;
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 650;
-    white-space: nowrap;
-  }
-
-  .secondary-link:hover {
-    background: #ffffff;
-    border-color: #0969da;
-  }
-
   .report-summary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(120px, 170px)) minmax(260px, 1fr);
+    grid-template-columns: repeat(4, minmax(110px, 170px)) minmax(220px, 1fr);
     gap: 12px;
     flex-shrink: 0;
+    min-width: 0;
   }
 
   .report-metric,
@@ -251,7 +251,9 @@ $: visibleStdlibUntestedSymbolCount =
   .report-list {
     display: flex;
     flex: 1;
+    max-width: 100%;
     min-height: 0;
+    min-width: 0;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid #d0d7de;
@@ -262,9 +264,10 @@ $: visibleStdlibUntestedSymbolCount =
   .report-list-head,
   .coverage-row {
     display: grid;
-    grid-template-columns: minmax(180px, 0.8fr) minmax(320px, 2fr) minmax(200px, 1fr);
+    grid-template-columns: minmax(150px, 0.72fr) minmax(0, 2.1fr) minmax(150px, 0.9fr);
     align-items: start;
     column-gap: 16px;
+    min-width: 0;
   }
 
   .report-list-head {
@@ -279,7 +282,9 @@ $: visibleStdlibUntestedSymbolCount =
   .report-list-body {
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .coverage-row {
@@ -299,10 +304,25 @@ $: visibleStdlibUntestedSymbolCount =
   }
 
   .package-cell code {
-    color: #116329;
     font-family: "Fira Code Variable", "Fira Code", monospace;
     font-size: 13px;
+    font-weight: 700;
     word-break: break-word;
+  }
+
+  .package-cell code.none,
+  .package-cell span.none {
+    color: #cf222e;
+  }
+
+  .package-cell code.tested,
+  .package-cell span.tested {
+    color: #1a7f37;
+  }
+
+  .package-cell code.partial,
+  .package-cell span.partial {
+    color: #9a6700;
   }
 
   .package-cell span {
@@ -310,20 +330,23 @@ $: visibleStdlibUntestedSymbolCount =
     font-size: 12px;
   }
 
-  .package-cell span.tested {
-    color: #1a7f37;
-  }
-
-  .package-cell span.untested {
-    color: #cf222e;
-  }
-
   .symbol-cell,
   .fixture-cell {
     display: flex;
+    max-width: 100%;
     min-width: 0;
     flex-wrap: wrap;
     gap: 6px;
+  }
+
+  .fixture-cell a {
+    max-width: 100%;
+    text-decoration: none;
+  }
+
+  .fixture-cell a:hover code {
+    border-color: #8250df;
+    background: #f0e7ff;
   }
 
   .symbol-token,
@@ -344,6 +367,12 @@ $: visibleStdlibUntestedSymbolCount =
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+  }
+
+  .symbol-token span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .symbol-token.tested {
@@ -385,6 +414,11 @@ $: visibleStdlibUntestedSymbolCount =
 
     .report-summary {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .report-summary,
+    .coverage-intro {
+      min-width: 0;
     }
 
     .report-filter {

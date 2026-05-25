@@ -22,7 +22,7 @@ import CoveragePage from "./CoveragePage.svelte";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
-type AppRoute = "home" | "coverage";
+type AppRoute = "home" | "playground" | "coverage";
 
 interface PipelineCache {
 	goSource: string | null;
@@ -42,19 +42,40 @@ const STATE_TITLES = {
 };
 
 const PIPELINE_DEBOUNCE_MS = 350;
+const HERO_GO_SAMPLE = `package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello, World!")
+}`;
+const HERO_RUST_SAMPLE = `fn main() {
+    println!("{}", "Hello, World!".to_string());
+}`;
 
 function routeFromPath(pathname: string): AppRoute {
-	return pathname.replace(/\/+$/, "") === "/coverage" ? "coverage" : "home";
+	const normalized = pathname.replace(/\/+$/, "");
+	if (normalized === "/coverage") return "coverage";
+	if (normalized === "/playground") return "playground";
+	return "home";
 }
 
 function pathForRoute(nextRoute: AppRoute): string {
-	return nextRoute === "coverage" ? "/coverage" : "/";
+	if (nextRoute === "coverage") return "/coverage";
+	if (nextRoute === "playground") return "/playground";
+	return "/";
 }
 
-function layoutPlayground() {
+function layoutEditors() {
 	tick().then(() => {
 		goEditor?.layout();
 		rustEditor?.layout();
+	});
+}
+
+function scrollPageToTop() {
+	tick().then(() => {
+		window.scrollTo({ top: 0, left: 0 });
 	});
 }
 
@@ -67,22 +88,20 @@ function navigateTo(nextRoute: AppRoute, event?: MouseEvent) {
 		window.history.pushState({}, "", nextPath);
 	}
 	route = nextRoute;
-	if (route === "home") layoutPlayground();
-}
-
-function scrollToPlayground(event: MouseEvent) {
-	event.preventDefault();
-	navigateTo("home");
-	tick().then(() => {
-		document
-			.getElementById("playground")
-			?.scrollIntoView({ behavior: "smooth", block: "start" });
-	});
+	if (route === "playground") layoutEditors();
+	if (route === "coverage") scrollPageToTop();
+	if (
+		route === "playground" &&
+		initialized &&
+		(!cache.rustCode || !cache.compiled)
+	)
+		schedulePipeline(0);
 }
 
 let vmState: VmState = State.INITIALIZING;
 let vmOverlayVisible = false;
 let consoleLines: ConsoleLine[] = [];
+let vmStartRequested = false;
 
 let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio") ?? "");
 let editorsFlex = isNaN(storedRatio) || storedRatio <= 0 ? 1.618 : storedRatio;
@@ -128,18 +147,22 @@ $: if (vmOverlayVisible && vmStarted) {
 let prevRoute: AppRoute = route;
 $: if (route !== prevRoute) {
 	prevRoute = route;
-	if (route === "home") layoutPlayground();
+	if (route === "playground") layoutEditors();
 }
 $: pipelineBusy = activePipelines > 0;
 $: runDisabled = pipelineBusy || !cache.compiled || !cache.jobId;
 $: compileStatus =
 	vmState === State.RUNNING
 		? "Running"
-		: pipelineBusy
-			? "Auto compiling"
-			: cache.compiled
-				? "Ready to run"
-				: "Waiting for changes";
+		: cache.compiled
+			? "Compiled"
+			: cache.rustCode
+				? route === "playground"
+					? "Rust output ready"
+					: "Rust ready"
+				: pipelineBusy
+					? "Transpiling"
+					: "Waiting for changes";
 
 // Console helpers
 function conClear() {
@@ -243,7 +266,16 @@ function setRustValue(value: string) {
 	rustEditor?.getModel()?.setValue(value);
 }
 
+function resetRustOutput() {
+	setRustValue("");
+	sourceMap = null;
+	clearRustHighlight();
+	const rustModel = rustEditor?.getModel();
+	if (rustModel) monaco.editor.setModelMarkers(rustModel, "rustc", []);
+}
+
 async function waitForVM() {
+	startVM();
 	if (
 		runner.state !== State.READY &&
 		runner.state !== State.COMPILING &&
@@ -403,7 +435,8 @@ async function runPipeline() {
 		conClear();
 		const rustCode = await doTranspile();
 		if (!rustCode) return;
-		await doCompile(rustCode);
+		await tick();
+		if (route === "playground") await doCompile(rustCode);
 	} finally {
 		activePipelines--;
 		if (queuedPipeline) {
@@ -416,6 +449,7 @@ async function runPipeline() {
 function onGoChanged() {
 	pipelineGeneration++;
 	cache = { ...cache, jobId: null, compiled: false };
+	resetRustOutput();
 	if (activePipelines > 0) {
 		go2rust.cancelActive("compiler input changed");
 	}
@@ -475,6 +509,7 @@ function onResizeMousedown(e: MouseEvent) {
 
 // VM terminal overlay
 function openVmOverlay() {
+	startVM();
 	vmOverlayVisible = true;
 }
 
@@ -490,12 +525,27 @@ function onKeydown(e: KeyboardEvent) {
 	if (e.key === "Escape" && vmOverlayVisible) closeVmOverlay();
 }
 
+function startVM() {
+	if (vmStartRequested) return;
+	vmStartRequested = true;
+	runner.start().catch(() => {
+		vmState = State.ERROR;
+	});
+}
+
 let resizeObserver: ResizeObserver | null = null;
 let removePopStateListener: (() => void) | null = null;
 
 onMount(() => {
 	const onPopState = () => {
 		route = routeFromPath(window.location.pathname);
+		if (route === "coverage") scrollPageToTop();
+		if (
+			route === "playground" &&
+			initialized &&
+			(!cache.rustCode || !cache.compiled)
+		)
+			schedulePipeline(0);
 	};
 	window.addEventListener("popstate", onPopState);
 	removePopStateListener = () =>
@@ -533,9 +583,6 @@ onMount(() => {
 	// VM state
 	runner.onStateChange((state) => {
 		vmState = state;
-	});
-	runner.start().catch(() => {
-		vmState = State.ERROR;
 	});
 
 	// Resize observer for terminal
@@ -575,6 +622,10 @@ onMount(() => {
 let goEditorReady = false;
 let rustEditorReady = false;
 
+$: if (!goEditor) goEditorReady = false;
+$: if (!rustEditor) rustEditorReady = false;
+$: if (!goEditor || !rustEditor) initialized = false;
+
 $: if (goEditor && !goEditorReady) {
 	goEditorReady = true;
 	goEditor.onMouseMove((e: monaco.editor.IEditorMouseEvent) => {
@@ -609,7 +660,7 @@ $: if (rustEditor && !rustEditorReady) {
 
 $: if (goEditor && rustEditor && !initialized) {
 	initialized = true;
-	if (route === "home") goEditor.focus();
+	if (route === "playground") goEditor.focus();
 	goEditor
 		.getModel()
 		?.setValue(
@@ -624,7 +675,7 @@ $: if (goEditor && rustEditor && !initialized) {
 			].join("\n"),
 		);
 	goEditor.setPosition({ lineNumber: 6, column: 2 });
-	schedulePipeline(0);
+	if (route === "playground") schedulePipeline(0);
 }
 
 let initialized = false;
@@ -643,78 +694,117 @@ onDestroy(() => {
 <main class="site-shell">
   <header class="site-header">
     <a class="brand" href="/" on:click={(event) => navigateTo("home", event)}>gors</a>
-    <p class="subtitle">Go to Rust transpilation, in your browser</p>
     <nav class="site-nav" aria-label="Primary navigation">
-      <a href="/" class:active={route === "home"} on:click={(event) => navigateTo("home", event)}>Playground</a>
+      <a href="/" class:active={route === "home"} on:click={(event) => navigateTo("home", event)}>Home</a>
+      <a href="/playground" class:active={route === "playground"} on:click={(event) => navigateTo("playground", event)}>Playground</a>
       <a href="/coverage" class:active={route === "coverage"} on:click={(event) => navigateTo("coverage", event)}>Coverage</a>
-      <a href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener">GitHub</a>
     </nav>
     <div class="spacer"></div>
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <div
-      class="vm-status"
-      data-state={vmState}
-      title={vmTitle}
-      on:click={openVmOverlay}
-      role="button"
-      tabindex="0"
-    >
-      <span class="vm-dot"></span>
-      <span class="vm-label">Linux VM</span>
-    </div>
+    <a class="github-link" href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener" aria-label="GitHub repository">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.53.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58A12 12 0 0 0 12 .5Z"/>
+      </svg>
+      <span>GitHub</span>
+    </a>
   </header>
 
-  <div class="home-route" class:hidden={route !== "home"} aria-hidden={route !== "home"}>
+  {#if route === "home"}
+  <div class="home-route">
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow">Go compiler frontend, Rust backend</p>
         <h1>gors</h1>
         <p class="hero-subtitle">
-          gors parses Go source, resolves real Go packages, lowers the program into Rust syntax, and runs the generated binary in a browser-hosted Linux VM.
+          gors is a Go-to-Rust compiler pipeline: it parses real Go source, resolves packages from a pinned Go SDK, lowers the AST into Rust, and prints normal Rust code.
         </p>
+        <dl class="hero-metrics" aria-label="Project coverage snapshot">
+          <div>
+            <dt>353</dt>
+            <dd>stdlib packages tracked</dd>
+          </div>
+          <div>
+            <dt>12,599</dt>
+            <dd>symbols reported</dd>
+          </div>
+          <div>
+            <dt>50</dt>
+            <dd>runnable fixtures</dd>
+          </div>
+        </dl>
         <div class="hero-actions">
-          <a href="#playground" class="primary-link" on:click={scrollToPlayground}>Try the playground</a>
-          <a href="/coverage" class="secondary-link" on:click={(event) => navigateTo("coverage", event)}>View stdlib coverage</a>
+          <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
         </div>
       </div>
-      <div class="hero-visual" aria-label="gors compiler pipeline">
-        <div class="pipeline-stage">
-          <span>Go source</span>
-          <code>fmt.Println("Hello")</code>
+
+      <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
+        <div class="compiler-card-header">
+          <span>main.go</span>
+          <span>scanner -> parser -> AST -> Rust</span>
+          <span>main.rs</span>
         </div>
-        <div class="pipeline-stage">
-          <span>Rust output</span>
-          <code>println!("Hello");</code>
+        <div class="compiler-card-body">
+          <pre><code>{HERO_GO_SAMPLE}</code></pre>
+          <div class="pipeline-rail" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <pre><code>{HERO_RUST_SAMPLE}</code></pre>
         </div>
-        <div class="pipeline-stage">
-          <span>Browser VM</span>
-          <code>rustc -o main main.rs</code>
-        </div>
+      </div>
+    </section>
+
+    <section class="home-details" aria-label="Project details">
+      <div>
+        <p class="eyebrow">Current focus</p>
+        <h2>Compiler correctness over shortcuts</h2>
+        <p>gors treats broad stdlib support as compiler coverage. When a package fails, the fix belongs in parsing, type inference, code generation, reachability, or runtime primitives rather than a package-specific replacement.</p>
+      </div>
+      <div>
+        <p class="eyebrow">Try it</p>
+        <h2>Fast browser feedback</h2>
+        <p>The browser playground is a convenient demo surface for small examples: edit Go, inspect generated Rust, then run the compiled result from the dedicated playground route.</p>
       </div>
     </section>
 
     <section class="info-grid" aria-label="About gors">
       <article>
         <h2>Real compiler path</h2>
-        <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup all run through the same pipeline used by the CLI.</p>
+        <p>Scanner, parser, AST lowering, Rust AST passes, pretty printing, and source-map lookup are shared with the CLI path.</p>
       </article>
       <article>
-        <h2>Hermetic Go stdlib</h2>
-        <p>The embedded Go SDK is pinned from the repository version file, and stdlib packages are resolved as Go source rather than handwritten browser shims.</p>
+        <h2>Go stdlib as source</h2>
+        <p>The embedded SDK is pinned from the repository version file, and stdlib packages are resolved as Go files instead of handwritten Rust shims.</p>
       </article>
       <article>
-        <h2>Executable feedback</h2>
-        <p>The playground auto-transpiles and auto-compiles after edits. Running is explicit, so output reflects the compiled program you choose to execute.</p>
+        <h2>Runnable checks</h2>
+        <p>Integration fixtures compare generated Rust programs against the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
       </article>
     </section>
 
+    <footer class="site-footer">
+      <div>
+        <p class="eyebrow">Try gors</p>
+        <strong>Inspect the generated Rust path</strong>
+        <span>Use the browser playground for small programs, or review coverage to see which stdlib symbols are exercised by runnable fixtures.</span>
+      </div>
+      <div class="footer-actions">
+        <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
+        <a href="/coverage" class="secondary-link" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>
+      </div>
+    </footer>
+  </div>
+  {/if}
+
+  {#if route === "playground"}
+  <div class="editor-route">
     <section id="playground" class="playground-section">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Live playground</p>
-          <h2>Go in, Rust out</h2>
+          <h2>Go in, Rust out, run it</h2>
         </div>
-        <span class="compile-status" class:ready={cache.compiled} class:busy={pipelineBusy}>{compileStatus}</span>
+        <span class="compile-status" class:ready={cache.compiled || !!cache.rustCode} class:busy={pipelineBusy}>{compileStatus}</span>
       </div>
 
       <div class="content playground-content">
@@ -763,6 +853,18 @@ onDestroy(() => {
               <div class="console-title"><span class="dot"></span><span>Console</span></div>
             </div>
             <div class="console-right">
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <div
+                class="vm-status"
+                data-state={vmState}
+                title={vmTitle}
+                on:click={openVmOverlay}
+                role="button"
+                tabindex="0"
+              >
+                <span class="vm-dot"></span>
+                <span class="vm-label">Linux VM</span>
+              </div>
               <CopyButton getContent={getConsoleText} title="Copy console output" />
             </div>
           </div>
@@ -770,11 +872,15 @@ onDestroy(() => {
         </div>
       </div>
     </section>
-  </div>
 
-  <div class="coverage-route" class:hidden={route !== "coverage"} aria-hidden={route !== "coverage"}>
+  </div>
+  {/if}
+
+  {#if route === "coverage"}
+  <div class="coverage-route">
     <CoveragePage />
   </div>
+  {/if}
 </main>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -806,7 +912,9 @@ onDestroy(() => {
   :global(html),
   :global(body),
   :global(#app) {
+    max-width: 100%;
     min-height: 100%;
+    overflow-x: hidden;
   }
 
   :global(body) {
@@ -832,13 +940,18 @@ onDestroy(() => {
 
   .site-shell {
     display: flex;
+    max-width: 100%;
     min-height: 100vh;
     flex-direction: column;
+    overflow-x: clip;
+    padding-top: 52px;
   }
 
   .site-header {
-    position: sticky;
+    position: fixed;
     top: 0;
+    right: 0;
+    left: 0;
     z-index: 60;
     display: flex;
     align-items: center;
@@ -858,12 +971,6 @@ onDestroy(() => {
 
   .brand:hover {
     color: #0969da;
-  }
-
-  .subtitle {
-    margin: 0;
-    color: #57606a;
-    font-size: 13px;
   }
 
   .site-nav {
@@ -888,6 +995,31 @@ onDestroy(() => {
     color: #0969da;
   }
 
+  .github-link {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    color: #57606a;
+    font-size: 13px;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .github-link svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    fill: currentColor;
+  }
+
+  .github-link:hover {
+    background: #eaeef2;
+    color: #0969da;
+  }
+
   .spacer {
     flex: 1;
   }
@@ -900,28 +1032,39 @@ onDestroy(() => {
     flex: 1;
   }
 
+  .editor-route {
+    display: flex;
+    flex: 1;
+    min-height: calc(100vh - 52px);
+    min-width: 0;
+    flex-direction: column;
+  }
+
   .coverage-route {
     display: flex;
     flex: 1;
-    min-height: calc(100vh - 51px);
+    max-width: 100%;
+    min-height: calc(100vh - 52px);
+    min-width: 0;
     flex-direction: column;
+    overflow-x: clip;
   }
 
   .hero {
     display: grid;
-    min-height: 520px;
-    grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
+    min-height: 590px;
+    grid-template-columns: minmax(0, 0.9fr) minmax(420px, 0.85fr);
     align-items: center;
-    gap: 48px;
-    padding: 56px 48px 40px;
+    gap: 46px;
+    padding: 58px 48px 44px;
     background:
-      linear-gradient(135deg, rgba(45, 164, 78, 0.12), transparent 42%),
-      linear-gradient(45deg, rgba(255, 200, 50, 0.16), transparent 38%),
+      linear-gradient(135deg, rgba(45, 164, 78, 0.12), transparent 45%),
+      linear-gradient(45deg, rgba(255, 200, 50, 0.18), transparent 38%),
       #f5f7fb;
   }
 
   .hero-copy {
-    max-width: 680px;
+    max-width: 760px;
   }
 
   .eyebrow {
@@ -941,11 +1084,42 @@ onDestroy(() => {
   }
 
   .hero-subtitle {
-    max-width: 620px;
+    max-width: 700px;
     margin: 18px 0 0;
     color: #424a53;
-    font-size: 20px;
+    font-size: 21px;
     line-height: 1.45;
+  }
+
+  .hero-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    max-width: 660px;
+    margin: 30px 0 0;
+    overflow: hidden;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    background: #d0d7de;
+  }
+
+  .hero-metrics div {
+    padding: 15px;
+    background: rgba(255, 255, 255, 0.86);
+  }
+
+  .hero-metrics dt {
+    color: #1f2328;
+    font-size: 28px;
+    font-weight: 760;
+    line-height: 1;
+  }
+
+  .hero-metrics dd {
+    margin: 6px 0 0;
+    color: #57606a;
+    font-size: 12px;
+    line-height: 1.35;
   }
 
   .hero-actions {
@@ -988,48 +1162,85 @@ onDestroy(() => {
     border-color: #0969da;
   }
 
-  .hero-visual {
-    display: grid;
-    gap: 12px;
-    padding: 18px;
+  .compiler-card {
+    overflow: hidden;
     border: 1px solid #30363d;
     border-radius: 8px;
     background: #0d1117;
-    box-shadow: 0 18px 48px rgba(31, 35, 40, 0.22);
+    box-shadow: 0 24px 70px rgba(31, 35, 40, 0.24);
   }
 
-  .pipeline-stage {
+  .compiler-card-header {
     display: grid;
-    grid-template-columns: 116px minmax(0, 1fr);
-    align-items: center;
+    grid-template-columns: 1fr auto 1fr;
     gap: 12px;
-    padding: 13px;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #30363d;
     background: #161b22;
-  }
-
-  .pipeline-stage span {
     color: #8b949e;
     font-size: 12px;
     font-weight: 700;
   }
 
-  .pipeline-stage code {
+  .compiler-card-header span:last-child {
+    text-align: right;
+  }
+
+  .compiler-card-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
+    min-height: 300px;
+  }
+
+  .compiler-card pre {
+    margin: 0;
+    padding: 20px;
     overflow: hidden;
     color: #c9d1d9;
     font-family: "Fira Code Variable", "Fira Code", monospace;
     font-size: 13px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+
+  .compiler-card pre:first-child {
+    border-right: 1px solid #30363d;
+  }
+
+  .compiler-card pre:last-child {
+    border-left: 1px solid #30363d;
+  }
+
+  .pipeline-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #11151c;
+  }
+
+  .pipeline-rail span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ffc832;
+  }
+
+  .pipeline-rail span:nth-child(2) {
+    background: #00add8;
+  }
+
+  .pipeline-rail span:nth-child(3) {
+    background: #2da44e;
   }
 
   .info-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
+    overflow: hidden;
     border-top: 1px solid #d0d7de;
-    border-bottom: 1px solid #d0d7de;
     background: #d0d7de;
   }
 
@@ -1052,9 +1263,91 @@ onDestroy(() => {
     line-height: 1.5;
   }
 
+  .info-grid a {
+    color: #0969da;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .info-grid a:hover {
+    text-decoration: underline;
+  }
+
+  .home-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 32px;
+    padding: 40px 48px 48px;
+    border-top: 1px solid #d0d7de;
+    background: #ffffff;
+  }
+
+  .home-details div {
+    max-width: 620px;
+  }
+
+  .home-details h2 {
+    margin: 0;
+    color: #1f2328;
+    font-size: 24px;
+    line-height: 1.15;
+  }
+
+  .home-details p:last-child {
+    margin: 12px 0 0;
+    color: #57606a;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .site-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 24px;
+    padding: 34px 48px;
+    border-top: 1px solid #d0d7de;
+    background: #f6f8fa;
+  }
+
+  .site-footer div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .site-footer strong {
+    color: #1f2328;
+    font-size: 24px;
+    line-height: 1.15;
+  }
+
+  .site-footer span {
+    color: #57606a;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .site-footer p {
+    max-width: 720px;
+    margin: 0;
+    color: #424a53;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .footer-actions {
+    align-items: center;
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+
   .playground-section {
     display: flex;
-    min-height: 820px;
+    flex: 1;
+    min-height: 0;
     flex-direction: column;
     padding: 28px 24px 24px;
     background: #11151c;
@@ -1506,38 +1799,82 @@ onDestroy(() => {
 
   @media (max-width: 980px) {
     .site-header {
-      flex-wrap: wrap;
-    }
-
-    .subtitle {
-      display: none;
+      gap: 8px;
+      padding: 10px 12px;
     }
 
     .spacer {
       display: none;
     }
 
+    .site-nav {
+      flex: 1;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .site-nav a,
+    .github-link {
+      padding: 6px 7px;
+      font-size: 12px;
+    }
+
+    .github-link span {
+      display: none;
+    }
+
     .hero {
-      min-height: auto;
       grid-template-columns: 1fr;
-      gap: 28px;
+      min-height: auto;
       padding: 36px 18px 28px;
     }
 
-    .hero-visual {
-      order: -1;
+    .hero-metrics {
+      grid-template-columns: 1fr;
     }
 
-    .pipeline-stage {
+    .compiler-card-body,
+    .compiler-card-header {
       grid-template-columns: 1fr;
+    }
+
+    .compiler-card-header span,
+    .compiler-card-header span:last-child {
+      text-align: left;
+    }
+
+    .pipeline-rail {
+      min-height: 36px;
+      flex-direction: row;
+      border-top: 1px solid #30363d;
+      border-bottom: 1px solid #30363d;
+    }
+
+    .compiler-card pre:first-child,
+    .compiler-card pre:last-child {
+      border: 0;
     }
 
     .info-grid {
       grid-template-columns: 1fr;
     }
 
+    .home-details {
+      grid-template-columns: 1fr;
+      padding: 28px 18px 32px;
+    }
+
+    .site-footer {
+      grid-template-columns: 1fr;
+      padding: 22px 18px;
+    }
+
+    .footer-actions {
+      flex-direction: row;
+    }
+
     .playground-section {
-      min-height: 980px;
+      min-height: 0;
       padding: 20px 14px;
     }
 
