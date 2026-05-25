@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onDestroy, onMount } from "svelte";
 import {
 	gostdlibCoverage,
 	gostdlibCoverageSummary,
@@ -40,7 +41,15 @@ function readUrlFilters(): {
 
 const initialFilters = readUrlFilters();
 let stdlibFilter = initialFilters.query;
+let appliedStdlibFilter = initialFilters.query;
 let statusFilter: CoverageStatusFilter = initialFilters.status;
+let filteredGostdlibCoverage: readonly GostdlibCoveragePackage[] =
+	gostdlibCoverage;
+let searchWorker: Worker | null = null;
+let nextSearchRequestId = 1;
+let activeSearchRequestId = 0;
+let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+let mounted = false;
 
 function symbolCoverageTitle(symbol: GostdlibCoverageSymbol): string {
 	if (!symbol.tested) return `${symbol.kind}; not tested`;
@@ -66,30 +75,6 @@ function fixtureGithubUrl(fixture: string): string {
 	return `${FIXTURE_GITHUB_BASE}/${fixture}`;
 }
 
-const coverageSearchIndex = gostdlibCoverage.map((item) => {
-	const color = packageCoverageColor(item);
-	const packageStatus =
-		color === "green"
-			? "green tested all tested"
-			: color === "yellow"
-				? "yellow partial partially tested"
-				: "red none not tested untested";
-	const searchText = [
-		item.packagePath,
-		packageStatus,
-		...item.fixtures,
-		...item.symbols.flatMap((symbol) => [
-			symbol.name,
-			symbol.kind,
-			symbol.tested ? "tested" : "not tested untested",
-			...symbol.fixtures,
-		]),
-	]
-		.join(" ")
-		.toLowerCase();
-	return { item, color, searchText };
-});
-
 function syncFiltersToUrl(query: string, status: CoverageStatusFilter): void {
 	const url = new URL(window.location.href);
 	const trimmedQuery = query.trim();
@@ -102,107 +87,185 @@ function syncFiltersToUrl(query: string, status: CoverageStatusFilter): void {
 	if (next !== current) window.history.replaceState({}, "", next);
 }
 
-$: stdlibQuery = stdlibFilter.trim().toLowerCase();
-$: filteredGostdlibCoverage = coverageSearchIndex
-	.filter(
-		(entry) =>
-			(statusFilter === "all" || entry.color === statusFilter) &&
-			(!stdlibQuery || entry.searchText.includes(stdlibQuery)),
-	)
-	.map((entry) => entry.item);
-$: syncFiltersToUrl(stdlibFilter, statusFilter);
-$: visibleStdlibSymbolCount = filteredGostdlibCoverage.reduce(
-	(total, item) => total + item.symbols.length,
-	0,
-);
-$: visibleStdlibTestedSymbolCount = filteredGostdlibCoverage.reduce(
-	(total, item) => total + item.testedSymbolCount,
-	0,
-);
-$: visibleStdlibUntestedSymbolCount =
-	visibleStdlibSymbolCount - visibleStdlibTestedSymbolCount;
+function coveragePercent(tested: number, total: number): string {
+	if (total === 0) return "0%";
+	return `${((tested / total) * 100).toFixed(1)}%`;
+}
+
+function coverageMetric(tested: number, total: number): string {
+	return `${tested}/${total} (${coveragePercent(tested, total)})`;
+}
+
+function applyPackageIndexes(packageIndexes: readonly number[]): void {
+	filteredGostdlibCoverage = packageIndexes.map(
+		(index) => gostdlibCoverage[index],
+	);
+}
+
+function runMainThreadSearch(
+	query: string,
+	status: CoverageStatusFilter,
+): void {
+	const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	filteredGostdlibCoverage = gostdlibCoverage.filter((item) => {
+		if (status !== "all" && packageCoverageColor(item) !== status) return false;
+		if (terms.length === 0) return true;
+		const searchText = [
+			item.packagePath,
+			...item.fixtures,
+			...item.symbols.flatMap((symbol) => [
+				symbol.name,
+				symbol.kind,
+				symbol.tested ? "tested" : "not tested untested",
+				...symbol.fixtures,
+			]),
+		]
+			.join(" ")
+			.toLowerCase();
+		return terms.every((term) => searchText.includes(term));
+	});
+}
+
+function requestCoverageSearch(
+	query: string,
+	status: CoverageStatusFilter,
+): void {
+	syncFiltersToUrl(query, status);
+	const id = nextSearchRequestId++;
+	activeSearchRequestId = id;
+	if (!searchWorker) {
+		runMainThreadSearch(query, status);
+		return;
+	}
+	searchWorker.postMessage({ type: "search", id, query, status });
+}
+
+function debounceCoverageSearch(): void {
+	if (debounceTimer) clearTimeout(debounceTimer);
+	debounceTimer = setTimeout(() => {
+		appliedStdlibFilter = stdlibFilter;
+	}, 120);
+}
+
+$: {
+	if (mounted) {
+		stdlibFilter;
+		debounceCoverageSearch();
+	}
+}
+$: {
+	if (mounted) {
+		statusFilter;
+		requestCoverageSearch(appliedStdlibFilter, statusFilter);
+	}
+}
+
+onMount(() => {
+	searchWorker = new Worker(
+		new URL("./coverage-search-worker.ts", import.meta.url),
+		{
+			type: "module",
+		},
+	);
+	searchWorker.onmessage = ({
+		data,
+	}: MessageEvent<{ id: number; packageIndexes: readonly number[] }>) => {
+		if (data.id !== activeSearchRequestId) return;
+		applyPackageIndexes(data.packageIndexes);
+	};
+	searchWorker.onerror = () => {
+		searchWorker?.terminate();
+		searchWorker = null;
+		runMainThreadSearch(appliedStdlibFilter, statusFilter);
+	};
+	mounted = true;
+	requestCoverageSearch(stdlibFilter, statusFilter);
+});
+
+onDestroy(() => {
+	if (debounceTimer) clearTimeout(debounceTimer);
+	searchWorker?.terminate();
+});
 </script>
 
 <section class="coverage-page">
-  <div class="coverage-intro">
-    <div>
-      <p class="eyebrow">Integration coverage</p>
-      <h1>Go stdlib coverage</h1>
-      <p>
-        Runnable fixtures are compared against the pinned Go SDK, then the tested selectors are matched against
-        the embedded stdlib symbol list used by the compiler.
-      </p>
-    </div>
+  <div class="conformance-section spec-conformance">
+    <h1>Go specification conformance</h1>
+    <p>TODO</p>
   </div>
 
-  <div class="report-summary">
-    <div class="report-metric">
-      <strong>{gostdlibCoverageSummary.fixtureCount}</strong>
-      <span>fixtures</span>
+  <div class="conformance-section">
+    <div class="coverage-intro">
+      <div>
+        <h1>Go standard library conformance</h1>
+        <p>
+          Runnable fixtures are compared against the pinned Go SDK, then the tested selectors are matched against
+          the embedded stdlib symbol list used by the compiler.
+        </p>
+      </div>
     </div>
-    <div class="report-metric">
-      <strong>{gostdlibCoverageSummary.testedPackageCount}/{gostdlibCoverageSummary.packageCount}</strong>
-      <span>packages tested</span>
-    </div>
-    <div class="report-metric">
-      <strong>{gostdlibCoverageSummary.testedSymbolCount}/{gostdlibCoverageSummary.symbolCount}</strong>
-      <span>symbols tested</span>
-    </div>
-    <div class="report-metric">
-      <strong>{visibleStdlibUntestedSymbolCount}</strong>
-      <span>visible untested</span>
-    </div>
-    <label class="report-filter">
-      <span>Filter</span>
-      <input bind:value={stdlibFilter} type="search" placeholder="package, function, fixture, tested" autocomplete="off" />
-    </label>
-    <div class="status-filter" role="group" aria-label="Coverage status filter">
-      {#each STATUS_FILTERS as filter}
-        <button
-          type="button"
-          class={filter.className}
-          class:active={statusFilter === filter.value}
-          on:click={() => (statusFilter = filter.value)}
-          aria-pressed={statusFilter === filter.value}
-        >
-          {filter.label}
-        </button>
-      {/each}
-    </div>
-  </div>
 
-  <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
-    <div class="report-list-head" role="row">
-      <span role="columnheader">Package</span>
-      <span role="columnheader">Functions / symbols</span>
-      <span role="columnheader">Fixtures</span>
+    <div class="report-summary">
+      <div class="report-metric">
+        <strong>{coverageMetric(gostdlibCoverageSummary.testedPackageCount, gostdlibCoverageSummary.packageCount)}</strong>
+        <span>packages tested</span>
+      </div>
+      <div class="report-metric">
+        <strong>{coverageMetric(gostdlibCoverageSummary.testedSymbolCount, gostdlibCoverageSummary.symbolCount)}</strong>
+        <span>symbols tested</span>
+      </div>
+      <label class="report-filter">
+        <span>Filter</span>
+        <input bind:value={stdlibFilter} type="search" placeholder="package, function, fixture, tested" autocomplete="off" />
+      </label>
+      <div class="status-filter" role="group" aria-label="Coverage status filter">
+        {#each STATUS_FILTERS as filter}
+          <button
+            type="button"
+            class={filter.className}
+            class:active={statusFilter === filter.value}
+            on:click={() => (statusFilter = filter.value)}
+            aria-pressed={statusFilter === filter.value}
+          >
+            {filter.label}
+          </button>
+        {/each}
+      </div>
     </div>
-    <div class="report-list-body">
-      {#each filteredGostdlibCoverage as item}
-        <div class="coverage-row" role="row">
-          <div class="package-cell" role="cell">
-            <code class={packageCoverageClass(item)}>{item.packagePath}</code>
-            <span class={packageCoverageClass(item)}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
+
+    <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
+      <div class="report-list-head" role="row">
+        <span role="columnheader">Package</span>
+        <span role="columnheader">Functions / symbols</span>
+        <span role="columnheader">Fixtures</span>
+      </div>
+      <div class="report-list-body">
+        {#each filteredGostdlibCoverage as item}
+          <div class="coverage-row" role="row">
+            <div class="package-cell" role="cell">
+              <code class={packageCoverageClass(item)}>{item.packagePath}</code>
+              <span class={packageCoverageClass(item)}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
+            </div>
+            <div class="symbol-cell" role="cell">
+              {#each item.symbols as symbol}
+                <span class="symbol-token" class:tested={symbol.tested} class:untested={!symbol.tested} title={symbolCoverageTitle(symbol)}>
+                  <span>{symbol.name}</span>
+                  <small>{symbol.kind}</small>
+                </span>
+              {/each}
+            </div>
+            <div class="fixture-cell" role="cell">
+              {#each item.fixtures as fixture}
+                <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
+                  <code>{fixture}</code>
+                </a>
+              {/each}
+            </div>
           </div>
-          <div class="symbol-cell" role="cell">
-            {#each item.symbols as symbol}
-              <span class="symbol-token" class:tested={symbol.tested} class:untested={!symbol.tested} title={symbolCoverageTitle(symbol)}>
-                <span>{symbol.name}</span>
-                <small>{symbol.kind}</small>
-              </span>
-            {/each}
-          </div>
-          <div class="fixture-cell" role="cell">
-            {#each item.fixtures as fixture}
-              <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
-                <code>{fixture}</code>
-              </a>
-            {/each}
-          </div>
-        </div>
-      {:else}
-        <div class="report-empty">No matching coverage</div>
-      {/each}
+        {:else}
+          <div class="report-empty">No matching coverage</div>
+        {/each}
+      </div>
     </div>
   </div>
 </section>
@@ -221,21 +284,36 @@ $: visibleStdlibUntestedSymbolCount =
     color: #1f2328;
   }
 
+  .conformance-section {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .conformance-section:last-child {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .spec-conformance {
+    padding-bottom: 16px;
+    border-bottom: 1px solid #d0d7de;
+  }
+
+  .spec-conformance p {
+    margin: 0;
+    color: #57606a;
+    font-size: 13px;
+  }
+
   .coverage-intro {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
     gap: 24px;
     flex-shrink: 0;
-  }
-
-  .eyebrow {
-    margin: 0 0 6px;
-    color: #57606a;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: uppercase;
   }
 
   h1 {
@@ -256,7 +334,7 @@ $: visibleStdlibUntestedSymbolCount =
   .report-summary {
     display: grid;
     grid-template-columns:
-      repeat(4, minmax(110px, 160px)) minmax(220px, 1fr)
+      repeat(2, minmax(170px, 210px)) minmax(220px, 1fr)
       minmax(220px, auto);
     gap: 12px;
     flex-shrink: 0;
@@ -281,9 +359,10 @@ $: visibleStdlibUntestedSymbolCount =
 
   .report-metric strong {
     color: #1f2328;
-    font-size: 22px;
+    font-size: 18px;
     font-weight: 650;
     line-height: 1;
+    white-space: nowrap;
   }
 
   .report-metric span,

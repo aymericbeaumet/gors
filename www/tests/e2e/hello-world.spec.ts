@@ -74,16 +74,17 @@ test("default hello world auto-compiles and runs manually", async ({
 	expect(consoleErrors).toEqual([]);
 });
 
-test("coverage route shows stdlib package and symbol coverage", async ({
+test("conformance route shows stdlib package and symbol coverage", async ({
 	page,
 }) => {
-	await page.goto("/coverage");
+	await page.goto("/conformance");
 
 	await expect(
-		page.getByRole("heading", { name: "Go stdlib coverage" }),
+		page.getByRole("heading", { name: "Go standard library conformance" }),
 	).toBeVisible();
-	await expect(page.getByText("51/353")).toBeVisible();
-	await expect(page.getByText("344/12599")).toBeVisible();
+	await expect(page.getByText("Go specification conformance")).toBeVisible();
+	await expect(page.getByText("51/353 (14.4%)")).toBeVisible();
+	await expect(page.getByText("344/12599 (2.7%)")).toBeVisible();
 
 	await page.getByRole("searchbox").fill("fmt");
 	await expect(
@@ -155,7 +156,7 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 	).toBeVisible();
 	await page.getByRole("searchbox").fill("fmt");
 	await expect(page).toHaveURL(/q=fmt/);
-	await page.goto("/coverage?q=fmt&color=yellow");
+	await page.goto("/conformance?q=fmt&color=yellow");
 	await expect(page.getByRole("searchbox")).toHaveValue("fmt");
 	await expect(page.getByRole("button", { name: "Yellow" })).toHaveAttribute(
 		"aria-pressed",
@@ -164,7 +165,7 @@ test("coverage route shows stdlib package and symbol coverage", async ({
 	await page.getByRole("searchbox").fill("");
 	await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
 	await page.getByRole("link", { name: "gors" }).click();
-	await page.getByRole("link", { name: "View coverage" }).click();
+	await page.getByRole("link", { name: "Learn more." }).click();
 	await expect.poll(() => page.evaluate("window.scrollY")).toBe(0);
 });
 

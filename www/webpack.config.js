@@ -127,7 +127,7 @@ module.exports = () => {
 			new HtmlWebpackPlugin({ template: "index.html", filename: "index.html" }),
 			new HtmlWebpackPlugin({
 				template: "index.html",
-				filename: "coverage/index.html",
+				filename: "conformance/index.html",
 			}),
 			new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
 			new MonacoWebpackPlugin(),

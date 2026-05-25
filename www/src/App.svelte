@@ -23,7 +23,7 @@ import CoveragePage from "./CoveragePage.svelte";
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const BREW_INSTALL_COMMAND = "brew install aymericbeaumet/tap/gors";
 
-type AppRoute = "home" | "playground" | "coverage";
+type AppRoute = "home" | "playground" | "conformance";
 type PipelineStage = "idle" | "gors" | "rustc" | "main";
 
 interface PipelineCache {
@@ -46,13 +46,13 @@ const STATE_TITLES = {
 const PIPELINE_DEBOUNCE_MS = 350;
 function routeFromPath(pathname: string): AppRoute {
 	const normalized = pathname.replace(/\/+$/, "");
-	if (normalized === "/coverage") return "coverage";
+	if (normalized === "/conformance") return "conformance";
 	if (normalized === "/playground") return "playground";
 	return "home";
 }
 
 function pathForRoute(nextRoute: AppRoute): string {
-	if (nextRoute === "coverage") return "/coverage";
+	if (nextRoute === "conformance") return "/conformance";
 	if (nextRoute === "playground") return "/playground";
 	return "/";
 }
@@ -80,7 +80,7 @@ function navigateTo(nextRoute: AppRoute, event?: MouseEvent) {
 	}
 	route = nextRoute;
 	if (route === "playground") layoutEditors();
-	if (route === "coverage") scrollPageToTop();
+	if (route === "conformance") scrollPageToTop();
 	if (route === "playground" && initialized && !cache.rustCode)
 		schedulePipeline(0);
 }
@@ -607,7 +607,7 @@ let removePopStateListener: (() => void) | null = null;
 onMount(() => {
 	const onPopState = () => {
 		route = routeFromPath(window.location.pathname);
-		if (route === "coverage") scrollPageToTop();
+		if (route === "conformance") scrollPageToTop();
 		if (route === "playground" && initialized && !cache.rustCode)
 			schedulePipeline(0);
 	};
@@ -834,7 +834,7 @@ onDestroy(() => {
       </article>
       <article>
         <h3>Executable checks</h3>
-        <p>Integration tests compare generated Rust behavior with the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
+        <p>Integration tests compare generated Rust behavior with the pinned Go SDK. <a href="/conformance" on:click={(event) => navigateTo("conformance", event)}>Learn more.</a></p>
       </article>
       <article>
         <h3>Generic stdlib progress</h3>
@@ -931,7 +931,7 @@ onDestroy(() => {
   </div>
   {/if}
 
-  {#if route === "coverage"}
+  {#if route === "conformance"}
   <div class="coverage-route">
     <CoveragePage />
   </div>
