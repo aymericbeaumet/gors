@@ -42,17 +42,6 @@ const STATE_TITLES = {
 };
 
 const PIPELINE_DEBOUNCE_MS = 350;
-const HERO_GO_SAMPLE = `package main
-
-import "fmt"
-
-func main() {
-    fmt.Println("Hello, World!")
-}`;
-const HERO_RUST_SAMPLE = `fn main() {
-    println!("{}", "Hello, World!".to_string());
-}`;
-
 function routeFromPath(pathname: string): AppRoute {
 	const normalized = pathname.replace(/\/+$/, "");
 	if (normalized === "/coverage") return "coverage";
@@ -104,13 +93,21 @@ let consoleLines: ConsoleLine[] = [];
 let vmStartRequested = false;
 
 let storedRatio = parseFloat(localStorage.getItem("gors:heightRatio") ?? "");
-let editorsFlex = isNaN(storedRatio) || storedRatio <= 0 ? 1.618 : storedRatio;
+let editorsFlex =
+	isNaN(storedRatio) || storedRatio <= 0
+		? 1.35
+		: Math.min(Math.max(storedRatio, 0.7), 2.6);
+let editorPaneHeight: number | null = null;
+let consolePaneHeight: number | null = null;
+const MIN_EDITOR_HEIGHT = 220;
+const MIN_CONSOLE_HEIGHT = 110;
 
 let goEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 let rustEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 
 let editorsEl: HTMLDivElement;
 let consoleSectionEl: HTMLDivElement;
+let playgroundContentEl: HTMLDivElement;
 let vmTerminalEl: HTMLDivElement;
 
 const go2rust = new Go2RustCompiler();
@@ -264,6 +261,53 @@ function schedulePipeline(delay = PIPELINE_DEBOUNCE_MS) {
 function setRustValue(value: string) {
 	rustExpectedValue = value;
 	rustEditor?.getModel()?.setValue(value);
+}
+
+function availablePaneHeight(): number | null {
+	if (!playgroundContentEl) return null;
+	const handle = playgroundContentEl.querySelector(".resize-handle");
+	const handleRect = handle?.getBoundingClientRect();
+	const handleStyles = handle ? getComputedStyle(handle) : null;
+	const handleOuterHeight =
+		(handleRect?.height ?? 0) +
+		(Number.parseFloat(handleStyles?.marginTop ?? "0") || 0) +
+		(Number.parseFloat(handleStyles?.marginBottom ?? "0") || 0);
+	const styles = getComputedStyle(playgroundContentEl);
+	const rowGap = Number.parseFloat(styles.rowGap || styles.gap || "0") || 0;
+	return Math.max(
+		MIN_EDITOR_HEIGHT + MIN_CONSOLE_HEIGHT,
+		playgroundContentEl.clientHeight - handleOuterHeight - rowGap * 2,
+	);
+}
+
+function setPaneHeights(editorHeight: number, totalHeight?: number) {
+	const total =
+		totalHeight ??
+		availablePaneHeight() ??
+		editorHeight + (consolePaneHeight ?? MIN_CONSOLE_HEIGHT);
+	const clampedEditorHeight = Math.min(
+		total - MIN_CONSOLE_HEIGHT,
+		Math.max(MIN_EDITOR_HEIGHT, editorHeight),
+	);
+	editorPaneHeight = clampedEditorHeight;
+	consolePaneHeight = total - clampedEditorHeight;
+	if (editorsEl) {
+		editorsEl.style.flex = "none";
+		editorsEl.style.height = `${editorPaneHeight}px`;
+	}
+	if (consoleSectionEl) {
+		consoleSectionEl.style.flex = "none";
+		consoleSectionEl.style.height = `${consolePaneHeight}px`;
+	}
+	tick().then(layoutEditors);
+}
+
+function initializePaneHeights() {
+	if (editorPaneHeight !== null && consolePaneHeight !== null) return;
+	const total = availablePaneHeight();
+	if (!total) return;
+	const editorHeight = (total * editorsFlex) / (editorsFlex + 1);
+	setPaneHeights(editorHeight, total);
 }
 
 function resetRustOutput() {
@@ -473,38 +517,32 @@ async function handleRun() {
 }
 
 // Resize
-function onResizeMousedown(e: MouseEvent) {
+function onResizePointerDown(e: PointerEvent) {
 	e.preventDefault();
+	if (!editorsEl || !consoleSectionEl || !playgroundContentEl) return;
 	const startY = e.clientY;
 	const startEH = editorsEl.offsetHeight;
-	const startCH = consoleSectionEl.offsetHeight;
-	const total = startEH + startCH;
-	editorsEl.style.flex = "none";
-	consoleSectionEl.style.flex = "none";
-	editorsEl.style.height = startEH + "px";
-	consoleSectionEl.style.height = startCH + "px";
-	function onMove(ev: MouseEvent) {
-		const h = Math.min(
-			total - 200,
-			Math.max(200, startEH + ev.clientY - startY),
-		);
-		editorsEl.style.height = h + "px";
-		consoleSectionEl.style.height = total - h + "px";
+	const total =
+		availablePaneHeight() ?? startEH + consoleSectionEl.offsetHeight;
+	setPaneHeights(startEH, total);
+	document.body.style.cursor = "row-resize";
+	document.body.style.userSelect = "none";
+	function onMove(ev: PointerEvent) {
+		setPaneHeights(startEH + ev.clientY - startY, total);
 	}
 	function onUp() {
-		document.removeEventListener("mousemove", onMove);
-		document.removeEventListener("mouseup", onUp);
-		const eh = editorsEl.offsetHeight;
-		const ch = consoleSectionEl.offsetHeight;
+		document.removeEventListener("pointermove", onMove);
+		document.removeEventListener("pointerup", onUp);
+		document.body.style.cursor = "";
+		document.body.style.userSelect = "";
+		const eh = editorPaneHeight ?? editorsEl.offsetHeight;
+		const ch = consolePaneHeight ?? consoleSectionEl.offsetHeight;
 		editorsFlex = ch > 0 ? eh / ch : 1.618;
 		localStorage.setItem("gors:heightRatio", editorsFlex.toString());
-		editorsEl.style.height = "";
-		editorsEl.style.flex = "";
-		consoleSectionEl.style.height = "";
-		consoleSectionEl.style.flex = "";
+		layoutEditors();
 	}
-	document.addEventListener("mousemove", onMove);
-	document.addEventListener("mouseup", onUp);
+	document.addEventListener("pointermove", onMove);
+	document.addEventListener("pointerup", onUp);
 }
 
 // VM terminal overlay
@@ -587,6 +625,11 @@ onMount(() => {
 
 	// Resize observer for terminal
 	resizeObserver = new ResizeObserver(() => {
+		if (route === "playground") {
+			editorPaneHeight = null;
+			consolePaneHeight = null;
+			tick().then(initializePaneHeights);
+		}
 		if (vmOverlayVisible) fitAddon.fit();
 	});
 	resizeObserver.observe(vmTerminalEl);
@@ -675,6 +718,7 @@ $: if (goEditor && rustEditor && !initialized) {
 			].join("\n"),
 		);
 	goEditor.setPosition({ lineNumber: 6, column: 2 });
+	initializePaneHeights();
 	if (route === "playground") schedulePipeline(0);
 }
 
@@ -697,7 +741,6 @@ onDestroy(() => {
     <nav class="site-nav" aria-label="Primary navigation">
       <a href="/" class:active={route === "home"} on:click={(event) => navigateTo("home", event)}>Home</a>
       <a href="/playground" class:active={route === "playground"} on:click={(event) => navigateTo("playground", event)}>Playground</a>
-      <a href="/coverage" class:active={route === "coverage"} on:click={(event) => navigateTo("coverage", event)}>Coverage</a>
     </nav>
     <div class="spacer"></div>
     <a class="github-link" href="https://github.com/aymericbeaumet/gors" target="_blank" rel="noopener" aria-label="GitHub repository">
@@ -717,53 +760,55 @@ onDestroy(() => {
         <p class="hero-subtitle">
           gors is a Go-to-Rust compiler pipeline: it parses real Go source, resolves packages from a pinned Go SDK, lowers the AST into Rust, and prints normal Rust code.
         </p>
-        <dl class="hero-metrics" aria-label="Project coverage snapshot">
-          <div>
-            <dt>353</dt>
-            <dd>stdlib packages tracked</dd>
-          </div>
-          <div>
-            <dt>12,599</dt>
-            <dd>symbols reported</dd>
-          </div>
-          <div>
-            <dt>50</dt>
-            <dd>runnable fixtures</dd>
-          </div>
-        </dl>
         <div class="hero-actions">
           <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
         </div>
       </div>
 
       <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
-        <div class="compiler-card-header">
-          <span>main.go</span>
-          <span>scanner -> parser -> AST -> Rust</span>
-          <span>main.rs</span>
+        <p class="compiler-card-kicker">Same path as the CLI</p>
+        <h2>Go source moves through a real compiler pipeline.</h2>
+        <div class="pipeline-flow" aria-hidden="true">
+          <div class="flow-node go-node"><span>Go source</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node"><span>Scanner</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node"><span>Parser</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node ast-node"><span>Go AST</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node"><span>Lowering</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node ast-node"><span>Rust AST</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node"><span>Passes</span></div>
+          <span class="flow-arrow">-></span>
+          <div class="flow-node rust-node"><span>Rust source</span></div>
+          <i class="flow-pulse pulse-one"></i>
+          <i class="flow-pulse pulse-two"></i>
         </div>
-        <div class="compiler-card-body">
-          <pre><code>{HERO_GO_SAMPLE}</code></pre>
-          <div class="pipeline-rail" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <pre><code>{HERO_RUST_SAMPLE}</code></pre>
+        <div class="compiler-card-footer">
+          <code>gors build main.go</code>
+          <span>main.rs</span>
         </div>
       </div>
     </section>
 
     <section class="home-details" aria-label="Project details">
       <div>
-        <p class="eyebrow">Current focus</p>
-        <h2>Compiler correctness over shortcuts</h2>
-        <p>gors treats broad stdlib support as compiler coverage. When a package fails, the fix belongs in parsing, type inference, code generation, reachability, or runtime primitives rather than a package-specific replacement.</p>
+        <p class="eyebrow">Less guesswork</p>
+        <h2>See the Rust a Go program becomes</h2>
+        <p>The playground keeps the generated Rust visible, so compiler behavior can be inspected directly instead of hidden behind a black-box run button.</p>
       </div>
       <div>
-        <p class="eyebrow">Try it</p>
-        <h2>Fast browser feedback</h2>
-        <p>The browser playground is a convenient demo surface for small examples: edit Go, inspect generated Rust, then run the compiled result from the dedicated playground route.</p>
+        <p class="eyebrow">Real inputs</p>
+        <h2>Exercise ordinary Go packages</h2>
+        <p>Stdlib packages are resolved from the pinned Go SDK as source files, which keeps progress tied to generic compiler support rather than custom package rewrites.</p>
+      </div>
+      <div>
+        <p class="eyebrow">Proof surface</p>
+        <h2>Coverage you can audit</h2>
+        <p>Generated Rust behavior is checked against the pinned Go SDK, and the coverage report shows which packages and symbols are backed by integration tests.</p>
       </div>
     </section>
 
@@ -778,7 +823,7 @@ onDestroy(() => {
       </article>
       <article>
         <h2>Runnable checks</h2>
-        <p>Integration fixtures compare generated Rust programs against the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
+        <p>Integration tests compare generated Rust programs against the pinned Go SDK. <a href="/coverage" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>.</p>
       </article>
     </section>
 
@@ -786,11 +831,10 @@ onDestroy(() => {
       <div>
         <p class="eyebrow">Try gors</p>
         <strong>Inspect the generated Rust path</strong>
-        <span>Use the browser playground for small programs, or review coverage to see which stdlib symbols are exercised by runnable fixtures.</span>
+        <span>Use the browser playground for small programs, or review coverage to see which stdlib symbols are exercised by integration tests.</span>
       </div>
       <div class="footer-actions">
         <a href="/playground" class="primary-link" on:click={(event) => navigateTo("playground", event)}>Open playground</a>
-        <a href="/coverage" class="secondary-link" on:click={(event) => navigateTo("coverage", event)}>View coverage</a>
       </div>
     </footer>
   </div>
@@ -807,8 +851,13 @@ onDestroy(() => {
         <span class="compile-status" class:ready={cache.compiled || !!cache.rustCode} class:busy={pipelineBusy}>{compileStatus}</span>
       </div>
 
-      <div class="content playground-content">
-        <div class="editors" bind:this={editorsEl} style="flex: {editorsFlex}">
+      <div class="content playground-content" bind:this={playgroundContentEl}>
+        <div
+          class="editors"
+          bind:this={editorsEl}
+          style:flex={editorPaneHeight === null ? editorsFlex : "none"}
+          style:height={editorPaneHeight === null ? null : `${editorPaneHeight}px`}
+        >
           <div class="editor-container go">
             <div class="editor-header">
               <div class="label"><span class="dot"></span><span>main.go</span></div>
@@ -845,9 +894,14 @@ onDestroy(() => {
         </div>
 
         <!-- svelte-ignore a11y-no-static-element-interactions -->
-        <div class="resize-handle" on:mousedown={onResizeMousedown}></div>
+        <div class="resize-handle" on:pointerdown={onResizePointerDown}></div>
 
-        <div class="console-section" bind:this={consoleSectionEl}>
+        <div
+          class="console-section"
+          bind:this={consoleSectionEl}
+          style:flex={consolePaneHeight === null ? 1 : "none"}
+          style:height={consolePaneHeight === null ? null : `${consolePaneHeight}px`}
+        >
           <div class="console-header">
             <div class="console-left">
               <div class="console-title"><span class="dot"></span><span>Console</span></div>
@@ -944,7 +998,7 @@ onDestroy(() => {
     min-height: 100vh;
     flex-direction: column;
     overflow-x: clip;
-    padding-top: 52px;
+    padding-top: 51px;
   }
 
   .site-header {
@@ -1035,16 +1089,21 @@ onDestroy(() => {
   .editor-route {
     display: flex;
     flex: 1;
-    min-height: calc(100vh - 52px);
+    height: calc(100vh - 51px);
+    max-height: calc(100vh - 51px);
+    min-height: calc(100vh - 51px);
     min-width: 0;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .coverage-route {
     display: flex;
     flex: 1;
     max-width: 100%;
-    min-height: calc(100vh - 52px);
+    height: calc(100vh - 51px);
+    max-height: calc(100vh - 51px);
+    min-height: calc(100vh - 51px);
     min-width: 0;
     flex-direction: column;
     overflow-x: clip;
@@ -1052,7 +1111,7 @@ onDestroy(() => {
 
   .hero {
     display: grid;
-    min-height: 590px;
+    min-height: 560px;
     grid-template-columns: minmax(0, 0.9fr) minmax(420px, 0.85fr);
     align-items: center;
     gap: 46px;
@@ -1089,37 +1148,6 @@ onDestroy(() => {
     color: #424a53;
     font-size: 21px;
     line-height: 1.45;
-  }
-
-  .hero-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
-    max-width: 660px;
-    margin: 30px 0 0;
-    overflow: hidden;
-    border: 1px solid #d0d7de;
-    border-radius: 8px;
-    background: #d0d7de;
-  }
-
-  .hero-metrics div {
-    padding: 15px;
-    background: rgba(255, 255, 255, 0.86);
-  }
-
-  .hero-metrics dt {
-    color: #1f2328;
-    font-size: 28px;
-    font-weight: 760;
-    line-height: 1;
-  }
-
-  .hero-metrics dd {
-    margin: 6px 0 0;
-    color: #57606a;
-    font-size: 12px;
-    line-height: 1.35;
   }
 
   .hero-actions {
@@ -1163,76 +1191,132 @@ onDestroy(() => {
   }
 
   .compiler-card {
+    padding: 24px;
     overflow: hidden;
     border: 1px solid #30363d;
     border-radius: 8px;
-    background: #0d1117;
+    background:
+      linear-gradient(135deg, rgba(0, 173, 216, 0.12), transparent 45%),
+      #0d1117;
     box-shadow: 0 24px 70px rgba(31, 35, 40, 0.24);
   }
 
-  .compiler-card-header {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 12px;
-    padding: 12px 14px;
-    border-bottom: 1px solid #30363d;
-    background: #161b22;
+  .compiler-card-kicker {
+    margin: 0;
     color: #8b949e;
     font-size: 12px;
     font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
   }
 
-  .compiler-card-header span:last-child {
-    text-align: right;
+  .compiler-card h2 {
+    max-width: 560px;
+    margin: 10px 0 0;
+    color: #f0f6fc;
+    font-size: 28px;
+    line-height: 1.18;
   }
 
-  .compiler-card-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
-    min-height: 300px;
-  }
-
-  .compiler-card pre {
-    margin: 0;
-    padding: 20px;
-    overflow: hidden;
-    color: #c9d1d9;
-    font-family: "Fira Code Variable", "Fira Code", monospace;
-    font-size: 13px;
-    line-height: 1.7;
-    white-space: pre-wrap;
-  }
-
-  .compiler-card pre:first-child {
-    border-right: 1px solid #30363d;
-  }
-
-  .compiler-card pre:last-child {
-    border-left: 1px solid #30363d;
-  }
-
-  .pipeline-rail {
+  .pipeline-flow {
+    position: relative;
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-top: 28px;
+    padding: 6px 0;
+  }
+
+  .pipeline-flow::before {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    left: 8px;
+    height: 2px;
+    background: linear-gradient(90deg, #00add8, #ffc832, #2da44e);
+    opacity: 0.42;
+    transform: translateY(-50%);
+    content: "";
+  }
+
+  .flow-node {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    min-height: 48px;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    background: #11151c;
+    padding: 9px 10px;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    background: rgba(22, 27, 34, 0.96);
+    box-shadow: 0 10px 24px rgba(1, 4, 9, 0.24);
   }
 
-  .pipeline-rail span {
-    width: 8px;
-    height: 8px;
+  .flow-node span {
+    color: #c9d1d9;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .flow-arrow {
+    position: relative;
+    z-index: 1;
+    color: #8b949e;
+    font-family: "Fira Code Variable", "Fira Code", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .go-node {
+    border-color: rgba(0, 173, 216, 0.8);
+  }
+
+  .ast-node {
+    border-color: rgba(255, 200, 50, 0.75);
+  }
+
+  .rust-node {
+    border-color: rgba(45, 164, 78, 0.75);
+  }
+
+  .flow-pulse {
+    position: absolute;
+    top: 50%;
+    z-index: 2;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: #ffc832;
+    background: #f0f6fc;
+    box-shadow:
+      0 0 0 4px rgba(88, 166, 255, 0.18),
+      0 0 18px rgba(88, 166, 255, 0.8);
+    transform: translate(-50%, -50%);
+    animation: flow-pulse 5.5s linear infinite;
   }
 
-  .pipeline-rail span:nth-child(2) {
-    background: #00add8;
+  .pulse-two {
+    animation-delay: 2.75s;
   }
 
-  .pipeline-rail span:nth-child(3) {
-    background: #2da44e;
+  .compiler-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid #30363d;
+    color: #8b949e;
+    font-size: 13px;
+  }
+
+  .compiler-card-footer code {
+    color: #ffc832;
+    font-family: "Fira Code Variable", "Fira Code", monospace;
   }
 
   .info-grid {
@@ -1275,15 +1359,15 @@ onDestroy(() => {
 
   .home-details {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 32px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
     padding: 40px 48px 48px;
     border-top: 1px solid #d0d7de;
     background: #ffffff;
   }
 
   .home-details div {
-    max-width: 620px;
+    min-width: 0;
   }
 
   .home-details h2 {
@@ -1347,9 +1431,11 @@ onDestroy(() => {
   .playground-section {
     display: flex;
     flex: 1;
+    height: 100%;
     min-height: 0;
     flex-direction: column;
-    padding: 28px 24px 24px;
+    overflow: hidden;
+    padding: 18px 18px 16px;
     background: #11151c;
     color: #c9d1d9;
   }
@@ -1361,7 +1447,7 @@ onDestroy(() => {
     gap: 16px;
     max-width: 1680px;
     width: 100%;
-    margin: 0 auto 16px;
+    margin: 0 auto 12px;
   }
 
   .section-heading .eyebrow {
@@ -1371,7 +1457,7 @@ onDestroy(() => {
   .section-heading h2 {
     margin: 0;
     color: #f0f6fc;
-    font-size: 28px;
+    font-size: 24px;
     line-height: 1.05;
   }
 
@@ -1400,18 +1486,22 @@ onDestroy(() => {
     min-height: 0;
     flex: 1;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .playground-content {
     width: 100%;
     max-width: 1680px;
+    min-height: 0;
+    overflow: hidden;
     margin: 0 auto;
   }
 
   .editors {
     display: flex;
-    min-height: 300px;
-    gap: 16px;
+    flex-shrink: 0;
+    min-height: 220px;
+    gap: 12px;
   }
 
   .editor-container {
@@ -1525,18 +1615,19 @@ onDestroy(() => {
 
   .resize-handle {
     display: flex;
-    height: 6px;
+    height: 16px;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    margin: 5px 0;
+    margin: 0;
     cursor: row-resize;
+    touch-action: none;
     user-select: none;
   }
 
   .resize-handle::after {
-    width: 40px;
-    height: 3px;
+    width: 72px;
+    height: 4px;
     border-radius: 2px;
     background: #30363d;
     content: "";
@@ -1549,7 +1640,8 @@ onDestroy(() => {
 
   .console-section {
     display: flex;
-    min-height: 220px;
+    flex-shrink: 0;
+    min-height: 110px;
     flex: 1;
     flex-direction: column;
     overflow: hidden;
@@ -1586,7 +1678,7 @@ onDestroy(() => {
 
   .console-content {
     flex: 1;
-    margin: 12px;
+    margin: 10px;
     overflow-y: auto;
     background: #0d1117;
     color: #c9d1d9;
@@ -1791,6 +1883,23 @@ onDestroy(() => {
     }
   }
 
+  @keyframes flow-pulse {
+    0% {
+      left: 4%;
+      opacity: 0;
+    }
+    8% {
+      opacity: 1;
+    }
+    92% {
+      opacity: 1;
+    }
+    100% {
+      left: 96%;
+      opacity: 0;
+    }
+  }
+
   @keyframes spin {
     to {
       transform: rotate(360deg);
@@ -1829,30 +1938,17 @@ onDestroy(() => {
       padding: 36px 18px 28px;
     }
 
-    .hero-metrics {
-      grid-template-columns: 1fr;
+    .pipeline-flow {
+      flex-wrap: wrap;
     }
 
-    .compiler-card-body,
-    .compiler-card-header {
-      grid-template-columns: 1fr;
+    .flow-pulse {
+      display: none;
     }
 
-    .compiler-card-header span,
-    .compiler-card-header span:last-child {
-      text-align: left;
-    }
-
-    .pipeline-rail {
-      min-height: 36px;
-      flex-direction: row;
-      border-top: 1px solid #30363d;
-      border-bottom: 1px solid #30363d;
-    }
-
-    .compiler-card pre:first-child,
-    .compiler-card pre:last-child {
-      border: 0;
+    .compiler-card-footer {
+      align-items: flex-start;
+      flex-direction: column;
     }
 
     .info-grid {
@@ -1875,7 +1971,7 @@ onDestroy(() => {
 
     .playground-section {
       min-height: 0;
-      padding: 20px 14px;
+      padding: 14px 10px;
     }
 
     .section-heading {
@@ -1885,6 +1981,7 @@ onDestroy(() => {
 
     .editors {
       flex-direction: column;
+      gap: 10px;
     }
 
     .vm-terminal-overlay.visible {
