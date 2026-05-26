@@ -12103,6 +12103,53 @@ fn compile_defer_arg_init(
     (maybe_clone_binding_init(should_clone, init), temp_ty)
 }
 
+fn compile_defer_saved_args<'a>(
+    args: Option<Vec<ast::Expr<'a>>>,
+    n: usize,
+    param_types: &[typeinfer::GoType],
+    variadic_start: Option<usize>,
+) -> (Vec<syn::Stmt>, Option<Vec<ast::Expr<'a>>>, Vec<syn::Ident>) {
+    let Some(args) = args else {
+        return (Vec::new(), None, Vec::new());
+    };
+    let mut prelude = Vec::new();
+    let mut saved_args = Vec::with_capacity(args.len());
+    let mut saved_arg_idents = Vec::with_capacity(args.len());
+    for (idx, arg) in args.into_iter().enumerate() {
+        let expected = if variadic_start.is_some_and(|start| idx >= start) {
+            None
+        } else {
+            param_types.get(idx)
+        };
+        let (init, temp_ty) = compile_defer_arg_init(arg, expected);
+        let temp_ident = quote::format_ident!("_defer_{}_arg_{}", n, idx);
+        if let Some(temp_ty) = temp_ty {
+            prelude.push(syn::parse_quote! {
+                let #temp_ident: #temp_ty = #init;
+            });
+        } else {
+            prelude.push(syn::parse_quote! {
+                let #temp_ident = #init;
+            });
+        }
+        saved_args.push(synthetic_ident_expr(temp_ident.to_string()));
+        saved_arg_idents.push(temp_ident);
+    }
+    (prelude, Some(saved_args), saved_arg_idents)
+}
+
+fn compile_defer_guard_stmt(defer_ident: &syn::Ident, call: syn::Expr) -> syn::Stmt {
+    syn::parse_quote! {
+        let #defer_ident = {
+            struct __Defer<F: FnOnce()>(Option<F>);
+            impl<F: FnOnce()> Drop for __Defer<F> {
+                fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
+            }
+            __Defer(Some(move || { #call; }))
+        };
+    }
+}
+
 fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
     let n = DEFER_COUNTER.with(|c| {
         let mut val = c.borrow_mut();
@@ -12111,42 +12158,44 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         n
     });
     let defer_ident = quote::format_ident!("_defer_{}", n);
+    let fun_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&call.fun, &env.borrow()));
     let param_types = call_param_types(&call.fun);
     let variadic_start = is_variadic_call(&call);
-    let mut prelude = Vec::new();
-    if let Some(args) = call.args.take() {
-        let mut saved_args = Vec::with_capacity(args.len());
-        for (idx, arg) in args.into_iter().enumerate() {
-            let expected = if variadic_start.is_some_and(|start| idx >= start) {
-                None
-            } else {
-                param_types.get(idx)
-            };
-            let (init, temp_ty) = compile_defer_arg_init(arg, expected);
-            let temp_ident = quote::format_ident!("_defer_{}_arg_{}", n, idx);
-            if let Some(temp_ty) = temp_ty {
-                prelude.push(syn::parse_quote! {
-                    let #temp_ident: #temp_ty = #init;
-                });
-            } else {
-                prelude.push(syn::parse_quote! {
-                    let #temp_ident = #init;
-                });
-            }
-            saved_args.push(synthetic_ident_expr(temp_ident.to_string()));
-        }
+
+    if !is_function_item_expr(&call.fun)
+        && let typeinfer::GoType::Func { params, .. } = resolved_go_type(&fun_ty)
+        && let Some(fun_ty) = shared_func_box_type_from_go_type(&fun_ty)
+    {
+        let fun_temp_ident = quote::format_ident!("_defer_{}_fun", n);
+        let fun_expr: syn::Expr = (*call.fun).into();
+        let (mut prelude, _, arg_idents) =
+            compile_defer_saved_args(call.args.take(), n, &params, None);
+        prelude.insert(
+            0,
+            syn::parse_quote! {
+                let #fun_temp_ident: #fun_ty = {
+                    let __gors_func = crate::builtin::lock_func(&(#fun_expr));
+                    match __gors_func.as_ref() {
+                        Some(__gors_func) => __gors_func.clone(),
+                        None => panic!("nil function"),
+                    }
+                };
+            },
+        );
+        let call: syn::Expr = syn::parse_quote! {
+            (&*#fun_temp_ident)(#(#arg_idents),*)
+        };
+        prelude.push(compile_defer_guard_stmt(&defer_ident, call));
+        return prelude;
+    }
+
+    let (mut prelude, saved_args, _) =
+        compile_defer_saved_args(call.args.take(), n, &param_types, variadic_start);
+    if let Some(saved_args) = saved_args {
         call.args = Some(saved_args);
     }
     let call: syn::Expr = ast::Expr::CallExpr(call).into();
-    prelude.push(syn::parse_quote! {
-        let #defer_ident = {
-            struct __Defer<F: FnOnce()>(Option<F>);
-            impl<F: FnOnce()> Drop for __Defer<F> {
-                fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
-            }
-            __Defer(Some(move || { #call; }))
-        };
-    });
+    prelude.push(compile_defer_guard_stmt(&defer_ident, call));
     prelude
 }
 
