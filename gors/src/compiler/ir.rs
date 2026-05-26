@@ -560,7 +560,7 @@ fn lower_case(case: &ast::CaseClause<'_>, env: &TypeEnv) -> Case {
 
 fn lower_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Expr {
     let ty = GoType::infer_expr(expr, env);
-    let addressability = addressability(expr, env);
+    let addressability = expr_addressability(expr, env);
     let kind = match expr {
         ast::Expr::ArrayType(array) => ExprKind::ArrayType {
             len: array.len.as_ref().map(|len| Box::new(lower_expr(len, env))),
@@ -658,7 +658,7 @@ fn lower_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Call {
     }
 }
 
-fn addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressability {
+pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressability {
     match expr {
         ast::Expr::Ident(ident)
             if !matches!(ident.name, "_" | "nil" | "true" | "false" | "iota") =>
@@ -672,7 +672,7 @@ fn addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressability {
                 _ => Addressability::Addressable,
             }
         }
-        ast::Expr::ParenExpr(paren) => addressability(&paren.x, env),
+        ast::Expr::ParenExpr(paren) => expr_addressability(&paren.x, env),
         ast::Expr::SelectorExpr(_) | ast::Expr::StarExpr(_) => Addressability::Addressable,
         _ => Addressability::NotAddressable,
     }
@@ -1125,6 +1125,35 @@ mod tests {
             panic!("expected rhs");
         };
         assert_eq!(expr.addressability, Addressability::Addressable);
+        assert!(matches!(expr.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn lower_expr_marks_map_indexes_not_addressable() {
+        let ir = lower(
+            r#"
+                package main
+
+                var m map[string]int
+
+                func main() {
+                    _ = m["k"]
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.get(1) else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.first() else {
+            panic!("expected assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected rhs");
+        };
+        assert_eq!(expr.addressability, Addressability::NotAddressable);
         assert!(matches!(expr.kind, ExprKind::Index { .. }));
     }
 

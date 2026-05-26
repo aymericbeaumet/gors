@@ -9201,6 +9201,9 @@ fn coerce_assignment_expr(
 }
 
 fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    if !is_ir_addressable_expr(expr) {
+        return None;
+    }
     match expr {
         ast::Expr::Ident(ident) => {
             let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
@@ -9231,6 +9234,15 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
 
 fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
     lvalue_expr_from_ref(&expr).unwrap_or_else(|| expr.into())
+}
+
+fn is_ir_addressable_expr(expr: &ast::Expr) -> bool {
+    TYPE_ENV.with(|env| {
+        matches!(
+            ir::expr_addressability(expr, &env.borrow()),
+            ir::Addressability::Addressable
+        )
+    })
 }
 
 fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
@@ -9366,10 +9378,7 @@ fn expr_should_clone_for_value_param(
     expected: &typeinfer::GoType,
     actual: &typeinfer::GoType,
 ) -> bool {
-    if !matches!(
-        expr,
-        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) | ast::Expr::IndexExpr(_)
-    ) {
+    if !is_ir_addressable_expr(expr) {
         return false;
     }
     let expected = resolved_go_type(expected);
