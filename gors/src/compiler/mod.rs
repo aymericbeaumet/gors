@@ -2274,12 +2274,7 @@ fn named_return_ident_expr(ident: &syn::Ident, clone_unshared: bool) -> syn::Exp
 
 fn is_named_return_name(name: &str) -> bool {
     let rust_name = rust_safe_ident_name(name);
-    NAMED_RETURN_IDENTS.with(|idents| {
-        idents
-            .borrow()
-            .iter()
-            .any(|ident| ident.to_string() == rust_name)
-    })
+    NAMED_RETURN_IDENTS.with(|idents| idents.borrow().iter().any(|ident| *ident == rust_name))
 }
 
 fn named_return_decl_stmt(
@@ -10242,21 +10237,17 @@ fn compile_expr_with_expected(
         expected.map(resolved_go_type),
         Some(typeinfer::GoType::Func { .. })
     ) {
-        match &expr {
-            ast::Expr::Ident(ident) => {
-                let is_func_var = TYPE_ENV.with(|env| {
-                    matches!(
-                        env.borrow().get_var(ident.name),
-                        Some(typeinfer::GoType::Func { .. })
-                    )
-                });
-                if is_func_var {
-                    let ident =
-                        syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-                    return syn::parse_quote! { #ident.clone() };
-                }
+        if let ast::Expr::Ident(ident) = &expr {
+            let is_func_var = TYPE_ENV.with(|env| {
+                matches!(
+                    env.borrow().get_var(ident.name),
+                    Some(typeinfer::GoType::Func { .. })
+                )
+            });
+            if is_func_var {
+                let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                return syn::parse_quote! { #ident.clone() };
             }
-            _ => {}
         }
 
         match expr {
@@ -11355,6 +11346,7 @@ fn rewrite_range_function_control_flow_expr(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_range_function_stmt(
     fun: syn::Expr,
     is_function_item: bool,

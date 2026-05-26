@@ -781,10 +781,8 @@ fn record_decl_bindings(gen_decl: &ast::GenDecl<'_>, env: &mut TypeEnv) {
             });
             if gen_decl.tok == token::Token::CONST {
                 env.set_const_type(name.name, ty.clone());
-                env.set_var(name.name, ty);
-            } else {
-                env.set_var(name.name, ty);
             }
+            env.set_var(name.name, ty);
         }
     }
 }
@@ -3007,8 +3005,8 @@ fn invalid_branch_in_expression_switch_cases(
         .filter_map(|(idx, stmt)| matches!(stmt, ast::Stmt::CaseClause(_)).then_some(idx))
         .collect();
 
-    for (case_order, stmt_idx) in case_indices.iter().enumerate() {
-        let ast::Stmt::CaseClause(case) = &stmts[*stmt_idx] else {
+    for (case_order, stmt_idx) in case_indices.iter().copied().enumerate() {
+        let Some(ast::Stmt::CaseClause(case)) = stmts.get(stmt_idx) else {
             continue;
         };
         if let Some(invalid) = invalid_branch_in_case_exprs(case, context) {
@@ -4828,7 +4826,10 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
         let Some(args) = &call.args else {
             return true;
         };
-        return args.len() != 1 || expr_is_known_non_constant(&args[0], env);
+        let [arg] = args.as_slice() else {
+            return true;
+        };
+        return expr_is_known_non_constant(arg, env);
     }
 
     if let Some(kind) = unshadowed_builtin_call_kind(call, env) {
@@ -4840,10 +4841,16 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
                 args.len() != 2 || args.iter().any(|arg| expr_is_known_non_constant(arg, env))
             }
             BuiltinCallKind::Imag | BuiltinCallKind::Real => {
-                args.len() != 1 || expr_is_known_non_constant(&args[0], env)
+                let [arg] = args.as_slice() else {
+                    return true;
+                };
+                expr_is_known_non_constant(arg, env)
             }
             BuiltinCallKind::Len | BuiltinCallKind::Cap => {
-                args.len() != 1 || expr_is_known_non_constant(&args[0], env)
+                let [arg] = args.as_slice() else {
+                    return true;
+                };
+                expr_is_known_non_constant(arg, env)
             }
             BuiltinCallKind::Max | BuiltinCallKind::Min => {
                 args.is_empty() || args.iter().any(|arg| expr_is_known_non_constant(arg, env))
@@ -5560,7 +5567,6 @@ fn invalid_builtin_call_expression(
         BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
         BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
         BuiltinCallKind::Recover => invalid_builtin_recover_call(call),
-        _ => None,
     }
 }
 
@@ -5591,7 +5597,8 @@ fn invalid_builtin_append_call(
             "expects at least one argument",
         ));
     }
-    let dst = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let (dst_arg, values) = args.split_first()?;
+    let dst = env.resolve_alias(&GoType::infer_expr(dst_arg, env));
     let dst_elem = match dst {
         GoType::Slice(elem) => *elem,
         GoType::Unknown | GoType::Named(_) => return None,
@@ -5611,7 +5618,7 @@ fn invalid_builtin_append_call(
     }
 
     let expected = env.resolve_alias(&dst_elem);
-    for value in &args[1..] {
+    for value in values {
         let actual = env.resolve_alias(&GoType::infer_expr(value, env));
         if !types_are_assignable_for_validation(&expected, &actual) {
             return Some(invalid_builtin_call_reason(
@@ -5632,13 +5639,13 @@ fn invalid_builtin_append_spread_call(
     dst_elem: &GoType,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    if args.len() != 2 {
+    let [_, src_arg] = args else {
         return Some(invalid_builtin_call_reason(
             BuiltinCallKind::Append,
             "spread form expects exactly two arguments",
         ));
-    }
-    let src = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+    };
+    let src = env.resolve_alias(&GoType::infer_expr(src_arg, env));
     if matches!((dst_elem, &src), (GoType::Uint8, GoType::String)) {
         return None;
     }
@@ -5688,7 +5695,10 @@ fn invalid_builtin_len_cap_call(
             "expects exactly one argument",
         ));
     }
-    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [arg] = args else {
+        return None;
+    };
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
     let valid = match kind {
         BuiltinCallKind::Len => {
             matches!(
@@ -5745,8 +5755,11 @@ fn invalid_builtin_complex_call(
             "expects exactly two arguments",
         ));
     }
-    let left = complex_arg_float_type(&args[0], env);
-    let right = complex_arg_float_type(&args[1], env);
+    let [left_arg, right_arg] = args else {
+        return None;
+    };
+    let left = complex_arg_float_type(left_arg, env);
+    let right = complex_arg_float_type(right_arg, env);
     if let Err(ty) = left {
         return Some(invalid_builtin_call_reason(
             BuiltinCallKind::Complex,
@@ -5816,7 +5829,10 @@ fn invalid_builtin_real_imag_call(
             "expects exactly one argument",
         ));
     }
-    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [arg] = args else {
+        return None;
+    };
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
     if matches!(
         ty,
         GoType::Complex64 | GoType::Complex128 | GoType::Unknown | GoType::Named(_)
@@ -5940,7 +5956,8 @@ fn invalid_builtin_make_call(
         ));
     }
 
-    let kind = match make_type_arg(&args[0], env) {
+    let (type_arg, size_args) = args.split_first()?;
+    let kind = match make_type_arg(type_arg, env) {
         MakeTypeArg::Type(kind) => kind,
         MakeTypeArg::NonMakeType(ty) => {
             return Some(invalid_builtin_call_reason(
@@ -5963,7 +5980,7 @@ fn invalid_builtin_make_call(
     if let Some(reason) = invalid_make_arg_count(kind, args.len()) {
         return Some(reason);
     }
-    args[1..]
+    size_args
         .iter()
         .find_map(|arg| invalid_make_size_arg(arg, env))
 }
@@ -6114,7 +6131,10 @@ fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatement
             "expects exactly one argument",
         ));
     }
-    if matches!(unparen_expr(&args[0]), ast::Expr::Ident(ident) if ident.name == "nil") {
+    let [arg] = args else {
+        return None;
+    };
+    if matches!(unparen_expr(arg), ast::Expr::Ident(ident) if ident.name == "nil") {
         return Some(invalid_builtin_call_reason(
             BuiltinCallKind::New,
             "argument must not be nil",
@@ -6187,7 +6207,10 @@ fn invalid_builtin_clear_call(
             "expects exactly one argument",
         ));
     }
-    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [arg] = args else {
+        return None;
+    };
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
     match ty {
         GoType::Map(_, _) | GoType::Slice(_) => None,
         GoType::Unknown | GoType::Named(_) => None,
@@ -6218,7 +6241,10 @@ fn invalid_builtin_close_call(
             "expects exactly one argument",
         ));
     }
-    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [arg] = args else {
+        return None;
+    };
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
     match ty {
         GoType::Chan { direction, .. } if direction.can_send() => None,
         GoType::Chan { .. } => Some(invalid_builtin_call_reason(
@@ -6253,7 +6279,10 @@ fn invalid_builtin_copy_call(
             "expects exactly two arguments",
         ));
     }
-    let dst = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [dst_arg, src_arg] = args else {
+        return None;
+    };
+    let dst = env.resolve_alias(&GoType::infer_expr(dst_arg, env));
     let dst_elem = match dst {
         GoType::Slice(dst_elem) => dst_elem,
         other => {
@@ -6269,7 +6298,7 @@ fn invalid_builtin_copy_call(
             };
         }
     };
-    let src = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+    let src = env.resolve_alias(&GoType::infer_expr(src_arg, env));
     if matches!((&*dst_elem, &src), (GoType::Uint8, GoType::String)) {
         return None;
     }
@@ -6320,10 +6349,13 @@ fn invalid_builtin_delete_call(
             "expects exactly two arguments",
         ));
     }
-    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let [map_arg, key_arg] = args else {
+        return None;
+    };
+    let ty = env.resolve_alias(&GoType::infer_expr(map_arg, env));
     match ty {
         GoType::Map(key, _) => {
-            let actual = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+            let actual = env.resolve_alias(&GoType::infer_expr(key_arg, env));
             let expected = env.resolve_alias(&key);
             if types_are_assignable_for_validation(&expected, &actual) {
                 return None;
@@ -8977,7 +9009,12 @@ fn is_predeclared_name(name: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::{Addressability, CaptureMode, Completion, ExprKind, Item, Stmt, lower_file};
     use crate::compiler::typeinfer::{GoType, TypeEnv};

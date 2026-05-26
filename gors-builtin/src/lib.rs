@@ -917,6 +917,11 @@ pub struct Chan<T> {
     inner: Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryRecvError {
+    Empty,
+}
+
 impl<T> Clone for Chan<T> {
     fn clone(&self) -> Self {
         Self {
@@ -993,23 +998,25 @@ impl<T> Chan<T> {
             return Err(val);
         }
         inner.buf.push_back(val);
+        drop(inner);
         rx_cv.notify_one();
         Ok(())
     }
 
-    pub fn try_recv(&self) -> Result<T, ()>
+    pub fn try_recv(&self) -> Result<T, TryRecvError>
     where
         T: Default,
     {
         let (lock, _, tx_cv) = &*self.inner;
         let mut inner = lock_chan(lock);
         if let Some(val) = inner.buf.pop_front() {
+            drop(inner);
             tx_cv.notify_one();
             Ok(val)
         } else if inner.closed {
             Ok(T::default())
         } else {
-            Err(())
+            Err(TryRecvError::Empty)
         }
     }
 
@@ -1387,11 +1394,11 @@ mod tests {
     #[test]
     fn channel_try_helpers_are_non_blocking() {
         let ch = make_chan(1);
-        assert_eq!(ch.try_recv(), Err(()));
+        assert_eq!(ch.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(ch.try_send(1), Ok(()));
         assert_eq!(ch.try_send(2), Err(2));
         assert_eq!(ch.try_recv(), Ok(1));
-        assert_eq!(ch.try_recv(), Err(()));
+        assert_eq!(ch.try_recv(), Err(TryRecvError::Empty));
         close(&ch);
         assert_eq!(ch.try_recv(), Ok(0));
 
