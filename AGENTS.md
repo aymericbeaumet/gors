@@ -315,6 +315,14 @@ and interface declarations. The `GoType` enum represents Go types. Used during
 code generation for type-aware decisions (string indexing, numeric casts,
 interface detection).
 
+`gors/src/compiler/ir.rs` is the typed Go IR layer being introduced between the
+parser AST and Rust `syn` backend. Current compile entrypoints build this IR as
+a semantic prepass before the legacy direct AST-to-syn lowering. Keep new
+language-semantic work moving into the IR first, especially addressability,
+capture modes, control-flow shape, and type-directed expression lowering; the
+Rust backend should consume those semantics instead of rediscovering them with
+ad hoc AST checks.
+
 Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
 `get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.
 Package-level string constants are also tracked in `TypeEnv` so generated

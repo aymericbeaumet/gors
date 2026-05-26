@@ -15,6 +15,7 @@
 //! - Goto statements
 //! - Some complex type expressions
 
+pub mod ir;
 pub mod manifest;
 pub(crate) mod passes;
 pub mod typeinfer;
@@ -2317,6 +2318,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
+    let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -2338,6 +2340,7 @@ pub fn compile_with_type_env_and_import_renames(
 ) -> Result<syn::File, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     set_import_renames(import_renames);
+    let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -2570,6 +2573,7 @@ fn compile_program_impl(
             &stdlib_type_envs,
             &stdlib_module_names,
         );
+        let _ir = ir::lower_file(&pkg.ast, &type_env);
         set_type_env(type_env);
         set_import_renames(import_rewrites.clone());
         let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
@@ -2630,6 +2634,7 @@ fn compile_program_impl(
         &stdlib_type_envs,
         &stdlib_module_names,
     );
+    let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
     set_type_env(main_type_env);
     set_import_renames(main_import_rewrites.clone());
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
