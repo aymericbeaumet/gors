@@ -12716,6 +12716,13 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::Assignment { reason } => {
             format!("invalid assignment: {}", invalid_assignment_reason(reason))
         }
+        ir::InvalidStatement::Condition { reason } => {
+            let kind = condition_kind_name(reason.kind);
+            format!(
+                "invalid {kind} condition: condition must be boolean, got {}",
+                reason.type_name
+            )
+        }
         ir::InvalidStatement::Defer { reason } => {
             format!(
                 "invalid defer statement: {}",
@@ -12787,6 +12794,13 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         }
     };
     CompilerError::UnsupportedConstruct(message)
+}
+
+fn condition_kind_name(kind: ir::ConditionKind) -> &'static str {
+    match kind {
+        ir::ConditionKind::For => "for",
+        ir::ConditionKind::If => "if",
+    }
 }
 
 fn invalid_inc_dec_reason(reason: ir::InvalidIncDecReason) -> String {
@@ -17805,6 +17819,17 @@ mod tests {
                 }
             "#,
             "invalid increment/decrement statement: operand must have numeric type",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    if 1 {
+                    }
+                }
+            "#,
+            "invalid if condition: condition must be boolean, got int",
         );
         assert_unsupported_construct(
             r#"

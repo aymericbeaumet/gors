@@ -982,6 +982,9 @@ pub enum InvalidStatement {
     Assignment {
         reason: InvalidAssignmentReason,
     },
+    Condition {
+        reason: InvalidConditionReason,
+    },
     Defer {
         reason: InvalidStatementReason,
     },
@@ -1022,6 +1025,18 @@ pub enum InvalidAssignmentReason {
     CompoundOperandCount { lhs: usize, rhs: usize },
     CountMismatch { lhs: usize, values: usize },
     MultiValueInSingleValueContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidConditionReason {
+    pub kind: ConditionKind,
+    pub type_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionKind {
+    For,
+    If,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3277,6 +3292,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(invalid);
             }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(reason) = invalid_condition(cond, &loop_env, ConditionKind::For)
+            {
+                return Some(InvalidStatement::Condition { reason });
+            }
             if let Some(post) = &for_stmt.post
                 && is_short_var_decl_stmt(post)
             {
@@ -3298,6 +3318,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut if_env)
             {
                 return Some(invalid);
+            }
+            if let Some(reason) = invalid_condition(&if_stmt.cond, &if_env, ConditionKind::If) {
+                return Some(InvalidStatement::Condition { reason });
             }
             if let Some(invalid) = invalid_statement_in_nested_block(&if_stmt.body, &if_env) {
                 return Some(invalid);
@@ -3457,6 +3480,21 @@ fn invalid_assignment(
     }
 
     None
+}
+
+fn invalid_condition(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    kind: ConditionKind,
+) -> Option<InvalidConditionReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(expr, env));
+    if matches!(ty, GoType::Bool | GoType::Unknown | GoType::Named(_)) {
+        return None;
+    }
+    Some(InvalidConditionReason {
+        kind,
+        type_name: go_type_display_name(&ty),
+    })
 }
 
 fn invalid_inc_dec(inc_dec: &ast::IncDecStmt<'_>, env: &TypeEnv) -> Option<InvalidIncDecReason> {
@@ -4116,7 +4154,7 @@ fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Inv
             return None;
         }
         return Some(InvalidRangeReason::NonRangeable {
-            type_name: range_operand_type_name(&ty),
+            type_name: go_type_display_name(&ty),
         });
     };
     (got > max).then_some(InvalidRangeReason::BindingCount { kind, max, got })
@@ -4227,7 +4265,7 @@ fn max_range_binding_count_for_type(ty: &GoType) -> Option<(RangeKind, usize)> {
     }
 }
 
-fn range_operand_type_name(ty: &GoType) -> String {
+fn go_type_display_name(ty: &GoType) -> String {
     match ty {
         GoType::Bool => "bool".to_string(),
         GoType::Float32 => "float32".to_string(),
@@ -8642,6 +8680,104 @@ mod tests {
                     z--
                     m := map[string]int{"go": 1}
                     m["go"]++
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_non_boolean_conditions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        if 1 {
+                        }
+                    }
+                "#,
+                super::ConditionKind::If,
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for "go" {
+                        }
+                    }
+                "#,
+                super::ConditionKind::For,
+                "string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        if x := 1; x {
+                        }
+                    }
+                "#,
+                super::ConditionKind::If,
+                "int",
+            ),
+        ];
+
+        for (source, kind, type_name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Condition {
+                    reason: super::InvalidConditionReason {
+                        kind,
+                        type_name: type_name.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_boolean_conditions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Flag bool
+
+                func main() {
+                    if true {
+                    }
+                    var flag Flag
+                    if flag {
+                    }
+                    for false {
+                    }
                 }
             "#,
         )

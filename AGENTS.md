@@ -476,6 +476,10 @@ bools, floats, complex values, pointers, and functions without the iterator
 yield signature are rejected in IR before backend lowering; unknown or
 unresolved named operands remain permissive until type inference can prove
 their shape.
+IR condition validation rejects known non-boolean `if` and conditional `for`
+expressions after simple-statement bindings have been recorded; unknown or
+unresolved named conditions stay permissive until type inference can prove them
+invalid.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array
