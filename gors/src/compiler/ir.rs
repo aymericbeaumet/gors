@@ -320,6 +320,29 @@ pub enum BuiltinCallKind {
     Recover,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialTypeConversionKind {
+    Any,
+    ByteSlice,
+    Complex64,
+    Complex128,
+    RuneSlice,
+    String,
+}
+
+impl SpecialTypeConversionKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::ByteSlice => "[]byte",
+            Self::Complex64 => "complex64",
+            Self::Complex128 => "complex128",
+            Self::RuneSlice => "[]rune",
+            Self::String => "string",
+        }
+    }
+}
+
 impl BuiltinCallKind {
     pub fn name(self) -> &'static str {
         match self {
@@ -408,6 +431,101 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
 pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<usize> {
     let key = call_func_key(&call_expr.fun, env)?;
     env.get_func_variadic_start(&key)
+}
+
+pub fn special_type_conversion(call_expr: &ast::CallExpr<'_>) -> Option<SpecialTypeConversionKind> {
+    let args = call_expr.args.as_ref()?;
+    if args.len() != 1 {
+        return None;
+    }
+    match &*call_expr.fun {
+        ast::Expr::Ident(id) if id.name == "string" => Some(SpecialTypeConversionKind::String),
+        ast::Expr::Ident(id) if id.name == "any" => Some(SpecialTypeConversionKind::Any),
+        ast::Expr::Ident(id) if id.name == "complex64" => {
+            Some(SpecialTypeConversionKind::Complex64)
+        }
+        ast::Expr::Ident(id) if id.name == "complex128" => {
+            Some(SpecialTypeConversionKind::Complex128)
+        }
+        ast::Expr::ArrayType(arr) if arr.len.is_none() => match &*arr.elt {
+            ast::Expr::Ident(elt_id) if matches!(elt_id.name, "byte" | "uint8") => {
+                Some(SpecialTypeConversionKind::ByteSlice)
+            }
+            ast::Expr::Ident(elt_id) if matches!(elt_id.name, "rune" | "int32") => {
+                Some(SpecialTypeConversionKind::RuneSlice)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn is_general_type_conversion_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match fun {
+        ast::Expr::ParenExpr(paren) => is_general_type_conversion_fun(&paren.x, env),
+        ast::Expr::StarExpr(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::StructType(_) => true,
+        ast::Expr::ArrayType(arr) => arr.len.is_some(),
+        ast::Expr::IndexExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name).cloned())
+            .is_some(),
+        ast::Expr::IndexListExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name).cloned())
+            .is_some(),
+        ast::Expr::SelectorExpr(sel) => {
+            if let ast::Expr::Ident(pkg) = &*sel.x {
+                if pkg.name == "unsafe" && sel.sel.name == "Pointer" {
+                    return true;
+                }
+                let key = format!("{}.{}", pkg.name, sel.sel.name);
+                return env.get_type_kind(&key).is_some();
+            }
+            false
+        }
+        ast::Expr::Ident(id) => {
+            is_predeclared_type_name(id.name) || env.get_type_kind(id.name).is_some()
+        }
+        _ => false,
+    }
+}
+
+fn type_name(expr: &ast::Expr<'_>) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(id) => Some(id.name.to_string()),
+        ast::Expr::StarExpr(star) => type_name(&star.x),
+        ast::Expr::SelectorExpr(sel) => Some(sel.sel.name.to_string()),
+        ast::Expr::IndexExpr(index) => type_name(&index.x),
+        ast::Expr::IndexListExpr(index) => type_name(&index.x),
+        _ => None,
+    }
+}
+
+fn is_predeclared_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "any"
+            | "bool"
+            | "byte"
+            | "rune"
+            | "string"
+            | "float32"
+            | "float64"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "error"
+    )
 }
 
 fn lower_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<Item> {
@@ -1458,6 +1576,78 @@ mod tests {
             panic!("expected fixed call");
         };
         assert_eq!(super::variadic_call_start(fixed_call, &env), None);
+    }
+
+    #[test]
+    fn classifies_type_conversions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type MyInt int
+
+                func helper(x int) int { return x }
+
+                func main() {
+                    _ = string(65)
+                    _ = []byte("go")
+                    _ = MyInt(1)
+                    _ = helper(1)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let calls: Vec<&crate::ast::CallExpr> = func
+            .body
+            .as_ref()
+            .map(|body| {
+                body.list
+                    .iter()
+                    .filter_map(|stmt| match stmt {
+                        crate::ast::Stmt::AssignStmt(assign) => assign.rhs.first(),
+                        _ => None,
+                    })
+                    .filter_map(|expr| match expr {
+                        crate::ast::Expr::CallExpr(call) => Some(call),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(string_call) = calls.first() else {
+            panic!("expected string call");
+        };
+        assert_eq!(
+            super::special_type_conversion(string_call),
+            Some(super::SpecialTypeConversionKind::String)
+        );
+        let Some(byte_slice_call) = calls.get(1) else {
+            panic!("expected byte slice call");
+        };
+        assert_eq!(
+            super::special_type_conversion(byte_slice_call),
+            Some(super::SpecialTypeConversionKind::ByteSlice)
+        );
+        let Some(named_call) = calls.get(2) else {
+            panic!("expected named conversion call");
+        };
+        assert!(super::is_general_type_conversion_fun(&named_call.fun, &env));
+        let Some(helper_call) = calls.get(3) else {
+            panic!("expected helper call");
+        };
+        assert!(!super::is_general_type_conversion_fun(
+            &helper_call.fun,
+            &env
+        ));
     }
 
     #[test]

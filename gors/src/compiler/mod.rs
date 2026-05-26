@@ -7709,88 +7709,8 @@ fn extract_type_name(expr: &ast::Expr) -> Option<String> {
     }
 }
 
-fn detect_type_conversion(call_expr: &ast::CallExpr) -> Option<&'static str> {
-    let args = call_expr.args.as_ref()?;
-    if args.len() != 1 {
-        return None;
-    }
-    match &*call_expr.fun {
-        ast::Expr::Ident(id) if id.name == "string" => Some("string"),
-        ast::Expr::Ident(id) if id.name == "any" => Some("any"),
-        ast::Expr::Ident(id) if id.name == "complex64" => Some("complex64"),
-        ast::Expr::Ident(id) if id.name == "complex128" => Some("complex128"),
-        ast::Expr::ArrayType(arr) if arr.len.is_none() => {
-            if let ast::Expr::Ident(elt_id) = &*arr.elt {
-                match elt_id.name {
-                    "byte" | "uint8" => Some("[]byte"),
-                    "rune" | "int32" => Some("[]rune"),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 fn is_general_type_conversion_fun(fun: &ast::Expr) -> bool {
-    match fun {
-        ast::Expr::ParenExpr(paren) => is_general_type_conversion_fun(&paren.x),
-        ast::Expr::StarExpr(_)
-        | ast::Expr::ChanType(_)
-        | ast::Expr::MapType(_)
-        | ast::Expr::InterfaceType(_)
-        | ast::Expr::StructType(_) => true,
-        ast::Expr::ArrayType(arr) => arr.len.is_some(),
-        ast::Expr::IndexExpr(index) => TYPE_ENV.with(|env| {
-            let env = env.borrow();
-            extract_type_name(&index.x)
-                .and_then(|name| env.get_type_kind(&name).cloned())
-                .is_some()
-        }),
-        ast::Expr::IndexListExpr(index) => TYPE_ENV.with(|env| {
-            let env = env.borrow();
-            extract_type_name(&index.x)
-                .and_then(|name| env.get_type_kind(&name).cloned())
-                .is_some()
-        }),
-        ast::Expr::SelectorExpr(sel) => {
-            if let ast::Expr::Ident(pkg) = &*sel.x {
-                if pkg.name == "unsafe" && sel.sel.name == "Pointer" {
-                    return true;
-                }
-                let key = format!("{}.{}", pkg.name, sel.sel.name);
-                return TYPE_ENV.with(|env| env.borrow().get_type_kind(&key).is_some());
-            }
-            false
-        }
-        ast::Expr::Ident(id) => {
-            matches!(
-                id.name,
-                "any"
-                    | "bool"
-                    | "byte"
-                    | "rune"
-                    | "string"
-                    | "float32"
-                    | "float64"
-                    | "int"
-                    | "int8"
-                    | "int16"
-                    | "int32"
-                    | "int64"
-                    | "uint"
-                    | "uint8"
-                    | "uint16"
-                    | "uint32"
-                    | "uint64"
-                    | "uintptr"
-                    | "error"
-            ) || TYPE_ENV.with(|env| env.borrow().get_type_kind(id.name).is_some())
-        }
-        _ => false,
-    }
+    TYPE_ENV.with(|env| ir::is_general_type_conversion_fun(fun, &env.borrow()))
 }
 
 fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
@@ -10968,8 +10888,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 ) {
                     return compile_unsafe_intrinsic_call(call_expr);
                 }
-                if let Some(kind) = detect_type_conversion(&call_expr) {
-                    return compile_type_conversion(call_expr, kind);
+                if let Some(kind) = ir::special_type_conversion(&call_expr) {
+                    return compile_type_conversion(call_expr, kind.name());
                 }
                 if call_expr.args.as_ref().is_some_and(|args| args.len() == 1)
                     && is_general_type_conversion_fun(&call_expr.fun)
