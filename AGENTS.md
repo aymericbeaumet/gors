@@ -656,6 +656,10 @@ Function signature validation is an IR-fronted compiler check in
 mixed named and unnamed parameter/result lists, variadic results, non-final or
 multi-name variadic parameters, and receivers that are variadic or declare other
 than one parameter before backend lowering.
+Receiver-type validation uses the package type environment and rejects method
+receiver bases that are undefined, unnamed, interfaces, or pointer types.
+Single-file and multi-package compile entrypoints run the same IR validation
+helper before Rust AST lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,
 duplicate methods for a receiver base type, and method names that collide with
 fields on the same struct base type before Rust emission.

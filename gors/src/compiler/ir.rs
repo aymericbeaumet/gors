@@ -1189,13 +1189,33 @@ pub enum InvalidLabel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidSignature {
-    DuplicateInterfaceMethod { name: String },
-    DuplicateName { name: String },
-    MixedNamedUnnamed { list: SignatureList },
-    ReceiverCount { count: usize },
+    DuplicateInterfaceMethod {
+        name: String,
+    },
+    DuplicateName {
+        name: String,
+    },
+    MixedNamedUnnamed {
+        list: SignatureList,
+    },
+    ReceiverCount {
+        count: usize,
+    },
+    ReceiverType {
+        base: Option<String>,
+        reason: InvalidReceiverTypeReason,
+    },
     ReceiverVariadic,
     VariadicNotFinal,
     VariadicResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidReceiverTypeReason {
+    Interface,
+    Pointer,
+    Undefined,
+    Unnamed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1341,6 +1361,18 @@ pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignatur
     None
 }
 
+pub fn invalid_receiver_type_in_file(
+    file: &ast::File<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidSignature> {
+    for decl in &file.decls {
+        if let Some(invalid) = invalid_receiver_type_in_decl(decl, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
 pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
     invalid_top_level_names_in_file(file).or_else(|| {
         invalid_method_names_in_file(file).or_else(|| {
@@ -1450,6 +1482,73 @@ fn invalid_signature_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidSignature> {
     match decl {
         ast::Decl::FuncDecl(func) => invalid_signature_in_func_decl(func),
         ast::Decl::GenDecl(gen_decl) => invalid_signature_in_gen_decl(gen_decl),
+    }
+}
+
+fn invalid_receiver_type_in_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<InvalidSignature> {
+    match decl {
+        ast::Decl::FuncDecl(func) => invalid_receiver_type_in_func_decl(func, env),
+        ast::Decl::GenDecl(_) => None,
+    }
+}
+
+fn invalid_receiver_type_in_func_decl(
+    func: &ast::FuncDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidSignature> {
+    let Some(recv) = &func.recv else {
+        return None;
+    };
+    if recv.list.len() != 1 {
+        return None;
+    }
+    let field = recv.list.first()?;
+    if field_binding_count(field) != 1 || field_type_is_variadic(field) {
+        return None;
+    }
+    if field.type_.is_none() {
+        return Some(InvalidSignature::ReceiverType {
+            base: None,
+            reason: InvalidReceiverTypeReason::Unnamed,
+        });
+    }
+    let Some(base) = receiver_base_type_name(recv) else {
+        return Some(InvalidSignature::ReceiverType {
+            base: None,
+            reason: InvalidReceiverTypeReason::Unnamed,
+        });
+    };
+    invalid_receiver_base_type(&base, env).map(|reason| InvalidSignature::ReceiverType {
+        base: Some(base),
+        reason,
+    })
+}
+
+fn invalid_receiver_base_type(base: &str, env: &TypeEnv) -> Option<InvalidReceiverTypeReason> {
+    let Some(kind) = env.get_type_kind(base) else {
+        return Some(InvalidReceiverTypeReason::Undefined);
+    };
+    match kind {
+        TypeKind::Struct => None,
+        TypeKind::Interface => Some(InvalidReceiverTypeReason::Interface),
+        TypeKind::Alias(ty) => {
+            let resolved = env.resolve_alias(ty);
+            if matches!(resolved, GoType::Pointer(_)) {
+                Some(InvalidReceiverTypeReason::Pointer)
+            } else if go_type_is_interface(&resolved, env) {
+                Some(InvalidReceiverTypeReason::Interface)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn go_type_is_interface(ty: &GoType, env: &TypeEnv) -> bool {
+    match ty {
+        GoType::Any | GoType::Error | GoType::Interface(_) => true,
+        GoType::Named(name) => env.is_interface(name),
+        _ => false,
     }
 }
 
@@ -11184,6 +11283,13 @@ mod tests {
         super::invalid_signature_in_file(&file)
     }
 
+    fn invalid_receiver_type(source: &str) -> Option<super::InvalidSignature> {
+        let file = parse_file("test.go", source).unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        super::invalid_receiver_type_in_file(&file, &env)
+    }
+
     #[test]
     fn rejects_invalid_function_signatures() {
         assert_eq!(
@@ -11255,6 +11361,81 @@ mod tests {
             Some(super::InvalidSignature::DuplicateInterfaceMethod {
                 name: "M".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_receiver_base_types() {
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    func (n int) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("int".to_string()),
+                reason: super::InvalidReceiverTypeReason::Undefined,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    func (s []int) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: None,
+                reason: super::InvalidReceiverTypeReason::Unnamed,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type I interface{}
+                    func (I) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("I".to_string()),
+                reason: super::InvalidReceiverTypeReason::Interface,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type P *int
+                    func (P) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("P".to_string()),
+                reason: super::InvalidReceiverTypeReason::Pointer,
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_defined_receiver_base_types() {
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    func (S) M() {}
+                    type S struct{}
+                    type N int
+                    func (*N) N() {}
+                "#,
+            ),
+            None
         );
     }
 

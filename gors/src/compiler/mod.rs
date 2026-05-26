@@ -2829,21 +2829,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
-    if let Some(invalid) = ir::invalid_signature_in_file(&file) {
-        return Err(invalid_signature_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
-        return Err(invalid_declaration_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
-        return Err(invalid_declaration_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_expression_in_file(&file, &type_env) {
-        return Err(invalid_statement_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
-        return Err(invalid_statement_error(invalid));
-    }
+    validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -2872,27 +2858,38 @@ pub fn compile_with_type_env_and_import_renames(
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
-    if let Some(invalid) = ir::invalid_signature_in_file(&file) {
-        return Err(invalid_signature_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
-        return Err(invalid_declaration_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
-        return Err(invalid_declaration_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_expression_in_file(&file, &type_env) {
-        return Err(invalid_statement_error(invalid));
-    }
-    if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
-        return Err(invalid_statement_error(invalid));
-    }
+    validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
+}
+
+fn validate_file_with_type_env(
+    file: &ast::File<'_>,
+    type_env: &typeinfer::TypeEnv,
+) -> Result<(), CompilerError> {
+    if let Some(invalid) = ir::invalid_signature_in_file(file) {
+        return Err(invalid_signature_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_receiver_type_in_file(file, type_env) {
+        return Err(invalid_signature_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_declaration_in_file(file) {
+        return Err(invalid_declaration_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_value_declaration_in_file(file, type_env) {
+        return Err(invalid_declaration_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_expression_in_file(file, type_env) {
+        return Err(invalid_statement_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(file) {
+        return Err(invalid_statement_error(invalid));
+    }
+    Ok(())
 }
 
 /// Compile a parsed program (main package + imports) into a single Rust file.
@@ -3139,6 +3136,7 @@ fn compile_program_impl(
             &stdlib_type_envs,
             &stdlib_module_names,
         );
+        validate_file_with_type_env(&pkg.ast, &type_env)?;
         let _ir = ir::lower_file(&pkg.ast, &type_env);
         set_type_env(type_env);
         set_import_renames(import_rewrites.clone());
@@ -3206,6 +3204,7 @@ fn compile_program_impl(
         &stdlib_type_envs,
         &stdlib_module_names,
     );
+    validate_file_with_type_env(&program.main_package.ast, &main_type_env)?;
     let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
     set_type_env(main_type_env);
     set_import_renames(main_import_rewrites.clone());
@@ -13096,6 +13095,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         ir::InvalidSignature::ReceiverCount { count } => {
             format!("method receiver must declare exactly one parameter, got {count}")
         }
+        ir::InvalidSignature::ReceiverType { base, reason } => {
+            invalid_receiver_type_reason(base.as_deref(), reason)
+        }
         ir::InvalidSignature::ReceiverVariadic => "method receiver cannot be variadic".to_string(),
         ir::InvalidSignature::VariadicNotFinal => {
             "variadic parameter must be the final incoming parameter".to_string()
@@ -13103,6 +13105,29 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         ir::InvalidSignature::VariadicResult => "result parameter cannot be variadic".to_string(),
     };
     CompilerError::InvalidFunctionSignature(message)
+}
+
+fn invalid_receiver_type_reason(
+    base: Option<&str>,
+    reason: ir::InvalidReceiverTypeReason,
+) -> String {
+    match reason {
+        ir::InvalidReceiverTypeReason::Interface => {
+            let base = base.unwrap_or("receiver");
+            format!("method receiver base type {base} cannot be an interface")
+        }
+        ir::InvalidReceiverTypeReason::Pointer => {
+            let base = base.unwrap_or("receiver");
+            format!("method receiver base type {base} cannot be a pointer type")
+        }
+        ir::InvalidReceiverTypeReason::Undefined => {
+            let base = base.unwrap_or("receiver");
+            format!("method receiver base type {base} is not defined in this package")
+        }
+        ir::InvalidReceiverTypeReason::Unnamed => {
+            "method receiver type must be a defined type or pointer to one".to_string()
+        }
+    }
 }
 
 fn signature_list_name(list: ir::SignatureList) -> &'static str {
@@ -17787,6 +17812,38 @@ func main() {
         let program = crate::parser::parse_program(dir.to_str().unwrap()).unwrap();
         let compiled = super::compile_program_multi(program).unwrap();
         printer::generate_multi(compiled).unwrap()
+    }
+
+    #[test]
+    fn compile_program_multi_applies_ir_validation_to_merged_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+var X int
+
+func main() {}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("other.go").as_path(),
+            r#"
+package main
+
+const X = 1
+"#,
+        );
+
+        let program = crate::parser::parse_program(tmp.path().to_str().unwrap()).unwrap();
+        match super::compile_program_multi(program) {
+            Err(super::CompilerError::UnsupportedConstruct(err)) => {
+                assert!(err.contains("duplicate top-level declaration X"), "{err:?}");
+            }
+            Err(err) => panic!("expected duplicate declaration rejection, got {err:?}"),
+            Ok(_) => panic!("expected duplicate declaration rejection"),
+        }
     }
 
     #[test]
