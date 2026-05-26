@@ -537,6 +537,9 @@ Return statement arity is also validated before backend lowering. Empty returns
 are allowed only for functions with no results or named result parameters, a
 single return expression may forward a matching multi-valued function call, and
 explicit multi-expression returns must contain only single-valued expressions.
+Type switch guards are validated against the spec grammar before lowering:
+only `x.(type)` and `identifier := x.(type)` forms are accepted, with exactly
+one non-blank guard identifier when the short declaration form is used.
 The same statement validation rejects short variable declarations in a `for`
 post statement; Go only permits them in init/simple statement positions.
 Switch, type-switch, and select statements reject multiple `default` clauses in

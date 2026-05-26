@@ -12753,6 +12753,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_short_var_decl_reason(reason)
             )
         }
+        ir::InvalidStatement::TypeSwitchGuard { reason } => {
+            format!(
+                "invalid type switch guard: {}",
+                invalid_type_switch_guard_reason(reason)
+            )
+        }
     };
     CompilerError::UnsupportedConstruct(message)
 }
@@ -12815,6 +12821,21 @@ fn invalid_return_reason(reason: ir::InvalidReturnReason) -> String {
         }
         ir::InvalidReturnReason::MultiValueInSingleValueContext => {
             "multi-valued expression in explicit return list".to_string()
+        }
+    }
+}
+
+fn invalid_type_switch_guard_reason(reason: ir::InvalidTypeSwitchGuardReason) -> String {
+    match reason {
+        ir::InvalidTypeSwitchGuardReason::BlankIdentifier => {
+            "guard variable must not be blank".to_string()
+        }
+        ir::InvalidTypeSwitchGuardReason::InvalidAssignmentToken => {
+            "guard assignment must use :=".to_string()
+        }
+        ir::InvalidTypeSwitchGuardReason::InvalidExpression => "guard must be x.(type)".to_string(),
+        ir::InvalidTypeSwitchGuardReason::InvalidIdentifierCount => {
+            "guard must declare exactly one identifier".to_string()
         }
     }
 }
@@ -17801,6 +17822,19 @@ mod tests {
                 }
             "#,
             "invalid return statement: expected 1 result value(s), got 0",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main(x any) {
+                    var v any
+                    switch v = x.(type) {
+                    default:
+                    }
+                }
+            "#,
+            "invalid type switch guard: guard assignment must use :=",
         );
         assert_unsupported_construct(
             r#"

@@ -979,15 +979,34 @@ pub enum InvalidBranch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatement {
-    Assignment { reason: InvalidAssignmentReason },
-    Defer { reason: InvalidStatementReason },
-    DuplicateDefault { kind: DefaultClauseKind },
-    Expr { reason: InvalidStatementReason },
+    Assignment {
+        reason: InvalidAssignmentReason,
+    },
+    Defer {
+        reason: InvalidStatementReason,
+    },
+    DuplicateDefault {
+        kind: DefaultClauseKind,
+    },
+    Expr {
+        reason: InvalidStatementReason,
+    },
     ForPostShortVarDecl,
-    Go { reason: InvalidStatementReason },
-    Range { reason: InvalidRangeReason },
-    Return { reason: InvalidReturnReason },
-    ShortVarDecl { reason: InvalidShortVarDeclReason },
+    Go {
+        reason: InvalidStatementReason,
+    },
+    Range {
+        reason: InvalidRangeReason,
+    },
+    Return {
+        reason: InvalidReturnReason,
+    },
+    ShortVarDecl {
+        reason: InvalidShortVarDeclReason,
+    },
+    TypeSwitchGuard {
+        reason: InvalidTypeSwitchGuardReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1002,6 +1021,14 @@ pub enum InvalidAssignmentReason {
 pub enum InvalidReturnReason {
     CountMismatch { expected: usize, values: usize },
     MultiValueInSingleValueContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidTypeSwitchGuardReason {
+    BlankIdentifier,
+    InvalidAssignmentToken,
+    InvalidExpression,
+    InvalidIdentifierCount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3276,6 +3303,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                     kind: DefaultClauseKind::TypeSwitch,
                 });
             }
+            if let Some(reason) = invalid_type_switch_guard(&type_switch.assign) {
+                return Some(InvalidStatement::TypeSwitchGuard { reason });
+            }
             let mut switch_env = env.clone();
             if let Some(init) = &type_switch.init
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
@@ -3875,6 +3905,40 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
         }
         ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env),
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_type_switch_guard(stmt: &ast::Stmt<'_>) -> Option<InvalidTypeSwitchGuardReason> {
+    match stmt {
+        ast::Stmt::ExprStmt(expr) => (!is_type_switch_guard_expr(&expr.x))
+            .then_some(InvalidTypeSwitchGuardReason::InvalidExpression),
+        ast::Stmt::AssignStmt(assign) => {
+            if assign.tok != token::Token::DEFINE {
+                return Some(InvalidTypeSwitchGuardReason::InvalidAssignmentToken);
+            }
+            if assign.lhs.len() != 1 || assign.rhs.len() != 1 {
+                return Some(InvalidTypeSwitchGuardReason::InvalidIdentifierCount);
+            }
+            if !assign.rhs.first().is_some_and(is_type_switch_guard_expr) {
+                return Some(InvalidTypeSwitchGuardReason::InvalidExpression);
+            }
+            match assign.lhs.first() {
+                Some(ast::Expr::Ident(ident)) if ident.name == "_" => {
+                    Some(InvalidTypeSwitchGuardReason::BlankIdentifier)
+                }
+                Some(ast::Expr::Ident(_)) => None,
+                _ => Some(InvalidTypeSwitchGuardReason::InvalidIdentifierCount),
+            }
+        }
+        _ => Some(InvalidTypeSwitchGuardReason::InvalidExpression),
+    }
+}
+
+fn is_type_switch_guard_expr(expr: &ast::Expr<'_>) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => is_type_switch_guard_expr(&paren.x),
+        ast::Expr::TypeAssertExpr(assert) => assert.type_.is_none(),
+        _ => false,
     }
 }
 
@@ -8308,6 +8372,100 @@ mod tests {
                 Some(super::InvalidStatement::DuplicateDefault { kind })
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_type_switch_guards() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main(x any) {
+                        var v any
+                        switch v = x.(type) {
+                        default:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchGuardReason::InvalidAssignmentToken,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main(x any) {
+                        switch v, ok := x.(type) {
+                        default:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchGuardReason::InvalidIdentifierCount,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main(x any) {
+                        switch _ := x.(type) {
+                        default:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchGuardReason::BlankIdentifier,
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::TypeSwitchGuard { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_type_switch_guards() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main(x any) {
+                    switch x.(type) {
+                    default:
+                    }
+
+                    switch v := x.(type) {
+                    case int:
+                        _ = v
+                    default:
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     fn invalid_short_var_redeclaration(source: &str) -> Option<super::InvalidStatement> {
