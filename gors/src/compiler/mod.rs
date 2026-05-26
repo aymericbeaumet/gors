@@ -12886,6 +12886,9 @@ fn invalid_return_reason(reason: ir::InvalidReturnReason) -> String {
         ir::InvalidReturnReason::MultiValueInSingleValueContext => {
             "multi-valued expression in explicit return list".to_string()
         }
+        ir::InvalidReturnReason::TypeMismatch { expected, actual } => {
+            format!("cannot return {actual} as {expected}")
+        }
     }
 }
 
@@ -18092,6 +18095,16 @@ mod tests {
                 }
             "#,
             "invalid return statement: expected 1 result value(s), got 0",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() int {
+                    return "go"
+                }
+            "#,
+            "invalid return statement: cannot return string as int",
         );
         assert_unsupported_construct(
             r#"

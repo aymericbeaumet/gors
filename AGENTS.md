@@ -482,10 +482,11 @@ unresolved named conditions stay permissive until type inference can prove them
 invalid.
 IR send-statement validation rejects known non-channel channel operands before
 backend lowering and rejects sends to known receive-only channels; send-value
-assignability rejects simple known mismatches such as sending `string` to
-`chan int`, but stays permissive for unknown/named/interface/nil-like values and
-numeric constants because the current type environment does not preserve full Go
-assignability or untyped-constant information.
+assignability rejects simple known scalar mismatches such as sending `string` to
+`chan int`, but stays permissive for aggregate, pointer, unknown, named,
+interface, nil-like values, and numeric constants because the current type
+environment does not preserve full Go assignability or untyped-constant
+information.
 IR receive validation rejects known non-channel receive operands in statement,
 assignment, and value-declaration contexts. Receive expression type inference
 returns the channel element type for known channel operands so boolean channel
@@ -513,6 +514,11 @@ lowering; blank identifiers and map-index operands are valid assignment targets,
 but string indexes, literals, calls, constants, and unshadowed predeclared names
 are not. Short variable declarations reject non-identifier left operands in
 plain assignments and range clauses.
+IR return validation rejects simple known scalar mismatches for explicit result
+expressions and single multi-result function calls, using the same conservative
+assignability helper as channel send validation. It remains permissive for
+aggregate, pointer, unknown, named, interface, nil-like values, and numeric
+constants until the type environment preserves full assignability details.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.
