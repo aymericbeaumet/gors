@@ -93,6 +93,10 @@ gors-builtin/
   lets `default` appear anywhere while still running only when no case matches,
   executes only explicit `fallthrough` chains, and maps unlabeled case-level
   `break` to the generated Rust switch block label.
+- `for` loops with post statements wrap the body in a generated labeled block
+  whenever a matching `continue` is present. This covers both unlabeled
+  continues and `continue label` targeting the current loop so Go's post clause
+  still runs before the next iteration.
 - Non-void functions and function literals with no explicit final Rust `return`
   get a tail `panic!("gors: missing return")` fallback. Go rejects reachable
   missing-return paths, but valid Go control-flow constructs such as exhaustive
