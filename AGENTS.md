@@ -547,7 +547,10 @@ with the Go `[]byte`/`string` exception; `append` requires a destination slice
 and assignable elements or a matching spread slice, with the Go `[]byte`/string
 spread exception; `make` requires a slice, map, or channel type with the
 spec-defined argument counts and integer-like size arguments; `new` rejects
-spread calls, missing/extra arguments, and `nil`.
+spread calls, missing/extra arguments, and `nil`; `complex`, `real`, and `imag`
+enforce the spec's complex-number operand shape; `min` and `max` require at
+least one ordered numeric/string argument and reject spread calls; `panic`,
+`recover`, `print`, and `println` enforce their fixed arity/spread rules.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.

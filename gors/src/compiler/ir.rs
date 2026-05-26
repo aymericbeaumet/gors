@@ -5372,10 +5372,17 @@ fn invalid_builtin_call_expression(
         BuiltinCallKind::Cap | BuiltinCallKind::Len => invalid_builtin_len_cap_call(call, env),
         BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
         BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
+        BuiltinCallKind::Complex => invalid_builtin_complex_call(call, env),
         BuiltinCallKind::Copy => invalid_builtin_copy_call(call, env),
         BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
+        BuiltinCallKind::Imag | BuiltinCallKind::Real => invalid_builtin_real_imag_call(call, env),
         BuiltinCallKind::Make => invalid_builtin_make_call(call, env),
+        BuiltinCallKind::Max | BuiltinCallKind::Min => invalid_builtin_min_max_call(call, env),
         BuiltinCallKind::New => invalid_builtin_new_call(call),
+        BuiltinCallKind::Panic => invalid_builtin_panic_call(call),
+        BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
+        BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
+        BuiltinCallKind::Recover => invalid_builtin_recover_call(call),
         _ => None,
     }
 }
@@ -5388,6 +5395,10 @@ fn invalid_builtin_call_statement(
         BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
         BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
         BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
+        BuiltinCallKind::Panic => invalid_builtin_panic_call(call),
+        BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
+        BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
+        BuiltinCallKind::Recover => invalid_builtin_recover_call(call),
         _ => None,
     }
 }
@@ -5538,6 +5549,186 @@ fn invalid_builtin_len_cap_call(
         kind,
         format!("{expected}, got {}", go_type_display_name(&ty)),
     ))
+}
+
+fn invalid_builtin_complex_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Complex,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 2 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Complex,
+            "expects exactly two arguments",
+        ));
+    }
+    let left = complex_arg_float_type(&args[0], env);
+    let right = complex_arg_float_type(&args[1], env);
+    if let Err(ty) = left {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Complex,
+            format!(
+                "arguments must have floating-point type, got {}",
+                go_type_display_name(&ty)
+            ),
+        ));
+    }
+    if let Err(ty) = right {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Complex,
+            format!(
+                "arguments must have floating-point type, got {}",
+                go_type_display_name(&ty)
+            ),
+        ));
+    }
+    match (left.ok().flatten(), right.ok().flatten()) {
+        (Some(left), Some(right)) if left != right => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Complex,
+            format!(
+                "arguments must have the same floating-point type, got {} and {}",
+                go_type_display_name(&left),
+                go_type_display_name(&right)
+            ),
+        )),
+        _ => None,
+    }
+}
+
+fn complex_arg_float_type(arg: &ast::Expr<'_>, env: &TypeEnv) -> Result<Option<GoType>, GoType> {
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
+    match unparen_expr(arg) {
+        ast::Expr::BasicLit(lit)
+            if matches!(
+                lit.kind,
+                token::Token::INT | token::Token::FLOAT | token::Token::CHAR
+            ) =>
+        {
+            Ok(None)
+        }
+        ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_numeric(&ty) => Ok(None),
+        _ => match ty {
+            GoType::Float32 | GoType::Float64 => Ok(Some(ty)),
+            GoType::Unknown | GoType::Named(_) => Ok(None),
+            other => Err(other),
+        },
+    }
+}
+
+fn invalid_builtin_real_imag_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let kind = unshadowed_builtin_call_kind(call, env)?;
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "expects exactly one argument",
+        ));
+    }
+    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    if matches!(
+        ty,
+        GoType::Complex64 | GoType::Complex128 | GoType::Unknown | GoType::Named(_)
+    ) {
+        return None;
+    }
+    Some(invalid_builtin_call_reason(
+        kind,
+        format!(
+            "argument must have complex type, got {}",
+            go_type_display_name(&ty)
+        ),
+    ))
+}
+
+fn invalid_builtin_min_max_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let kind = unshadowed_builtin_call_kind(call, env)?;
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.is_empty() {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "expects at least one argument",
+        ));
+    }
+
+    let mut saw_string = false;
+    let mut saw_numeric = false;
+    for arg in args {
+        let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
+        match min_max_arg_kind(arg, &ty, env) {
+            MinMaxArgKind::Numeric => saw_numeric = true,
+            MinMaxArgKind::String => saw_string = true,
+            MinMaxArgKind::Unknown => {}
+            MinMaxArgKind::Invalid => {
+                return Some(invalid_builtin_call_reason(
+                    kind,
+                    format!(
+                        "arguments must have ordered type, got {}",
+                        go_type_display_name(&ty)
+                    ),
+                ));
+            }
+        }
+    }
+    if saw_string && saw_numeric {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "arguments must be all numeric or all string",
+        ));
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MinMaxArgKind {
+    Numeric,
+    String,
+    Unknown,
+    Invalid,
+}
+
+fn min_max_arg_kind(arg: &ast::Expr<'_>, ty: &GoType, env: &TypeEnv) -> MinMaxArgKind {
+    match unparen_expr(arg) {
+        ast::Expr::BasicLit(lit)
+            if matches!(
+                lit.kind,
+                token::Token::INT | token::Token::FLOAT | token::Token::CHAR
+            ) =>
+        {
+            MinMaxArgKind::Numeric
+        }
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => MinMaxArgKind::String,
+        ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_numeric(ty) => {
+            MinMaxArgKind::Numeric
+        }
+        _ if ty.is_numeric() => MinMaxArgKind::Numeric,
+        _ if matches!(ty, GoType::String) => MinMaxArgKind::String,
+        _ if matches!(ty, GoType::Unknown | GoType::Named(_)) => MinMaxArgKind::Unknown,
+        _ => MinMaxArgKind::Invalid,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -5755,10 +5946,63 @@ fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatement
     None
 }
 
+fn invalid_builtin_panic_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Panic,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Panic,
+            "expects exactly one argument",
+        ));
+    }
+    None
+}
+
+fn invalid_builtin_recover_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Recover,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if !args.is_empty() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Recover,
+            "expects no arguments",
+        ));
+    }
+    None
+}
+
+fn invalid_builtin_print_call(
+    call: &ast::CallExpr<'_>,
+    kind: BuiltinCallKind,
+) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "does not accept spread arguments",
+        ));
+    }
+    None
+}
+
 fn invalid_builtin_clear_call(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Clear,
+            "does not accept spread arguments",
+        ));
+    }
     let args = call.args.as_deref().unwrap_or(&[]);
     if args.len() != 1 {
         return Some(invalid_builtin_call_reason(
@@ -5784,6 +6028,12 @@ fn invalid_builtin_close_call(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Close,
+            "does not accept spread arguments",
+        ));
+    }
     let args = call.args.as_deref().unwrap_or(&[]);
     if args.len() != 1 {
         return Some(invalid_builtin_call_reason(
@@ -5880,6 +6130,12 @@ fn invalid_builtin_delete_call(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Delete,
+            "does not accept spread arguments",
+        ));
+    }
     let args = call.args.as_deref().unwrap_or(&[]);
     if args.len() != 2 {
         return Some(invalid_builtin_call_reason(
@@ -10369,6 +10625,29 @@ mod tests {
                 "delete",
                 "expects exactly two arguments",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        panic()
+                    }
+                "#,
+                "panic",
+                "expects exactly one argument",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        println(xs...)
+                    }
+                "#,
+                "println",
+                "does not accept spread arguments",
+            ),
         ];
 
         for (source, name, reason) in cases {
@@ -10529,6 +10808,94 @@ mod tests {
                 "new",
                 "argument must not be nil",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = complex("x", 1)
+                    }
+                "#,
+                "complex",
+                "arguments must have floating-point type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = complex(float32(1), float64(2))
+                    }
+                "#,
+                "complex",
+                "arguments must have the same floating-point type, got float32 and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = real(1)
+                    }
+                "#,
+                "real",
+                "argument must have complex type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = imag("x")
+                    }
+                "#,
+                "imag",
+                "argument must have complex type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = min()
+                    }
+                "#,
+                "min",
+                "expects at least one argument",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = max(true, false)
+                    }
+                "#,
+                "max",
+                "arguments must have ordered type, got bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = max("x", 1)
+                    }
+                "#,
+                "max",
+                "arguments must be all numeric or all string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = recover(1)
+                    }
+                "#,
+                "recover",
+                "expects no arguments",
+            ),
         ];
 
         for (source, name, reason) in cases {
@@ -10600,6 +10967,14 @@ mod tests {
                     _ = make(Ints, 1)
                     _ = new(int)
                     _ = new(123)
+                    _ = complex(1, 2)
+                    _ = complex(float32(1), float32(2))
+                    _ = real(1i)
+                    _ = imag(complex(1, 2))
+                    _ = max(1, 2.0, 3)
+                    _ = min("a", "b")
+                    _ = recover()
+                    println("ok", 1)
                     len := func(int) int { return 1 }
                     _ = len(1)
                 }
