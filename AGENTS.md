@@ -449,6 +449,11 @@ IR goto validation rejects undefined labels, jumps into nested blocks, and
 forward gotos that would skip same-block local declarations before the Rust
 state-machine lowering hoists locals for valid forward jumps; do not use
 hoisting to make Go-invalid control flow compile.
+IR branch validation rejects `break`, `continue`, and `fallthrough` placements
+that Go disallows before Rust lowering. Labeled `break`/`continue` must target
+an enclosing breakable statement or loop respectively, and `fallthrough` is
+accepted only as the final non-empty top-level statement of a non-final
+expression-switch case.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array

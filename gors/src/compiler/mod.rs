@@ -12657,9 +12657,40 @@ fn invalid_goto_error(invalid: ir::InvalidGoto) -> CompilerError {
     CompilerError::UnsupportedConstruct(message)
 }
 
+fn invalid_branch_error(invalid: ir::InvalidBranch) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidBranch::BreakLabel { label } => {
+            format!("invalid break to non-enclosing label {}", label)
+        }
+        ir::InvalidBranch::BreakOutside => {
+            "invalid break outside for, switch, or select".to_string()
+        }
+        ir::InvalidBranch::ContinueLabel { label } => {
+            format!("invalid continue to non-enclosing for label {}", label)
+        }
+        ir::InvalidBranch::ContinueOutside => "invalid continue outside for loop".to_string(),
+        ir::InvalidBranch::FallthroughInFinalCase => {
+            "invalid fallthrough in final switch case".to_string()
+        }
+        ir::InvalidBranch::FallthroughInTypeSwitch => {
+            "invalid fallthrough in type switch".to_string()
+        }
+        ir::InvalidBranch::FallthroughNotFinal => {
+            "invalid fallthrough before final switch case statement".to_string()
+        }
+        ir::InvalidBranch::FallthroughOutsideSwitch => {
+            "invalid fallthrough outside expression switch case".to_string()
+        }
+    };
+    CompilerError::UnsupportedConstruct(message)
+}
+
 fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_branch_in_func(body) {
+        return Err(invalid_branch_error(invalid));
     }
     Ok(())
 }
@@ -17308,6 +17339,47 @@ mod tests {
                 }
             "#,
             "invalid goto to undefined label Missing",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_branch_statements() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    break
+                }
+            "#,
+            "invalid break outside for, switch, or select",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                Switch:
+                    switch 1 {
+                    default:
+                        continue Switch
+                    }
+                }
+            "#,
+            "invalid continue to non-enclosing for label Switch",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    switch 1 {
+                    default:
+                        fallthrough
+                    }
+                }
+            "#,
+            "invalid fallthrough in final switch case",
         );
     }
 

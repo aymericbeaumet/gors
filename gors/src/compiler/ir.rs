@@ -965,6 +965,18 @@ pub enum InvalidGoto {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidBranch {
+    BreakLabel { label: String },
+    BreakOutside,
+    ContinueLabel { label: String },
+    ContinueOutside,
+    FallthroughInFinalCase,
+    FallthroughInTypeSwitch,
+    FallthroughNotFinal,
+    FallthroughOutsideSwitch,
+}
+
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
     let mut label_positions = BTreeMap::new();
     for (idx, stmt) in block.list.iter().enumerate() {
@@ -1001,6 +1013,11 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
     None
 }
 
+pub fn invalid_branch_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidBranch> {
+    let mut context = BranchContext::default();
+    invalid_branch_in_block(block, &mut context)
+}
+
 pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
     let mut labels = BTreeMap::new();
     collect_label_paths_in_block(block, &[], &mut labels);
@@ -1016,6 +1033,552 @@ pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<Invalid
         }
     }
     None
+}
+
+#[derive(Default)]
+struct BranchContext {
+    breakable_depth: usize,
+    loop_depth: usize,
+    labels: Vec<(String, BranchLabelTarget)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BranchLabelTarget {
+    Breakable,
+    Loop,
+}
+
+impl BranchContext {
+    fn with_breakable<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.breakable_depth += 1;
+        let out = f(self);
+        self.breakable_depth -= 1;
+        out
+    }
+
+    fn with_loop<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.breakable_depth += 1;
+        self.loop_depth += 1;
+        let out = f(self);
+        self.loop_depth -= 1;
+        self.breakable_depth -= 1;
+        out
+    }
+
+    fn with_labels<T>(
+        &mut self,
+        labels: Vec<String>,
+        target: Option<BranchLabelTarget>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let original_len = self.labels.len();
+        if let Some(target) = target {
+            self.labels
+                .extend(labels.into_iter().map(|label| (label, target)));
+        }
+        let out = f(self);
+        self.labels.truncate(original_len);
+        out
+    }
+
+    fn label_target(&self, label: &str) -> Option<BranchLabelTarget> {
+        self.labels
+            .iter()
+            .rev()
+            .find_map(|(name, target)| (name == label).then_some(*target))
+    }
+}
+
+fn invalid_branch_in_block(
+    block: &ast::BlockStmt<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    invalid_branch_in_stmt_list(&block.list, context)
+}
+
+fn invalid_branch_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_branch_in_stmt(stmt, context) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_branch_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                if let Some(invalid) = invalid_branch_in_expr(expr, context) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::BranchStmt(branch) => invalid_branch_stmt(branch, context),
+        ast::Stmt::BlockStmt(block) => invalid_branch_in_block(block, context),
+        ast::Stmt::CaseClause(case) => invalid_branch_in_case_body(&case.body, context),
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_branch_in_stmt(comm, context)
+            {
+                return Some(invalid);
+            }
+            invalid_branch_in_stmt_list(&comm.body, context)
+        }
+        ast::Stmt::DeclStmt(_) => None,
+        ast::Stmt::DeferStmt(defer) => invalid_branch_in_call(&defer.call, context),
+        ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::ExprStmt(expr) => invalid_branch_in_expr(&expr.x, context),
+        ast::Stmt::ForStmt(for_stmt) => context.with_loop(|context| {
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_branch_in_stmt(init, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(invalid) = invalid_branch_in_expr(cond, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_branch_in_stmt(post, context)
+            {
+                return Some(invalid);
+            }
+            invalid_branch_in_block(&for_stmt.body, context)
+        }),
+        ast::Stmt::GoStmt(go) => invalid_branch_in_call(&go.call, context),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_branch_in_stmt(init, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_branch_in_expr(&if_stmt.cond, context) {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_branch_in_block(&if_stmt.body, context) {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                return invalid_branch_in_stmt(else_branch, context);
+            }
+            None
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_branch_in_expr(&inc_dec.x, context),
+        ast::Stmt::LabeledStmt(labeled) => invalid_branch_in_labeled_stmt(labeled, context),
+        ast::Stmt::RangeStmt(range) => context.with_loop(|context| {
+            if let Some(key) = &range.key
+                && let Some(invalid) = invalid_branch_in_expr(key, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(value) = &range.value
+                && let Some(invalid) = invalid_branch_in_expr(value, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_branch_in_expr(&range.x, context) {
+                return Some(invalid);
+            }
+            invalid_branch_in_block(&range.body, context)
+        }),
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                if let Some(invalid) = invalid_branch_in_expr(expr, context) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::SelectStmt(select) => context.with_breakable(|context| {
+            for stmt in &select.body.list {
+                if let Some(invalid) = invalid_branch_in_stmt(stmt, context) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Stmt::SendStmt(send) => invalid_branch_in_expr(&send.chan, context)
+            .or_else(|| invalid_branch_in_expr(&send.value, context)),
+        ast::Stmt::SwitchStmt(switch) => context.with_breakable(|context| {
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_branch_in_stmt(init, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(invalid) = invalid_branch_in_expr(tag, context)
+            {
+                return Some(invalid);
+            }
+            invalid_branch_in_expression_switch_cases(&switch.body.list, context)
+        }),
+        ast::Stmt::TypeSwitchStmt(type_switch) => context.with_breakable(|context| {
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_branch_in_stmt(init, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_branch_in_stmt(&type_switch.assign, context) {
+                return Some(invalid);
+            }
+            invalid_branch_in_type_switch_cases(&type_switch.body.list, context)
+        }),
+    }
+}
+
+fn invalid_branch_stmt(
+    branch: &ast::BranchStmt<'_>,
+    context: &BranchContext,
+) -> Option<InvalidBranch> {
+    match branch.tok {
+        token::Token::BREAK => {
+            let Some(label) = branch.label.as_ref() else {
+                return (context.breakable_depth == 0).then_some(InvalidBranch::BreakOutside);
+            };
+            match context.label_target(label.name) {
+                Some(BranchLabelTarget::Breakable | BranchLabelTarget::Loop) => None,
+                None => Some(InvalidBranch::BreakLabel {
+                    label: label.name.to_string(),
+                }),
+            }
+        }
+        token::Token::CONTINUE => {
+            let Some(label) = branch.label.as_ref() else {
+                return (context.loop_depth == 0).then_some(InvalidBranch::ContinueOutside);
+            };
+            match context.label_target(label.name) {
+                Some(BranchLabelTarget::Loop) => None,
+                Some(BranchLabelTarget::Breakable) | None => Some(InvalidBranch::ContinueLabel {
+                    label: label.name.to_string(),
+                }),
+            }
+        }
+        token::Token::FALLTHROUGH => Some(InvalidBranch::FallthroughOutsideSwitch),
+        _ => None,
+    }
+}
+
+fn invalid_branch_in_labeled_stmt(
+    labeled: &ast::LabeledStmt<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    let mut labels = vec![labeled.label.name.to_string()];
+    let mut inner = labeled.stmt.as_ref();
+    while let ast::Stmt::LabeledStmt(next) = inner {
+        labels.push(next.label.name.to_string());
+        inner = &next.stmt;
+    }
+    let target = branch_label_target(inner);
+    context.with_labels(labels, target, |context| {
+        invalid_branch_in_stmt(inner, context)
+    })
+}
+
+fn branch_label_target(stmt: &ast::Stmt<'_>) -> Option<BranchLabelTarget> {
+    match stmt {
+        ast::Stmt::ForStmt(_) | ast::Stmt::RangeStmt(_) => Some(BranchLabelTarget::Loop),
+        ast::Stmt::SelectStmt(_) | ast::Stmt::SwitchStmt(_) | ast::Stmt::TypeSwitchStmt(_) => {
+            Some(BranchLabelTarget::Breakable)
+        }
+        _ => None,
+    }
+}
+
+fn invalid_branch_in_expression_switch_cases(
+    stmts: &[ast::Stmt<'_>],
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    let case_indices: Vec<_> = stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, stmt)| matches!(stmt, ast::Stmt::CaseClause(_)).then_some(idx))
+        .collect();
+
+    for (case_order, stmt_idx) in case_indices.iter().enumerate() {
+        let ast::Stmt::CaseClause(case) = &stmts[*stmt_idx] else {
+            continue;
+        };
+        if let Some(invalid) = invalid_branch_in_case_exprs(case, context) {
+            return Some(invalid);
+        }
+        let final_idx = final_non_empty_stmt_idx(&case.body);
+        for (idx, stmt) in case.body.iter().enumerate() {
+            let allowed_fallthrough = final_idx == Some(idx) && case_order + 1 < case_indices.len();
+            if allowed_fallthrough && is_fallthrough_stmt(stmt) {
+                continue;
+            }
+            if contains_fallthrough_for_current_switch(stmt) {
+                return Some(
+                    if final_idx == Some(idx) && case_order + 1 == case_indices.len() {
+                        InvalidBranch::FallthroughInFinalCase
+                    } else {
+                        InvalidBranch::FallthroughNotFinal
+                    },
+                );
+            }
+            if let Some(invalid) = invalid_branch_in_stmt(stmt, context) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_branch_in_type_switch_cases(
+    stmts: &[ast::Stmt<'_>],
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    for stmt in stmts {
+        let ast::Stmt::CaseClause(case) = stmt else {
+            continue;
+        };
+        if let Some(invalid) = invalid_branch_in_case_exprs(case, context) {
+            return Some(invalid);
+        }
+        for stmt in &case.body {
+            if contains_fallthrough_for_current_switch(stmt) {
+                return Some(InvalidBranch::FallthroughInTypeSwitch);
+            }
+            if let Some(invalid) = invalid_branch_in_stmt(stmt, context) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_branch_in_case_exprs(
+    case: &ast::CaseClause<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    if let Some(exprs) = &case.list {
+        for expr in exprs {
+            if let Some(invalid) = invalid_branch_in_expr(expr, context) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_branch_in_case_body(
+    body: &[ast::Stmt<'_>],
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    invalid_branch_in_stmt_list(body, context)
+}
+
+fn final_non_empty_stmt_idx(stmts: &[ast::Stmt<'_>]) -> Option<usize> {
+    stmts
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, stmt)| (!matches!(stmt, ast::Stmt::EmptyStmt(_))).then_some(idx))
+}
+
+fn is_fallthrough_stmt(stmt: &ast::Stmt<'_>) -> bool {
+    matches!(
+        stmt,
+        ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::FALLTHROUGH
+    )
+}
+
+fn contains_fallthrough_for_current_switch(stmt: &ast::Stmt<'_>) -> bool {
+    match stmt {
+        ast::Stmt::BranchStmt(branch) => branch.tok == token::Token::FALLTHROUGH,
+        ast::Stmt::BlockStmt(block) => block
+            .list
+            .iter()
+            .any(contains_fallthrough_for_current_switch),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(contains_fallthrough_for_current_switch),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| contains_fallthrough_for_current_switch(stmt))
+                || comm
+                    .body
+                    .iter()
+                    .any(contains_fallthrough_for_current_switch)
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| contains_fallthrough_for_current_switch(stmt))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| contains_fallthrough_for_current_switch(stmt))
+                || for_stmt
+                    .body
+                    .list
+                    .iter()
+                    .any(contains_fallthrough_for_current_switch)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| contains_fallthrough_for_current_switch(stmt))
+                || if_stmt
+                    .body
+                    .list
+                    .iter()
+                    .any(contains_fallthrough_for_current_switch)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| contains_fallthrough_for_current_switch(stmt))
+        }
+        ast::Stmt::LabeledStmt(labeled) => contains_fallthrough_for_current_switch(&labeled.stmt),
+        ast::Stmt::RangeStmt(range) => range
+            .body
+            .list
+            .iter()
+            .any(contains_fallthrough_for_current_switch),
+        ast::Stmt::SelectStmt(select) => select
+            .body
+            .list
+            .iter()
+            .any(contains_fallthrough_for_current_switch),
+        ast::Stmt::SwitchStmt(_) | ast::Stmt::TypeSwitchStmt(_) => false,
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => false,
+    }
+}
+
+fn invalid_branch_in_call(
+    call: &ast::CallExpr<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    if let Some(invalid) = invalid_branch_in_expr(&call.fun, context) {
+        return Some(invalid);
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(invalid) = invalid_branch_in_expr(arg, context) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_branch_in_expr(
+    expr: &ast::Expr<'_>,
+    context: &mut BranchContext,
+) -> Option<InvalidBranch> {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                if let Some(invalid) = invalid_branch_in_expr(len, context) {
+                    return Some(invalid);
+                }
+            }
+            invalid_branch_in_expr(&array.elt, context)
+        }
+        ast::Expr::BinaryExpr(binary) => invalid_branch_in_expr(&binary.x, context)
+            .or_else(|| invalid_branch_in_expr(&binary.y, context)),
+        ast::Expr::CallExpr(call) => invalid_branch_in_call(call, context),
+        ast::Expr::ChanType(chan) => invalid_branch_in_expr(&chan.value, context),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(ty) = &comp.type_ {
+                if let Some(invalid) = invalid_branch_in_expr(ty, context) {
+                    return Some(invalid);
+                }
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    if let Some(invalid) = invalid_branch_in_expr(elt, context) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|expr| invalid_branch_in_expr(expr, context)),
+        ast::Expr::FuncLit(_) => None,
+        ast::Expr::IndexExpr(index) => invalid_branch_in_expr(&index.x, context)
+            .or_else(|| invalid_branch_in_expr(&index.index, context)),
+        ast::Expr::IndexListExpr(index) => {
+            if let Some(invalid) = invalid_branch_in_expr(&index.x, context) {
+                return Some(invalid);
+            }
+            for index in &index.indices {
+                if let Some(invalid) = invalid_branch_in_expr(index, context) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Expr::KeyValueExpr(kv) => invalid_branch_in_expr(&kv.key, context)
+            .or_else(|| invalid_branch_in_expr(&kv.value, context)),
+        ast::Expr::MapType(map) => invalid_branch_in_expr(&map.key, context)
+            .or_else(|| invalid_branch_in_expr(&map.value, context)),
+        ast::Expr::ParenExpr(paren) => invalid_branch_in_expr(&paren.x, context),
+        ast::Expr::SelectorExpr(selector) => invalid_branch_in_expr(&selector.x, context),
+        ast::Expr::SliceExpr(slice) => {
+            if let Some(invalid) = invalid_branch_in_expr(&slice.x, context) {
+                return Some(invalid);
+            }
+            if let Some(low) = &slice.low
+                && let Some(invalid) = invalid_branch_in_expr(low, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(high) = &slice.high
+                && let Some(invalid) = invalid_branch_in_expr(high, context)
+            {
+                return Some(invalid);
+            }
+            if let Some(max) = &slice.max
+                && let Some(invalid) = invalid_branch_in_expr(max, context)
+            {
+                return Some(invalid);
+            }
+            None
+        }
+        ast::Expr::StarExpr(star) => invalid_branch_in_expr(&star.x, context),
+        ast::Expr::TypeAssertExpr(assert) => {
+            if let Some(invalid) = invalid_branch_in_expr(&assert.x, context) {
+                return Some(invalid);
+            }
+            assert
+                .type_
+                .as_ref()
+                .and_then(|ty| invalid_branch_in_expr(ty, context))
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_branch_in_expr(&unary.x, context),
+        ast::Expr::BasicLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::StructType(_) => None,
+    }
 }
 
 fn child_path(path: &[usize], idx: usize, child: usize) -> Vec<usize> {
@@ -4424,6 +4987,169 @@ mod tests {
             super::InvalidGoto::UndefinedLabel {
                 label: "Missing".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_branch_statements() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        break
+                    }
+                "#,
+                super::InvalidBranch::BreakOutside,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        continue
+                    }
+                "#,
+                super::InvalidBranch::ContinueOutside,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                    Done:
+                        println("done")
+                        for {
+                            break Done
+                        }
+                    }
+                "#,
+                super::InvalidBranch::BreakLabel {
+                    label: "Done".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                    Switch:
+                        switch 1 {
+                        default:
+                            continue Switch
+                        }
+                    }
+                "#,
+                super::InvalidBranch::ContinueLabel {
+                    label: "Switch".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        case 1:
+                            fallthrough
+                            println("unreachable")
+                        default:
+                        }
+                    }
+                "#,
+                super::InvalidBranch::FallthroughNotFinal,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        default:
+                            fallthrough
+                        }
+                    }
+                "#,
+                super::InvalidBranch::FallthroughInFinalCase,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x any
+                        switch x.(type) {
+                        case int:
+                            fallthrough
+                        default:
+                        }
+                    }
+                "#,
+                super::InvalidBranch::FallthroughInTypeSwitch,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        fallthrough
+                    }
+                "#,
+                super::InvalidBranch::FallthroughOutsideSwitch,
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_branch_in_func(func.body.as_ref().expect("body")),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_labeled_branches_and_fallthrough() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                Loop:
+                    for i := 0; i < 2; i++ {
+                        switch i {
+                        case 0:
+                            fallthrough
+                        default:
+                            continue Loop
+                        }
+                        break Loop
+                    }
+                    select {
+                    default:
+                        break
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_branch_in_func(func.body.as_ref().expect("body")),
+            None
         );
     }
 
