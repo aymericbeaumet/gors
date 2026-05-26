@@ -1,6 +1,6 @@
 //! Typed Go IR used as the semantic layer between the parser AST and Rust codegen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ast, token};
 
@@ -949,6 +949,48 @@ pub fn ast_stmt_has_goto_to_label(stmt: &ast::Stmt<'_>, label: &str) -> bool {
 pub struct GotoStatePlan {
     pub labels: Vec<String>,
     pub hoisted_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidGoto {
+    pub label: String,
+    pub skipped_names: Vec<String>,
+}
+
+pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
+    let mut label_positions = BTreeMap::new();
+    for (idx, stmt) in block.list.iter().enumerate() {
+        for label in direct_label_names_in_stmt(stmt) {
+            label_positions.entry(label).or_insert(idx);
+        }
+    }
+    if label_positions.is_empty() {
+        return None;
+    }
+
+    for (idx, stmt) in block.list.iter().enumerate() {
+        let mut targets = BTreeSet::new();
+        collect_goto_targets_in_stmt(stmt, &mut targets);
+        for target in targets {
+            let Some(target_idx) = label_positions.get(&target).copied() else {
+                continue;
+            };
+            if target_idx <= idx {
+                continue;
+            }
+            let mut skipped_names = BTreeSet::new();
+            for skipped in block.list.iter().take(target_idx).skip(idx + 1) {
+                collect_direct_declared_names_in_stmt(skipped, &mut skipped_names);
+            }
+            if !skipped_names.is_empty() {
+                return Some(InvalidGoto {
+                    label: target,
+                    skipped_names: skipped_names.into_iter().collect(),
+                });
+            }
+        }
+    }
+    None
 }
 
 pub fn goto_state_plan_for_block(block: &ast::BlockStmt<'_>) -> Option<GotoStatePlan> {
@@ -4096,6 +4138,36 @@ mod tests {
         };
         assert_eq!(plan.labels, vec!["Done"]);
         assert_eq!(plan.hoisted_names, vec!["x"]);
+    }
+
+    #[test]
+    fn rejects_forward_goto_over_same_block_decl() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    goto Done
+                    x := 1
+                Done:
+                    println(x)
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(invalid) = super::invalid_forward_goto_in_block(func.body.as_ref().expect("body"))
+        else {
+            panic!("expected invalid goto");
+        };
+        assert_eq!(invalid.label, "Done");
+        assert_eq!(invalid.skipped_names, vec!["x"]);
     }
 
     #[test]

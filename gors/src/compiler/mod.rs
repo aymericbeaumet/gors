@@ -12567,6 +12567,13 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
                 .chain(range_function_capture_names)
                 .chain(address_taken_names),
         );
+        if let Some(invalid) = ir::invalid_forward_goto_in_block(&block_stmt) {
+            return Err(CompilerError::UnsupportedConstruct(format!(
+                "invalid goto to {} skips declarations: {}",
+                invalid.label,
+                invalid.skipped_names.join(", ")
+            )));
+        }
         if let Some(goto_plan) = ir::goto_state_plan_for_block(&block_stmt) {
             return Ok(Self {
                 brace_token: syn::token::Brace::default(),
@@ -16998,6 +17005,17 @@ mod tests {
         }
     }
 
+    fn assert_unsupported_construct(go_input: &str, message: &str) {
+        let parsed = parse_file("test.go", go_input).unwrap();
+        match compile(parsed) {
+            Err(super::CompilerError::UnsupportedConstruct(err)) => {
+                assert!(err.contains(message), "{err:?}");
+            }
+            Err(err) => panic!("expected unsupported construct, got {err:?}"),
+            Ok(_) => panic!("expected unsupported construct, got success"),
+        }
+    }
+
     fn write_fixture_file(path: &Path, source: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -17119,6 +17137,23 @@ mod tests {
         )
         .unwrap();
         compile(parsed).unwrap();
+    }
+
+    #[test]
+    fn it_should_reject_goto_that_skips_local_declaration() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    goto Done
+                    x := 1
+                Done:
+                    println(x)
+                }
+            "#,
+            "invalid goto to Done skips declarations: x",
+        );
     }
 
     #[test]

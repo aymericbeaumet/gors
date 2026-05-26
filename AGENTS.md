@@ -441,6 +441,9 @@ IR also owns capture and goto discovery. Keep extending those analyses in
 `ir.rs` before adding backend-only statement walkers; codegen may still carry
 temporary guards for legacy lowering, but the semantic decision should come from
 the IR.
+IR goto planning rejects forward gotos that would skip same-block local
+declarations before the Rust state-machine lowering hoists locals for valid
+forward jumps; do not use hoisting to make Go-invalid control flow compile.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array
