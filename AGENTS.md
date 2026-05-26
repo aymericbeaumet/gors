@@ -350,6 +350,14 @@ IR control-flow completion (`ast_block_completion`, `block_completion`,
 `stmt_completion`) classifies whether lowered blocks can complete normally.
 Use it for backend decisions that need Go reachability or return-shape
 semantics instead of duplicating statement-shape checks in codegen.
+It follows Go's terminating-statement rules rather than generic Rust
+reachability: statement lists are classified by their final non-empty statement,
+labeled statements inherit the labeled statement's completion, empty `select {}`
+and no-condition non-range `for` loops can terminate control flow, and
+`for`/`switch`/`select` termination must reject only `break` statements that
+refer to that specific construct. Keep nested breakable statements label-aware
+so an unlabeled `break` inside a nested switch/select/loop does not make the
+outer construct complete.
 
 Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
 `get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.

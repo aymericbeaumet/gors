@@ -716,15 +716,18 @@ pub fn block_completion(block: &Block) -> Completion {
 }
 
 fn stmts_completion(stmts: &[Stmt]) -> Completion {
-    for stmt in stmts {
-        if stmt_completion(stmt) == Completion::Terminates {
-            return Completion::Terminates;
-        }
-    }
-    Completion::MayComplete
+    stmts
+        .iter()
+        .rev()
+        .find(|stmt| !matches!(stmt, Stmt::Empty))
+        .map_or(Completion::MayComplete, stmt_completion)
 }
 
 pub fn stmt_completion(stmt: &Stmt) -> Completion {
+    stmt_completion_with_label(stmt, None)
+}
+
+fn stmt_completion_with_label(stmt: &Stmt, label: Option<&str>) -> Completion {
     match stmt {
         Stmt::Return(_)
         | Stmt::Branch {
@@ -732,6 +735,7 @@ pub fn stmt_completion(stmt: &Stmt) -> Completion {
             ..
         } => Completion::Terminates,
         Stmt::Block(block) => block_completion(block),
+        Stmt::For { cond, body, .. } => for_completion(cond.as_ref(), body, label),
         Stmt::If {
             body, else_branch, ..
         } => {
@@ -743,13 +747,26 @@ pub fn stmt_completion(stmt: &Stmt) -> Completion {
             };
             stmt_completion(else_branch)
         }
-        Stmt::Select { cases } => select_completion(cases),
-        Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => switch_completion(cases),
+        Stmt::Label { name, stmt } => stmt_completion_with_label(stmt, Some(name)),
+        Stmt::Select { cases } => select_completion(cases, label),
+        Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => {
+            switch_completion(cases, label)
+        }
         _ => Completion::MayComplete,
     }
 }
 
-fn select_completion(cases: &[CommCase]) -> Completion {
+fn for_completion(cond: Option<&Expr>, body: &Block, label: Option<&str>) -> Completion {
+    if cond.is_some() || block_has_break_referring_to_current(body, label) {
+        return Completion::MayComplete;
+    }
+    Completion::Terminates
+}
+
+fn select_completion(cases: &[CommCase], label: Option<&str>) -> Completion {
+    if comm_cases_have_break_referring_to_current(cases, label) {
+        return Completion::MayComplete;
+    }
     if cases.is_empty() {
         return Completion::Terminates;
     }
@@ -761,8 +778,11 @@ fn select_completion(cases: &[CommCase]) -> Completion {
     Completion::Terminates
 }
 
-fn switch_completion(cases: &[Case]) -> Completion {
-    if cases.is_empty() || !cases.iter().any(|case| case.is_default) {
+fn switch_completion(cases: &[Case], label: Option<&str>) -> Completion {
+    if cases.is_empty()
+        || !cases.iter().any(|case| case.is_default)
+        || cases_have_break_referring_to_current(cases, label)
+    {
         return Completion::MayComplete;
     }
     for idx in 0..cases.len() {
@@ -784,13 +804,138 @@ fn case_completion(cases: &[Case], idx: usize) -> Completion {
 }
 
 fn case_ends_with_fallthrough(case: &Case) -> bool {
-    matches!(
-        case.body.last(),
-        Some(Stmt::Branch {
+    case.body.last().is_some_and(stmt_is_fallthrough)
+}
+
+fn stmt_is_fallthrough(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Branch {
             kind: BranchKind::Fallthrough,
             ..
-        })
-    )
+        } => true,
+        Stmt::Label { stmt, .. } => stmt_is_fallthrough(stmt),
+        _ => false,
+    }
+}
+
+fn block_has_break_referring_to_current(block: &Block, label: Option<&str>) -> bool {
+    block
+        .stmts
+        .iter()
+        .any(|stmt| stmt_has_break_referring_to_current(stmt, label))
+}
+
+fn stmt_has_break_referring_to_current(stmt: &Stmt, label: Option<&str>) -> bool {
+    match stmt {
+        Stmt::Branch {
+            kind: BranchKind::Break,
+            label: break_label,
+        } => match (break_label.as_deref(), label) {
+            (None, _) => true,
+            (Some(break_label), Some(current_label)) => break_label == current_label,
+            (Some(_), None) => false,
+        },
+        Stmt::Block(block) => block_has_break_referring_to_current(block, label),
+        Stmt::If {
+            init,
+            body,
+            else_branch,
+            ..
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_has_break_referring_to_current(stmt, label))
+                || block_has_break_referring_to_current(body, label)
+                || else_branch
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_has_break_referring_to_current(stmt, label))
+        }
+        Stmt::Label { stmt, .. } => stmt_has_break_referring_to_current(stmt, label),
+        Stmt::For { body, .. } | Stmt::Range { body, .. } => {
+            block_has_labeled_break_referring_to_current(body, label)
+        }
+        Stmt::Select { cases } => comm_cases_have_labeled_break_referring_to_current(cases, label),
+        Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => {
+            cases_have_labeled_break_referring_to_current(cases, label)
+        }
+        _ => false,
+    }
+}
+
+fn block_has_labeled_break_referring_to_current(block: &Block, label: Option<&str>) -> bool {
+    block
+        .stmts
+        .iter()
+        .any(|stmt| stmt_has_labeled_break_referring_to_current(stmt, label))
+}
+
+fn stmt_has_labeled_break_referring_to_current(stmt: &Stmt, label: Option<&str>) -> bool {
+    let Some(current_label) = label else {
+        return false;
+    };
+    match stmt {
+        Stmt::Branch {
+            kind: BranchKind::Break,
+            label: Some(break_label),
+        } => break_label == current_label,
+        Stmt::Block(block) => block_has_labeled_break_referring_to_current(block, label),
+        Stmt::If {
+            init,
+            body,
+            else_branch,
+            ..
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_has_labeled_break_referring_to_current(stmt, label))
+                || block_has_labeled_break_referring_to_current(body, label)
+                || else_branch
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_has_labeled_break_referring_to_current(stmt, label))
+        }
+        Stmt::Label { stmt, .. } => stmt_has_labeled_break_referring_to_current(stmt, label),
+        Stmt::For { body, .. } | Stmt::Range { body, .. } => {
+            block_has_labeled_break_referring_to_current(body, label)
+        }
+        Stmt::Select { cases } => comm_cases_have_labeled_break_referring_to_current(cases, label),
+        Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => {
+            cases_have_labeled_break_referring_to_current(cases, label)
+        }
+        _ => false,
+    }
+}
+
+fn cases_have_break_referring_to_current(cases: &[Case], label: Option<&str>) -> bool {
+    cases.iter().any(|case| {
+        case.body
+            .iter()
+            .any(|stmt| stmt_has_break_referring_to_current(stmt, label))
+    })
+}
+
+fn cases_have_labeled_break_referring_to_current(cases: &[Case], label: Option<&str>) -> bool {
+    cases.iter().any(|case| {
+        case.body
+            .iter()
+            .any(|stmt| stmt_has_labeled_break_referring_to_current(stmt, label))
+    })
+}
+
+fn comm_cases_have_break_referring_to_current(cases: &[CommCase], label: Option<&str>) -> bool {
+    cases.iter().any(|case| {
+        case.body
+            .iter()
+            .any(|stmt| stmt_has_break_referring_to_current(stmt, label))
+    })
+}
+
+fn comm_cases_have_labeled_break_referring_to_current(
+    cases: &[CommCase],
+    label: Option<&str>,
+) -> bool {
+    cases.iter().any(|case| {
+        case.body
+            .iter()
+            .any(|stmt| stmt_has_labeled_break_referring_to_current(stmt, label))
+    })
 }
 
 fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
@@ -2129,6 +2274,184 @@ mod tests {
         );
         assert_eq!(
             super::stmt_completion(&body.stmts[3]),
+            Completion::MayComplete
+        );
+    }
+
+    #[test]
+    fn classifies_statement_lists_by_final_non_empty_statement() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f() {
+                    return
+                    _ = 1
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(super::block_completion(body), Completion::MayComplete);
+        assert_eq!(
+            super::stmt_completion(&body.stmts[0]),
+            Completion::Terminates
+        );
+    }
+
+    #[test]
+    fn classifies_for_completion_and_break_targets() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(x bool, xs []int) {
+                    for {
+                    }
+                    for {
+                        break
+                    }
+                Outer:
+                    for {
+                        if x {
+                            break Outer
+                        }
+                    }
+                    for {
+                        switch {
+                        default:
+                            break
+                        }
+                    }
+                OuterNested:
+                    for {
+                        switch {
+                        default:
+                            break OuterNested
+                        }
+                    }
+                    for range xs {
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(
+            super::stmt_completion(&body.stmts[0]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[1]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[2]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[3]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[4]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[5]),
+            Completion::MayComplete
+        );
+    }
+
+    #[test]
+    fn classifies_breaks_for_switch_and_select_completion() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(x int, ch chan int) {
+                    switch x {
+                    default:
+                        return
+                    }
+                    switch x {
+                    default:
+                        break
+                    }
+                SwitchLabel:
+                    switch x {
+                    default:
+                        for {
+                            break SwitchLabel
+                        }
+                        return
+                    }
+                    switch x {
+                    case 1:
+                    Label:
+                        fallthrough
+                    default:
+                        return
+                    }
+                    select {
+                    default:
+                        return
+                    }
+                    select {
+                    default:
+                        break
+                    }
+                SelectLabel:
+                    select {
+                    default:
+                        for {
+                            break SelectLabel
+                        }
+                        return
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(
+            super::stmt_completion(&body.stmts[0]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[1]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[2]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[3]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[4]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[5]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[6]),
             Completion::MayComplete
         );
     }
