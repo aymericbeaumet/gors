@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -94,11 +94,17 @@ impl RunMetrics {
     }
 }
 
-fn command_output_abortable(
+struct RunningCommand {
+    child: Child,
+    stdout_file: tempfile::NamedTempFile,
+    stderr_file: tempfile::NamedTempFile,
+    started: Instant,
+}
+
+fn spawn_command_abortable(
     mut command: Command,
     abort: &AtomicBool,
-    timeout: Option<Duration>,
-) -> Result<Option<Output>, String> {
+) -> Result<Option<RunningCommand>, String> {
     if abort.load(Ordering::SeqCst) {
         return Ok(None);
     }
@@ -111,30 +117,53 @@ fn command_output_abortable(
         .stderr(Stdio::from(
             stderr_file.reopen().map_err(|e| e.to_string())?,
         ));
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let started = Instant::now();
+    let child = command.spawn().map_err(|e| e.to_string())?;
+    Ok(Some(RunningCommand {
+        child,
+        stdout_file,
+        stderr_file,
+        started: Instant::now(),
+    }))
+}
+
+fn wait_command_output_abortable(
+    mut running: RunningCommand,
+    abort: &AtomicBool,
+    timeout: Option<Duration>,
+) -> Result<Option<Output>, String> {
     loop {
         if abort.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = running.child.kill();
+            let _ = running.child.wait();
             return Ok(None);
         }
-        if let Some(timeout) = timeout
-            && started.elapsed() >= timeout
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("command timed out after {timeout:?}"));
-        }
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(status) = running.child.try_wait().map_err(|e| e.to_string())? {
             return Ok(Some(Output {
                 status,
-                stdout: fs::read(stdout_file.path()).map_err(|e| e.to_string())?,
-                stderr: fs::read(stderr_file.path()).map_err(|e| e.to_string())?,
+                stdout: fs::read(running.stdout_file.path()).map_err(|e| e.to_string())?,
+                stderr: fs::read(running.stderr_file.path()).map_err(|e| e.to_string())?,
             }));
+        }
+        if let Some(timeout) = timeout
+            && running.started.elapsed() >= timeout
+        {
+            let _ = running.child.kill();
+            let _ = running.child.wait();
+            return Err(format!("command timed out after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn command_output_abortable(
+    command: Command,
+    abort: &AtomicBool,
+    timeout: Option<Duration>,
+) -> Result<Option<Output>, String> {
+    let Some(running) = spawn_command_abortable(command, abort)? else {
+        return Ok(None);
+    };
+    wait_command_output_abortable(running, abort, timeout)
 }
 
 fn run_generated_rust_program(
@@ -156,8 +185,8 @@ fn run_generated_rust_program(
         eprintln!("RUN  {name}");
     }
 
-    let rust_out = match compile_and_run_generated_rust(dir, abort, metrics) {
-        Ok(Some(output)) => output,
+    let go_run = match spawn_go_program(dir, abort) {
+        Ok(Some(go_run)) => Some(go_run),
         Ok(None) => {
             return ProgramRunResult {
                 name,
@@ -166,8 +195,22 @@ fn run_generated_rust_program(
                 error: None,
             };
         }
+        Err(_) => None,
+    };
+
+    let rust_out = match compile_and_run_generated_rust(dir, abort, metrics) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            let _ = finish_go_reference_stdout(go_run, abort, metrics, &name);
+            return ProgramRunResult {
+                name,
+                passed: false,
+                skipped: true,
+                error: None,
+            };
+        }
         Err(error) => {
-            if go_reference_stdout(dir, abort, metrics, &name).is_none() {
+            if finish_go_reference_stdout(go_run, abort, metrics, &name).is_none() {
                 return ProgramRunResult {
                     name,
                     passed: false,
@@ -188,7 +231,7 @@ fn run_generated_rust_program(
         }
     };
 
-    let Some(go_stdout) = go_reference_stdout(dir, abort, metrics, &name) else {
+    let Some(go_stdout) = finish_go_reference_stdout(go_run, abort, metrics, &name) else {
         return ProgramRunResult {
             name,
             passed: false,
@@ -245,13 +288,26 @@ fn run_generated_rust_program(
     result
 }
 
-fn go_reference_stdout(
-    dir: &Path,
+fn spawn_go_program(dir: &Path, abort: &AtomicBool) -> Result<Option<RunningCommand>, String> {
+    let mut go_cmd = go_command();
+    go_cmd.args(["run", "."]).current_dir(dir);
+    spawn_command_abortable(go_cmd, abort)
+}
+
+fn finish_go_reference_stdout(
+    go_run: Option<RunningCommand>,
     abort: &AtomicBool,
     metrics: &RunMetrics,
     name: &str,
 ) -> Option<String> {
-    match run_go_program(dir, abort, metrics) {
+    let Some(go_run) = go_run else {
+        eprintln!("Skipping {name} - go run failed");
+        return None;
+    };
+    let before = go_run.started;
+    let output = wait_command_output_abortable(go_run, abort, Some(go_run_timeout()));
+    RunMetrics::add_duration(&metrics.go, before.elapsed());
+    match output {
         Ok(Some(o)) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).to_string()),
         Ok(None) => None,
         _ => {
@@ -259,19 +315,6 @@ fn go_reference_stdout(
             None
         }
     }
-}
-
-fn run_go_program(
-    dir: &Path,
-    abort: &AtomicBool,
-    metrics: &RunMetrics,
-) -> Result<Option<Output>, String> {
-    let mut go_cmd = go_command();
-    go_cmd.args(["run", "."]).current_dir(dir);
-    let before = Instant::now();
-    let output = command_output_abortable(go_cmd, abort, Some(go_run_timeout()));
-    RunMetrics::add_duration(&metrics.go, before.elapsed());
-    output
 }
 
 fn compile_and_run_generated_rust(
