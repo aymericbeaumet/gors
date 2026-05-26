@@ -52,6 +52,7 @@ thread_local! {
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 #[derive(Clone)]
@@ -79,6 +80,10 @@ struct SharedCaptureNamesGuard {
 }
 
 struct GotoContinueLabelsGuard {
+    previous: std::collections::HashSet<String>,
+}
+
+struct BorrowedPointerParamNamesGuard {
     previous: std::collections::HashSet<String>,
 }
 
@@ -135,6 +140,25 @@ impl Drop for GotoContinueLabelsGuard {
     fn drop(&mut self) {
         GOTO_CONTINUE_LABELS.with(|labels| {
             *labels.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl BorrowedPointerParamNamesGuard {
+    fn set(names: std::collections::HashSet<String>) -> Self {
+        let previous = BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
+            let previous = borrowed.borrow().clone();
+            *borrowed.borrow_mut() = names;
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for BorrowedPointerParamNamesGuard {
+    fn drop(&mut self) {
+        BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
+            *borrowed.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -5819,7 +5843,12 @@ fn collect_refs_from_item(
                     }
                 })
                 .or_else(|| self.receiver_type_from_expr(&call.func)),
-                syn::Expr::MethodCall(method) if method.method == "clone" => {
+                syn::Expr::MethodCall(method)
+                    if matches!(
+                        method.method.to_string().as_str(),
+                        "clone" | "lock" | "unwrap"
+                    ) =>
+                {
                     self.receiver_type_from_expr(&method.receiver)
                 }
                 syn::Expr::Cast(cast) => self.receiver_type_from_expr(&cast.expr),
@@ -6475,7 +6504,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         }
         ast::Expr::StarExpr(star) => {
             let inner = type_from_expr_ref(&star.x);
-            syn::parse_quote! { Box<#inner> }
+            syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
         }
         ast::Expr::ArrayType(array_type) => {
             let elem = type_from_expr_ref(&array_type.elt);
@@ -7797,8 +7826,13 @@ fn compile_method(
         }
     });
 
-    let borrow_pointer_params =
+    let mut borrow_pointer_params =
         pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
+    if is_pointer && !recv_name.is_empty() {
+        borrow_pointer_params.insert(recv_name.clone());
+    }
+    let borrowed_pointer_param_names =
+        BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
     let type_param_info = TypeParamInfo::default();
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
@@ -7824,6 +7858,7 @@ fn compile_method(
         })
     };
     let mut block = block_result?;
+    drop(borrowed_pointer_param_names);
 
     if !recv_name.is_empty() {
         rewrite_receiver(&mut block, &recv_name);
@@ -8007,6 +8042,11 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
             return syn::parse_quote! { #target_ty::from(#arg) };
         }
         return syn::parse_quote! { #target_ty(#arg) };
+    }
+    if let Some(inner_ty) = arc_mutex_inner_type(&target_ty) {
+        return syn::parse_quote! {
+            std::sync::Arc::new(std::sync::Mutex::new(<#inner_ty>::default()))
+        };
     }
     if let Some(inner_ty) = box_inner_type(&target_ty) {
         return syn::parse_quote! { Box::new(<#inner_ty>::default()) };
@@ -8287,7 +8327,7 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
         }
         typeinfer::GoType::Pointer(inner) => {
             let inner = rust_type_from_inferred_go_type(&inner);
-            syn::parse_quote! { Box<#inner> }
+            syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
         }
         typeinfer::GoType::Chan(inner) => {
             let inner = rust_type_from_inferred_go_type(&inner);
@@ -8530,7 +8570,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 return compile_error_expr("new requires a type argument");
             };
             let type_arg: syn::Type = type_arg.into();
-            syn::parse_quote! { Box::new(<#type_arg>::default()) }
+            syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(<#type_arg>::default())) }
         }
         ir::BuiltinCallKind::Append => compile_append_builtin(raw_args, has_variadic_spread),
         ir::BuiltinCallKind::Panic => compile_panic_builtin(raw_args),
@@ -9364,7 +9404,10 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
                     syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
                 return Some(syn::parse_quote! { #module::#sel });
             }
-            let base = lvalue_expr_from_ref(&selector.x)?;
+            let mut base = lvalue_expr_from_ref(&selector.x)?;
+            if is_owning_pointer_cell_expr_ref(&selector.x) {
+                base = syn::parse_quote! { #base.lock().unwrap() };
+            }
             let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
             Some(syn::parse_quote! { #base.#sel })
         }
@@ -9375,14 +9418,27 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
         }
         ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
         ast::Expr::StarExpr(star) => {
+            if let ast::Expr::Ident(ident) = &*star.x {
+                let name = rust_safe_ident_name(ident.name);
+                if is_borrowed_pointer_param_name(&name) {
+                    let ident = syn::Ident::new(&name, Span::mixed_site());
+                    return Some(syn::parse_quote! { *#ident });
+                }
+            }
             let inner = syn_expr_from_type_expr_like(&star.x)?;
-            Some(syn::parse_quote! { *#inner })
+            Some(syn::parse_quote! { *#inner.lock().unwrap() })
         }
         _ => None,
     }
 }
 
 fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
+    if is_owning_pointer_cell_expr_ref(&expr) {
+        let base = lvalue_expr_from_ref(&expr)
+            .or_else(|| syn_expr_from_type_expr_like(&expr))
+            .unwrap_or_else(|| expr.into());
+        return syn::parse_quote! { #base.lock().unwrap() };
+    }
     lvalue_expr_from_ref(&expr).unwrap_or_else(|| expr.into())
 }
 
@@ -9509,6 +9565,32 @@ fn is_goto_continue_label(name: &str) -> bool {
     GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
 }
 
+fn is_borrowed_pointer_param_name(name: &str) -> bool {
+    BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
+}
+
+fn is_borrowed_pointer_expr_ref(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            is_borrowed_pointer_param_name(&rust_safe_ident_name(ident.name))
+        }
+        ast::Expr::ParenExpr(paren) => is_borrowed_pointer_expr_ref(&paren.x),
+        _ => false,
+    }
+}
+
+fn is_owning_pointer_cell_expr_ref(expr: &ast::Expr) -> bool {
+    if is_borrowed_pointer_expr_ref(expr) {
+        return false;
+    }
+    TYPE_ENV.with(|env| {
+        matches!(
+            resolved_go_type(&typeinfer::GoType::infer_expr(expr, &env.borrow())),
+            typeinfer::GoType::Pointer(_)
+        )
+    })
+}
+
 fn shared_capture_init_expr(name: &str, init: syn::Expr) -> syn::Expr {
     if is_shared_capture_name(name) {
         syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#init)) }
@@ -9544,9 +9626,15 @@ fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
             .unwrap_or(typeinfer::GoType::Unknown)
     });
     if go_type_is_copy(&go_type) {
-        Some(syn::parse_quote! { *#ident.lock().unwrap() })
+        Some(syn::parse_quote! {{
+            let __gors_shared_value = *#ident.lock().unwrap();
+            __gors_shared_value
+        }})
     } else {
-        Some(syn::parse_quote! { #ident.lock().unwrap().clone() })
+        Some(syn::parse_quote! {{
+            let __gors_shared_value = #ident.lock().unwrap().clone();
+            __gors_shared_value
+        }})
     }
 }
 
@@ -9651,6 +9739,8 @@ fn compile_return_expr_with_expected(
         }
         return if is_box_new_call(&compiled) {
             syn::parse_quote! { #compiled as Box<dyn #trait_path + '_> }
+        } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
+            syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path + '_> }
         } else {
             syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path + '_> }
         };
@@ -9672,6 +9762,24 @@ fn is_box_new_call(expr: &syn::Expr) -> bool {
         .map(|segment| segment.ident.to_string())
         .collect();
     matches!(segments.as_slice(), [box_name, new_name] if box_name == "Box" && new_name == "new")
+}
+
+fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::Call(call) = expr else {
+        return None;
+    };
+    if !is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
+        return None;
+    }
+    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
+        return None;
+    };
+    if !is_path_call_expr(&mutex_call.func, &["std", "sync", "Mutex", "new"])
+        || mutex_call.args.len() != 1
+    {
+        return None;
+    }
+    mutex_call.args.first().cloned()
 }
 
 fn compile_expr_with_expected(
@@ -9752,6 +9860,9 @@ fn compile_expr_with_expected(
             }
             let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
+            if let Some(inner) = arc_mutex_new_inner_expr(&expr) {
+                return syn::parse_quote! { &mut #inner };
+            }
             if needs_owned_temp {
                 return syn::parse_quote! { &mut (#expr).clone() };
             }
@@ -10417,7 +10528,8 @@ fn infer_static_type_from_init(expr: &ast::Expr) -> Option<syn::Type> {
             }
         }),
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
-            infer_static_type_from_init(&unary.x).map(|inner| syn::parse_quote! { Box<#inner> })
+            infer_static_type_from_init(&unary.x)
+                .map(|inner| syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> })
         }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => {
             Some(syn::parse_quote! { String })
@@ -10923,6 +11035,26 @@ fn compile_string_concat_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr 
     }}
 }
 
+fn is_self_referential_pointer_selector(expr: &ast::Expr, ty: &typeinfer::GoType) -> bool {
+    let ast::Expr::SelectorExpr(selector) = expr else {
+        return false;
+    };
+    let typeinfer::GoType::Pointer(inner) = resolved_go_type(ty) else {
+        return false;
+    };
+    let typeinfer::GoType::Named(inner_name) = *inner else {
+        return false;
+    };
+    let base_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    match resolved_go_type(&base_type) {
+        typeinfer::GoType::Named(base_name) => base_name == inner_name,
+        typeinfer::GoType::Pointer(base_inner) => {
+            matches!(*base_inner, typeinfer::GoType::Named(base_name) if base_name == inner_name)
+        }
+        _ => false,
+    }
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if let Some(compare) = detect_reflect_kind_compare(&binary_expr) {
@@ -11008,15 +11140,23 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         }
 
         if matches!(resolved_go_type(&other_ty), typeinfer::GoType::Pointer(_)) {
+            let is_self_referential = is_self_referential_pointer_selector(other, &other_ty);
             let other_expr = if left_nil {
                 syn::Expr::from(*binary_expr.y)
             } else {
                 syn::Expr::from(*binary_expr.x)
             };
+            if is_self_referential {
+                return if is_eq {
+                    syn::parse_quote! { #other_expr == Default::default() }
+                } else {
+                    syn::parse_quote! { #other_expr != Default::default() }
+                };
+            }
             return if is_eq {
-                syn::parse_quote! { #other_expr == Default::default() }
+                syn::parse_quote! { #other_expr.lock().unwrap().clone() == Default::default() }
             } else {
-                syn::parse_quote! { #other_expr != Default::default() }
+                syn::parse_quote! { #other_expr.lock().unwrap().clone() != Default::default() }
             };
         }
     }
@@ -11357,7 +11497,10 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
         let shared_capture_names = TYPE_ENV
             .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
-        let _shared_capture_names = SharedCaptureNamesGuard::extend(shared_capture_names);
+        let address_taken_names = ir::address_taken_names_in_block(&block_stmt);
+        let _shared_capture_names = SharedCaptureNamesGuard::extend(
+            shared_capture_names.into_iter().chain(address_taken_names),
+        );
         let mut stmts = vec![];
         for stmt in block_stmt.list {
             stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
@@ -11394,8 +11537,16 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
             for (idx, arg) in cargs.into_iter().enumerate() {
                 let actual =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                let borrow_pointer_by_shape =
+                    should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
+                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape {
+                    if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
+                        args.push(arg);
+                        continue;
+                    }
+                }
                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
-                if borrow_pointer_indices.contains(&idx) {
+                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape {
                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                 }
                 args.push(arg)
@@ -11467,8 +11618,18 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             for (idx, arg) in cargs.into_iter().enumerate() {
                                 let actual = TYPE_ENV
                                     .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                                let borrow_pointer_by_shape =
+                                    should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
+                                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape
+                                {
+                                    if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
+                                        args.push(arg);
+                                        continue;
+                                    }
+                                }
                                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
-                                if borrow_pointer_indices.contains(&idx) {
+                                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape
+                                {
                                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                                 }
                                 args.push(arg);
@@ -11547,7 +11708,18 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         path
                     }
                 } else {
-                    let base: syn::Expr = (*selector_expr.x).into();
+                    let base_ast = *selector_expr.x;
+                    let base_is_owning_pointer = is_owning_pointer_cell_expr_ref(&base_ast);
+                    let mut base: syn::Expr = if base_is_owning_pointer {
+                        lvalue_expr_from_ref(&base_ast)
+                            .or_else(|| syn_expr_from_type_expr_like(&base_ast))
+                            .unwrap_or_else(|| base_ast.into())
+                    } else {
+                        base_ast.into()
+                    };
+                    if base_is_owning_pointer {
+                        base = syn::parse_quote! { #base.lock().unwrap() };
+                    }
                     let field: syn::Ident = selector_expr.sel.into();
                     let field_expr = syn::Expr::Field(syn::ExprField {
                         attrs: vec![],
@@ -11581,18 +11753,16 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     (*unary_expr.x).into()
                 }
                 token::Token::AND => {
-                    // &x → Box::new(x)
-                    let inner: syn::Expr = (*unary_expr.x).into();
-                    Self::Call(syn::ExprCall {
-                        attrs: vec![],
-                        func: Box::new(syn::parse_quote! { Box::new }),
-                        paren_token: syn::token::Paren::default(),
-                        args: {
-                            let mut a = syn::punctuated::Punctuated::new();
-                            a.push(inner);
-                            a
-                        },
-                    })
+                    let target = *unary_expr.x;
+                    if let ast::Expr::Ident(ident) = &target
+                        && is_shared_capture_name(ident.name)
+                    {
+                        let ident =
+                            syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                        return syn::parse_quote! { #ident.clone() };
+                    }
+                    let inner: syn::Expr = target.into();
+                    syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#inner)) }
                 }
                 token::Token::XOR => {
                     // ^x → !x (bitwise NOT in Go)
@@ -11670,11 +11840,18 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         compile_error_expr("unsupported unsafe pointer bitcast")
                     });
                 }
-                Self::Unary(syn::ExprUnary {
-                    attrs: vec![],
-                    op: syn::UnOp::Deref(<Token![*]>::default()),
-                    expr: Box::new(inner.into()),
-                })
+                if let ast::Expr::Ident(ident) = &inner {
+                    let name = rust_safe_ident_name(ident.name);
+                    if is_borrowed_pointer_param_name(&name) {
+                        let ident = syn::Ident::new(&name, Span::mixed_site());
+                        return syn::parse_quote! { *#ident };
+                    }
+                }
+                let inner_expr: syn::Expr = inner.into();
+                syn::parse_quote! {{
+                    let __gors_pointer_value = #inner_expr.lock().unwrap().clone();
+                    __gors_pointer_value
+                }}
             }
             ast::Expr::CompositeLit(comp_lit) => compile_composite_lit(comp_lit),
             ast::Expr::FuncLit(func_lit) => compile_func_lit(func_lit),
@@ -11756,6 +11933,33 @@ fn box_inner_type(ty: &syn::Type) -> Option<syn::Type> {
     Some(inner.clone())
 }
 
+fn arc_mutex_inner_type(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Arc" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(syn::Type::Path(mutex_path)) = args.args.first()? else {
+        return None;
+    };
+    let mutex_segment = mutex_path.path.segments.last()?;
+    if mutex_segment.ident != "Mutex" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(mutex_args) = &mutex_segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = mutex_args.args.first()? else {
+        return None;
+    };
+    Some(inner.clone())
+}
+
 impl From<ast::Expr<'_>> for syn::Type {
     fn from(expr: ast::Expr) -> Self {
         match expr {
@@ -11784,7 +11988,7 @@ impl From<ast::Expr<'_>> for syn::Type {
             }
             ast::Expr::StarExpr(star_expr) => {
                 let inner: syn::Type = (*star_expr.x).into();
-                syn::parse_quote! { Box<#inner> }
+                syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
             }
             ast::Expr::ArrayType(array_type) => {
                 let elem: syn::Type = (*array_type.elt).into();
@@ -12305,7 +12509,11 @@ fn set_borrow_pointer_arg_indices_for_decls_if_unseeded(decls: &[ast::Decl]) {
 pub(crate) fn set_borrow_pointer_arg_indices_for_files(files: &[&ast::File<'_>]) {
     let mut map = BTreeMap::new();
     for file in files {
-        map.extend(collect_borrow_pointer_arg_indices(&file.decls));
+        let file_map = collect_borrow_pointer_arg_indices(&file.decls);
+        for (name, indices) in &file_map {
+            map.insert(format!("{}.{}", file.name.name, name), indices.clone());
+        }
+        map.extend(file_map);
     }
     BORROW_POINTER_ARG_INDICES.with(|indices| {
         *indices.borrow_mut() = map;
@@ -12328,8 +12536,12 @@ fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(receiver) = &*selector.x {
                 TYPE_ENV.with(|env| {
-                    env.borrow()
-                        .get_var(receiver.name)
+                    let env = env.borrow();
+                    let package_key = format!("{}.{}", receiver.name, selector.sel.name);
+                    if env.has_func(&package_key) {
+                        return Some(package_key);
+                    }
+                    env.get_var(receiver.name)
                         .and_then(|ty| match ty {
                             typeinfer::GoType::Named(name) => {
                                 Some(format!("{name}.{}", selector.sel.name))
@@ -12371,15 +12583,105 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
         *expr = syn::parse_quote! { &mut #inner };
         return;
     }
+    if let syn::Expr::Call(call) = expr
+        && is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"])
+        && call.args.len() == 1
+        && let Some(syn::Expr::Call(mutex_call)) = call.args.first()
+        && is_path_call_expr(&mutex_call.func, &["std", "sync", "Mutex", "new"])
+        && mutex_call.args.len() == 1
+        && let Some(inner) = mutex_call.args.first()
+    {
+        *expr = syn::parse_quote! { &mut #inner };
+        return;
+    }
+    if let Some(lock_target) = pointer_cell_lock_target_expr(expr) {
+        *expr = syn::parse_quote! { &mut *(#lock_target).lock().unwrap() };
+        return;
+    }
     let inner = expr.clone();
     if matches!(
         actual.map(resolved_go_type),
         Some(typeinfer::GoType::Pointer(_))
     ) {
-        *expr = syn::parse_quote! { &mut *#inner };
+        if is_borrowed_pointer_path_expr(&inner) {
+            *expr = syn::parse_quote! { &mut *#inner };
+        } else {
+            let lock_target = strip_clone_method_call(&inner).unwrap_or(inner);
+            *expr = syn::parse_quote! { &mut *(#lock_target).lock().unwrap() };
+        }
     } else {
         *expr = syn::parse_quote! { &mut #inner };
     }
+}
+
+fn borrowed_address_of_ident_arg_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::UnaryExpr(unary) = expr else {
+        return None;
+    };
+    if unary.op != token::Token::AND {
+        return None;
+    }
+    let ast::Expr::Ident(ident) = &*unary.x else {
+        return None;
+    };
+    let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+    if is_shared_capture_name(&ident.to_string()) {
+        Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
+    } else {
+        Some(syn::parse_quote! { &mut #ident })
+    }
+}
+
+fn should_borrow_pointer_arg_by_shape(
+    expr: &ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> bool {
+    if !matches!(
+        expected.map(resolved_go_type),
+        Some(typeinfer::GoType::Pointer(_))
+    ) {
+        return false;
+    }
+    match expr {
+        ast::Expr::ParenExpr(paren) => should_borrow_pointer_arg_by_shape(&paren.x, expected),
+        ast::Expr::SelectorExpr(selector) => matches!(
+            &*selector.x,
+            ast::Expr::Ident(pkg)
+                if IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name))
+        ),
+        _ => false,
+    }
+}
+
+fn strip_clone_method_call(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::MethodCall(method) = expr else {
+        return None;
+    };
+    if method.method != "clone" || !method.args.is_empty() {
+        return None;
+    }
+    Some((*method.receiver).clone())
+}
+
+fn pointer_cell_lock_target_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    if let Some(stripped) = strip_clone_method_call(expr) {
+        return pointer_cell_lock_target_expr(&stripped).or(Some(stripped));
+    }
+    match expr {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => Some(expr.clone()),
+        _ => None,
+    }
+}
+
+fn is_borrowed_pointer_path_expr(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Path(path)
+        if path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && path
+                .path
+                .segments
+                .first()
+                .is_some_and(|segment| is_borrowed_pointer_param_name(&segment.ident.to_string())))
 }
 
 fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
@@ -12532,7 +12834,7 @@ fn type_from_param_expr(
             if borrow_pointer_params.contains(&rust_safe_ident_name(name)) {
                 syn::parse_quote! { &mut #inner }
             } else {
-                syn::parse_quote! { Box<#inner> }
+                syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
             }
         }
         ast::Expr::Ellipsis(ellipsis) => {
@@ -12749,6 +13051,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let borrow_pointer_params =
             pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
+        let borrowed_pointer_param_names =
+            BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
             for arg in compile_field_to_fn_args_with_type_params(
@@ -12813,6 +13117,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         } else {
             Ok(bodyless_function_block(&output, &inputs))
         };
+        drop(borrowed_pointer_param_names);
         BYTE_SEQ_TYPE_PARAMS.with(|params| {
             *params.borrow_mut() = previous_byte_seq_type_params;
         });
@@ -16483,7 +16788,7 @@ func main() {
     }
 
     #[test]
-    fn it_should_compile_address_of_as_box() {
+    fn it_should_compile_address_of_as_shared_cell() {
         test(
             r#"
                 package main
@@ -16495,8 +16800,8 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    let mut x = 42;
-                    let mut p = Box::new(x);
+                    let mut x = std::sync::Arc::new(std::sync::Mutex::new(42));
+                    let mut p = x.clone();
                 }
             },
         );
@@ -17176,8 +17481,8 @@ func main() {
                 }
             "#,
             rust! {
-                fn newInt(mut x: isize) -> Box<isize> {
-                    Box::new(x)
+                fn newInt(mut x: isize) -> std::sync::Arc<std::sync::Mutex<isize>> {
+                    std::sync::Arc::new(std::sync::Mutex::new(x))
                 }
             },
         );
@@ -17197,9 +17502,9 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    let mut p = Box::new(<isize>::default());
-                    *p = 2;
-                    *p += 1;
+                    let mut p = std::sync::Arc::new(std::sync::Mutex::new(<isize>::default()));
+                    *p.lock().unwrap() = 2;
+                    *p.lock().unwrap() += 1;
                 }
             },
         );

@@ -106,6 +106,11 @@ gors-builtin/
   bindings and avoids Rust moves such as `d := c` invalidating later uses of
   `c`. Function values and pointers stay cheap-copy through their existing
   representations.
+- Go pointer values lower to `Arc<Mutex<T>>` cells. Locals whose address is
+  taken are promoted through the IR addressability analysis into the same cell
+  representation, so `p := &x`, `*p = v`, and later reads of `x` observe the
+  shared storage. Borrowed pointer parameters may still lower to `&mut T` when
+  the existing escape analysis proves the pointer does not escape.
 - Map literals, comma-ok map indexes, map assignments, and `delete` calls must
   compile keys and values with the expected map key/value Go types. This keeps
   `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
@@ -446,10 +451,8 @@ capacity for `max-low`, but they still do not share the original Go backing
 array; fixing shared backing-array semantics belongs in the IR/value model, not
 in another ad hoc slice codegen special case.
 Pointer dereference lvalues (`*p = x`, `(*p)++`) lower through the IR
-addressability path to Rust deref assignments. However, address-of local lowering
-still boxes the current value (`&x` → `Box::new(x)`) rather than promoting the
-local's storage, so mutations through that pointer do not yet alias the original
-Go local.
+addressability path to shared-cell assignments for owning pointers and direct
+`&mut T` dereferences for borrowed pointer parameters.
 
 ## Compiler passes (in order)
 

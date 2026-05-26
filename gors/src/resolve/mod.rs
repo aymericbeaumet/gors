@@ -1146,7 +1146,7 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             syn::parse_quote! {
                 impl pp {
                     fn __gors_flush_fmt(&mut self) {
-                        let bytes = std::mem::take(&mut self.fmt.buf.0);
+                        let bytes = std::mem::take(&mut self.fmt.buf.lock().unwrap().0);
                         self.buf.0.extend(bytes);
                     }
                 }

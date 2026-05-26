@@ -283,22 +283,9 @@ impl GoType {
                             if !matches!(package_return, GoType::Unknown) {
                                 return package_return;
                             }
-                            match env.get_var(pkg.name) {
-                                Some(GoType::Named(name)) => {
-                                    env.get_func_return(&format!("{name}.{}", sel.sel.name))
-                                }
-                                Some(GoType::Pointer(inner)) => {
-                                    if let GoType::Named(name) = *inner {
-                                        env.get_func_return(&format!("{name}.{}", sel.sel.name))
-                                    } else {
-                                        GoType::Unknown
-                                    }
-                                }
-                                _ => GoType::Unknown,
-                            }
-                        } else {
-                            GoType::Unknown
                         }
+                        let receiver_type = GoType::infer_expr(&sel.x, env);
+                        method_return_from_receiver_type(receiver_type, sel.sel.name, env)
                     }
                     other => {
                         let converted = GoType::from_expr(other);
@@ -320,28 +307,14 @@ impl GoType {
                 }
             }
             ast::Expr::SelectorExpr(sel) => {
-                // Field access: would need struct type info
-                // For reflect.Value method calls, we know the return types
                 if let ast::Expr::Ident(id) = &*sel.x {
                     let package_key = format!("{}.{}", id.name, sel.sel.name);
                     if let Some(ty) = env.get_var(&package_key) {
                         return ty;
                     }
-                    let var_type = env.get_var(id.name);
-                    match var_type {
-                        Some(GoType::Named(ref name)) => env.get_field_type(name, sel.sel.name),
-                        Some(GoType::Pointer(inner)) => {
-                            if let GoType::Named(ref name) = *inner {
-                                env.get_field_type(name, sel.sel.name)
-                            } else {
-                                GoType::Unknown
-                            }
-                        }
-                        _ => GoType::Unknown,
-                    }
-                } else {
-                    GoType::Unknown
                 }
+                let base_type = GoType::infer_expr(&sel.x, env);
+                field_type_from_receiver_type(base_type, sel.sel.name, env)
             }
             ast::Expr::TypeAssertExpr(ta) => {
                 if let Some(type_expr) = &ta.type_ {
@@ -378,6 +351,22 @@ impl GoType {
             ast::Expr::ParenExpr(p) => GoType::infer_expr(&p.x, env),
             _ => GoType::Unknown,
         }
+    }
+}
+
+fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeEnv) -> GoType {
+    match env.resolve_alias(&receiver_type) {
+        GoType::Named(name) => env.get_field_type(&name, field),
+        GoType::Pointer(inner) => field_type_from_receiver_type(*inner, field, env),
+        _ => GoType::Unknown,
+    }
+}
+
+fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
+    match env.resolve_alias(&receiver_type) {
+        GoType::Named(name) => env.get_func_return(&format!("{name}.{method}")),
+        GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
+        _ => GoType::Unknown,
     }
 }
 

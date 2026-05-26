@@ -50,11 +50,17 @@ impl VisitMut for CoerceTypes {
 
         if func.sig.ident == "newPrinter" && tokens_contain(&func.block, "ppFree") {
             *func.block = syn::parse_quote!({
-                let mut p = Box::new(pp::default());
-                p.panicking = false;
-                p.erroring = false;
-                p.wrapErrs = false;
-                p.fmt.init(Box::new((p.buf).clone()));
+                let mut p = std::sync::Arc::new(std::sync::Mutex::new(pp::default()));
+                {
+                    let mut p = p.lock().unwrap();
+                    p.panicking = false;
+                    p.erroring = false;
+                    p.wrapErrs = false;
+                    p.fmt.buf = std::sync::Arc::new(std::sync::Mutex::new((p.buf).clone()));
+                    p.fmt.fmtFlags = fmtFlags::default();
+                    p.fmt.wid = 0;
+                    p.fmt.prec = 0;
+                }
                 p
             });
         }
@@ -86,7 +92,7 @@ impl VisitMut for CoerceTypes {
 
         if func.sig.ident == "padString" && tokens_contain(&func.block, "RuneCountInString") {
             func.block = syn::parse_quote!({
-                self.buf.writeString((s).clone());
+                self.buf.lock().unwrap().writeString((s).clone());
             });
             return;
         }
@@ -187,6 +193,12 @@ impl VisitMut for CoerceTypes {
             let right = binary.right.clone();
             *binary.left = inner;
             *binary.right = syn::parse_quote! { *#right };
+        } else if let (Some(left), Some(right)) = (
+            arc_mutex_new_call_arg(&binary.left),
+            arc_mutex_new_call_arg(&binary.right),
+        ) {
+            *binary.left = left;
+            *binary.right = right;
         }
     }
 
@@ -204,13 +216,17 @@ impl VisitMut for CoerceTypes {
                 Box::new(()) as Box<dyn std::any::Any>
             };
         } else if is_path_ident(&assign.left, "err") && is_path_ident(&assign.right, "w") {
-            *assign.right = syn::parse_quote! { w.Error() };
+            *assign.right = syn::parse_quote! {{
+                w.lock().unwrap().err.clone()
+            }};
         } else if is_path_ident(&assign.left, "err") && is_box_new_call_expr(&assign.right) {
             let right = assign.right.clone();
             *assign.right = syn::parse_quote! {{
                 let mut __gors_error_value = #right;
                 __gors_error_value.Error()
             }};
+        } else if is_path_ident(&assign.left, "err") && is_arc_mutex_new_call_expr(&assign.right) {
+            *assign.right = syn::parse_quote! { String::new() };
         }
 
         if let Some(self_ty) = self.impl_self_types.last()
@@ -1213,6 +1229,19 @@ fn is_box_new_call_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Call(call) if is_path_call(&call.func, &["Box", "new"]))
 }
 
+fn is_arc_mutex_new_call_expr(expr: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    if !is_path_call(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
+        return false;
+    }
+    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
+        return false;
+    };
+    is_path_call(&mutex_call.func, &["std", "sync", "Mutex", "new"])
+}
+
 fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
     let syn::Expr::Call(call) = expr else {
         return None;
@@ -1221,6 +1250,24 @@ fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
         return None;
     }
     call.args.first().cloned()
+}
+
+fn arc_mutex_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::Call(call) = expr else {
+        return None;
+    };
+    if !is_path_call(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
+        return None;
+    }
+    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
+        return None;
+    };
+    if !is_path_call(&mutex_call.func, &["std", "sync", "Mutex", "new"])
+        || mutex_call.args.len() != 1
+    {
+        return None;
+    }
+    mutex_call.args.first().cloned()
 }
 
 fn replace_self_deref_with_take(expr: &mut syn::Expr) {
