@@ -606,6 +606,9 @@ arithmetic, integer bitwise/remainder, integer shifts, comparable equality, and
 ordered numeric/string comparisons. Integer-only binary operators must still
 accept integer-valued untyped numeric literals such as `1e9` when the other
 operand has an integer type.
+Unary expression validation checks known operands for numeric `+`/`-`, boolean
+`!`, integer `^`, addressable `&`, pointer dereference `*`, and receive-capable
+`<-`; unresolved named/unknown operands stay permissive.
 Select lowering appends synthetic `break;` statements to multi-case arms, so
 case-body statements embedded before that break must be emitted as non-tail Rust
 statements; otherwise block expression bodies can make Syn report `expected ;`.

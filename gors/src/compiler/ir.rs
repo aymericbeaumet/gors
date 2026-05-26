@@ -1123,6 +1123,7 @@ pub enum InvalidStatementReason {
     InvalidIndex { reason: String },
     InvalidSlice { reason: String },
     InvalidTypeConversion { target: String, reason: String },
+    InvalidUnary { op: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
 }
@@ -4759,7 +4760,9 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             }
             invalid_slice_expr(slice, env).map(|reason| InvalidStatement::Expression { reason })
         }
-        ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env),
+        ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env).or_else(|| {
+            invalid_star_expr(star, env).map(|reason| InvalidStatement::Expression { reason })
+        }),
         ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().and_then(|fields| {
             for field in &fields.list {
                 if let Some(type_) = &field.type_
@@ -4779,7 +4782,9 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
                 .as_ref()
                 .and_then(|ty| invalid_return_in_expr(ty, env))
         }
-        ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env),
+        ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env).or_else(|| {
+            invalid_unary_expr(unary, env).map(|reason| InvalidStatement::Expression { reason })
+        }),
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
     }
 }
@@ -5450,7 +5455,9 @@ fn invalid_expression_in_expr(
                     .and_then(|max| invalid_expression_in_expr(max, env))
             })
             .or_else(|| invalid_slice_expr(slice, env)),
-        ast::Expr::StarExpr(star) => invalid_expression_in_expr(&star.x, env),
+        ast::Expr::StarExpr(star) => {
+            invalid_expression_in_expr(&star.x, env).or_else(|| invalid_star_expr(star, env))
+        }
         ast::Expr::StructType(struct_type) => struct_type
             .fields
             .as_ref()
@@ -5463,7 +5470,9 @@ fn invalid_expression_in_expr(
                     .and_then(|type_| invalid_expression_in_expr(type_, env))
             })
         }
-        ast::Expr::UnaryExpr(unary) => invalid_expression_in_expr(&unary.x, env),
+        ast::Expr::UnaryExpr(unary) => {
+            invalid_expression_in_expr(&unary.x, env).or_else(|| invalid_unary_expr(unary, env))
+        }
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
     }
 }
@@ -5784,6 +5793,132 @@ fn invalid_map_index_key(
 fn invalid_index_reason(reason: impl Into<String>) -> InvalidStatementReason {
     InvalidStatementReason::InvalidIndex {
         reason: reason.into(),
+    }
+}
+
+fn invalid_star_expr(star: &ast::StarExpr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let operand = env.resolve_alias(&GoType::infer_expr(&star.x, env));
+    match operand {
+        GoType::Pointer(_) | GoType::Unknown | GoType::Named(_) => None,
+        other => Some(invalid_unary_reason(
+            "*",
+            format!(
+                "operand must be pointer, got {}",
+                go_type_display_name(&other)
+            ),
+        )),
+    }
+}
+
+fn invalid_unary_expr(unary: &ast::UnaryExpr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let operand = env.resolve_alias(&GoType::infer_expr(&unary.x, env));
+    match unary.op {
+        token::Token::ADD | token::Token::SUB => invalid_unary_numeric_operand(unary.op, &operand),
+        token::Token::NOT => invalid_unary_bool_operand(&operand),
+        token::Token::XOR => invalid_unary_integer_operand(unary, &operand),
+        token::Token::AND => invalid_unary_address_operand(unary, env),
+        token::Token::ARROW => invalid_unary_receive_operand(&operand),
+        _ => None,
+    }
+}
+
+fn invalid_unary_numeric_operand(
+    op: token::Token,
+    operand: &GoType,
+) -> Option<InvalidStatementReason> {
+    if go_type_is_numeric(operand) || matches!(operand, GoType::Unknown | GoType::Named(_)) {
+        return None;
+    }
+    Some(invalid_unary_reason(
+        unary_op_name(op),
+        format!(
+            "operand must be numeric, got {}",
+            go_type_display_name(operand)
+        ),
+    ))
+}
+
+fn invalid_unary_bool_operand(operand: &GoType) -> Option<InvalidStatementReason> {
+    if matches!(operand, GoType::Bool | GoType::Unknown | GoType::Named(_)) {
+        return None;
+    }
+    Some(invalid_unary_reason(
+        "!",
+        format!(
+            "operand must be bool, got {}",
+            go_type_display_name(operand)
+        ),
+    ))
+}
+
+fn invalid_unary_integer_operand(
+    unary: &ast::UnaryExpr<'_>,
+    operand: &GoType,
+) -> Option<InvalidStatementReason> {
+    if matches!(operand, GoType::Unknown | GoType::Named(_))
+        || binary_operand_is_integer(operand, &unary.x)
+    {
+        return None;
+    }
+    Some(invalid_unary_reason(
+        "^",
+        format!(
+            "operand must be integer, got {}",
+            go_type_display_name(operand)
+        ),
+    ))
+}
+
+fn invalid_unary_address_operand(
+    unary: &ast::UnaryExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if matches!(unparen_expr(&unary.x), ast::Expr::CompositeLit(_))
+        || (!is_blank_ident(&unary.x)
+            && expr_addressability(&unary.x, env) == Addressability::Addressable)
+    {
+        return None;
+    }
+    Some(invalid_unary_reason("&", "operand must be addressable"))
+}
+
+fn invalid_unary_receive_operand(operand: &GoType) -> Option<InvalidStatementReason> {
+    match operand {
+        GoType::Chan { direction, .. } if direction.can_receive() => None,
+        GoType::Unknown | GoType::Named(_) => None,
+        GoType::Chan { .. } => Some(invalid_unary_reason(
+            "<-",
+            "operand must be receive-capable channel, got send-only channel",
+        )),
+        other => Some(invalid_unary_reason(
+            "<-",
+            format!(
+                "operand must be receive-capable channel, got {}",
+                go_type_display_name(other)
+            ),
+        )),
+    }
+}
+
+fn invalid_unary_reason(
+    op: impl Into<String>,
+    reason: impl Into<String>,
+) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidUnary {
+        op: op.into(),
+        reason: reason.into(),
+    }
+}
+
+fn unary_op_name(op: token::Token) -> &'static str {
+    match op {
+        token::Token::ADD => "+",
+        token::Token::SUB => "-",
+        token::Token::NOT => "!",
+        token::Token::XOR => "^",
+        token::Token::AND => "&",
+        token::Token::ARROW => "<-",
+        _ => "unary operator",
     }
 }
 
@@ -12733,6 +12868,142 @@ mod tests {
                     _ = f == nil
                     ch := make(chan int)
                     _ = ch == ch
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_unary_expressions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = +"go"
+                    }
+                "#,
+                "+",
+                "operand must be numeric, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = !1
+                    }
+                "#,
+                "!",
+                "operand must be bool, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = ^1.5
+                    }
+                "#,
+                "^",
+                "operand must be integer, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = &1
+                    }
+                "#,
+                "&",
+                "operand must be addressable",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        _ = *x
+                    }
+                "#,
+                "*",
+                "operand must be pointer, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var ch chan<- int
+                        _ = func() int {
+                            return <-ch
+                        }
+                    }
+                "#,
+                "<-",
+                "operand must be receive-capable channel, got send-only channel",
+            ),
+        ];
+
+        for (source, op, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidUnary {
+                        op: op.to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_unary_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type T struct {}
+
+                func main() {
+                    x := 1
+                    _ = +x
+                    _ = -x
+                    _ = ^1e9
+                    _ = !false
+                    _ = &x
+                    _ = &T{}
+                    p := &x
+                    _ = *p
+                    ch := make(chan int, 1)
+                    _ = <-ch
                 }
             "#,
         )
