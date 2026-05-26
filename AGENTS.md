@@ -77,9 +77,10 @@ gors-builtin/
   `main()` as startup locals.
 - Go function values stored in generated data structures are reference-counted
   as `std::sync::Arc<std::sync::Mutex<dyn FnMut(...) -> ... + Send>>`, and
-  calls go through `crate::builtin::lock_func`. Do not reintroduce
-  `Rc<RefCell<dyn FnMut>>`; keep the representation thread-safe so goroutine
-  lowering can share the same value model.
+  explicit local variables of `func(...)` type use the same representation. Calls
+  go through `crate::builtin::lock_func`. Do not reintroduce `Rc<RefCell<dyn
+  FnMut>>`; keep the representation thread-safe so goroutine lowering can share
+  the same value model.
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are boxed
@@ -410,7 +411,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 
-- Closure support is partial
+- Closure support is partial; recursive self-capturing function literals still need a nil-capable function-cell representation.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
 

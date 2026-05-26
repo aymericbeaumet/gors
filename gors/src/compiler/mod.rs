@@ -6389,12 +6389,6 @@ fn impl_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     syn::parse_quote! { impl FnMut(#(#params),*) -> #result }
 }
 
-fn fn_pointer_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
-    let params = func_param_types_from_ast(func_type);
-    let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { fn(#(#params),*) -> #result }
-}
-
 fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
     vec![
         syn::parse_quote! {
@@ -8564,12 +8558,17 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
     if is_function_field_selector {
         return compiled;
     }
-    if let Some(func_ty) = shared_func_type_from_go_type(expected) {
-        return syn::parse_quote! {
-            std::sync::Arc::new(std::sync::Mutex::new(#compiled)) as #func_ty
-        };
+    if let Some(expr) = shared_func_value_expr(expected, compiled.clone()) {
+        return expr;
     }
     compiled
+}
+
+fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
+    let func_ty = shared_func_type_from_go_type(expected)?;
+    Some(syn::parse_quote! {
+        std::sync::Arc::new(std::sync::Mutex::new(#compiled)) as #func_ty
+    })
 }
 
 fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Vec<syn::FieldValue> {
@@ -9510,10 +9509,7 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
     })
 }
 
-fn function_field_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
-    if !matches!(fun, ast::Expr::SelectorExpr(_)) {
-        return None;
-    }
+fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
     let ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(fun, &env.borrow()));
     match resolved_go_type(&ty) {
         typeinfer::GoType::Func { params, .. } => Some(params),
@@ -9521,8 +9517,16 @@ fn function_field_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>>
     }
 }
 
+fn function_field_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
+    if matches!(fun, ast::Expr::SelectorExpr(_)) {
+        function_value_call_params(fun)
+    } else {
+        None
+    }
+}
+
 fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
-    let params = function_field_call_params(&call_expr.fun)?;
+    let params = function_value_call_params(&call_expr.fun)?;
     let func: syn::Expr = (*call_expr.fun).into();
     let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
     if let Some(raw_args) = call_expr.args {
@@ -11015,7 +11019,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if let Some(variadic_start) = is_variadic_call(&call_expr) {
                     return compile_variadic_call(call_expr, variadic_start);
                 }
-                if function_field_call_params(&call_expr.fun).is_some() {
+                if function_value_call_params(&call_expr.fun).is_some() {
                     return compile_function_field_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid function field call"));
                 }
@@ -11406,7 +11410,7 @@ impl From<ast::Expr<'_>> for syn::Type {
                 type_with_generic_args(base, args)
             }
             ast::Expr::StructType(struct_type) => anonymous_struct_type(struct_type),
-            ast::Expr::FuncType(func_type) => fn_pointer_type_from_ast(&func_type),
+            ast::Expr::FuncType(func_type) => shared_func_type_from_ast(&func_type),
             ast::Expr::ChanType(chan_type) => {
                 // chan T → crate::builtin::Chan<T>
                 let inner: syn::Type = (*chan_type.value).into();
@@ -13130,8 +13134,9 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
             match spec {
                 ast::Spec::ValueSpec(value_spec) => {
                     let names = value_spec.names;
-                    let go_type = value_spec.type_.as_ref().map(typeinfer::GoType::from_expr);
-                    let rust_type: Option<syn::Type> = value_spec.type_.map(syn::Type::from);
+                    let type_expr = value_spec.type_;
+                    let go_type = type_expr.as_ref().map(typeinfer::GoType::from_expr);
+                    let rust_type: Option<syn::Type> = type_expr.as_ref().map(type_from_expr_ref);
                     let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
                     for name in names {
@@ -13149,6 +13154,7 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                                 env.borrow_mut().set_var(&ident.to_string(), inferred);
                             });
                         }
+                        let has_init = init_ast.is_some();
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
                             if let Some(ref go_type) = go_type {
                                 compile_expr_with_expected(expr, Some(go_type))
@@ -13157,8 +13163,18 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                             }
                         });
 
-                        let init = init_expr
-                            .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
+                        let mut init = init_expr.unwrap_or_else(|| {
+                            type_expr
+                                .as_ref()
+                                .map(default_expr_for_type)
+                                .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()))
+                        });
+                        if has_init
+                            && let Some(ref go_type) = go_type
+                            && let Some(func_value) = shared_func_value_expr(go_type, init.clone())
+                        {
+                            init = func_value;
+                        }
                         let name = ident.to_string();
                         let init = shared_capture_init_expr(&name, init);
                         if let Some(ref ty) = rust_type {
@@ -13911,9 +13927,15 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         lhs_ast, rhs_ast, key_ty, value_ty,
                     )?]);
                 }
+                let rhs_is_func_lit = matches!(rhs_ast, ast::Expr::FuncLit(_));
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
                 let right_raw = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
+                if rhs_is_func_lit
+                    && let Some(func_value) = shared_func_value_expr(&lhs_ty, right.clone())
+                {
+                    right = func_value;
+                }
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
