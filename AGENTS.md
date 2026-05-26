@@ -524,6 +524,8 @@ than one parameter before backend lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,
 duplicate methods for a receiver base type, and method names that collide with
 fields on the same struct base type before Rust emission.
+Short variable declarations are also checked there for duplicate non-blank names
+on the left side, including `for ... := range` bindings.
 
 Range-over-function support is IR-classified as a function range and backend
 lowered by synthesizing the Go `yield` callback as the same shared function

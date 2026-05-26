@@ -12720,6 +12720,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
             reason.max,
             reason.got
         ),
+        ir::InvalidStatement::ShortVarDecl { reason } => {
+            format!(
+                "invalid short variable declaration: {}",
+                invalid_short_var_decl_reason(reason)
+            )
+        }
     };
     CompilerError::UnsupportedConstruct(message)
 }
@@ -12746,6 +12752,14 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         }
         ir::InvalidStatementReason::TypeConversion => {
             "type conversions are not permitted in statement context".to_string()
+        }
+    }
+}
+
+fn invalid_short_var_decl_reason(reason: ir::InvalidShortVarDeclReason) -> String {
+    match reason {
+        ir::InvalidShortVarDeclReason::DuplicateName(name) => {
+            format!("name {name} appears more than once on left side of :=")
         }
     }
 }
@@ -17573,6 +17587,28 @@ mod tests {
                 }
             "#,
             "invalid defer statement: type conversions are not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x, x := 1, 2
+                }
+            "#,
+            "invalid short variable declaration: name x appears more than once on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    for i, i := range []int{1} {
+                        _ = i
+                    }
+                }
+            "#,
+            "invalid short variable declaration: name i appears more than once on left side of :=",
         );
     }
 

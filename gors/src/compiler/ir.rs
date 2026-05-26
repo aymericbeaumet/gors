@@ -983,6 +983,7 @@ pub enum InvalidStatement {
     Expr { reason: InvalidStatementReason },
     Go { reason: InvalidStatementReason },
     Range { reason: InvalidRangeReason },
+    ShortVarDecl { reason: InvalidShortVarDeclReason },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -997,6 +998,11 @@ pub struct InvalidRangeReason {
     pub kind: RangeKind,
     pub max: usize,
     pub got: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidShortVarDeclReason {
+    DuplicateName(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2611,6 +2617,11 @@ fn invalid_statement_in_nested_block(
 fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<InvalidStatement> {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
+            if assign.tok == token::Token::DEFINE
+                && let Some(reason) = invalid_short_var_decl_names(&assign.lhs)
+            {
+                return Some(InvalidStatement::ShortVarDecl { reason });
+            }
             record_define_bindings(assign, env);
             None
         }
@@ -2674,6 +2685,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         ast::Stmt::IncDecStmt(_) => None,
         ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
         ast::Stmt::RangeStmt(range) => {
+            if range.tok == Some(token::Token::DEFINE)
+                && let Some(reason) = invalid_range_short_var_decl_names(range)
+            {
+                return Some(InvalidStatement::ShortVarDecl { reason });
+            }
             if let Some(reason) = invalid_range_clause(range, env) {
                 return Some(InvalidStatement::Range { reason });
             }
@@ -2717,6 +2733,63 @@ fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Inv
     let got = effective_range_binding_count(range);
     let (kind, max) = max_range_binding_count(&range.x, env)?;
     (got > max).then_some(InvalidRangeReason { kind, max, got })
+}
+
+fn invalid_short_var_decl_names(lhs: &[ast::Expr<'_>]) -> Option<InvalidShortVarDeclReason> {
+    let mut names = BTreeSet::new();
+    for expr in lhs {
+        let Some(name) = short_var_decl_ident_name(expr) else {
+            continue;
+        };
+        if name == "_" {
+            continue;
+        }
+        if !names.insert(name) {
+            return Some(InvalidShortVarDeclReason::DuplicateName(name.to_string()));
+        }
+    }
+    None
+}
+
+fn invalid_range_short_var_decl_names(
+    range: &ast::RangeStmt<'_>,
+) -> Option<InvalidShortVarDeclReason> {
+    let mut names = BTreeSet::new();
+    if let Some(key) = &range.key {
+        if let Some(reason) = record_short_var_decl_name(key, &mut names) {
+            return Some(reason);
+        }
+    }
+    if let Some(value) = &range.value {
+        if let Some(reason) = record_short_var_decl_name(value, &mut names) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn record_short_var_decl_name<'src>(
+    expr: &'src ast::Expr<'src>,
+    names: &mut BTreeSet<&'src str>,
+) -> Option<InvalidShortVarDeclReason> {
+    let Some(name) = short_var_decl_ident_name(expr) else {
+        return None;
+    };
+    if name == "_" {
+        return None;
+    }
+    if !names.insert(name) {
+        return Some(InvalidShortVarDeclReason::DuplicateName(name.to_string()));
+    }
+    None
+}
+
+fn short_var_decl_ident_name<'src>(expr: &'src ast::Expr<'src>) -> Option<&'src str> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::ParenExpr(paren) => short_var_decl_ident_name(&paren.x),
+        _ => None,
+    }
 }
 
 fn effective_range_binding_count(range: &ast::RangeStmt<'_>) -> usize {
@@ -6897,6 +6970,52 @@ mod tests {
             assert_eq!(
                 super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_short_var_decl_names() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x, x := 1, 2
+                    }
+                "#,
+                "x",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for i, i := range []int{1} {
+                            _ = i
+                        }
+                    }
+                "#,
+                "i",
+            ),
+        ];
+
+        for (source, name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::ShortVarDecl {
+                    reason: super::InvalidShortVarDeclReason::DuplicateName(name.to_string()),
+                })
             );
         }
     }
