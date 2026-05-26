@@ -6230,7 +6230,7 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
     };
 
     syn::parse_quote! {
-        std::rc::Rc::new(std::cell::RefCell::new(move |#(#params),*| { #body })) as #func_ty
+        std::sync::Arc::new(std::sync::Mutex::new(move |#(#params),*| { #body })) as #func_ty
     }
 }
 
@@ -6434,7 +6434,7 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
 fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { std::rc::Rc<std::cell::RefCell<dyn FnMut(#(#params),*) -> #result>> }
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<dyn FnMut(#(#params),*) -> #result + Send>> }
 }
 
 fn impl_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
@@ -8256,7 +8256,7 @@ fn shared_func_type_from_go_parts(
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    syn::parse_quote! { std::rc::Rc<std::cell::RefCell<dyn FnMut(#(#params),*) -> #result>> }
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<dyn FnMut(#(#params),*) -> #result + Send>> }
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -8733,7 +8733,7 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
     }
     if let Some(func_ty) = shared_func_type_from_go_type(expected) {
         return syn::parse_quote! {
-            std::rc::Rc::new(std::cell::RefCell::new(#compiled)) as #func_ty
+            std::sync::Arc::new(std::sync::Mutex::new(#compiled)) as #func_ty
         };
     }
     compiled
@@ -9584,7 +9584,10 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
             args.push(compile_expr_with_expected(arg, params.get(idx)));
         }
     }
-    Some(syn::parse_quote! { (#func).borrow_mut()(#args) })
+    Some(syn::parse_quote! {{
+        let mut __gors_func = crate::builtin::lock_func(&(#func));
+        (&mut *__gors_func)(#args)
+    }})
 }
 
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
@@ -10510,6 +10513,61 @@ fn compile_binary_side_for_parent(
     parenthesize_binary_child_if_needed(compiled, child_op, parent_op, side)
 }
 
+fn is_string_concat_operand(expr: &ast::Expr, env: &typeinfer::TypeEnv) -> bool {
+    match expr {
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
+            is_string_concat_binary_expr_with_env(binary, env)
+        }
+        _ => matches!(
+            env.resolve_alias(&typeinfer::GoType::infer_expr(expr, env)),
+            typeinfer::GoType::String
+        ),
+    }
+}
+
+fn is_string_concat_binary_expr_with_env(
+    binary_expr: &ast::BinaryExpr,
+    env: &typeinfer::TypeEnv,
+) -> bool {
+    binary_expr.op == token::Token::ADD
+        && is_string_concat_operand(&binary_expr.x, env)
+        && is_string_concat_operand(&binary_expr.y, env)
+}
+
+fn is_string_concat_binary_expr(binary_expr: &ast::BinaryExpr) -> bool {
+    TYPE_ENV.with(|env| is_string_concat_binary_expr_with_env(binary_expr, &env.borrow()))
+}
+
+fn collect_string_concat_operands<'src>(
+    expr: ast::Expr<'src>,
+    operands: &mut Vec<ast::Expr<'src>>,
+) {
+    match expr {
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
+            collect_string_concat_operands(*binary.x, operands);
+            collect_string_concat_operands(*binary.y, operands);
+        }
+        other => operands.push(other),
+    }
+}
+
+fn compile_string_concat_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
+    let mut operands = Vec::new();
+    collect_string_concat_operands(ast::Expr::BinaryExpr(binary_expr), &mut operands);
+    let parts: Vec<syn::Expr> = operands
+        .into_iter()
+        .map(|operand| compile_expr_with_expected(operand, Some(&typeinfer::GoType::String)))
+        .collect();
+    syn::parse_quote! {{
+        let mut __gors_string = std::string::String::new();
+        #(
+            let __gors_part = #parts;
+            __gors_string.push_str(&__gors_part);
+        )*
+        __gors_string
+    }}
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if let Some(compare) = detect_reflect_kind_compare(&binary_expr) {
@@ -10606,6 +10664,10 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::parse_quote! { #other_expr != Default::default() }
             };
         }
+    }
+
+    if is_string_concat_binary_expr(&binary_expr) {
+        return compile_string_concat_binary_expr(binary_expr);
     }
 
     let binary_expr = match flatten_same_binary_operands(binary_expr) {

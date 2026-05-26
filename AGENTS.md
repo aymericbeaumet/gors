@@ -75,6 +75,11 @@ gors-builtin/
 - Package-level vars in imported/transpiled packages are emitted as concrete
   `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
   `main()` as startup locals.
+- Go function values stored in generated data structures are reference-counted
+  as `std::sync::Arc<std::sync::Mutex<dyn FnMut(...) -> ... + Send>>`, and
+  calls go through `crate::builtin::lock_func`. Do not reintroduce
+  `Rc<RefCell<dyn FnMut>>`; keep the representation thread-safe so goroutine
+  lowering can share the same value model.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
@@ -386,7 +391,6 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 ## Known limitations
 
 - No closures or variadic function definitions
-- No string concatenation with `+` (needs type inference)
 - No `for range` over strings (uses `.iter()` instead of `.chars()`)
 - `any` type maps to `Box<dyn Any>` but auto-boxing at assignment sites requires manual wrapping
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably

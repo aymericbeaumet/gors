@@ -259,6 +259,10 @@ pub trait Len {
     fn len_value(&self) -> usize;
 }
 
+pub fn lock_func<T: ?Sized>(func: &Arc<Mutex<T>>) -> MutexGuard<'_, T> {
+    func.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub trait ByteSeq {
     fn byte_at(&self, index: usize) -> u8;
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8>;
@@ -1306,6 +1310,14 @@ mod tests {
         assert_eq!(byte_slice(&bytes, 0, 2), vec![b'g', b'o']);
         assert_eq!(string_from_byte_seq(&text), "gors");
         assert_eq!(string_from_byte_seq(&bytes), "gors");
+    }
+
+    #[test]
+    fn lock_func_calls_shared_function_values() {
+        let func: Arc<Mutex<dyn FnMut(isize) -> isize + Send>> =
+            Arc::new(Mutex::new(|value| value + 1));
+        let mut locked = lock_func(&func);
+        assert_eq!((&mut *locked)(41), 42);
     }
 
     #[test]
