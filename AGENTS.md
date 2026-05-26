@@ -485,6 +485,11 @@ because the legacy type environment has not learned every local type yet.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.
+IR statement validation rejects `++`/`--` operands with known non-numeric types
+before backend lowering; unresolved named/unknown operand types stay permissive
+until type inference can prove them invalid. Map-index `++`/`--` is valid per
+the Go spec and lowers through the map entry API rather than the normal
+addressable-lvalue path.
 
 The generated-code fallback pruner must preserve control-flow containers while
 removing only unsupported reflection-dependent branches. When it prunes a local

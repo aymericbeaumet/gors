@@ -12747,6 +12747,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::Go { reason } => {
             format!("invalid go statement: {}", invalid_statement_reason(reason))
         }
+        ir::InvalidStatement::IncDec { reason } => {
+            format!(
+                "invalid increment/decrement statement: {}",
+                invalid_inc_dec_reason(reason)
+            )
+        }
         ir::InvalidStatement::MissingReturn => {
             "invalid function body: missing terminating statement".to_string()
         }
@@ -12776,6 +12782,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         }
     };
     CompilerError::UnsupportedConstruct(message)
+}
+
+fn invalid_inc_dec_reason(reason: ir::InvalidIncDecReason) -> String {
+    match reason {
+        ir::InvalidIncDecReason::NonNumericOperand => "operand must have numeric type".to_string(),
+    }
 }
 
 fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
@@ -15193,6 +15205,9 @@ fn is_catch_panic_defer(call: &ast::CallExpr) -> bool {
 }
 
 fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    if let Some((key_ty, _)) = map_index_types(&inc_dec_stmt.x) {
+        return compile_map_index_inc_dec(inc_dec_stmt, key_ty);
+    }
     let x = compile_assignment_lhs_checked(inc_dec_stmt.x)?;
     Ok(match inc_dec_stmt.tok {
         token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
@@ -16677,6 +16692,28 @@ fn compile_map_index_assignment(
     Ok(syn::parse_quote! { #base.insert(#key, #right); })
 }
 
+fn compile_map_index_inc_dec(
+    inc_dec_stmt: ast::IncDecStmt,
+    key_ty: typeinfer::GoType,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let ast::Expr::IndexExpr(index) = inc_dec_stmt.x else {
+        return Err(CompilerError::InvalidAssignment(
+            "map increment/decrement without map index lhs".to_string(),
+        ));
+    };
+    let base = lvalue_expr_from_ref(&index.x).ok_or_else(|| {
+        CompilerError::InvalidAssignment(
+            "map increment/decrement lhs is not addressable".to_string(),
+        )
+    })?;
+    let key = compile_expr_with_expected(*index.index, Some(&key_ty));
+    Ok(match inc_dec_stmt.tok {
+        token::Token::INC => vec![syn::parse_quote! { *#base.entry(#key).or_default() += 1; }],
+        token::Token::DEC => vec![syn::parse_quote! { *#base.entry(#key).or_default() -= 1; }],
+        _ => vec![],
+    })
+}
+
 fn expr_shape_key(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Ident(ident) => Some(format!("id:{}", ident.name)),
@@ -17752,6 +17789,17 @@ mod tests {
                 }
             "#,
             "invalid defer statement: type conversions are not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    s := "go"
+                    s++
+                }
+            "#,
+            "invalid increment/decrement statement: operand must have numeric type",
         );
         assert_unsupported_construct(
             r#"
@@ -18971,6 +19019,28 @@ func main() {
                 pub fn main() {
                     let mut m = std::collections::HashMap::<String, isize>::new();
                     m.insert("a".to_string(), 1);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_map_index_inc_dec() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]int{"a": 1}
+                    m["a"]++
+                    m["b"]--
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::from([("a".to_string(), 1)]);
+                    *m.entry("a".to_string()).or_default() += 1;
+                    *m.entry("b".to_string()).or_default() -= 1;
                 }
             },
         );

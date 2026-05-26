@@ -998,6 +998,9 @@ pub enum InvalidStatement {
     Go {
         reason: InvalidStatementReason,
     },
+    IncDec {
+        reason: InvalidIncDecReason,
+    },
     MissingReturn,
     Range {
         reason: InvalidRangeReason,
@@ -1019,6 +1022,11 @@ pub enum InvalidAssignmentReason {
     CompoundOperandCount { lhs: usize, rhs: usize },
     CountMismatch { lhs: usize, values: usize },
     MultiValueInSingleValueContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidIncDecReason {
+    NonNumericOperand,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3295,7 +3303,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             }
             None
         }
-        ast::Stmt::IncDecStmt(_) => None,
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            invalid_inc_dec(inc_dec, env).map(|reason| InvalidStatement::IncDec { reason })
+        }
         ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
         ast::Stmt::RangeStmt(range) => {
             if range.tok == Some(token::Token::DEFINE)
@@ -3442,6 +3452,18 @@ fn invalid_assignment(
     }
 
     None
+}
+
+fn invalid_inc_dec(inc_dec: &ast::IncDecStmt<'_>, env: &TypeEnv) -> Option<InvalidIncDecReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(&inc_dec.x, env));
+    if matches!(ty, GoType::Unknown | GoType::Named(_)) || inc_dec_operand_is_numeric(&ty) {
+        return None;
+    }
+    Some(InvalidIncDecReason::NonNumericOperand)
+}
+
+fn inc_dec_operand_is_numeric(ty: &GoType) -> bool {
+    ty.is_integer() || ty.is_float() || matches!(ty, GoType::Complex64 | GoType::Complex128)
 }
 
 #[derive(Clone, Copy)]
@@ -8519,6 +8541,92 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn rejects_inc_dec_on_non_numeric_operands() {
+        let cases = vec![
+            r#"
+                package main
+
+                func main() {
+                    s := "go"
+                    s++
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    b := true
+                    b--
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]string{"go": "rs"}
+                    m["go"]++
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::IncDec {
+                    reason: super::InvalidIncDecReason::NonNumericOperand,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_inc_dec_on_numeric_operands() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+
+                func main() {
+                    i := 0
+                    i++
+                    f := 1.5
+                    f--
+                    var c Count
+                    c++
+                    var z complex128
+                    z--
+                    m := map[string]int{"go": 1}
+                    m["go"]++
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]
