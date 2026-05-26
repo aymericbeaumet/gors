@@ -12872,6 +12872,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::DisallowedBuiltin(name) => {
             format!("{} is not permitted in statement context", name)
         }
+        ir::InvalidStatementReason::InvalidBuiltinCall { name, reason } => {
+            format!("invalid {name} call: {reason}")
+        }
         ir::InvalidStatementReason::NonCallOrReceive => {
             "expected a function call, method call, or receive operation".to_string()
         }
@@ -17888,6 +17891,16 @@ mod tests {
                 }
             "#,
             "invalid defer statement: type conversions are not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    close(1)
+                }
+            "#,
+            "invalid expression statement: invalid close call: argument must have channel type, got int",
         );
         assert_unsupported_construct(
             r#"

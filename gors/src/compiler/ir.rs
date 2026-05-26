@@ -1101,6 +1101,7 @@ pub enum DefaultClauseKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
+    InvalidBuiltinCall { name: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
 }
@@ -5140,7 +5141,59 @@ fn invalid_call_statement(
     if let Some(name) = disallowed_builtin_statement_name(call, env) {
         return Some(InvalidStatementReason::DisallowedBuiltin(name));
     }
+    if let Some(reason) = invalid_builtin_call_statement(call, env) {
+        return Some(reason);
+    }
     call_is_type_conversion(call, env).then_some(InvalidStatementReason::TypeConversion)
+}
+
+fn invalid_builtin_call_statement(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
+        _ => None,
+    }
+}
+
+fn invalid_builtin_close_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Close,
+            "expects exactly one argument",
+        ));
+    }
+    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    match ty {
+        GoType::Chan { direction, .. } if direction.can_send() => None,
+        GoType::Chan { .. } => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Close,
+            "cannot close receive-only channel",
+        )),
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Close,
+            format!(
+                "argument must have channel type, got {}",
+                go_type_display_name(&other)
+            ),
+        )),
+    }
+}
+
+fn invalid_builtin_call_reason(
+    kind: BuiltinCallKind,
+    reason: impl Into<String>,
+) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidBuiltinCall {
+        name: kind.name().to_string(),
+        reason: reason.into(),
+    }
 }
 
 fn disallowed_builtin_statement_name(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<String> {
@@ -9481,6 +9534,65 @@ mod tests {
             assert_eq!(
                 super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_close_builtin_calls() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        close(1)
+                    }
+                "#,
+                "argument must have channel type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var ch <-chan int
+                        close(ch)
+                    }
+                "#,
+                "cannot close receive-only channel",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int)
+                        close(ch, ch)
+                    }
+                "#,
+                "expects exactly one argument",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expr {
+                    reason: super::InvalidStatementReason::InvalidBuiltinCall {
+                        name: "close".to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
             );
         }
     }
