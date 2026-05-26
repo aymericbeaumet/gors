@@ -477,6 +477,10 @@ impl TypeEnv {
         self.func_params.get(name).cloned().unwrap_or_default()
     }
 
+    pub fn has_func(&self, name: &str) -> bool {
+        self.funcs.contains_key(name) || self.func_params.contains_key(name)
+    }
+
     pub fn get_func_return(&self, name: &str) -> GoType {
         self.funcs
             .get(name)

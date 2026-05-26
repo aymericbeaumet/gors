@@ -84,7 +84,13 @@ gors-builtin/
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are boxed
-  behind the shared `Arc<Mutex<dyn FnMut(...) -> ... + Send>>` representation.
+  behind the shared `Arc<Mutex<Option<Box<dyn FnMut(...) -> ... + Send>>>>`
+  representation.
+- Expected-type expression lowering owns Go function-value coercions. Function
+  literals and named or selector function items passed to `func(...)`-typed
+  arguments or assignments are wrapped as shared function cells by casting the
+  inner `Box` to `Box<dyn FnMut(...) -> ... + Send>`; do not cast the outer
+  `Arc`, because Rust rejects non-primitive casts between `Arc` instantiations.
 - Goroutine function literals use IR capture analysis. Mutable outer captures are
   promoted to `Arc<Mutex<T>>` in the enclosing block and cloned into the spawned
   closure so synchronized goroutine writes are visible after channel joins.
@@ -105,9 +111,10 @@ gors-builtin/
   preserve those methods whenever select lowering or channel helpers reference
   them.
 - Non-void functions and function literals with no explicit final Rust `return`
-  get a tail `panic!("gors: missing return")` fallback. Go rejects reachable
-  missing-return paths, but valid Go control-flow constructs such as exhaustive
-  switch returns still need a Rust tail expression after lowering.
+  get a tail `panic!("gors: missing return")` fallback unless lowering already
+  ended the block with a Rust tail value expression. Go rejects reachable
+  missing-return paths, but valid Go control-flow constructs and bodyless stdlib
+  fallbacks can still need a Rust tail expression after lowering.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.

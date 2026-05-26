@@ -6296,8 +6296,8 @@ fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
 }
 
 fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
-    let func_ty = shared_func_type_from_ast(func_type);
-    syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(None)) as #func_ty }
+    let box_ty = shared_func_box_type_from_ast(func_type);
+    syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(None::<#box_ty>)) }
 }
 
 fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
@@ -6501,6 +6501,12 @@ fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
     syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(#(#params),*) -> #result + Send>>>> }
+}
+
+fn shared_func_box_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
+    let params = func_param_types_from_ast(func_type);
+    let result = func_result_type_from_ast(func_type);
+    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result + Send> }
 }
 
 fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
@@ -8219,6 +8225,14 @@ fn shared_func_type_from_go_parts(
     params: &[typeinfer::GoType],
     results: &[typeinfer::GoType],
 ) -> syn::Type {
+    let box_ty = shared_func_box_type_from_go_parts(params, results);
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<#box_ty>>> }
+}
+
+fn shared_func_box_type_from_go_parts(
+    params: &[typeinfer::GoType],
+    results: &[typeinfer::GoType],
+) -> syn::Type {
     let params = params.iter().map(rust_type_from_inferred_go_type);
     let result_types: Vec<syn::Type> = results
         .iter()
@@ -8229,13 +8243,22 @@ fn shared_func_type_from_go_parts(
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(#(#params),*) -> #result + Send>>>> }
+    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result + Send> }
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
     match resolved_go_type(go_type) {
         typeinfer::GoType::Func { params, results } => {
             Some(shared_func_type_from_go_parts(&params, &results))
+        }
+        _ => None,
+    }
+}
+
+fn shared_func_box_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
+    match resolved_go_type(go_type) {
+        typeinfer::GoType::Func { params, results } => {
+            Some(shared_func_box_type_from_go_parts(&params, &results))
         }
         _ => None,
     }
@@ -8683,9 +8706,9 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
 }
 
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
-    let func_ty = shared_func_type_from_go_type(expected)?;
+    let box_ty = shared_func_box_type_from_go_type(expected)?;
     Some(syn::parse_quote! {
-        std::sync::Arc::new(std::sync::Mutex::new(Some(Box::new(#compiled)))) as #func_ty
+        std::sync::Arc::new(std::sync::Mutex::new(Some(Box::new(#compiled) as #box_ty)))
     })
 }
 
@@ -9491,7 +9514,27 @@ fn compile_expr_with_expected(
         };
     }
 
-    if matches!(expected, Some(typeinfer::GoType::Func { .. })) {
+    if matches!(
+        expected.map(resolved_go_type),
+        Some(typeinfer::GoType::Func { .. })
+    ) {
+        match &expr {
+            ast::Expr::Ident(ident) => {
+                let is_func_var = TYPE_ENV.with(|env| {
+                    matches!(
+                        env.borrow().get_var(ident.name),
+                        Some(typeinfer::GoType::Func { .. })
+                    )
+                });
+                if is_func_var {
+                    let ident =
+                        syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                    return syn::parse_quote! { #ident.clone() };
+                }
+            }
+            _ => {}
+        }
+
         match expr {
             ast::Expr::FuncLit(func_lit) => {
                 let compiled = compile_func_lit_with_capture_mode(func_lit, true);
@@ -9505,6 +9548,16 @@ fn compile_expr_with_expected(
             other => {
                 expr = other;
             }
+        }
+
+        if let Some(expected) = expected
+            && is_function_item_expr(&expr)
+        {
+            let compiled: syn::Expr = expr.into();
+            if let Some(func_value) = shared_func_value_expr(expected, compiled.clone()) {
+                return func_value;
+            }
+            return compiled;
         }
     }
 
@@ -9538,21 +9591,6 @@ fn compile_expr_with_expected(
             other => {
                 expr = other;
             }
-        }
-    }
-
-    if matches!(expected, Some(typeinfer::GoType::Func { .. }))
-        && let ast::Expr::Ident(ident) = &expr
-    {
-        let is_func_var = TYPE_ENV.with(|env| {
-            matches!(
-                env.borrow().get_var(ident.name),
-                Some(typeinfer::GoType::Func { .. })
-            )
-        });
-        if is_func_var {
-            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-            return syn::parse_quote! { #ident.clone() };
         }
     }
 
@@ -9613,6 +9651,40 @@ fn compile_expr_with_expected(
     }
 
     expr.into()
+}
+
+fn is_function_item_expr(expr: &ast::Expr) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        match expr {
+            ast::Expr::Ident(id) => {
+                !matches!(env.get_var(id.name), Some(typeinfer::GoType::Func { .. }))
+                    && env.has_func(id.name)
+            }
+            ast::Expr::SelectorExpr(sel) => {
+                let ast::Expr::Ident(pkg_or_recv) = &*sel.x else {
+                    return false;
+                };
+                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
+                if env.has_func(&package_key) {
+                    return true;
+                }
+                match env.get_var(pkg_or_recv.name) {
+                    Some(typeinfer::GoType::Named(name)) => {
+                        env.has_func(&format!("{name}.{}", sel.sel.name))
+                    }
+                    Some(typeinfer::GoType::Pointer(inner)) => match *inner {
+                        typeinfer::GoType::Named(name) => {
+                            env.has_func(&format!("{name}.{}", sel.sel.name))
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    })
 }
 
 fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
@@ -12419,11 +12491,13 @@ fn bodyless_function_block(
     }}
 }
 
-fn block_ends_with_return(block: &syn::Block) -> bool {
-    block
-        .stmts
-        .last()
-        .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)))
+fn block_ends_with_value(block: &syn::Block) -> bool {
+    block.stmts.last().is_some_and(|last| {
+        matches!(
+            last,
+            syn::Stmt::Expr(syn::Expr::Return(_), _) | syn::Stmt::Expr(_, None)
+        )
+    })
 }
 
 fn append_missing_return_panic(
@@ -12431,7 +12505,7 @@ fn append_missing_return_panic(
     output: &syn::ReturnType,
     completion: Option<ir::Completion>,
 ) {
-    if matches!(output, syn::ReturnType::Default) || block_ends_with_return(block) {
+    if matches!(output, syn::ReturnType::Default) || block_ends_with_value(block) {
         return;
     }
 
@@ -13776,7 +13850,6 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                                 env.borrow_mut().set_var(&ident.to_string(), inferred);
                             });
                         }
-                        let has_init = init_ast.is_some();
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
                             if let Some(ref go_type) = go_type {
                                 compile_expr_with_expected(expr, Some(go_type))
@@ -13785,18 +13858,12 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                             }
                         });
 
-                        let mut init = init_expr.unwrap_or_else(|| {
+                        let init = init_expr.unwrap_or_else(|| {
                             type_expr
                                 .as_ref()
                                 .map(default_expr_for_type)
                                 .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()))
                         });
-                        if has_init
-                            && let Some(ref go_type) = go_type
-                            && let Some(func_value) = shared_func_value_expr(go_type, init.clone())
-                        {
-                            init = func_value;
-                        }
                         let name = ident.to_string();
                         let init = shared_capture_init_expr(&name, init);
                         if let Some(ref ty) = rust_type {
@@ -14986,6 +15053,44 @@ func main() {
             super::compute_content_hash(&files1),
             super::compute_content_hash(&files2)
         );
+    }
+
+    #[test]
+    fn it_should_coerce_function_values_at_expected_argument_sites() {
+        let go_source = r#"
+package main
+
+func apply(f func(int) int, x int) int {
+	return f(x)
+}
+
+func inc(x int) int {
+	return x + 1
+}
+
+func main() {
+	println(apply(inc, 1))
+	println(apply(func(x int) int { return x + 2 }, 1))
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("Some(Box::new(inc) as Box<dyn FnMut(isize) -> isize + Send>)"));
+        assert!(output.contains("Box::new(move |mut x: isize| -> isize"));
+        assert!(output.contains("as Box<dyn FnMut(isize) -> isize + Send>"));
+        assert!(!output.contains(") as std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut"));
+    }
+
+    #[test]
+    fn append_missing_return_panic_preserves_tail_value_exprs() {
+        let mut block: syn::Block = rust!({ 1 });
+        let output: syn::ReturnType = rust!(-> isize);
+
+        super::append_missing_return_panic(&mut block, &output, None);
+
+        assert_eq!(quote! { #block }.to_string(), "{ 1 }");
     }
 
     #[test]
