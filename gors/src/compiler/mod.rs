@@ -8691,8 +8691,8 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
             let inner = rust_type_from_inferred_go_type(&inner);
             syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
         }
-        typeinfer::GoType::Chan(inner) => {
-            let inner = rust_type_from_inferred_go_type(&inner);
+        typeinfer::GoType::Chan { elem, .. } => {
+            let inner = rust_type_from_inferred_go_type(&elem);
             syn::parse_quote! { crate::builtin::Chan<#inner> }
         }
         typeinfer::GoType::Func { params, results } => {
@@ -10774,7 +10774,7 @@ fn set_range_bindings(
         (Some(key), None, typeinfer::GoType::Map(key_ty, _)) => {
             set_range_binding(Some(key), *key_ty);
         }
-        (Some(key), None, typeinfer::GoType::Chan(elem)) => {
+        (Some(key), None, typeinfer::GoType::Chan { elem, .. }) => {
             set_range_binding(Some(key), *elem);
         }
         _ => {}
@@ -12891,6 +12891,9 @@ fn invalid_receive_reason(reason: ir::InvalidReceiveReason) -> String {
         ir::InvalidReceiveReason::NonChannel { type_name } => {
             format!("operand must have channel type, got {type_name}")
         }
+        ir::InvalidReceiveReason::SendOnlyChannel => {
+            "cannot receive from send-only channel".to_string()
+        }
     }
 }
 
@@ -12898,6 +12901,9 @@ fn invalid_send_reason(reason: ir::InvalidSendReason) -> String {
     match reason {
         ir::InvalidSendReason::NonChannel { type_name } => {
             format!("channel operand must have channel type, got {type_name}")
+        }
+        ir::InvalidSendReason::ReceiveOnlyChannel => {
+            "cannot send to receive-only channel".to_string()
         }
     }
 }
@@ -17895,10 +17901,32 @@ mod tests {
                 package main
 
                 func main() {
+                    var ch <-chan int
+                    ch <- 1
+                }
+            "#,
+            "invalid send statement: cannot send to receive-only channel",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
                     <-1
                 }
             "#,
             "invalid receive operation: operand must have channel type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    var ch chan<- int
+                    <-ch
+                }
+            "#,
+            "invalid receive operation: cannot receive from send-only channel",
         );
         assert_unsupported_construct(
             r#"

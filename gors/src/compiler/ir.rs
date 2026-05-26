@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ast, token};
 
-use super::typeinfer::{GoType, TypeEnv};
+use super::typeinfer::{GoChannelDirection, GoType, TypeEnv};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
@@ -466,7 +466,7 @@ pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
         | GoType::Uintptr => RangeKind::Integer,
         GoType::Slice(_) | GoType::Array(_) => RangeKind::Indexed,
         GoType::Map(_, _) => RangeKind::Map,
-        GoType::Chan(_) => RangeKind::Channel,
+        GoType::Chan { direction, .. } if direction.can_receive() => RangeKind::Channel,
         GoType::Func { .. } => RangeKind::Function,
         _ => RangeKind::Other,
     }
@@ -820,7 +820,7 @@ fn record_range_bindings(range: &ast::RangeStmt<'_>, env: &mut TypeEnv) {
         GoType::String => (GoType::Int, Some(GoType::Int32)),
         GoType::Slice(elem) | GoType::Array(elem) => (GoType::Int, Some(*elem)),
         GoType::Map(key, value) => (*key, Some(*value)),
-        GoType::Chan(value) => (*value, None),
+        GoType::Chan { elem, .. } => (*elem, None),
         GoType::Int
         | GoType::Int8
         | GoType::Int16
@@ -1056,6 +1056,7 @@ pub enum InvalidIncDecReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidReceiveReason {
     NonChannel { type_name: String },
+    SendOnlyChannel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1067,6 +1068,7 @@ pub enum InvalidReturnReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidSendReason {
     NonChannel { type_name: String },
+    ReceiveOnlyChannel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3555,12 +3557,14 @@ fn invalid_condition(
 
 fn invalid_send(send: &ast::SendStmt<'_>, env: &TypeEnv) -> Option<InvalidSendReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(&send.chan, env));
-    if matches!(ty, GoType::Chan(_) | GoType::Unknown | GoType::Named(_)) {
-        return None;
+    match ty {
+        GoType::Chan { direction, .. } if direction.can_send() => None,
+        GoType::Chan { .. } => Some(InvalidSendReason::ReceiveOnlyChannel),
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(InvalidSendReason::NonChannel {
+            type_name: go_type_display_name(&other),
+        }),
     }
-    Some(InvalidSendReason::NonChannel {
-        type_name: go_type_display_name(&ty),
-    })
 }
 
 fn invalid_select_comm_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidSelectCommReason> {
@@ -3680,12 +3684,15 @@ fn invalid_receive_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidRe
         }),
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW => {
             let ty = env.resolve_alias(&GoType::infer_expr(&unary.x, env));
-            if matches!(ty, GoType::Chan(_) | GoType::Unknown | GoType::Named(_)) {
-                invalid_receive_expr(&unary.x, env)
-            } else {
-                Some(InvalidReceiveReason::NonChannel {
-                    type_name: go_type_display_name(&ty),
-                })
+            match ty {
+                GoType::Chan { direction, .. } if direction.can_receive() => {
+                    invalid_receive_expr(&unary.x, env)
+                }
+                GoType::Chan { .. } => Some(InvalidReceiveReason::SendOnlyChannel),
+                GoType::Unknown | GoType::Named(_) => invalid_receive_expr(&unary.x, env),
+                other => Some(InvalidReceiveReason::NonChannel {
+                    type_name: go_type_display_name(&other),
+                }),
             }
         }
         ast::Expr::UnaryExpr(unary) => invalid_receive_expr(&unary.x, env),
@@ -4513,7 +4520,8 @@ fn max_range_binding_count_for_type(ty: &GoType) -> Option<(RangeKind, usize)> {
             Some((RangeKind::Indexed, 2))
         }
         GoType::Map(_, _) => Some((RangeKind::Map, 2)),
-        GoType::Chan(_) => Some((RangeKind::Channel, 1)),
+        GoType::Chan { direction, .. } if direction.can_receive() => Some((RangeKind::Channel, 1)),
+        GoType::Chan { .. } => None,
         GoType::Int
         | GoType::Int8
         | GoType::Int16
@@ -4541,10 +4549,19 @@ fn go_type_display_name(ty: &GoType) -> String {
         GoType::Complex128 => "complex128".to_string(),
         GoType::Pointer(_) => "pointer".to_string(),
         GoType::Func { .. } => "function".to_string(),
+        GoType::Chan { direction, .. } => channel_type_display_name(*direction).to_string(),
         GoType::Any | GoType::Interface(_) | GoType::Error => "interface".to_string(),
         GoType::Unknown => "unknown".to_string(),
         GoType::Named(name) => name.clone(),
         other => format!("{other:?}").to_lowercase(),
+    }
+}
+
+fn channel_type_display_name(direction: GoChannelDirection) -> &'static str {
+    match direction {
+        GoChannelDirection::Bidirectional => "channel",
+        GoChannelDirection::Send => "send-only channel",
+        GoChannelDirection::Receive => "receive-only channel",
     }
 }
 
@@ -9144,6 +9161,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_send_to_receive_only_channels() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func send(ch <-chan int) {
+                    ch <- 1
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            Some(super::InvalidStatement::Send {
+                reason: super::InvalidSendReason::ReceiveOnlyChannel,
+            })
+        );
+    }
+
+    #[test]
     fn rejects_receive_operations_with_non_channel_operands() {
         let cases = vec![
             (
@@ -9224,6 +9270,67 @@ mod tests {
                     ch := make(chan bool, 1)
                     ch <- true
                     if <-ch {
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_receive_from_send_only_channels() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func recv(ch chan<- int) {
+                    <-ch
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            Some(super::InvalidStatement::Receive {
+                reason: super::InvalidReceiveReason::SendOnlyChannel,
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_directional_channel_operations() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func use(send chan<- int, recv <-chan bool) {
+                    send <- 1
+                    if <-recv {
+                    }
+                    for range recv {
+                        break
                     }
                 }
             "#,
@@ -10177,6 +10284,18 @@ mod tests {
                     }
                 "#,
                 "float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var ch chan<- int
+                        for range ch {
+                        }
+                    }
+                "#,
+                "send-only channel",
             ),
             (
                 r#"

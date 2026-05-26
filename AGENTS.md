@@ -481,13 +481,14 @@ expressions after simple-statement bindings have been recorded; unknown or
 unresolved named conditions stay permissive until type inference can prove them
 invalid.
 IR send-statement validation rejects known non-channel channel operands before
-backend lowering; channel direction and send-value assignability remain future
-type-system work.
+backend lowering and rejects sends to known receive-only channels; send-value
+assignability remains future type-system work.
 IR receive validation rejects known non-channel receive operands in statement,
 assignment, and value-declaration contexts. Receive expression type inference
 returns the channel element type for known channel operands so boolean channel
-receives are valid in `if`/`for` conditions; broader nested receive validation is
-still limited by legacy expression traversal.
+receives are valid in `if`/`for` conditions. Known send-only channel receives
+and ranges are rejected in IR; broader nested receive validation is still
+limited by legacy expression traversal.
 IR select communication validation rejects non-communication `case` statements
 before backend lowering. A select case may be default, a send statement, a
 receive expression statement, or an `=`/`:=` receive assignment; short receive

@@ -26,7 +26,10 @@ pub enum GoType {
     Map(Box<GoType>, Box<GoType>),
     Pointer(Box<GoType>),
     Array(Box<GoType>),
-    Chan(Box<GoType>),
+    Chan {
+        elem: Box<GoType>,
+        direction: GoChannelDirection,
+    },
     Func {
         params: Vec<GoType>,
         results: Vec<GoType>,
@@ -36,6 +39,31 @@ pub enum GoType {
     Any,
     Error,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoChannelDirection {
+    Bidirectional,
+    Send,
+    Receive,
+}
+
+impl GoChannelDirection {
+    pub fn from_ast_dir(dir: u8) -> Self {
+        match dir {
+            1 => Self::Send,
+            2 => Self::Receive,
+            _ => Self::Bidirectional,
+        }
+    }
+
+    pub fn can_send(self) -> bool {
+        matches!(self, Self::Bidirectional | Self::Send)
+    }
+
+    pub fn can_receive(self) -> bool {
+        matches!(self, Self::Bidirectional | Self::Receive)
+    }
 }
 
 impl GoType {
@@ -113,7 +141,10 @@ impl GoType {
                 Box::new(GoType::from_expr(&map.key)),
                 Box::new(GoType::from_expr(&map.value)),
             ),
-            ast::Expr::ChanType(chan) => GoType::Chan(Box::new(GoType::from_expr(&chan.value))),
+            ast::Expr::ChanType(chan) => GoType::Chan {
+                elem: Box::new(GoType::from_expr(&chan.value)),
+                direction: GoChannelDirection::from_ast_dir(chan.dir),
+            },
             ast::Expr::InterfaceType(_) => GoType::Any,
             ast::Expr::Ellipsis(e) => {
                 if let Some(elt) = &e.elt {
@@ -228,7 +259,7 @@ impl GoType {
             ast::Expr::UnaryExpr(u) if u.op == token::Token::ARROW => {
                 let operand = GoType::infer_expr(&u.x, env);
                 match env.resolve_alias(&operand) {
-                    GoType::Chan(elem) => *elem,
+                    GoType::Chan { elem, .. } => *elem,
                     GoType::Unknown | GoType::Named(_) => GoType::Unknown,
                     _ => GoType::Unknown,
                 }
@@ -602,7 +633,10 @@ impl TypeEnv {
                 Box::new(self.resolve_alias(key)),
                 Box::new(self.resolve_alias(value)),
             ),
-            GoType::Chan(inner) => GoType::Chan(Box::new(self.resolve_alias(inner))),
+            GoType::Chan { elem, direction } => GoType::Chan {
+                elem: Box::new(self.resolve_alias(elem)),
+                direction: *direction,
+            },
             _ => ty.clone(),
         }
     }
