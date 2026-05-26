@@ -7681,9 +7681,13 @@ fn compile_method(
     };
 
     if !recv_name.is_empty() {
+        let recv_go_type = if is_pointer {
+            typeinfer::GoType::Pointer(Box::new(typeinfer::GoType::Named(type_name.clone())))
+        } else {
+            typeinfer::GoType::Named(type_name.clone())
+        };
         TYPE_ENV.with(|env| {
-            env.borrow_mut()
-                .set_var(&recv_name, typeinfer::GoType::Named(type_name.clone()));
+            env.borrow_mut().set_var(&recv_name, recv_go_type);
         });
     }
     TYPE_ENV.with(|env| {
@@ -9206,6 +9210,10 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { #base[(#index) as usize] })
         }
         ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
+        ast::Expr::StarExpr(star) => {
+            let inner = syn_expr_from_type_expr_like(&star.x)?;
+            Some(syn::parse_quote! { *#inner })
+        }
         _ => None,
     }
 }
@@ -16362,6 +16370,28 @@ func main() {
             rust! {
                 fn newInt(mut x: isize) -> Box<isize> {
                     Box::new(x)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_support_pointer_deref_lvalue_assignment() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    p := new(int)
+                    *p = 2
+                    (*p)++
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut p = Box::new(<isize>::default());
+                    *p = 2;
+                    *p += 1;
                 }
             },
         );

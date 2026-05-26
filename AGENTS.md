@@ -384,6 +384,11 @@ expressions (`a[low:high:max]`) preserve observable `len`/`cap` by reserving
 capacity for `max-low`, but they still do not share the original Go backing
 array; fixing shared backing-array semantics belongs in the IR/value model, not
 in another ad hoc slice codegen special case.
+Pointer dereference lvalues (`*p = x`, `(*p)++`) lower through the IR
+addressability path to Rust deref assignments. However, address-of local lowering
+still boxes the current value (`&x` → `Box::new(x)`) rather than promoting the
+local's storage, so mutations through that pointer do not yet alias the original
+Go local.
 
 ## Compiler passes (in order)
 
