@@ -532,7 +532,7 @@ export interface GostdlibCoveragePackage {
 \treadonly symbols: readonly GostdlibCoverageSymbol[];
 }
 
-export const gostdlibCoverage = ${JSON.stringify(report.packages, null, "\t")} as const satisfies readonly GostdlibCoveragePackage[];
+export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = ${JSON.stringify(report.packages, null, "\t")};
 
 export const gostdlibCoverageSummary = ${JSON.stringify(report.summary, null, "\t")} as const;
 `;

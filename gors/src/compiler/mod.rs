@@ -12876,6 +12876,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidBuiltinCall { name, reason } => {
             format!("invalid {name} call: {reason}")
         }
+        ir::InvalidStatementReason::InvalidCall { target, reason } => {
+            format!("invalid call to {target}: {reason}")
+        }
         ir::InvalidStatementReason::NonCallOrReceive => {
             "expected a function call, method call, or receive operation".to_string()
         }
@@ -16793,6 +16796,30 @@ fn compile_map_index_assignment(
     Ok(syn::parse_quote! { #base.insert(#key, #right); })
 }
 
+fn binary_expr_stmt(left: syn::Expr, op: syn::BinOp, right: syn::Expr) -> syn::Stmt {
+    syn::Stmt::Expr(
+        syn::Expr::Binary(syn::ExprBinary {
+            attrs: vec![],
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        }),
+        Some(<Token![;]>::default()),
+    )
+}
+
+fn assign_expr_stmt(left: syn::Expr, right: syn::Expr) -> syn::Stmt {
+    syn::Stmt::Expr(
+        syn::Expr::Assign(syn::ExprAssign {
+            attrs: vec![],
+            left: Box::new(left),
+            eq_token: <Token![=]>::default(),
+            right: Box::new(right),
+        }),
+        Some(<Token![;]>::default()),
+    )
+}
+
 fn compile_map_index_inc_dec(
     inc_dec_stmt: ast::IncDecStmt,
     key_ty: typeinfer::GoType,
@@ -17048,7 +17075,8 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     }));
                     if !matches!(&lhs, ast::Expr::Ident(ident) if ident.name == "_") {
                         let left = compile_assignment_lhs_checked(lhs)?;
-                        assignments.push(syn::parse_quote! { #left = #tmp; });
+                        let right: syn::Expr = syn::parse_quote! { #tmp };
+                        assignments.push(assign_expr_stmt(left, right));
                     }
                 }
                 let pat = syn::Pat::Tuple(syn::PatTuple {
@@ -17337,7 +17365,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                                 )
                             })?;
                         let left = compile_assignment_lhs_checked(lhs_ast)?;
-                        return Ok(vec![syn::parse_quote! { #left = #right; }]);
+                        return Ok(vec![assign_expr_stmt(left, right)]);
                     }
                     other => other,
                 };
@@ -17348,13 +17376,25 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
                 if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
-                    return Ok(vec![syn::parse_quote! {{
-                        let __gors_shared_value = #right;
-                        *#shared_ident.lock().unwrap() = __gors_shared_value;
-                    }}]);
+                    let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
+                    let value_ident = quote::format_ident!("__gors_shared_value");
+                    let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
+                    let value_stmt: syn::Stmt = syn::parse_quote! { let #value_ident = #right; };
+                    let assign_stmt = assign_expr_stmt(left, value_expr);
+                    return Ok(vec![syn::Stmt::Expr(
+                        syn::Expr::Block(syn::ExprBlock {
+                            attrs: vec![],
+                            label: None,
+                            block: syn::Block {
+                                brace_token: syn::token::Brace::default(),
+                                stmts: vec![value_stmt, assign_stmt],
+                            },
+                        }),
+                        Some(<Token![;]>::default()),
+                    )]);
                 }
                 let left = compile_assignment_lhs_checked(lhs_ast)?;
-                return Ok(vec![syn::parse_quote! { #left = #right; }]);
+                return Ok(vec![assign_expr_stmt(left, right)]);
             }
 
             let mut out = vec![];
@@ -17378,7 +17418,8 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 }
                 let right = quote::format_ident!("__gors_assign_{}", idx);
                 let left = compile_assignment_lhs_checked(lhs)?;
-                out.push(syn::parse_quote! { #left = #right; });
+                let right: syn::Expr = syn::parse_quote! { #right };
+                out.push(assign_expr_stmt(left, right));
             }
 
             return Ok(out);
@@ -17448,14 +17489,26 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             };
             if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
                 let op: syn::BinOp = assign_stmt.tok.into();
-                return Ok(vec![syn::parse_quote! {{
-                    let __gors_shared_value = #right;
-                    *#shared_ident.lock().unwrap() #op __gors_shared_value;
-                }}]);
+                let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
+                let value_ident = quote::format_ident!("__gors_shared_value");
+                let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
+                let value_stmt: syn::Stmt = syn::parse_quote! { let #value_ident = #right; };
+                let assign_stmt = binary_expr_stmt(left, op, value_expr);
+                return Ok(vec![syn::Stmt::Expr(
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts: vec![value_stmt, assign_stmt],
+                        },
+                    }),
+                    Some(<Token![;]>::default()),
+                )]);
             }
             let left = compile_assignment_lhs_checked(lhs_ast)?;
             let op: syn::BinOp = assign_stmt.tok.into();
-            return Ok(vec![syn::parse_quote! { #left #op #right; }]);
+            return Ok(vec![binary_expr_stmt(left, op, right)]);
         }
 
         Err(CompilerError::UnsupportedConstruct(format!(
@@ -17596,6 +17649,27 @@ mod tests {
             Err(err) => panic!("expected invalid function signature, got {err:?}"),
             Ok(_) => panic!("expected invalid function signature, got success"),
         }
+    }
+
+    #[test]
+    fn compile_compound_assignments_without_dynamic_parse() {
+        let go_input = r#"
+package main
+
+func main() {
+	x := 1
+	x += 2
+	x <<= 1
+	x &= 3
+}
+"#;
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("x += 2"));
+        assert!(output.contains("x <<= 1"));
+        assert!(output.contains("x &= 3"));
     }
 
     fn write_fixture_file(path: &Path, source: &str) {

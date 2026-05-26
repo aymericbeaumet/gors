@@ -26,7 +26,7 @@ export interface GostdlibCoveragePackage {
 	readonly symbols: readonly GostdlibCoverageSymbol[];
 }
 
-export const gostdlibCoverage = [
+export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	{
 		"packagePath": "archive/tar",
 		"tested": true,
@@ -79678,7 +79678,7 @@ export const gostdlibCoverage = [
 			}
 		]
 	}
-] as const satisfies readonly GostdlibCoveragePackage[];
+];
 
 export const gostdlibCoverageSummary = {
 	"fixtureCount": 50,

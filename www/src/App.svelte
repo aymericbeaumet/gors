@@ -875,7 +875,7 @@ onDestroy(() => {
             <div class="editor-header">
               <div class="label"><span class="dot"></span><span>main.rs</span></div>
               <div class="actions">
-                <button class="action-button run-button" title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
+                <button type="button" class="action-button run-button" title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
                   {#if runButtonBusy}
                     <span class="btn-spinner"></span>
                   {:else}
@@ -1086,11 +1086,9 @@ onDestroy(() => {
   .home-route {
     flex: 1;
     display: grid;
-    height: calc(100vh - 51px);
-    max-height: calc(100vh - 51px);
     min-height: calc(100vh - 51px);
-    grid-template-rows: minmax(0, 1fr) auto;
-    overflow: hidden;
+    grid-template-rows: minmax(420px, 1fr) auto;
+    overflow: visible;
   }
 
   .editor-route {
@@ -1118,7 +1116,9 @@ onDestroy(() => {
 
   .hero {
     display: grid;
-    min-height: 0;
+    position: relative;
+    z-index: 1;
+    min-height: 420px;
     grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
     align-items: center;
     gap: 36px;
@@ -1384,6 +1384,8 @@ onDestroy(() => {
   }
 
   .home-details {
+    position: relative;
+    z-index: 0;
     display: grid;
     align-self: end;
     grid-template-columns: repeat(2, minmax(0, 1fr));

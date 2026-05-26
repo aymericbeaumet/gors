@@ -25,6 +25,7 @@ const staticAssets = [
 
 const assetManifest = {};
 const copyPatterns = [];
+const devServerLiveReload = process.env.GORS_WEB_LIVE_RELOAD !== "0";
 
 for (const { src, name, ext } of staticAssets) {
 	const hash = contentHash(src);
@@ -133,9 +134,10 @@ module.exports = () => {
 			new MonacoWebpackPlugin(),
 		],
 		devServer: {
+			allowedHosts: ["127.0.0.1", "localhost"],
 			static: {
 				directory: path.resolve(__dirname, "dist"),
-				watch: true,
+				watch: devServerLiveReload,
 			},
 			compress: true,
 			port: 8080,
@@ -145,8 +147,8 @@ module.exports = () => {
 			},
 			historyApiFallback: true,
 			hot: false,
-			liveReload: true,
-			watchFiles: ["src/**/*", "index.html"],
+			liveReload: devServerLiveReload,
+			watchFiles: devServerLiveReload ? ["src/**/*", "index.html"] : [],
 		},
 		experiments: {
 			asyncWebAssembly: true,

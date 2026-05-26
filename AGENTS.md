@@ -402,10 +402,30 @@ The first-party browser/runtime code in `www/` is TypeScript. `make web-lint`
 includes both ESLint and TypeScript/Svelte type checking, while
 `make web-test-unit` runs Vitest and `make web-test-integration` runs the
 Playwright browser test against the real default app pipeline, including VM
-startup, Rust compilation, and program execution. `make web-test-integration`
+startup, Rust compilation, and program execution. The default `/playground`
+Hello World example is part of that integration contract: it must auto-compile
+through the wasm worker before the VM run step. `make web-test-integration`
 installs Chromium by default; CI passes
 `PLAYWRIGHT_INSTALL_ARGS="--with-deps chromium"` so browser system
-dependencies are installed after `web-install`.
+dependencies are installed after `web-install`. The Playwright web-server
+startup timeout must account for cold v86 rootfs extraction plus webpack's first
+bundle on hosted runners; do not shrink it back to a short dev-server default
+without validating CI cold-start timing.
+Playwright integration should start its own webpack server by default; only set
+`PLAYWRIGHT_REUSE_EXISTING_SERVER=1` for deliberate manual reuse. This prevents
+local dev servers from masking missing dependencies or disappearing while
+`npm ci` rewrites `www/node_modules`. It also uses `GORS_WEB_TEST_PORT`
+(default `18080`) instead of the human dev-server port `8080`, so local browser
+sessions on `http://localhost:8080` do not collide with CI-parity tests.
+The Playwright-owned webpack server disables live reload/watch; the VM run test
+can take several minutes and must not reset the playground while it is waiting
+for the Linux VM to finish.
+`make web-lint` runs before `wasm-pack build`, so TypeScript checked by that
+target must not depend on generated declarations under `www/wasm/pkg/`; define a
+small local interface for the wasm-bindgen surface when lint needs those types.
+The webpack dev server must accept both `127.0.0.1` and `localhost` hosts,
+because Playwright uses the former while local browser testing commonly uses the
+latter.
 
 CI deploys `www/dist` with native GitHub Pages artifacts
 (`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by
@@ -553,6 +573,12 @@ least one ordered numeric/string argument and reject spread calls; `panic`,
 `recover`, `print`, and `println` enforce their fixed arity/spread rules.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
+The same IR expression pass validates ordinary function and method calls whose
+signature is known to `TypeEnv`: fixed-arity calls must match parameter count,
+single multi-result calls may forward results to matching parameters, variadic
+calls validate fixed arguments plus element/spread assignability, and function
+literals are checked from their AST signature. Unknown callees stay permissive
+until type inference can prove their signature.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.
@@ -644,6 +670,9 @@ before entering its `move` closure.
 Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
+Assignment and compound-assignment lowering should also construct `syn`
+assignment/binary expression nodes directly when either side is dynamic; do not
+round-trip generated assignment tokens back through `parse_quote!`.
 
 Imaginary literals are treated as untyped complex constants in the Go front end
 and lower through `crate::builtin::complex128`; expected `complex64` constant
@@ -709,9 +738,10 @@ imports, and root-specific resolved modules through shared `RwLock`/per-key
 initialization state so parallel integration tests can reuse stdlib work.
 Per-file stdlib parser/compiler skips are quiet by default; set
 `GORS_STDLIB_TRACE=1` to see resolver decisions and skipped files.
-Quiet stdlib panic capture must not wrap compilation in a global mutex; the
-resolver uses a process-wide hook with a thread-local suppression flag so
-Rayon workers can compile independent stdlib files concurrently.
+Stdlib resolution must not rely on catching compiler panics. Parser/compiler
+gaps should return normal errors and be logged as skips; actual panics should
+fail the invoking test or build so wasm does not turn them into `unreachable`
+traps.
 Root-specific resolved-module cache contention should fall back to uncached
 resolution on the waiting worker instead of blocking on the cache `RwLock`;
 the duplicate cold work keeps fixture-level integration parallelism saturated.

@@ -1103,6 +1103,7 @@ pub enum DefaultClauseKind {
 pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
+    InvalidCall { target: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
 }
@@ -5240,12 +5241,15 @@ fn invalid_expression_in_call(
     if let Some(reason) = invalid_builtin_call_expression(call, env) {
         return Some(reason);
     }
-    invalid_expression_in_expr(&call.fun, env).or_else(|| {
+    if let Some(reason) = invalid_expression_in_expr(&call.fun, env).or_else(|| {
         call.args.as_ref().and_then(|args| {
             args.iter()
                 .find_map(|arg| invalid_expression_in_expr(arg, env))
         })
-    })
+    }) {
+        return Some(reason);
+    }
+    invalid_ordinary_call(call, env)
 }
 
 fn invalid_expression_in_expr(
@@ -5583,6 +5587,415 @@ fn invalid_builtin_call_statement(
         BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
         BuiltinCallKind::Recover => invalid_builtin_recover_call(call),
         _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct CallSignature {
+    target: String,
+    params: Vec<GoType>,
+    variadic_start: Option<usize>,
+}
+
+fn invalid_ordinary_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if unshadowed_builtin_call_kind(call, env).is_some() || call_is_type_conversion(call, env) {
+        return None;
+    }
+    let signature = call_signature(call, env)?;
+    if let Some(variadic_start) = signature.variadic_start {
+        invalid_variadic_call_args(call, &signature, variadic_start, env)
+    } else {
+        invalid_fixed_call_args(call, &signature, env)
+    }
+}
+
+fn call_signature(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<CallSignature> {
+    call_signature_for_fun(&call.fun, env)
+}
+
+fn call_signature_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<CallSignature> {
+    match unparen_expr(fun) {
+        ast::Expr::Ident(ident) => call_signature_for_ident(ident.name, env),
+        ast::Expr::SelectorExpr(selector) => call_signature_for_selector(selector, env)
+            .or_else(|| call_signature_from_inferred_type(fun, "function value", env)),
+        ast::Expr::FuncLit(func_lit) => Some(call_signature_from_func_type(
+            "function literal".to_string(),
+            &func_lit.type_,
+        )),
+        ast::Expr::ParenExpr(paren) => call_signature_for_fun(&paren.x, env),
+        _ => call_signature_from_inferred_type(fun, "function value", env),
+    }
+}
+
+fn call_signature_for_ident(name: &str, env: &TypeEnv) -> Option<CallSignature> {
+    if env.has_func(name) {
+        return Some(CallSignature {
+            target: name.to_string(),
+            params: env.get_func_params(name),
+            variadic_start: env.get_func_variadic_start(name),
+        });
+    }
+    match env.get_var(name) {
+        Some(GoType::Func { params, .. }) => Some(CallSignature {
+            target: name.to_string(),
+            params,
+            variadic_start: None,
+        }),
+        _ => None,
+    }
+}
+
+fn call_signature_for_selector(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<CallSignature> {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return None;
+    };
+    let package_key = format!("{}.{}", base.name, selector.sel.name);
+    if env.has_func(&package_key) {
+        return Some(CallSignature {
+            target: package_key.clone(),
+            params: env.get_func_params(&package_key),
+            variadic_start: env.get_func_variadic_start(&package_key),
+        });
+    }
+    let receiver_name = env
+        .get_var(base.name)
+        .and_then(|ty| method_receiver_type_name(ty, env))?;
+    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+    env.has_func(&method_key).then(|| CallSignature {
+        target: method_key.clone(),
+        params: env.get_func_params(&method_key),
+        variadic_start: env.get_func_variadic_start(&method_key),
+    })
+}
+
+fn method_receiver_type_name(ty: GoType, env: &TypeEnv) -> Option<String> {
+    match env.resolve_alias(&ty) {
+        GoType::Named(name) => Some(name),
+        GoType::Pointer(inner) => method_receiver_type_name(*inner, env),
+        _ => None,
+    }
+}
+
+fn call_signature_from_inferred_type(
+    fun: &ast::Expr<'_>,
+    target: &str,
+    env: &TypeEnv,
+) -> Option<CallSignature> {
+    match env.resolve_alias(&GoType::infer_expr(fun, env)) {
+        GoType::Func { params, .. } => Some(CallSignature {
+            target: target.to_string(),
+            params,
+            variadic_start: None,
+        }),
+        _ => None,
+    }
+}
+
+fn call_signature_from_func_type(target: String, func_type: &ast::FuncType<'_>) -> CallSignature {
+    CallSignature {
+        target,
+        params: field_list_types(Some(&func_type.params)),
+        variadic_start: func_type_variadic_start(func_type),
+    }
+}
+
+fn func_type_variadic_start(func_type: &ast::FuncType<'_>) -> Option<usize> {
+    let mut param_count = 0;
+    for field in &func_type.params.list {
+        if matches!(field.type_, Some(ast::Expr::Ellipsis(_))) {
+            return Some(param_count);
+        }
+        param_count += field.names.as_ref().map_or(1, Vec::len);
+    }
+    None
+}
+
+fn invalid_fixed_call_args(
+    call: &ast::CallExpr<'_>,
+    signature: &CallSignature,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_call_reason(
+            &signature.target,
+            "cannot use spread arguments with non-variadic call",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if let Some(return_types) = single_call_result_types(args, env)
+        && (return_types.len() != 1 || signature.params.len() != 1)
+    {
+        if return_types.len() != signature.params.len() {
+            return Some(invalid_call_reason(
+                &signature.target,
+                format!(
+                    "expects {} argument(s), got {} return value(s)",
+                    signature.params.len(),
+                    return_types.len()
+                ),
+            ));
+        }
+        return invalid_call_arg_types(
+            &signature.target,
+            signature.params.iter(),
+            &return_types,
+            env,
+        );
+    }
+    if args.len() != signature.params.len() {
+        return Some(invalid_call_reason(
+            &signature.target,
+            format!(
+                "expects {} argument(s), got {}",
+                signature.params.len(),
+                args.len()
+            ),
+        ));
+    }
+    invalid_call_arg_exprs(&signature.target, signature.params.iter(), args.iter(), env)
+}
+
+fn invalid_variadic_call_args(
+    call: &ast::CallExpr<'_>,
+    signature: &CallSignature,
+    variadic_start: usize,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    let variadic_param = signature.params.get(variadic_start)?;
+    let variadic_elem = variadic_elem_type(variadic_param, env);
+    if call.ellipsis.is_some() {
+        return invalid_variadic_spread_call_args(call, signature, variadic_start, env);
+    }
+    if let Some(return_types) = single_call_result_types(args, env)
+        && (return_types.len() != 1 || variadic_start != 0)
+    {
+        return invalid_variadic_forwarded_call_args(
+            signature,
+            variadic_start,
+            variadic_elem.as_ref(),
+            &return_types,
+            env,
+        );
+    }
+    if args.len() < variadic_start {
+        return Some(invalid_call_reason(
+            &signature.target,
+            format!(
+                "expects at least {} argument(s), got {}",
+                variadic_start,
+                args.len()
+            ),
+        ));
+    }
+    for (idx, (expected, arg)) in signature
+        .params
+        .iter()
+        .take(variadic_start)
+        .zip(args.iter())
+        .enumerate()
+    {
+        if let Some(reason) = invalid_call_arg_expr(&signature.target, idx + 1, expected, arg, env)
+        {
+            return Some(reason);
+        }
+    }
+    if let Some(elem) = variadic_elem {
+        for (idx, arg) in args.iter().skip(variadic_start).enumerate() {
+            if let Some(reason) =
+                invalid_call_arg_expr(&signature.target, variadic_start + idx + 1, &elem, arg, env)
+            {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_variadic_spread_call_args(
+    call: &ast::CallExpr<'_>,
+    signature: &CallSignature,
+    variadic_start: usize,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    let expected_count = variadic_start + 1;
+    if args.len() != expected_count {
+        return Some(invalid_call_reason(
+            &signature.target,
+            format!(
+                "spread call expects {} argument(s), got {}",
+                expected_count,
+                args.len()
+            ),
+        ));
+    }
+    for (idx, (expected, arg)) in signature
+        .params
+        .iter()
+        .take(variadic_start)
+        .zip(args.iter())
+        .enumerate()
+    {
+        if let Some(reason) = invalid_call_arg_expr(&signature.target, idx + 1, expected, arg, env)
+        {
+            return Some(reason);
+        }
+    }
+    let spread_arg = args.last()?;
+    let spread_param = signature.params.get(variadic_start)?;
+    invalid_call_arg_expr(
+        &signature.target,
+        expected_count,
+        spread_param,
+        spread_arg,
+        env,
+    )
+}
+
+fn invalid_variadic_forwarded_call_args(
+    signature: &CallSignature,
+    variadic_start: usize,
+    variadic_elem: Option<&GoType>,
+    return_types: &[GoType],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if return_types.len() < variadic_start {
+        return Some(invalid_call_reason(
+            &signature.target,
+            format!(
+                "expects at least {} argument(s), got {} return value(s)",
+                variadic_start,
+                return_types.len()
+            ),
+        ));
+    }
+    for (idx, (expected, actual)) in signature
+        .params
+        .iter()
+        .take(variadic_start)
+        .zip(return_types.iter())
+        .enumerate()
+    {
+        if let Some(reason) =
+            invalid_call_arg_type(&signature.target, idx + 1, expected, actual, env)
+        {
+            return Some(reason);
+        }
+    }
+    if let Some(elem) = variadic_elem {
+        for (idx, actual) in return_types.iter().skip(variadic_start).enumerate() {
+            if let Some(reason) = invalid_call_arg_type(
+                &signature.target,
+                variadic_start + idx + 1,
+                elem,
+                actual,
+                env,
+            ) {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn variadic_elem_type(param: &GoType, env: &TypeEnv) -> Option<GoType> {
+    match env.resolve_alias(param) {
+        GoType::Slice(elem) => Some(*elem),
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(other),
+    }
+}
+
+fn single_call_result_types(args: &[ast::Expr<'_>], env: &TypeEnv) -> Option<Vec<GoType>> {
+    let [arg] = args else {
+        return None;
+    };
+    let ast::Expr::CallExpr(call) = unparen_expr(arg) else {
+        return None;
+    };
+    call_result_types(call, env)
+}
+
+fn invalid_call_arg_exprs<'a>(
+    target: &str,
+    params: impl Iterator<Item = &'a GoType>,
+    args: impl Iterator<Item = &'a ast::Expr<'a>>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for (idx, (expected, arg)) in params.zip(args).enumerate() {
+        if let Some(reason) = invalid_call_arg_expr(target, idx + 1, expected, arg, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_call_arg_expr(
+    target: &str,
+    position: usize,
+    expected: &GoType,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if let Some(values) = expression_value_count(arg, env, TupleAssignmentMode::SingleValueContext)
+        .filter(|values| *values != 1)
+    {
+        return Some(invalid_call_reason(
+            target,
+            format!("argument {position} must be single-valued, got {values} value(s)"),
+        ));
+    }
+    let actual = GoType::infer_expr(arg, env);
+    invalid_call_arg_type(target, position, expected, &actual, env)
+}
+
+fn invalid_call_arg_types<'a>(
+    target: &str,
+    params: impl Iterator<Item = &'a GoType>,
+    actual_types: &'a [GoType],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for (idx, (expected, actual)) in params.zip(actual_types.iter()).enumerate() {
+        if let Some(reason) = invalid_call_arg_type(target, idx + 1, expected, actual, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_call_arg_type(
+    target: &str,
+    position: usize,
+    expected: &GoType,
+    actual: &GoType,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let expected = env.resolve_alias(expected);
+    let actual = env.resolve_alias(actual);
+    if types_are_assignable_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(invalid_call_reason(
+        target,
+        format!(
+            "argument {position} must be assignable to {}, got {}",
+            go_type_display_name(&expected),
+            go_type_display_name(&actual)
+        ),
+    ))
+}
+
+fn invalid_call_reason(target: &str, reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidCall {
+        target: target.to_string(),
+        reason: reason.into(),
     }
 }
 
@@ -11132,6 +11545,182 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_ordinary_function_calls() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func takes(a int, b string) {}
+
+                    func main() {
+                        takes(1)
+                    }
+                "#,
+                "takes",
+                "expects 2 argument(s), got 1",
+            ),
+            (
+                r#"
+                    package main
+
+                    func takes(a int, b string) {}
+
+                    func main() {
+                        takes(1, 2)
+                    }
+                "#,
+                "takes",
+                "argument 2 must be assignable to string, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, string) { return 1, "go" }
+                    func takesInts(a int, b int) {}
+
+                    func main() {
+                        takesInts(pair())
+                    }
+                "#,
+                "takesInts",
+                "argument 2 must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func sink(prefix string, values ...string) {}
+
+                    func main() {
+                        sink()
+                    }
+                "#,
+                "sink",
+                "expects at least 1 argument(s), got 0",
+            ),
+            (
+                r#"
+                    package main
+
+                    func sink(prefix string, values ...string) {}
+
+                    func main() {
+                        sink("go", 1)
+                    }
+                "#,
+                "sink",
+                "argument 2 must be assignable to string, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func takes(a int, b string) {}
+
+                    func main() {
+                        xs := []string{}
+                        takes(1, xs...)
+                    }
+                "#,
+                "takes",
+                "cannot use spread arguments with non-variadic call",
+            ),
+            (
+                r#"
+                    package main
+
+                    func sink(prefix string, values ...string) {}
+
+                    func main() {
+                        xs := []string{}
+                        sink("go", "rs", xs...)
+                    }
+                "#,
+                "sink",
+                "spread call expects 2 argument(s), got 3",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = func(a int) int { return a }("go")
+                    }
+                "#,
+                "function literal",
+                "argument 1 must be assignable to int, got string",
+            ),
+        ];
+
+        for (source, target, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidCall {
+                        target: target.to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_ordinary_function_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func pair() (int, string) { return 1, "go" }
+                func source() (string, string) { return "go", "rs" }
+                func takes(a int, b string) {}
+                func sink(prefix string, values ...string) {}
+                func noArgs() {}
+                func len(a int) {}
+
+                func main() {
+                    takes(pair())
+                    sink("go")
+                    sink("go", "rs", "lang")
+                    xs := []string{}
+                    sink("go", xs...)
+                    sink(source())
+                    noArgs()
+                    len(1)
+                    f := func(a int) {}
+                    f(1)
+                    _ = func(a int) int { return a }(1)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]

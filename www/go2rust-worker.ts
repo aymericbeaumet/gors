@@ -1,6 +1,5 @@
-import { loadGorsWasm } from "./gors-wasm-loader";
+import { loadGorsWasm, type GorsBuildResult } from "./gors-wasm-loader";
 import type { StructuredSourceMap } from "./src/source-map-index";
-import type { BuildResult } from "./wasm/pkg/gors.js";
 
 const MAX_CACHE_ENTRIES = 32;
 
@@ -52,7 +51,7 @@ function touchCache(key: string, value: WorkerCompileResult): void {
 	}
 }
 
-function normalizeResult(result: BuildResult): WorkerCompileResult {
+function normalizeResult(result: GorsBuildResult): WorkerCompileResult {
 	try {
 		if (result.success) {
 			return {

@@ -46,7 +46,7 @@ test("default hello world auto-compiles and runs manually", async ({
 		)
 		.toBe(true);
 
-	await page.locator(".go .monaco-editor textarea").click();
+	await page.locator(".go .monaco-editor .view-lines").click();
 	await page.keyboard.press("ControlOrMeta+A");
 	await page.keyboard.type(
 		[

@@ -4,7 +4,6 @@
 //! build-time generated metadata from the embedded Go SDK.
 
 use quote::ToTokens;
-use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -43,11 +42,6 @@ static TYPE_ENVS: OnceLock<RwLock<TypeEnvCache>> = OnceLock::new();
 static TRANSITIVE_IMPORTS: OnceLock<RwLock<TransitiveImportsCache>> = OnceLock::new();
 static RESOLVED_MODULES: OnceLock<RwLock<ResolvedModuleCache>> = OnceLock::new();
 static RESOLVED_IMPORTS: OnceLock<RwLock<HashMap<String, Vec<String>>>> = OnceLock::new();
-static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
-
-thread_local! {
-    static SUPPRESS_RESOLVER_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
-}
 
 fn package_file_cache() -> &'static RwLock<PackageFilesCache> {
     PACKAGE_FILES.get_or_init(|| RwLock::new(HashMap::new()))
@@ -343,30 +337,15 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             &BTreeMap::new(),
             &imported_type_envs,
         );
-        let compiled = match catch_unwind_quiet(std::panic::AssertUnwindSafe(|| {
-            crate::compiler::compile_with_type_env_and_import_renames(
-                ast,
-                type_env,
-                import_renames.clone(),
-            )
-        })) {
-            Ok(Ok(compiled)) => compiled,
-            Ok(Err(e)) => {
+        let compiled = match crate::compiler::compile_with_type_env_and_import_renames(
+            ast,
+            type_env,
+            import_renames.clone(),
+        ) {
+            Ok(compiled) => compiled,
+            Err(e) => {
                 log_skip(format_args!(
                     "[gors] skip {import_path}/{filename}: compile error: {e}"
-                ));
-                continue;
-            }
-            Err(e) => {
-                let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = e.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
-                log_skip(format_args!(
-                    "[gors] skip {import_path}/{filename}: panic: {msg}"
                 ));
                 continue;
             }
@@ -417,31 +396,6 @@ fn dedupe_use_items(items: &mut Vec<syn::Item>) {
             return true;
         };
         seen.insert(item_use.to_token_stream().to_string())
-    });
-}
-
-fn catch_unwind_quiet<F, R>(f: F) -> std::thread::Result<R>
-where
-    F: FnOnce() -> R + std::panic::UnwindSafe,
-{
-    install_resolver_panic_hook();
-    SUPPRESS_RESOLVER_PANIC_HOOK.with(|suppress| {
-        let previous = suppress.replace(true);
-        let result = std::panic::catch_unwind(f);
-        suppress.set(previous);
-        result
-    })
-}
-
-fn install_resolver_panic_hook() {
-    PANIC_HOOK_INSTALLED.get_or_init(|| {
-        let previous_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if SUPPRESS_RESOLVER_PANIC_HOOK.with(Cell::get) {
-                return;
-            }
-            previous_hook(info);
-        }));
     });
 }
 

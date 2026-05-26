@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const webTestPort = process.env.GORS_WEB_TEST_PORT ?? "18080";
+const webTestUrl = `http://127.0.0.1:${webTestPort}`;
+
 export default defineConfig({
 	testDir: "./tests/e2e",
 	timeout: 10 * 60 * 1000,
@@ -7,7 +10,7 @@ export default defineConfig({
 		timeout: 60 * 1000,
 	},
 	use: {
-		baseURL: "http://127.0.0.1:8080",
+		baseURL: webTestUrl,
 		trace: "retain-on-failure",
 	},
 	projects: [
@@ -17,9 +20,12 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: "npm run serve:e2e",
-		url: "http://127.0.0.1:8080",
-		reuseExistingServer: !process.env.CI,
-		timeout: 5 * 60 * 1000,
+		command: `npm run serve:e2e -- --port ${webTestPort}`,
+		env: {
+			GORS_WEB_LIVE_RELOAD: "0",
+		},
+		url: webTestUrl,
+		reuseExistingServer: process.env.PLAYWRIGHT_REUSE_EXISTING_SERVER === "1",
+		timeout: 15 * 60 * 1000,
 	},
 });
