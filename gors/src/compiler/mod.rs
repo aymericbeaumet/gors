@@ -12831,6 +12831,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_type_switch_guard_reason(reason)
             )
         }
+        ir::InvalidStatement::TypeSwitch { reason } => {
+            format!(
+                "invalid type switch statement: {}",
+                invalid_type_switch_reason(reason)
+            )
+        }
     };
     CompilerError::UnsupportedConstruct(message)
 }
@@ -13022,6 +13028,22 @@ fn invalid_type_switch_guard_reason(reason: ir::InvalidTypeSwitchGuardReason) ->
         ir::InvalidTypeSwitchGuardReason::InvalidExpression => "guard must be x.(type)".to_string(),
         ir::InvalidTypeSwitchGuardReason::InvalidIdentifierCount => {
             "guard must declare exactly one identifier".to_string()
+        }
+    }
+}
+
+fn invalid_type_switch_reason(reason: ir::InvalidTypeSwitchReason) -> String {
+    match reason {
+        ir::InvalidTypeSwitchReason::CaseDoesNotImplement {
+            case_type,
+            interface_type,
+        } => format!("{case_type} does not implement {interface_type}"),
+        ir::InvalidTypeSwitchReason::DuplicateCase { type_name } => {
+            format!("duplicate case type {type_name}")
+        }
+        ir::InvalidTypeSwitchReason::DuplicateNil => "duplicate nil case".to_string(),
+        ir::InvalidTypeSwitchReason::NonInterfaceGuard { type_name } => {
+            format!("guard expression must have interface type, got {type_name}")
         }
     }
 }

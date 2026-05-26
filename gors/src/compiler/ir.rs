@@ -1030,6 +1030,9 @@ pub enum InvalidStatement {
     TypeSwitchGuard {
         reason: InvalidTypeSwitchGuardReason,
     },
+    TypeSwitch {
+        reason: InvalidTypeSwitchReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1117,6 +1120,21 @@ pub enum InvalidTypeSwitchGuardReason {
     InvalidAssignmentToken,
     InvalidExpression,
     InvalidIdentifierCount,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidTypeSwitchReason {
+    CaseDoesNotImplement {
+        case_type: String,
+        interface_type: String,
+    },
+    DuplicateCase {
+        type_name: String,
+    },
+    DuplicateNil,
+    NonInterfaceGuard {
+        type_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3562,6 +3580,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(invalid);
             }
+            if let Some(reason) = invalid_type_switch_stmt(type_switch, &switch_env) {
+                return Some(InvalidStatement::TypeSwitch { reason });
+            }
             invalid_statement_in_case_block(&type_switch.body, &switch_env)
         }
     }
@@ -4828,6 +4849,141 @@ fn invalid_type_switch_guard(stmt: &ast::Stmt<'_>) -> Option<InvalidTypeSwitchGu
             }
         }
         _ => Some(InvalidTypeSwitchGuardReason::InvalidExpression),
+    }
+}
+
+fn invalid_type_switch_stmt(
+    type_switch: &ast::TypeSwitchStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidTypeSwitchReason> {
+    let guard = type_switch_guard_operand(&type_switch.assign)?;
+    let guard_type = env.resolve_alias(&GoType::infer_expr(guard, env));
+    let interface_name = match type_switch_interface_name(&guard_type, env) {
+        TypeSwitchInterface::Interface(name) => name,
+        TypeSwitchInterface::Empty => None,
+        TypeSwitchInterface::Unknown => None,
+        TypeSwitchInterface::NonInterface { type_name } => {
+            return Some(InvalidTypeSwitchReason::NonInterfaceGuard { type_name });
+        }
+    };
+
+    let mut seen = BTreeSet::new();
+    let mut saw_nil = false;
+    for stmt in &type_switch.body.list {
+        let ast::Stmt::CaseClause(case) = stmt else {
+            continue;
+        };
+        let Some(exprs) = &case.list else {
+            continue;
+        };
+        for expr in exprs {
+            if expr_is_nil(expr) {
+                if saw_nil {
+                    return Some(InvalidTypeSwitchReason::DuplicateNil);
+                }
+                saw_nil = true;
+                continue;
+            }
+            let Some(key) = type_switch_case_key(expr, env) else {
+                continue;
+            };
+            if !seen.insert(key.clone()) {
+                return Some(InvalidTypeSwitchReason::DuplicateCase { type_name: key });
+            }
+            if let Some(interface_name) = interface_name.as_deref()
+                && let Some(reason) =
+                    invalid_type_switch_case_implementation(interface_name, expr, env)
+            {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn type_switch_guard_operand<'a>(stmt: &'a ast::Stmt<'a>) -> Option<&'a ast::Expr<'a>> {
+    match stmt {
+        ast::Stmt::ExprStmt(expr) => type_switch_guard_operand_expr(&expr.x),
+        ast::Stmt::AssignStmt(assign) => {
+            assign.rhs.first().and_then(type_switch_guard_operand_expr)
+        }
+        _ => None,
+    }
+}
+
+fn type_switch_guard_operand_expr<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a ast::Expr<'a>> {
+    match unparen_expr(expr) {
+        ast::Expr::TypeAssertExpr(assert) if assert.type_.is_none() => Some(&assert.x),
+        _ => None,
+    }
+}
+
+enum TypeSwitchInterface {
+    Empty,
+    Interface(Option<String>),
+    NonInterface { type_name: String },
+    Unknown,
+}
+
+fn type_switch_interface_name(ty: &GoType, env: &TypeEnv) -> TypeSwitchInterface {
+    match ty {
+        GoType::Any | GoType::Error | GoType::Interface(_) => TypeSwitchInterface::Empty,
+        GoType::Named(name) if env.is_interface(name) => {
+            TypeSwitchInterface::Interface(Some(name.clone()))
+        }
+        GoType::Unknown => TypeSwitchInterface::Unknown,
+        other => TypeSwitchInterface::NonInterface {
+            type_name: go_type_display_name(other),
+        },
+    }
+}
+
+fn type_switch_case_key(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    let ty = env.resolve_alias(&GoType::from_expr(expr));
+    (!matches!(ty, GoType::Unknown)).then(|| go_type_display_name(&ty))
+}
+
+fn invalid_type_switch_case_implementation(
+    interface_name: &str,
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidTypeSwitchReason> {
+    if env
+        .get_interface_methods(interface_name)
+        .is_none_or(|methods| methods.is_empty())
+    {
+        return None;
+    }
+    let case_type_name = type_switch_case_named_type(expr)?;
+    if env
+        .interface_implementors(interface_name)
+        .iter()
+        .any(|implementor| implementor == &case_type_name)
+    {
+        return None;
+    }
+    Some(InvalidTypeSwitchReason::CaseDoesNotImplement {
+        case_type: case_type_name,
+        interface_type: interface_name.to_string(),
+    })
+}
+
+fn type_switch_case_named_type(expr: &ast::Expr<'_>) -> Option<String> {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) if !is_predeclared_type_name(ident.name) => {
+            Some(ident.name.to_string())
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(package) = selector.x.as_ref() {
+                Some(format!("{}.{}", package.name, selector.sel.name))
+            } else {
+                Some(selector.sel.name.to_string())
+            }
+        }
+        ast::Expr::StarExpr(star) => type_switch_case_named_type(&star.x),
+        ast::Expr::IndexExpr(index) => type_switch_case_named_type(&index.x),
+        ast::Expr::IndexListExpr(index) => type_switch_case_named_type(&index.x),
+        _ => None,
     }
 }
 
@@ -14970,6 +15126,128 @@ mod tests {
                     case int:
                         _ = v
                     default:
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_type_switch_cases() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x int
+                        switch x.(type) {
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchReason::NonInterfaceGuard {
+                    type_name: "int".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x any
+                        switch x.(type) {
+                        case nil:
+                        case nil:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchReason::DuplicateNil,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x any
+                        switch x.(type) {
+                        case int:
+                        case int:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchReason::DuplicateCase {
+                    type_name: "int".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    type I interface { M() }
+                    type T struct {}
+
+                    func main(x I) {
+                        switch x.(type) {
+                        case T:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchReason::CaseDoesNotImplement {
+                    case_type: "T".to_string(),
+                    interface_type: "I".to_string(),
+                },
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::TypeSwitch { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_type_switch_cases() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type I interface { M() }
+                type T struct {}
+                func (T) M() {}
+
+                func main(x any, y I) {
+                    switch x.(type) {
+                    case nil:
+                    case int, string:
+                    case T:
+                    }
+                    switch y.(type) {
+                    case T:
                     }
                 }
             "#,
