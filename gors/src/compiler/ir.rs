@@ -1053,6 +1053,7 @@ pub enum ConditionKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidIncDecReason {
+    InvalidOperand,
     NonNumericOperand,
 }
 
@@ -3967,6 +3968,9 @@ fn invalid_receive_in_gen_decl(
 }
 
 fn invalid_inc_dec(inc_dec: &ast::IncDecStmt<'_>, env: &TypeEnv) -> Option<InvalidIncDecReason> {
+    if is_blank_ident(&inc_dec.x) || !assignment_lhs_is_valid(&inc_dec.x, env) {
+        return Some(InvalidIncDecReason::InvalidOperand);
+    }
     let ty = env.resolve_alias(&GoType::infer_expr(&inc_dec.x, env));
     if matches!(ty, GoType::Unknown | GoType::Named(_)) || inc_dec_operand_is_numeric(&ty) {
         return None;
@@ -12106,6 +12110,53 @@ mod tests {
                 super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
                 Some(super::InvalidStatement::IncDec {
                     reason: super::InvalidIncDecReason::NonNumericOperand,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_inc_dec_on_invalid_operands() {
+        let cases = vec![
+            r#"
+                package main
+
+                func main() {
+                    1++
+                }
+            "#,
+            r#"
+                package main
+
+                func f() int { return 1 }
+
+                func main() {
+                    f()--
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    _++
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::IncDec {
+                    reason: super::InvalidIncDecReason::InvalidOperand,
                 })
             );
         }

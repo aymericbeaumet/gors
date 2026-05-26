@@ -12821,6 +12821,9 @@ fn condition_kind_name(kind: ir::ConditionKind) -> &'static str {
 
 fn invalid_inc_dec_reason(reason: ir::InvalidIncDecReason) -> String {
     match reason {
+        ir::InvalidIncDecReason::InvalidOperand => {
+            "operand must be addressable or a map index".to_string()
+        }
         ir::InvalidIncDecReason::NonNumericOperand => "operand must have numeric type".to_string(),
     }
 }
@@ -17756,7 +17759,7 @@ func main() {
                 }
             "#,
         );
-        assert_invalid_assignment(
+        assert_unsupported_construct(
             r#"
                 package main
 
@@ -17766,6 +17769,7 @@ func main() {
                     c++
                 }
             "#,
+            "operand must be addressable or a map index",
         );
         assert_invalid_assignment(
             r#"

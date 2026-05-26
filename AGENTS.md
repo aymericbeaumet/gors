@@ -585,7 +585,9 @@ conversion calls are a separate IR validation path: they require exactly one
 single-valued argument and reject spread arguments before backend lowering.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
-as compiler errors instead of falling back to arbitrary expression codegen.
+as compiler errors instead of falling back to arbitrary expression codegen. IR
+validation also checks `++`/`--` directly: the operand must be addressable or a
+map index, may not be `_`, and must have numeric type when known.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per
