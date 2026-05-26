@@ -1058,10 +1058,15 @@ pub enum InvalidStatementReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidRangeReason {
-    pub kind: RangeKind,
-    pub max: usize,
-    pub got: usize,
+pub enum InvalidRangeReason {
+    BindingCount {
+        kind: RangeKind,
+        max: usize,
+        got: usize,
+    },
+    NonRangeable {
+        type_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4105,8 +4110,16 @@ fn is_type_switch_guard_expr(expr: &ast::Expr<'_>) -> bool {
 
 fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
     let got = effective_range_binding_count(range);
-    let (kind, max) = max_range_binding_count(&range.x, env)?;
-    (got > max).then_some(InvalidRangeReason { kind, max, got })
+    let ty = env.resolve_alias(&GoType::infer_expr(&range.x, env));
+    let Some((kind, max)) = max_range_binding_count_for_type(&ty) else {
+        if matches!(ty, GoType::Unknown | GoType::Named(_)) {
+            return None;
+        }
+        return Some(InvalidRangeReason::NonRangeable {
+            type_name: range_operand_type_name(&ty),
+        });
+    };
+    (got > max).then_some(InvalidRangeReason::BindingCount { kind, max, got })
 }
 
 fn invalid_short_var_decl_names(lhs: &[ast::Expr<'_>]) -> Option<InvalidShortVarDeclReason> {
@@ -4187,12 +4200,14 @@ fn effective_range_binding_count(range: &ast::RangeStmt<'_>) -> usize {
     }
 }
 
-fn max_range_binding_count(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<(RangeKind, usize)> {
-    let ty = env.resolve_alias(&GoType::infer_expr(expr, env));
+fn max_range_binding_count_for_type(ty: &GoType) -> Option<(RangeKind, usize)> {
     match ty {
-        GoType::String | GoType::Slice(_) | GoType::Array(_) | GoType::Map(_, _) => {
-            Some((range_kind(expr, env), 2))
+        GoType::String => Some((RangeKind::String, 2)),
+        GoType::Slice(_) | GoType::Array(_) => Some((RangeKind::Indexed, 2)),
+        GoType::Pointer(inner) if matches!(inner.as_ref(), GoType::Array(_)) => {
+            Some((RangeKind::Indexed, 2))
         }
+        GoType::Map(_, _) => Some((RangeKind::Map, 2)),
         GoType::Chan(_) => Some((RangeKind::Channel, 1)),
         GoType::Int
         | GoType::Int8
@@ -4206,9 +4221,25 @@ fn max_range_binding_count(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<(Range
         | GoType::Uint64
         | GoType::Uintptr => Some((RangeKind::Integer, 1)),
         GoType::Func { params, .. } => {
-            range_function_max_binding_count(&params).map(|max| (RangeKind::Function, max))
+            range_function_max_binding_count(params).map(|max| (RangeKind::Function, max))
         }
         _ => None,
+    }
+}
+
+fn range_operand_type_name(ty: &GoType) -> String {
+    match ty {
+        GoType::Bool => "bool".to_string(),
+        GoType::Float32 => "float32".to_string(),
+        GoType::Float64 => "float64".to_string(),
+        GoType::Complex64 => "complex64".to_string(),
+        GoType::Complex128 => "complex128".to_string(),
+        GoType::Pointer(_) => "pointer".to_string(),
+        GoType::Func { .. } => "function".to_string(),
+        GoType::Any | GoType::Interface(_) | GoType::Error => "interface".to_string(),
+        GoType::Unknown => "unknown".to_string(),
+        GoType::Named(name) => name.clone(),
+        other => format!("{other:?}").to_lowercase(),
     }
 }
 
@@ -9417,7 +9448,68 @@ mod tests {
             assert_eq!(
                 super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
                 Some(super::InvalidStatement::Range {
-                    reason: super::InvalidRangeReason { kind, max, got },
+                    reason: super::InvalidRangeReason::BindingCount { kind, max, got },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_range_clauses_over_non_rangeable_operands() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for range true {
+                        }
+                    }
+                "#,
+                "bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for range 1.5 {
+                        }
+                    }
+                "#,
+                "float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func bad(yield func(int)) {}
+
+                    func main() {
+                        for range bad {
+                        }
+                    }
+                "#,
+                "function",
+            ),
+        ];
+
+        for (source, type_name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Range {
+                    reason: super::InvalidRangeReason::NonRangeable {
+                        type_name: type_name.to_string(),
+                    },
                 })
             );
         }

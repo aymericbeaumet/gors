@@ -12756,12 +12756,17 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::MissingReturn => {
             "invalid function body: missing terminating statement".to_string()
         }
-        ir::InvalidStatement::Range { reason } => format!(
-            "invalid range clause: {} range permits at most {} iteration variable(s), got {}",
-            range_kind_name(reason.kind),
-            reason.max,
-            reason.got
-        ),
+        ir::InvalidStatement::Range { reason } => match reason {
+            ir::InvalidRangeReason::BindingCount { kind, max, got } => format!(
+                "invalid range clause: {} range permits at most {} iteration variable(s), got {}",
+                range_kind_name(kind),
+                max,
+                got
+            ),
+            ir::InvalidRangeReason::NonRangeable { type_name } => {
+                format!("invalid range clause: cannot range over {type_name}")
+            }
+        },
         ir::InvalidStatement::Return { reason } => {
             format!(
                 "invalid return statement: {}",
@@ -18057,6 +18062,17 @@ mod tests {
                 }
             "#,
             "invalid range clause: channel range permits at most 1 iteration variable(s), got 2",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    for range 1.5 {
+                    }
+                }
+            "#,
+            "invalid range clause: cannot range over float64",
         );
     }
 

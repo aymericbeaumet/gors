@@ -471,7 +471,11 @@ literals.
 IR range-clause validation rejects too many iteration variables before backend
 lowering: channels and integer ranges permit one effective binding, while
 function ranges are capped by the yield callback arity. A blank second binding
-is treated as absent per the Go spec.
+is treated as absent per the Go spec. Known non-rangeable operands such as
+bools, floats, complex values, pointers, and functions without the iterator
+yield signature are rejected in IR before backend lowering; unknown or
+unresolved named operands remain permissive until type inference can prove
+their shape.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array
