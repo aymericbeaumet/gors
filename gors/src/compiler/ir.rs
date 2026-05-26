@@ -5269,7 +5269,7 @@ fn invalid_expression_in_expr(
             .elt
             .as_ref()
             .and_then(|elt| invalid_expression_in_expr(elt, env)),
-        ast::Expr::FuncLit(_) => None,
+        ast::Expr::FuncLit(func_lit) => invalid_expression_in_func_lit(func_lit, env),
         ast::Expr::FuncType(func_type) => invalid_expression_in_field_list(&func_type.params, env)
             .or_else(|| {
                 func_type
@@ -5332,6 +5332,183 @@ fn invalid_expression_in_expr(
         ast::Expr::UnaryExpr(unary) => invalid_expression_in_expr(&unary.x, env),
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
     }
+}
+
+fn invalid_expression_in_func_lit(
+    func_lit: &ast::FuncLit<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let mut func_env = env.clone();
+    record_func_type_bindings(&func_lit.type_, &mut func_env);
+    invalid_expression_in_block(&func_lit.body, &mut func_env)
+}
+
+fn invalid_expression_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for stmt in &block.list {
+        if let Some(reason) = invalid_expression_in_stmt(stmt, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_expression_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            let invalid = assign
+                .lhs
+                .iter()
+                .chain(assign.rhs.iter())
+                .find_map(|expr| invalid_expression_in_expr(expr, env));
+            record_define_bindings(assign, env);
+            invalid
+        }
+        ast::Stmt::BlockStmt(block) => {
+            let mut block_env = env.clone();
+            invalid_expression_in_block(block, &mut block_env)
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::CaseClause(case) => {
+            let mut case_env = env.clone();
+            if let Some(list) = &case.list
+                && let Some(reason) = list
+                    .iter()
+                    .find_map(|expr| invalid_expression_in_expr(expr, &case_env))
+            {
+                return Some(reason);
+            }
+            invalid_expression_in_stmt_list(&case.body, &mut case_env)
+        }
+        ast::Stmt::CommClause(comm) => {
+            let mut comm_env = env.clone();
+            if let Some(comm_stmt) = &comm.comm
+                && let Some(reason) = invalid_expression_in_stmt(comm_stmt, &mut comm_env)
+            {
+                return Some(reason);
+            }
+            invalid_expression_in_stmt_list(&comm.body, &mut comm_env)
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            let invalid = invalid_expression_in_gen_decl(&decl.decl, env);
+            record_decl_bindings(&decl.decl, env);
+            invalid
+        }
+        ast::Stmt::DeferStmt(defer) => invalid_expression_in_call(&defer.call, env),
+        ast::Stmt::ExprStmt(expr) => invalid_expression_in_expr(&expr.x, env),
+        ast::Stmt::ForStmt(for_stmt) => {
+            let mut loop_env = env.clone();
+            if let Some(init) = &for_stmt.init
+                && let Some(reason) = invalid_expression_in_stmt(init, &mut loop_env)
+            {
+                return Some(reason);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(reason) = invalid_expression_in_expr(cond, &loop_env)
+            {
+                return Some(reason);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(reason) = invalid_expression_in_stmt(post, &mut loop_env)
+            {
+                return Some(reason);
+            }
+            invalid_expression_in_block(&for_stmt.body, &mut loop_env)
+        }
+        ast::Stmt::GoStmt(go) => invalid_expression_in_call(&go.call, env),
+        ast::Stmt::IfStmt(if_stmt) => {
+            let mut if_env = env.clone();
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(reason) = invalid_expression_in_stmt(init, &mut if_env)
+            {
+                return Some(reason);
+            }
+            if let Some(reason) = invalid_expression_in_expr(&if_stmt.cond, &if_env) {
+                return Some(reason);
+            }
+            if let Some(reason) = invalid_expression_in_block(&if_stmt.body, &mut if_env) {
+                return Some(reason);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                let mut else_env = if_env;
+                return invalid_expression_in_stmt(else_branch, &mut else_env);
+            }
+            None
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_expression_in_expr(&inc_dec.x, env),
+        ast::Stmt::LabeledStmt(labeled) => invalid_expression_in_stmt(&labeled.stmt, env),
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key
+                && let Some(reason) = invalid_expression_in_expr(key, env)
+            {
+                return Some(reason);
+            }
+            if let Some(value) = &range.value
+                && let Some(reason) = invalid_expression_in_expr(value, env)
+            {
+                return Some(reason);
+            }
+            if let Some(reason) = invalid_expression_in_expr(&range.x, env) {
+                return Some(reason);
+            }
+            let mut range_env = env.clone();
+            record_range_bindings(range, &mut range_env);
+            invalid_expression_in_block(&range.body, &mut range_env)
+        }
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .find_map(|expr| invalid_expression_in_expr(expr, env)),
+        ast::Stmt::SelectStmt(select) => {
+            let mut select_env = env.clone();
+            invalid_expression_in_block(&select.body, &mut select_env)
+        }
+        ast::Stmt::SendStmt(send) => invalid_expression_in_expr(&send.chan, env)
+            .or_else(|| invalid_expression_in_expr(&send.value, env)),
+        ast::Stmt::SwitchStmt(switch) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = switch.init.as_ref().as_ref()
+                && let Some(reason) = invalid_expression_in_stmt(init, &mut switch_env)
+            {
+                return Some(reason);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(reason) = invalid_expression_in_expr(tag, &switch_env)
+            {
+                return Some(reason);
+            }
+            invalid_expression_in_block(&switch.body, &mut switch_env)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = type_switch.init.as_ref().as_ref()
+                && let Some(reason) = invalid_expression_in_stmt(init, &mut switch_env)
+            {
+                return Some(reason);
+            }
+            if let Some(reason) = invalid_expression_in_stmt(&type_switch.assign, &mut switch_env) {
+                return Some(reason);
+            }
+            invalid_expression_in_block(&type_switch.body, &mut switch_env)
+        }
+    }
+}
+
+fn invalid_expression_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    env: &mut TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for stmt in stmts {
+        if let Some(reason) = invalid_expression_in_stmt(stmt, env) {
+            return Some(reason);
+        }
+    }
+    None
 }
 
 fn invalid_expression_in_field_list(
@@ -10947,6 +11124,67 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_expression_builtin_calls_inside_function_literals() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                var F = func() {
+                    _ = len(1)
+                }
+
+                func main() {}
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        assert_eq!(
+            super::invalid_expression_in_file(&file, &env),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::InvalidBuiltinCall {
+                    name: "len".to_string(),
+                    reason:
+                        "argument must have string, array, slice, map, or channel type, got int"
+                            .to_string(),
+                },
+            })
+        );
+
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = func() {
+                        _ = copy([]int{}, []string{})
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::InvalidBuiltinCall {
+                    name: "copy".to_string(),
+                    reason: "source element type must match int, got string".to_string(),
+                },
+            })
+        );
+    }
+
+    #[test]
     fn accepts_valid_expression_builtin_calls() {
         let file = parse_file(
             "test.go",
@@ -10975,6 +11213,9 @@ mod tests {
                     _ = min("a", "b")
                     _ = recover()
                     println("ok", 1)
+                    _ = func(len func(int) int) {
+                        _ = len(1)
+                    }
                     len := func(int) int { return 1 }
                     _ = len(1)
                 }

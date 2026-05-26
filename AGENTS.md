@@ -551,6 +551,8 @@ spread calls, missing/extra arguments, and `nil`; `complex`, `real`, and `imag`
 enforce the spec's complex-number operand shape; `min` and `max` require at
 least one ordered numeric/string argument and reject spread calls; `panic`,
 `recover`, `print`, and `println` enforce their fixed arity/spread rules.
+Function literal bodies are included in IR expression validation with their
+parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.
