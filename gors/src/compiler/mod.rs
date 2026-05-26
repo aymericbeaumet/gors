@@ -12711,6 +12711,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_statement_reason(reason)
             )
         }
+        ir::InvalidStatement::DuplicateDefault { kind } => {
+            format!(
+                "invalid {} statement: multiple default clauses",
+                default_clause_kind_name(kind)
+            )
+        }
         ir::InvalidStatement::Expr { reason } => {
             format!(
                 "invalid expression statement: {}",
@@ -12734,6 +12740,14 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         }
     };
     CompilerError::UnsupportedConstruct(message)
+}
+
+fn default_clause_kind_name(kind: ir::DefaultClauseKind) -> &'static str {
+    match kind {
+        ir::DefaultClauseKind::Select => "select",
+        ir::DefaultClauseKind::Switch => "switch",
+        ir::DefaultClauseKind::TypeSwitch => "type switch",
+    }
 }
 
 fn range_kind_name(kind: ir::RangeKind) -> &'static str {
@@ -17641,6 +17655,32 @@ mod tests {
                 }
             "#,
             "invalid short variable declaration: no new variables on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    switch 1 {
+                    default:
+                    default:
+                    }
+                }
+            "#,
+            "invalid switch statement: multiple default clauses",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    select {
+                    default:
+                    default:
+                    }
+                }
+            "#,
+            "invalid select statement: multiple default clauses",
         );
     }
 

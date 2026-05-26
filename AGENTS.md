@@ -528,6 +528,8 @@ Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than
 `TypeEnv`-based so nested short declarations can still shadow outer bindings.
+Switch, type-switch, and select statements reject multiple `default` clauses in
+the same IR-fronted statement validation pass.
 
 Range-over-function support is IR-classified as a function range and backend
 lowered by synthesizing the Go `yield` callback as the same shared function

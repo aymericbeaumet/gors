@@ -980,10 +980,18 @@ pub enum InvalidBranch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatement {
     Defer { reason: InvalidStatementReason },
+    DuplicateDefault { kind: DefaultClauseKind },
     Expr { reason: InvalidStatementReason },
     Go { reason: InvalidStatementReason },
     Range { reason: InvalidRangeReason },
     ShortVarDecl { reason: InvalidShortVarDeclReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultClauseKind {
+    Select,
+    Switch,
+    TypeSwitch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3192,6 +3200,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         }
         ast::Stmt::ReturnStmt(_) => None,
         ast::Stmt::SelectStmt(select) => {
+            if has_duplicate_select_default(&select.body) {
+                return Some(InvalidStatement::DuplicateDefault {
+                    kind: DefaultClauseKind::Select,
+                });
+            }
             let mut select_env = env.clone();
             for stmt in &select.body.list {
                 if let Some(invalid) = invalid_statement_in_stmt(stmt, &mut select_env) {
@@ -3202,6 +3215,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         }
         ast::Stmt::SendStmt(_) => None,
         ast::Stmt::SwitchStmt(switch) => {
+            if has_duplicate_case_default(&switch.body) {
+                return Some(InvalidStatement::DuplicateDefault {
+                    kind: DefaultClauseKind::Switch,
+                });
+            }
             let mut switch_env = env.clone();
             if let Some(init) = &switch.init
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
@@ -3211,6 +3229,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_case_block(&switch.body, &switch_env)
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if has_duplicate_case_default(&type_switch.body) {
+                return Some(InvalidStatement::DuplicateDefault {
+                    kind: DefaultClauseKind::TypeSwitch,
+                });
+            }
             let mut switch_env = env.clone();
             if let Some(init) = &type_switch.init
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
@@ -3220,6 +3243,24 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_case_block(&type_switch.body, &switch_env)
         }
     }
+}
+
+fn has_duplicate_case_default(block: &ast::BlockStmt<'_>) -> bool {
+    block
+        .list
+        .iter()
+        .filter(|stmt| matches!(stmt, ast::Stmt::CaseClause(case) if case.list.is_none()))
+        .nth(1)
+        .is_some()
+}
+
+fn has_duplicate_select_default(block: &ast::BlockStmt<'_>) -> bool {
+    block
+        .list
+        .iter()
+        .filter(|stmt| matches!(stmt, ast::Stmt::CommClause(comm) if comm.comm.is_none()))
+        .nth(1)
+        .is_some()
 }
 
 fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
@@ -7509,6 +7550,68 @@ mod tests {
                 Some(super::InvalidStatement::ShortVarDecl {
                     reason: super::InvalidShortVarDeclReason::DuplicateName(name.to_string()),
                 })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_default_clauses() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        default:
+                        default:
+                        }
+                    }
+                "#,
+                super::DefaultClauseKind::Switch,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x any
+                        switch x.(type) {
+                        default:
+                        default:
+                        }
+                    }
+                "#,
+                super::DefaultClauseKind::TypeSwitch,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        select {
+                        default:
+                        default:
+                        }
+                    }
+                "#,
+                super::DefaultClauseKind::Select,
+            ),
+        ];
+
+        for (source, kind) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::DuplicateDefault { kind })
             );
         }
     }
