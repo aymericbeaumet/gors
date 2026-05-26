@@ -88,6 +88,14 @@ gors-builtin/
 - Goroutine function literals use IR capture analysis. Mutable outer captures are
   promoted to `Arc<Mutex<T>>` in the enclosing block and cloned into the spawned
   closure so synchronized goroutine writes are visible after channel joins.
+- Go expression switches lower through an explicit selected-case slot plus a
+  fallthrough flag. This preserves source-order case expression evaluation,
+  lets `default` appear anywhere while still running only when no case matches,
+  and executes only explicit `fallthrough` chains.
+- Non-void functions and function literals with no explicit final Rust `return`
+  get a tail `panic!("gors: missing return")` fallback. Go rejects reachable
+  missing-return paths, but valid Go control-flow constructs such as exhaustive
+  switch returns still need a Rust tail expression after lowering.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.

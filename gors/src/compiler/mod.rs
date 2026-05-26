@@ -8832,10 +8832,11 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     RETURN_TYPES.with(|types| {
         *types.borrow_mut() = previous_return_types;
     });
-    let block: syn::Block = block_result.unwrap_or(syn::Block {
+    let mut block: syn::Block = block_result.unwrap_or(syn::Block {
         brace_token: syn::token::Brace::default(),
         stmts: vec![],
     });
+    append_missing_return_panic(&mut block, &ret);
 
     if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
         if move_capture {
@@ -12244,6 +12245,24 @@ fn bodyless_function_block(
     }}
 }
 
+fn block_ends_with_return(block: &syn::Block) -> bool {
+    block
+        .stmts
+        .last()
+        .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)))
+}
+
+fn append_missing_return_panic(block: &mut syn::Block, output: &syn::ReturnType) {
+    if matches!(output, syn::ReturnType::Default) || block_ends_with_return(block) {
+        return;
+    }
+
+    let panic_expr: syn::Expr = syn::parse_quote! {
+        panic!("gors: missing return")
+    };
+    block.stmts.push(syn::Stmt::Expr(panic_expr, None));
+}
+
 impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
@@ -12399,6 +12418,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                     ));
                 }
             }
+        } else {
+            append_missing_return_panic(&mut block, &output);
         }
 
         // Convert type parameters to Rust generics (Go 1.18+ generics)
@@ -12685,7 +12706,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 if let Some(init) = s.init.take() {
                     stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
                 }
-                stmts.push(syn::Stmt::Expr(s.try_into()?, None));
+                stmts.push(syn::Stmt::Expr(s.try_into()?, Some(<Token![;]>::default())));
                 Ok(stmts)
             }
             ast::Stmt::TypeSwitchStmt(s) => compile_type_switch_stmt(s),
@@ -12948,60 +12969,84 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             })
             .collect();
 
-        // Separate default from cases
-        let mut cases: Vec<ast::CaseClause> = Vec::new();
-        let mut default_body: Option<Vec<ast::Stmt>> = None;
-        for clause in clauses {
-            if clause.list.is_none() {
-                default_body = Some(clause.body);
-            } else {
-                cases.push(clause);
-            }
+        if clauses.is_empty() {
+            return Err(CompilerError::UnsupportedConstruct(
+                "empty switch statement".to_string(),
+            ));
         }
 
-        // Build the if/else chain from bottom up
-        let else_block: Option<syn::Expr> = if let Some(body) = default_body {
-            let mut stmts = vec![];
-            for stmt in body {
-                stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-            }
-            Some(syn::Expr::Block(syn::ExprBlock {
-                attrs: vec![],
-                label: None,
-                block: syn::Block {
-                    brace_token: syn::token::Brace::default(),
-                    stmts,
-                },
-            }))
+        let fallthrough_ident = syn::Ident::new("__gors_switch_fallthrough", Span::mixed_site());
+        let selected_ident = syn::Ident::new("__gors_switch_selected", Span::mixed_site());
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            let mut #selected_ident: isize = -1;
+        }];
+
+        let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+        let tag_syn: Option<syn::Expr> = if let Some(tag) = switch_stmt.tag {
+            let tag_expr: syn::Expr = tag.into();
+            stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
+            Some(syn::parse_quote! { #tag_ident })
         } else {
             None
         };
 
-        let tag_syn: Option<syn::Expr> = switch_stmt.tag.map(Into::into);
-
-        let mut result: Option<syn::Expr> = else_block;
-        for case in cases.into_iter().rev() {
-            let cond = build_case_condition(case.list, tag_syn.as_ref())?;
-            let mut body_stmts = vec![];
-            for stmt in case.body {
-                body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        let mut lowered_cases: Vec<(usize, Option<syn::Expr>, Vec<ast::Stmt>)> = vec![];
+        let mut default_index: Option<usize> = None;
+        for (index, case) in clauses.into_iter().enumerate() {
+            let cond = if case.list.is_none() {
+                default_index = Some(index);
+                None
+            } else {
+                Some(build_case_condition(case.list, tag_syn.as_ref())?)
+            };
+            if let Some(cond) = &cond {
+                let case_index = syn::LitInt::new(&index.to_string(), Span::mixed_site());
+                stmts.push(syn::parse_quote! {
+                    if #selected_ident == -1 && (#cond) {
+                        #selected_ident = #case_index;
+                    };
+                });
             }
-
-            result = Some(syn::Expr::If(syn::ExprIf {
-                attrs: vec![],
-                if_token: <Token![if]>::default(),
-                cond: Box::new(cond),
-                then_branch: syn::Block {
-                    brace_token: syn::token::Brace::default(),
-                    stmts: body_stmts,
-                },
-                else_branch: result.map(|e| (<Token![else]>::default(), Box::new(e))),
-            }));
+            lowered_cases.push((index, cond, case.body));
         }
 
-        result.ok_or_else(|| {
-            CompilerError::UnsupportedConstruct("empty switch statement".to_string())
-        })
+        if let Some(default_index) = default_index {
+            let default_index = syn::LitInt::new(&default_index.to_string(), Span::mixed_site());
+            stmts.push(syn::parse_quote! {
+                if #selected_ident == -1 {
+                    #selected_ident = #default_index;
+                };
+            });
+        }
+        stmts.push(syn::parse_quote! { let mut #fallthrough_ident = false; });
+
+        for (index, _cond, body) in lowered_cases {
+            let case_index = syn::LitInt::new(&index.to_string(), Span::mixed_site());
+            let mut body_stmts: Vec<syn::Stmt> =
+                vec![syn::parse_quote! { #fallthrough_ident = false; }];
+            for stmt in body {
+                if matches!(&stmt, ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::FALLTHROUGH)
+                {
+                    body_stmts.push(syn::parse_quote! { #fallthrough_ident = true; });
+                } else {
+                    body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+                }
+            }
+            stmts.push(syn::parse_quote! {
+                if #selected_ident == #case_index || #fallthrough_ident {
+                    #(#body_stmts)*
+                };
+            });
+        }
+
+        Ok(syn::Expr::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: None,
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts,
+            },
+        }))
     }
 }
 
