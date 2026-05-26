@@ -390,8 +390,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 
-- No closures or variadic function definitions
-- No `for range` over strings (uses `.iter()` instead of `.chars()`)
+- Closure support is partial
 - `any` type maps to `Box<dyn Any>` but auto-boxing at assignment sites requires manual wrapping
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
@@ -405,4 +404,3 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 - Test modules use `#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]`
 - No comments unless the WHY is non-obvious
 - Prefer editing existing files over creating new ones
-- `func Add(a, b int)` shorthand not supported by parser — use `func Add(a int, b int)`

@@ -1316,8 +1316,11 @@ mod tests {
     fn lock_func_calls_shared_function_values() {
         let func: Arc<Mutex<dyn FnMut(isize) -> isize + Send>> =
             Arc::new(Mutex::new(|value| value + 1));
-        let mut locked = lock_func(&func);
-        assert_eq!((&mut *locked)(41), 42);
+        let result = {
+            let mut locked = lock_func(&func);
+            (*locked)(41)
+        };
+        assert_eq!(result, 42);
     }
 
     #[test]
