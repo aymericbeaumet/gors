@@ -11506,13 +11506,38 @@ fn is_nil_expr(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::Ident(id) if id.name == "nil")
 }
 
-fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
+fn import_selector_assignment_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     match expr {
-        ast::Expr::SelectorExpr(selector) if matches!(&*selector.x, ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))) => {
-            syn::Expr::Path(selector.into())
+        ast::Expr::SelectorExpr(selector) if matches!(&*selector.x, ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))) =>
+        {
+            let ast::Expr::Ident(pkg) = &*selector.x else {
+                return None;
+            };
+            let module = syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site());
+            let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+            Some(syn::parse_quote! { #module::#sel })
         }
-        other => lvalue_expr_from_ref(&other).unwrap_or_else(|| other.into()),
+        _ => None,
     }
+}
+
+fn compile_assignment_lhs_checked(expr: ast::Expr) -> Result<syn::Expr, CompilerError> {
+    if let Some(expr) = import_selector_assignment_expr(&expr) {
+        return Ok(expr);
+    }
+    if !is_ir_addressable_expr(&expr) {
+        let shape = expr_shape_key(&expr).unwrap_or_else(|| format!("{expr:?}"));
+        return Err(CompilerError::InvalidAssignment(format!(
+            "lhs is not addressable: {shape}"
+        )));
+    }
+    Ok(compile_assignment_lhs(expr))
+}
+
+fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
+    import_selector_assignment_expr(&expr)
+        .or_else(|| lvalue_expr_from_ref(&expr))
+        .unwrap_or_else(|| expr.into())
 }
 
 fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
@@ -15978,16 +16003,19 @@ fn compile_comma_ok(
             let (#val_pat, #ok_pat) = #rhs_expr;
         }])
     } else {
-        let lhs_exprs = lhs.into_iter().map(comma_ok_lhs_expr).collect();
+        let lhs_exprs = lhs
+            .into_iter()
+            .map(comma_ok_lhs_expr)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(comma_ok_assignment_stmts(lhs_exprs, rhs_expr))
     }
 }
 
-fn comma_ok_lhs_expr(expr: ast::Expr) -> Option<syn::Expr> {
+fn comma_ok_lhs_expr(expr: ast::Expr) -> Result<Option<syn::Expr>, CompilerError> {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "_") {
-        None
+        Ok(None)
     } else {
-        Some(compile_assignment_lhs(expr))
+        compile_assignment_lhs_checked(expr).map(Some)
     }
 }
 
@@ -16334,7 +16362,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         mutability: Some(<Token![mut]>::default()),
                     }));
                     if !matches!(&lhs, ast::Expr::Ident(ident) if ident.name == "_") {
-                        let left = compile_assignment_lhs(lhs);
+                        let left = compile_assignment_lhs_checked(lhs)?;
                         assignments.push(syn::parse_quote! { #left = #tmp; });
                     }
                 }
@@ -16623,7 +16651,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                                     "invalid function assignment".to_string(),
                                 )
                             })?;
-                        let left = compile_assignment_lhs(lhs_ast);
+                        let left = compile_assignment_lhs_checked(lhs_ast)?;
                         return Ok(vec![syn::parse_quote! { #left = #right; }]);
                     }
                     other => other,
@@ -16640,7 +16668,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         *#shared_ident.lock().unwrap() = __gors_shared_value;
                     }}]);
                 }
-                let left = compile_assignment_lhs(lhs_ast);
+                let left = compile_assignment_lhs_checked(lhs_ast)?;
                 return Ok(vec![syn::parse_quote! { #left = #right; }]);
             }
 
@@ -16664,7 +16692,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     continue;
                 }
                 let right = quote::format_ident!("__gors_assign_{}", idx);
-                let left = compile_assignment_lhs(lhs);
+                let left = compile_assignment_lhs_checked(lhs)?;
                 out.push(syn::parse_quote! { #left = #right; });
             }
 
@@ -16678,12 +16706,13 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     "compound assignment only supports a single lhs element".to_string(),
                 ));
             }
-            let left: syn::Expr = assign_stmt
-                .lhs
-                .into_iter()
-                .next()
-                .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?
-                .into();
+            let left = compile_assignment_lhs_checked(
+                assign_stmt
+                    .lhs
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| CompilerError::InvalidAssignment("empty lhs".to_string()))?,
+            )?;
             let right: syn::Expr = assign_stmt
                 .rhs
                 .into_iter()
@@ -16721,7 +16750,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         #shared_ident.lock().unwrap().push_str(&__gors_shared_value);
                     }}]);
                 }
-                let left = compile_assignment_lhs(lhs_ast);
+                let left = compile_assignment_lhs_checked(lhs_ast)?;
                 return Ok(vec![syn::parse_quote! { #left.push_str(&#right); }]);
             }
             let right = if matches!(
@@ -16739,7 +16768,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     *#shared_ident.lock().unwrap() #op __gors_shared_value;
                 }}]);
             }
-            let left = compile_assignment_lhs(lhs_ast);
+            let left = compile_assignment_lhs_checked(lhs_ast)?;
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
         }
@@ -16851,6 +16880,15 @@ mod tests {
         assert_eq!(output, expected);
     }
 
+    fn assert_invalid_assignment(go_input: &str) {
+        let parsed = parse_file("test.go", go_input).unwrap();
+        match compile(parsed) {
+            Err(super::CompilerError::InvalidAssignment(_)) => {}
+            Err(err) => panic!("expected invalid assignment, got {err:?}"),
+            Ok(_) => panic!("expected invalid assignment, got success"),
+        }
+    }
+
     fn write_fixture_file(path: &Path, source: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -16897,6 +16935,58 @@ mod tests {
                 }
             },
         )
+    }
+
+    #[test]
+    fn it_should_reject_non_addressable_assignment_lhs() {
+        assert_invalid_assignment(
+            r#"
+                package main
+
+                const c = 1
+
+                func main() {
+                    c = 2
+                }
+            "#,
+        );
+        assert_invalid_assignment(
+            r#"
+                package main
+
+                type S struct { X int }
+
+                func main() {
+                    S{X: 1}.X = 2
+                }
+            "#,
+        );
+        assert_invalid_assignment(
+            r#"
+                package main
+
+                func main() {
+                    [1]int{1}[0] = 2
+                }
+            "#,
+        );
+    }
+
+    #[test]
+    fn it_should_allow_assignment_to_shadowed_predeclared_name() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    len := 1
+                    len <<= 3
+                }
+            "#,
+        )
+        .unwrap();
+        compile(parsed).unwrap();
     }
 
     #[test]

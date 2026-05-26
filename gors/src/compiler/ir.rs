@@ -1458,7 +1458,8 @@ fn lower_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Call {
 pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressability {
     match expr {
         ast::Expr::Ident(ident)
-            if !is_predeclared_name(ident.name) && !env.is_const(ident.name) =>
+            if !env.is_const(ident.name)
+                && (env.get_var(ident.name).is_some() || !is_predeclared_name(ident.name)) =>
         {
             Addressability::Addressable
         }
@@ -1473,10 +1474,9 @@ pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressabilit
         ast::Expr::ParenExpr(paren) => expr_addressability(&paren.x, env),
         ast::Expr::SelectorExpr(selector) => {
             let target_type = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
-            if matches!(target_type, GoType::Pointer(_)) {
-                Addressability::Addressable
-            } else {
-                expr_addressability(&selector.x, env)
+            match target_type {
+                GoType::Pointer(_) | GoType::Unknown => Addressability::Addressable,
+                _ => expr_addressability(&selector.x, env),
             }
         }
         ast::Expr::StarExpr(_) => Addressability::Addressable,
@@ -3149,6 +3149,46 @@ mod tests {
             };
             assert_eq!(expr.addressability, Addressability::NotAddressable);
         }
+    }
+
+    #[test]
+    fn expr_addressability_allows_shadowed_predeclared_names() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = len
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(crate::ast::Stmt::AssignStmt(assign)) =
+            func.body.as_ref().and_then(|body| body.list.first())
+        else {
+            panic!("expected assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected rhs");
+        };
+
+        let mut env = TypeEnv::new();
+        assert_eq!(
+            super::expr_addressability(expr, &env),
+            Addressability::NotAddressable
+        );
+        env.set_var("len", GoType::Int);
+        assert_eq!(
+            super::expr_addressability(expr, &env),
+            Addressability::Addressable
+        );
     }
 
     #[test]

@@ -344,7 +344,9 @@ fn compile_and_run_generated_rust(
     RunMetrics::add_duration(&metrics.rustc, before.elapsed());
     if !rustc_out.status.success() {
         return Err(format!(
-            "rustc failed:\n{}",
+            "rustc failed for {} with {}:\n{}",
+            src_path.display(),
+            rustc_out.status,
             String::from_utf8_lossy(&rustc_out.stderr)
         ));
     }
