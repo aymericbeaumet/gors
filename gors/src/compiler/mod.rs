@@ -12723,6 +12723,10 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_statement_reason(reason)
             )
         }
+        ir::InvalidStatement::ForPostShortVarDecl => {
+            "invalid for statement: post statement cannot be a short variable declaration"
+                .to_string()
+        }
         ir::InvalidStatement::Go { reason } => {
             format!("invalid go statement: {}", invalid_statement_reason(reason))
         }
@@ -17685,6 +17689,18 @@ mod tests {
                 }
             "#,
             "invalid short variable declaration: no new variables on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    for i := 0; i < 3; i := i + 1 {
+                        _ = i
+                    }
+                }
+            "#,
+            "invalid for statement: post statement cannot be a short variable declaration",
         );
         assert_unsupported_construct(
             r#"

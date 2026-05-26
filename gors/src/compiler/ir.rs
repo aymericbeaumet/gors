@@ -982,6 +982,7 @@ pub enum InvalidStatement {
     Defer { reason: InvalidStatementReason },
     DuplicateDefault { kind: DefaultClauseKind },
     Expr { reason: InvalidStatementReason },
+    ForPostShortVarDecl,
     Go { reason: InvalidStatementReason },
     Range { reason: InvalidRangeReason },
     ShortVarDecl { reason: InvalidShortVarDeclReason },
@@ -2239,6 +2240,11 @@ fn invalid_short_var_redeclaration_in_stmt(
                 return Some(invalid);
             }
             if let Some(post) = &for_stmt.post
+                && is_short_var_decl_stmt(post)
+            {
+                return Some(InvalidStatement::ForPostShortVarDecl);
+            }
+            if let Some(post) = &for_stmt.post
                 && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(post, scopes)
             {
                 return Some(invalid);
@@ -3162,6 +3168,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 return Some(invalid);
             }
             if let Some(post) = &for_stmt.post
+                && is_short_var_decl_stmt(post)
+            {
+                return Some(InvalidStatement::ForPostShortVarDecl);
+            }
+            if let Some(post) = &for_stmt.post
                 && let Some(invalid) = invalid_statement_in_stmt(post, &mut loop_env)
             {
                 return Some(invalid);
@@ -3247,6 +3258,10 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_case_block(&type_switch.body, &switch_env)
         }
     }
+}
+
+fn is_short_var_decl_stmt(stmt: &ast::Stmt<'_>) -> bool {
+    matches!(stmt, ast::Stmt::AssignStmt(assign) if assign.tok == token::Token::DEFINE)
 }
 
 fn has_duplicate_case_default(block: &ast::BlockStmt<'_>) -> bool {
@@ -7559,6 +7574,18 @@ mod tests {
                 super::InvalidStatement::Defer {
                     reason: super::InvalidStatementReason::TypeConversion,
                 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for i := 0; i < 3; i := i + 1 {
+                            _ = i
+                        }
+                    }
+                "#,
+                super::InvalidStatement::ForPostShortVarDecl,
             ),
         ];
 

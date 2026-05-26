@@ -528,6 +528,8 @@ Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than
 `TypeEnv`-based so nested short declarations can still shadow outer bindings.
+The same statement validation rejects short variable declarations in a `for`
+post statement; Go only permits them in init/simple statement positions.
 Switch, type-switch, and select statements reject multiple `default` clauses in
 the same IR-fronted statement validation pass.
 Blank labels (`_:`) are valid placeholder labels but do not define branch/goto
