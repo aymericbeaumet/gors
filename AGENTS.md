@@ -513,7 +513,10 @@ IR assignment validation rejects non-assignable left operands before backend
 lowering; blank identifiers and map-index operands are valid assignment targets,
 but string indexes, literals, calls, constants, and unshadowed predeclared names
 are not. Short variable declarations reject non-identifier left operands in
-plain assignments and range clauses.
+plain assignments and range clauses. Plain `=` assignments also reject simple
+known scalar mismatches, including values forwarded from a single multi-result
+function call, through the conservative assignability helper shared with
+channel sends and returns.
 IR return validation rejects simple known scalar mismatches for explicit result
 expressions and single multi-result function calls, using the same conservative
 assignability helper as channel send validation. It remains permissive for

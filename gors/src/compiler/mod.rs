@@ -12841,6 +12841,9 @@ fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
         ir::InvalidAssignmentReason::MultiValueInSingleValueContext => {
             "multi-valued expression in single-value assignment context".to_string()
         }
+        ir::InvalidAssignmentReason::TypeMismatch { expected, actual } => {
+            format!("cannot assign {actual} to {expected}")
+        }
     }
 }
 
@@ -18044,6 +18047,17 @@ mod tests {
                 }
             "#,
             "invalid for statement: post statement cannot be a short variable declaration",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x = "go"
+                }
+            "#,
+            "invalid assignment: cannot assign string to int",
         );
         assert_unsupported_construct(
             r#"

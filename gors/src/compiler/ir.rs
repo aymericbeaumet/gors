@@ -1035,6 +1035,7 @@ pub enum InvalidAssignmentReason {
     CountMismatch { lhs: usize, values: usize },
     InvalidLeftOperand,
     MultiValueInSingleValueContext,
+    TypeMismatch { expected: String, actual: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3540,6 +3541,9 @@ fn invalid_assignment(
                 values,
             });
         }
+        if let Some(reason) = invalid_assignment_type_mismatch(assign, env) {
+            return Some(reason);
+        }
         return None;
     }
 
@@ -3559,7 +3563,57 @@ fn invalid_assignment(
         });
     }
 
+    if let Some(reason) = invalid_assignment_type_mismatch(assign, env) {
+        return Some(reason);
+    }
+
     None
+}
+
+fn invalid_assignment_type_mismatch(
+    assign: &ast::AssignStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidAssignmentReason> {
+    if assign.tok != token::Token::ASSIGN {
+        return None;
+    }
+    let actual_types = assignment_rhs_types(assign, env)?;
+    if actual_types.len() != assign.lhs.len() {
+        return None;
+    }
+    assign
+        .lhs
+        .iter()
+        .zip(actual_types.iter())
+        .find_map(|(lhs, actual)| {
+            if is_blank_ident(lhs) {
+                return None;
+            }
+            let expected = env.resolve_alias(&GoType::infer_expr(lhs, env));
+            let actual = env.resolve_alias(actual);
+            (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+                InvalidAssignmentReason::TypeMismatch {
+                    expected: go_type_display_name(&expected),
+                    actual: go_type_display_name(&actual),
+                }
+            })
+        })
+}
+
+fn assignment_rhs_types(assign: &ast::AssignStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
+    if assign.rhs.len() == 1 && assign.lhs.len() > 1 {
+        let ast::Expr::CallExpr(call) = unparen_expr(assign.rhs.first()?) else {
+            return None;
+        };
+        return call_result_types(call, env).filter(|types| types.len() == assign.lhs.len());
+    }
+    (assign.rhs.len() == assign.lhs.len()).then(|| {
+        assign
+            .rhs
+            .iter()
+            .map(|expr| GoType::infer_expr(expr, env))
+            .collect()
+    })
 }
 
 fn assignment_lhs_is_valid(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
@@ -10401,6 +10455,119 @@ mod tests {
                     asserted, matches := anyv.(int)
                     _ = asserted
                     _ = matches
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_assignment_value_type_mismatches() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x = "go"
+                    }
+                "#,
+                "int",
+                "string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ok := true
+                        ok = 1
+                    }
+                "#,
+                "bool",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, string) {
+                        return 1, "go"
+                    }
+
+                    func main() {
+                        x := 1
+                        y := 2
+                        x, y = pair()
+                    }
+                "#,
+                "int",
+                "string",
+            ),
+        ];
+
+        for (source, expected, actual) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Assignment {
+                    reason: super::InvalidAssignmentReason::TypeMismatch {
+                        expected: expected.to_string(),
+                        actual: actual.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_assignment_values_with_compatible_known_types() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+
+                func pair() (int, string) {
+                    return 1, "go"
+                }
+
+                func main() {
+                    x := 1
+                    x = 2
+                    f := 1.5
+                    f = 1
+                    s := "go"
+                    s = "rs"
+                    var count Count
+                    count = 1
+                    xs := []int{1}
+                    xs = nil
+                    y := 0
+                    z := ""
+                    y, z = pair()
                 }
             "#,
         )
