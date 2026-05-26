@@ -318,7 +318,7 @@ fn lower_func_lit(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Func {
         receiver: Vec::new(),
         signature: lower_signature(&func_lit.type_),
         body: Some(lower_block(&func_lit.body, env)),
-        captures: collect_captures(func_lit, env),
+        captures: func_lit_captures(func_lit, env),
     }
 }
 
@@ -726,7 +726,7 @@ fn token_text(tok: token::Token) -> String {
     <&'static str>::from(&tok).to_string()
 }
 
-fn collect_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capture> {
+pub fn func_lit_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capture> {
     let mut declared = BTreeSet::new();
     collect_signature_bindings(&func_lit.type_, &mut declared);
     collect_declared_names_in_block(&func_lit.body, &mut declared);
@@ -1194,5 +1194,42 @@ mod tests {
         assert_eq!(capture.name, "count");
         assert_eq!(capture.mode, CaptureMode::BorrowMut);
         assert_eq!(capture.ty, GoType::Unknown);
+    }
+
+    #[test]
+    fn lower_func_lit_records_read_only_captures() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    base := 10
+                    add := func(x int) int {
+                        return base + x
+                    }
+                    _ = add
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected closure assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected closure rhs");
+        };
+        let ExprKind::FuncLit(func_lit) = &expr.kind else {
+            panic!("expected function literal");
+        };
+        let Some(capture) = func_lit.captures.first() else {
+            panic!("expected capture");
+        };
+        assert_eq!(capture.name, "base");
+        assert_eq!(capture.mode, CaptureMode::Borrow);
     }
 }

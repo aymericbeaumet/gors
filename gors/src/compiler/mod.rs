@@ -1905,100 +1905,17 @@ fn rewrite_bare_returns_in_expr(expr: &mut syn::Expr, named_return_idents: &[syn
     }
 }
 
-/// Extract identifiers from a syn::Block that should be cloned before being
-/// moved into a goroutine closure. Returns `let name = name.clone();` statements.
-fn extract_idents_for_clone(block: &syn::Block) -> Vec<syn::Stmt> {
-    use std::collections::BTreeSet;
-
-    struct IdentCollector {
-        idents: BTreeSet<String>,
-        locals: BTreeSet<String>,
-    }
-
-    impl IdentCollector {
-        fn visit_expr(&mut self, expr: &syn::Expr) {
-            match expr {
-                syn::Expr::MethodCall(mc) => {
-                    if let syn::Expr::Path(path) = mc.receiver.as_ref() {
-                        if let Some(segment) = path.path.segments.first()
-                            && path.path.segments.len() == 1
-                        {
-                            let name = segment.ident.to_string();
-                            if !self.locals.contains(&name) {
-                                self.idents.insert(name);
-                            }
-                        }
-                    }
-                    self.visit_expr(&mc.receiver);
-                    for arg in &mc.args {
-                        self.visit_expr(arg);
-                    }
-                }
-                syn::Expr::Call(call) => {
-                    self.visit_expr(&call.func);
-                    for arg in &call.args {
-                        self.visit_expr(arg);
-                    }
-                }
-                syn::Expr::Path(path) if path.path.segments.len() == 1 => {
-                    let Some(name) = path.path.segments.first().map(|seg| seg.ident.to_string())
-                    else {
-                        return;
-                    };
-                    if !self.locals.contains(&name) {
-                        self.idents.insert(name);
-                    }
-                }
-                syn::Expr::Binary(binary) => {
-                    self.visit_expr(&binary.left);
-                    self.visit_expr(&binary.right);
-                }
-                _ => {}
-            }
-        }
-
-        fn visit_stmt(&mut self, stmt: &syn::Stmt) {
-            match stmt {
-                syn::Stmt::Expr(expr, _) => self.visit_expr(expr),
-                syn::Stmt::Local(local) => {
-                    if let syn::Pat::Ident(pat_ident) = &local.pat {
-                        self.locals.insert(pat_ident.ident.to_string());
-                    }
-                    if let Some(init) = &local.init {
-                        self.visit_expr(&init.expr);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut collector = IdentCollector {
-        idents: BTreeSet::new(),
-        locals: BTreeSet::new(),
-    };
-    for stmt in &block.stmts {
-        collector.visit_stmt(stmt);
-    }
-
-    let skip = [
-        "println",
-        "print",
-        "eprintln",
-        "make_chan",
-        "spawn",
-        "true",
-        "false",
-    ];
-    collector
-        .idents
-        .into_iter()
-        .filter(|name| !skip.contains(&name.as_str()))
-        .map(|name| {
-            let ident = syn::Ident::new(&name, Span::mixed_site());
-            syn::parse_quote! { let #ident = #ident.clone(); }
-        })
-        .collect()
+fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
+    TYPE_ENV.with(|env| {
+        ir::func_lit_captures(func_lit, &env.borrow())
+            .into_iter()
+            .map(|capture| {
+                let ident =
+                    syn::Ident::new(&rust_safe_ident_name(&capture.name), Span::mixed_site());
+                syn::parse_quote! { let #ident = #ident.clone(); }
+            })
+            .collect()
+    })
 }
 
 /// Compile a Go select statement into Rust.
@@ -12668,9 +12585,9 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
 
                 if let ast::Expr::FuncLit(func_lit) = *call_expr.fun {
                     // Inline the body directly into the spawn closure
+                    let clones = goroutine_capture_clones(&func_lit);
                     let block: syn::Block = func_lit.body.try_into()?;
                     let stmts = &block.stmts;
-                    let clones = extract_idents_for_clone(&block);
                     Ok(vec![syn::Stmt::Expr(
                         syn::parse_quote! {
                             {
