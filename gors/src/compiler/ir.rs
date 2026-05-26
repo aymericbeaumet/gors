@@ -1017,6 +1017,9 @@ pub enum InvalidStatement {
     Send {
         reason: InvalidSendReason,
     },
+    SelectComm {
+        reason: InvalidSelectCommReason,
+    },
     ShortVarDecl {
         reason: InvalidShortVarDeclReason,
     },
@@ -1064,6 +1067,14 @@ pub enum InvalidReturnReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidSendReason {
     NonChannel { type_name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidSelectCommReason {
+    InvalidAssignmentToken,
+    MissingReceiveExpression,
+    NonCommunication,
+    ShortReceiveDeclarationLhs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3290,10 +3301,13 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         }
         ast::Stmt::CommClause(comm) => {
             let mut comm_env = env.clone();
-            if let Some(comm) = &comm.comm
-                && let Some(invalid) = invalid_statement_in_stmt(comm, &mut comm_env)
-            {
-                return Some(invalid);
+            if let Some(comm_stmt) = &comm.comm {
+                if let Some(reason) = invalid_select_comm_stmt(comm_stmt) {
+                    return Some(InvalidStatement::SelectComm { reason });
+                }
+                if let Some(invalid) = invalid_statement_in_stmt(comm_stmt, &mut comm_env) {
+                    return Some(invalid);
+                }
             }
             invalid_statement_in_stmt_list(&comm.body, &mut comm_env)
         }
@@ -3547,6 +3561,33 @@ fn invalid_send(send: &ast::SendStmt<'_>, env: &TypeEnv) -> Option<InvalidSendRe
     Some(InvalidSendReason::NonChannel {
         type_name: go_type_display_name(&ty),
     })
+}
+
+fn invalid_select_comm_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidSelectCommReason> {
+    match stmt {
+        ast::Stmt::SendStmt(_) => None,
+        ast::Stmt::ExprStmt(expr) if expr_is_receive_operation(&expr.x) => None,
+        ast::Stmt::AssignStmt(assign) => invalid_select_recv_assignment(assign),
+        _ => Some(InvalidSelectCommReason::NonCommunication),
+    }
+}
+
+fn invalid_select_recv_assignment(assign: &ast::AssignStmt<'_>) -> Option<InvalidSelectCommReason> {
+    if !matches!(assign.tok, token::Token::ASSIGN | token::Token::DEFINE) {
+        return Some(InvalidSelectCommReason::InvalidAssignmentToken);
+    }
+    if assign.rhs.len() != 1 || !assign.rhs.first().is_some_and(expr_is_receive_operation) {
+        return Some(InvalidSelectCommReason::MissingReceiveExpression);
+    }
+    if assign.tok == token::Token::DEFINE
+        && !assign
+            .lhs
+            .iter()
+            .all(|expr| matches!(expr, ast::Expr::Ident(_)))
+    {
+        return Some(InvalidSelectCommReason::ShortReceiveDeclarationLhs);
+    }
+    None
 }
 
 fn invalid_receive_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidReceiveReason> {
@@ -4565,6 +4606,10 @@ fn invalid_expression_statement(
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW => None,
         _ => Some(InvalidStatementReason::NonCallOrReceive),
     }
+}
+
+fn expr_is_receive_operation(expr: &ast::Expr<'_>) -> bool {
+    matches!(unparen_expr(expr), ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW)
 }
 
 fn invalid_call_statement(
@@ -9179,6 +9224,122 @@ mod tests {
                     ch := make(chan bool, 1)
                     ch <- true
                     if <-ch {
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_select_communication_clauses() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func f() {}
+
+                    func main() {
+                        select {
+                        case f():
+                        }
+                    }
+                "#,
+                super::InvalidSelectCommReason::NonCommunication,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int, 1)
+                        x := 0
+                        select {
+                        case x += <-ch:
+                        }
+                    }
+                "#,
+                super::InvalidSelectCommReason::InvalidAssignmentToken,
+            ),
+            (
+                r#"
+                    package main
+
+                    func f() int { return 1 }
+
+                    func main() {
+                        x := 0
+                        select {
+                        case x := f():
+                        }
+                    }
+                "#,
+                super::InvalidSelectCommReason::MissingReceiveExpression,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int, 1)
+                        a := []int{0}
+                        select {
+                        case a[0] := <-ch:
+                        }
+                    }
+                "#,
+                super::InvalidSelectCommReason::ShortReceiveDeclarationLhs,
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::SelectComm { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_select_communication_clauses() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int, 1)
+                    x := 0
+                    select {
+                    case (<-ch):
+                    case x = <-ch:
+                    case y, ok := (<-ch):
+                        _ = y
+                        _ = ok
+                    case ch <- x:
+                    default:
                     }
                 }
             "#,

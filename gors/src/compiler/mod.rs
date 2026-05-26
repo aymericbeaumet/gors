@@ -12789,6 +12789,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::Send { reason } => {
             format!("invalid send statement: {}", invalid_send_reason(reason))
         }
+        ir::InvalidStatement::SelectComm { reason } => {
+            format!(
+                "invalid select communication clause: {}",
+                invalid_select_comm_reason(reason)
+            )
+        }
         ir::InvalidStatement::ShortVarDecl { reason } => {
             format!(
                 "invalid short variable declaration: {}",
@@ -12892,6 +12898,23 @@ fn invalid_send_reason(reason: ir::InvalidSendReason) -> String {
     match reason {
         ir::InvalidSendReason::NonChannel { type_name } => {
             format!("channel operand must have channel type, got {type_name}")
+        }
+    }
+}
+
+fn invalid_select_comm_reason(reason: ir::InvalidSelectCommReason) -> String {
+    match reason {
+        ir::InvalidSelectCommReason::InvalidAssignmentToken => {
+            "receive assignment must use = or :=".to_string()
+        }
+        ir::InvalidSelectCommReason::MissingReceiveExpression => {
+            "receive assignment must use a receive operation".to_string()
+        }
+        ir::InvalidSelectCommReason::NonCommunication => {
+            "case must be a send statement, receive statement, or default".to_string()
+        }
+        ir::InvalidSelectCommReason::ShortReceiveDeclarationLhs => {
+            "short receive declaration must use identifiers on the left side".to_string()
         }
     }
 }
@@ -17876,6 +17899,20 @@ mod tests {
                 }
             "#,
             "invalid receive operation: operand must have channel type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func f() {}
+
+                func main() {
+                    select {
+                    case f():
+                    }
+                }
+            "#,
+            "invalid select communication clause: case must be a send statement, receive statement, or default",
         );
         assert_unsupported_construct(
             r#"

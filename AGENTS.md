@@ -488,6 +488,10 @@ assignment, and value-declaration contexts. Receive expression type inference
 returns the channel element type for known channel operands so boolean channel
 receives are valid in `if`/`for` conditions; broader nested receive validation is
 still limited by legacy expression traversal.
+IR select communication validation rejects non-communication `case` statements
+before backend lowering. A select case may be default, a send statement, a
+receive expression statement, or an `=`/`:=` receive assignment; short receive
+declarations require identifier left-hand sides.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array
