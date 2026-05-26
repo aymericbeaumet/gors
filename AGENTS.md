@@ -321,6 +321,10 @@ compiler-sensitive inputs in that key if the harness starts skipping more work.
 with 16 MiB worker stacks, matching the lexer/parser integration stack budget.
 Large stdlib fixtures such as `gostdlib_net_http` can overflow the default test
 thread stack while parsing and compiling real Go stdlib packages.
+Each generated-program worker starts with the generated Rust compile/run path
+before running the Go reference program so cold runs schedule CPU-heavy work
+across the whole pool; keep the Go reference check before reporting generated
+Rust failures so invalid Go fixtures still skip instead of failing gors.
 
 ### Environment variables for test tuning
 

@@ -156,28 +156,6 @@ fn run_generated_rust_program(
         eprintln!("RUN  {name}");
     }
 
-    let go_out = run_go_program(dir, abort, metrics);
-    let go_stdout = match go_out {
-        Ok(Some(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(None) => {
-            return ProgramRunResult {
-                name,
-                passed: false,
-                skipped: true,
-                error: None,
-            };
-        }
-        _ => {
-            eprintln!("Skipping {name} - go run failed");
-            return ProgramRunResult {
-                name,
-                passed: false,
-                skipped: true,
-                error: None,
-            };
-        }
-    };
-
     let rust_out = match compile_and_run_generated_rust(dir, abort, metrics) {
         Ok(Some(output)) => output,
         Ok(None) => {
@@ -189,6 +167,14 @@ fn run_generated_rust_program(
             };
         }
         Err(error) => {
+            if go_reference_stdout(dir, abort, metrics, &name).is_none() {
+                return ProgramRunResult {
+                    name,
+                    passed: false,
+                    skipped: true,
+                    error: None,
+                };
+            }
             let result = ProgramRunResult {
                 name,
                 passed: false,
@@ -200,6 +186,15 @@ fn run_generated_rust_program(
             }
             return result;
         }
+    };
+
+    let Some(go_stdout) = go_reference_stdout(dir, abort, metrics, &name) else {
+        return ProgramRunResult {
+            name,
+            passed: false,
+            skipped: true,
+            error: None,
+        };
     };
 
     let rust_stdout = String::from_utf8_lossy(&rust_out.stdout);
@@ -248,6 +243,22 @@ fn run_generated_rust_program(
     }
 
     result
+}
+
+fn go_reference_stdout(
+    dir: &Path,
+    abort: &AtomicBool,
+    metrics: &RunMetrics,
+    name: &str,
+) -> Option<String> {
+    match run_go_program(dir, abort, metrics) {
+        Ok(Some(o)) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).to_string()),
+        Ok(None) => None,
+        _ => {
+            eprintln!("Skipping {name} - go run failed");
+            None
+        }
+    }
 }
 
 fn run_go_program(
