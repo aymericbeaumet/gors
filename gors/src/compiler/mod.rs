@@ -10678,6 +10678,52 @@ fn compile_range_function_call_stmt(
     }
 }
 
+fn rewrite_range_function_control_flow(block: &mut syn::Block) {
+    for stmt in &mut block.stmts {
+        rewrite_range_function_control_flow_stmt(stmt);
+    }
+}
+
+fn rewrite_range_function_control_flow_stmt(stmt: &mut syn::Stmt) {
+    match stmt {
+        syn::Stmt::Expr(syn::Expr::Break(expr), _) if expr.label.is_none() => {
+            *stmt = syn::parse_quote! { return false; };
+        }
+        syn::Stmt::Expr(syn::Expr::Continue(expr), _) if expr.label.is_none() => {
+            *stmt = syn::parse_quote! { return true; };
+        }
+        syn::Stmt::Expr(expr, _) => rewrite_range_function_control_flow_expr(expr),
+        syn::Stmt::Local(local) => {
+            if let Some(init) = &mut local.init {
+                rewrite_range_function_control_flow_expr(&mut init.expr);
+            }
+        }
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+    }
+}
+
+fn rewrite_range_function_control_flow_expr(expr: &mut syn::Expr) {
+    match expr {
+        syn::Expr::If(if_expr) => {
+            rewrite_range_function_control_flow(&mut if_expr.then_branch);
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                rewrite_range_function_control_flow_expr(else_expr);
+            }
+        }
+        syn::Expr::Block(block) => rewrite_range_function_control_flow(&mut block.block),
+        syn::Expr::Match(match_expr) => {
+            for arm in &mut match_expr.arms {
+                rewrite_range_function_control_flow_expr(&mut arm.body);
+            }
+        }
+        syn::Expr::Loop(_)
+        | syn::Expr::While(_)
+        | syn::Expr::ForLoop(_)
+        | syn::Expr::Closure(_) => {}
+        _ => {}
+    }
+}
+
 fn compile_range_function_stmt(
     fun: syn::Expr,
     is_function_item: bool,
@@ -10705,6 +10751,7 @@ fn compile_range_function_stmt(
         stmts.extend(body.stmts);
         body.stmts = stmts;
     }
+    rewrite_range_function_control_flow(&mut body);
     let param_types: Vec<syn::Type> = yield_params
         .iter()
         .map(rust_type_from_inferred_go_type)

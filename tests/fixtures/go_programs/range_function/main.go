@@ -24,4 +24,13 @@ func main() {
 	for k, v := range pairs {
 		fmt.Println("pair", k, v)
 	}
+	for v := range ints {
+		if v == 1 {
+			continue
+		}
+		if v == 2 {
+			break
+		}
+		fmt.Println("control", v)
+	}
 }

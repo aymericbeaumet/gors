@@ -540,7 +540,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 ## Known limitations
 
 - Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
-- Range-over-function loop bodies with `break`, `continue`, or `return` still need yield-aware control-flow lowering.
+- Range-over-function loop bodies with `return` still need outer-function-return lowering; unlabeled `break`/`continue` lower through the synthesized yield callback result.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
