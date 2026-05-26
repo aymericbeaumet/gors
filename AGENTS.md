@@ -408,7 +408,6 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 ## Known limitations
 
 - Closure support is partial
-- `any` type maps to `Box<dyn Any>` but auto-boxing at assignment sites requires manual wrapping
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
 - `complex128`/`complex64` types conflict with builtin function names in map_type pass

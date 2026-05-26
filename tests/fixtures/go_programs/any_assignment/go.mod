@@ -1,0 +1,1 @@
+module any_assignment
