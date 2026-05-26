@@ -13508,25 +13508,38 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 if is_main_package {
                                     // Package-level main vars stay local to main's startup path.
                                     let names = vs.names;
-                                    let has_type = vs.type_.is_some();
                                     let type_expr = vs.type_;
+                                    let explicit_go_type =
+                                        type_expr.as_ref().map(typeinfer::GoType::from_expr);
+                                    let rust_type =
+                                        type_expr.as_ref().map(local_value_type_from_expr);
                                     let mut values_iter = vs.values.unwrap_or_default().into_iter();
 
                                     for name in names {
                                         let ident: syn::Ident = name.into();
-                                        let init_expr: Option<syn::Expr> =
-                                            values_iter.next().map(|v| v.into());
+                                        let init_ast = values_iter.next();
 
-                                        if let Some(init) = init_expr {
+                                        if let Some(init_ast) = init_ast {
+                                            let init = if let Some(go_type) = &explicit_go_type {
+                                                compile_expr_with_expected(init_ast, Some(go_type))
+                                            } else {
+                                                init_ast.into()
+                                            };
+                                            if let Some(ty) = &rust_type {
+                                                package_var_stmts.push(syn::parse_quote! {
+                                                    let mut #ident: #ty = #init;
+                                                });
+                                            } else {
+                                                package_var_stmts.push(syn::parse_quote! {
+                                                    let mut #ident = #init;
+                                                });
+                                            }
+                                        } else if let (Some(type_expr), Some(ty)) =
+                                            (type_expr.as_ref(), rust_type.as_ref())
+                                        {
+                                            let zero = default_expr_for_type(type_expr);
                                             package_var_stmts.push(syn::parse_quote! {
-                                                let mut #ident = #init;
-                                            });
-                                        } else if has_type {
-                                            let type_name =
-                                                type_expr.as_ref().and_then(go_type_name_from_expr);
-                                            let zero = zero_value_for_type(type_name);
-                                            package_var_stmts.push(syn::parse_quote! {
-                                                let mut #ident = #zero;
+                                                let mut #ident: #ty = #zero;
                                             });
                                         } else {
                                             package_var_stmts.push(syn::parse_quote! {
@@ -17502,6 +17515,41 @@ func main() {
         assert!(builtin_item_names.contains("println_value"));
         assert!(!builtin_item_names.contains("println_empty"));
         assert!(!builtin_item_names.contains("append"));
+    }
+
+    #[test]
+    fn compile_program_multi_preserves_main_package_var_types() {
+        let go_source = r#"package main
+
+var greeting string = "go"
+var count int8 = 40
+var suffix string
+
+func main() {
+	greeting += "rs"
+	suffix = "!"
+	count += 2
+	println(greeting + suffix, count)
+}
+"#;
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec![],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(main_rs.contains("let mut greeting: String = \"go\".to_string();"));
+        assert!(main_rs.contains("let mut count: i8 = (40 as i8);"));
+        assert!(main_rs.contains("let mut suffix: String = Default::default();"));
     }
 
     #[test]

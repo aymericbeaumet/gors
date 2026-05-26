@@ -118,6 +118,10 @@ gors-builtin/
 - String `+=` lowers to `String::push_str(&rhs)` rather than Rust `+=`, because
   Go accepts string operands by value while Rust's `String` add-assign expects a
   borrowed string slice.
+- Main-package package-level vars are injected as startup locals in `main()`.
+  Preserve explicit Go types there: typed initializers must be compiled with the
+  expected type and emitted with a Rust type annotation, and typed zero values
+  should use the same default-expression path as local var declarations.
 - Runtime interface downcast hooks (`__gors_as_any`) are part of the generated
   interface contract. DCE must preserve the hook on reachable traits and trait
   impls, and any injected structural stdlib helper that implements a Go
