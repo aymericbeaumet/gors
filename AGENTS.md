@@ -592,6 +592,9 @@ Index-expression validation is intentionally conservative around generics and
 unknown named operands, but rejects known non-indexable operands, non-integer
 array/slice/string indexes, and map keys that are not assignable to the map key
 type.
+Slice-expression validation follows the same boundary: known non-sliceable
+operands fail, bounds must have integer type when known, and full slice
+expressions on strings are rejected before lowering.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per

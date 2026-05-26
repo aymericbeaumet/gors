@@ -12885,6 +12885,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidIndex { reason } => {
             format!("invalid index expression: {reason}")
         }
+        ir::InvalidStatementReason::InvalidSlice { reason } => {
+            format!("invalid slice expression: {reason}")
+        }
         ir::InvalidStatementReason::InvalidTypeConversion { target, reason } => {
             format!("invalid type conversion to {target}: {reason}")
         }

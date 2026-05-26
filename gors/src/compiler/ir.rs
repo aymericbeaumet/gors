@@ -1106,6 +1106,7 @@ pub enum InvalidStatementReason {
     InvalidBuiltinCall { name: String, reason: String },
     InvalidCall { target: String, reason: String },
     InvalidIndex { reason: String },
+    InvalidSlice { reason: String },
     InvalidTypeConversion { target: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
@@ -4662,7 +4663,7 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             {
                 return Some(invalid);
             }
-            None
+            invalid_slice_expr(slice, env).map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env),
         ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().and_then(|fields| {
@@ -5352,7 +5353,8 @@ fn invalid_expression_in_expr(
                     .max
                     .as_ref()
                     .and_then(|max| invalid_expression_in_expr(max, env))
-            }),
+            })
+            .or_else(|| invalid_slice_expr(slice, env)),
         ast::Expr::StarExpr(star) => invalid_expression_in_expr(&star.x, env),
         ast::Expr::StructType(struct_type) => struct_type
             .fields
@@ -5686,6 +5688,51 @@ fn invalid_map_index_key(
 
 fn invalid_index_reason(reason: impl Into<String>) -> InvalidStatementReason {
     InvalidStatementReason::InvalidIndex {
+        reason: reason.into(),
+    }
+}
+
+fn invalid_slice_expr(slice: &ast::SliceExpr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let target = env.resolve_alias(&GoType::infer_expr(&slice.x, env));
+    match target {
+        GoType::String if slice.max.is_some() => Some(invalid_slice_reason(
+            "full slice expression is not valid for strings",
+        )),
+        GoType::String | GoType::Slice(_) | GoType::Array(_) => invalid_slice_bounds(slice, env),
+        GoType::Pointer(inner) if matches!(inner.as_ref(), GoType::Array(_)) => {
+            invalid_slice_bounds(slice, env)
+        }
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(invalid_slice_reason(format!(
+            "cannot slice {}",
+            go_type_display_name(&other)
+        ))),
+    }
+}
+
+fn invalid_slice_bounds(
+    slice: &ast::SliceExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    [slice.low.as_ref(), slice.high.as_ref(), slice.max.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|bound| invalid_integer_bound(bound, env))
+}
+
+fn invalid_integer_bound(bound: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(bound, env));
+    if matches!(ty, GoType::Unknown | GoType::Named(_)) || ty.is_integer() {
+        return None;
+    }
+    Some(invalid_slice_reason(format!(
+        "bound must have integer type, got {}",
+        go_type_display_name(&ty)
+    )))
+}
+
+fn invalid_slice_reason(reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidSlice {
         reason: reason.into(),
     }
 }
@@ -12057,6 +12104,100 @@ mod tests {
                     a := [1]int{1}
                     p := &a
                     _ = p[0]
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_slice_expressions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1[0:1]
+                    }
+                "#,
+                "cannot slice int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        _ = xs["0":]
+                    }
+                "#,
+                "bound must have integer type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        s := "go"
+                        _ = s[0:1:1]
+                    }
+                "#,
+                "full slice expression is not valid for strings",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidSlice {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_slice_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1, 2}
+                    _ = xs[0:]
+                    _ = xs[:1]
+                    _ = xs[0:1:1]
+                    s := "go"
+                    _ = s[0:1]
+                    a := [2]int{1, 2}
+                    _ = a[0:1]
+                    p := &a
+                    _ = p[0:1:1]
                 }
             "#,
         )
