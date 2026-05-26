@@ -8189,6 +8189,9 @@ fn compile_method(
 
     let mut borrow_pointer_params =
         pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
+    if let Some(body) = func_decl.body.as_ref() {
+        validate_function_semantics(&func_decl.type_, body)?;
+    }
     if is_pointer && !recv_name.is_empty() {
         borrow_pointer_params.insert(recv_name.clone());
     }
@@ -8255,7 +8258,6 @@ fn compile_method(
     let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
     let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
     let block_result = if let Some(body) = func_decl.body {
-        validate_function_gotos(&body)?;
         body.try_into()
     } else {
         Ok(syn::Block {
@@ -12739,6 +12741,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
             reason.max,
             reason.got
         ),
+        ir::InvalidStatement::Return { reason } => {
+            format!(
+                "invalid return statement: {}",
+                invalid_return_reason(reason)
+            )
+        }
         ir::InvalidStatement::ShortVarDecl { reason } => {
             format!(
                 "invalid short variable declaration: {}",
@@ -12796,6 +12804,17 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         }
         ir::InvalidStatementReason::TypeConversion => {
             "type conversions are not permitted in statement context".to_string()
+        }
+    }
+}
+
+fn invalid_return_reason(reason: ir::InvalidReturnReason) -> String {
+    match reason {
+        ir::InvalidReturnReason::CountMismatch { expected, values } => {
+            format!("expected {expected} result value(s), got {values}")
+        }
+        ir::InvalidReturnReason::MultiValueInSingleValueContext => {
+            "multi-valued expression in explicit return list".to_string()
         }
     }
 }
@@ -12868,7 +12887,10 @@ fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
     CompilerError::UnsupportedConstruct(message)
 }
 
-fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
+fn validate_function_semantics(
+    func_type: &ast::FuncType<'_>,
+    body: &ast::BlockStmt,
+) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
     }
@@ -12876,6 +12898,11 @@ fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
         return Err(invalid_branch_error(invalid));
     }
     if let Some(invalid) = TYPE_ENV.with(|env| ir::invalid_statement_in_func(body, &env.borrow())) {
+        return Err(invalid_statement_error(invalid));
+    }
+    if let Some(invalid) =
+        TYPE_ENV.with(|env| ir::invalid_return_in_func(func_type, body, &env.borrow()))
+    {
         return Err(invalid_statement_error(invalid));
     }
     if let Some(invalid) = ir::invalid_label_in_func(body) {
@@ -14700,6 +14727,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         let borrow_pointer_params =
             pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
+        if let Some(body) = func_decl.body.as_ref() {
+            validate_function_semantics(&func_decl.type_, body)?;
+        }
         let borrowed_pointer_param_names =
             BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
         let mut inputs = syn::punctuated::Punctuated::new();
@@ -14781,7 +14811,6 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
         let block_result = if let Some(body) = func_decl.body {
-            validate_function_gotos(&body)?;
             body.try_into()
         } else {
             Ok(bodyless_function_block(&output, &inputs))
@@ -17748,6 +17777,30 @@ mod tests {
                 }
             "#,
             "invalid assignment: assignment count mismatch: 2 left operand(s), 1 value(s)",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func pair() (int, int) {
+                    return 1, 2
+                }
+
+                func main() int {
+                    return pair()
+                }
+            "#,
+            "invalid return statement: expected 1 result value(s), got 2",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() int {
+                    return
+                }
+            "#,
+            "invalid return statement: expected 1 result value(s), got 0",
         );
         assert_unsupported_construct(
             r#"

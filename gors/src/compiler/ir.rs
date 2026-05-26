@@ -986,6 +986,7 @@ pub enum InvalidStatement {
     ForPostShortVarDecl,
     Go { reason: InvalidStatementReason },
     Range { reason: InvalidRangeReason },
+    Return { reason: InvalidReturnReason },
     ShortVarDecl { reason: InvalidShortVarDeclReason },
 }
 
@@ -994,6 +995,12 @@ pub enum InvalidAssignmentReason {
     CompoundBlankIdentifier,
     CompoundOperandCount { lhs: usize, rhs: usize },
     CountMismatch { lhs: usize, values: usize },
+    MultiValueInSingleValueContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidReturnReason {
+    CountMismatch { expected: usize, values: usize },
     MultiValueInSingleValueContext,
 }
 
@@ -1109,6 +1116,14 @@ pub fn invalid_statement_in_func(
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
     invalid_statement_in_block(block, &mut env)
+}
+
+pub fn invalid_return_in_func(
+    func_type: &ast::FuncType<'_>,
+    body: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    invalid_return_in_block(body, &return_signature(func_type), env)
 }
 
 pub fn invalid_label_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidLabel> {
@@ -3467,6 +3482,400 @@ fn field_list_binding_count(fields: Option<&ast::FieldList<'_>>) -> usize {
             .map(|field| field.names.as_ref().map_or(1, Vec::len))
             .sum()
     })
+}
+
+#[derive(Clone, Copy)]
+struct ReturnSignature {
+    count: usize,
+    named: bool,
+}
+
+fn return_signature(func_type: &ast::FuncType<'_>) -> ReturnSignature {
+    let count = field_list_binding_count(func_type.results.as_ref());
+    let named = func_type.results.as_ref().is_some_and(|results| {
+        results
+            .list
+            .iter()
+            .any(|field| field.names.as_ref().is_some_and(|names| !names.is_empty()))
+    });
+    ReturnSignature { count, named }
+}
+
+fn invalid_return_in_block(
+    block: &ast::BlockStmt<'_>,
+    signature: &ReturnSignature,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in &block.list {
+        if let Some(invalid) = invalid_return_in_stmt(stmt, signature, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_return_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    signature: &ReturnSignature,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                if let Some(invalid) = invalid_return_in_expr(expr, env) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::BlockStmt(block) => invalid_return_in_block(block, signature, env),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::CaseClause(case) => {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    if let Some(invalid) = invalid_return_in_expr(expr, env) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            invalid_return_in_stmt_list(&case.body, signature, env)
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_return_in_stmt(comm, signature, env)
+            {
+                return Some(invalid);
+            }
+            invalid_return_in_stmt_list(&comm.body, signature, env)
+        }
+        ast::Stmt::DeclStmt(decl) => invalid_return_in_gen_decl(&decl.decl, env),
+        ast::Stmt::DeferStmt(defer) => invalid_return_in_call(&defer.call, env),
+        ast::Stmt::ExprStmt(expr) => invalid_return_in_expr(&expr.x, env),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_return_in_stmt(init, signature, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(invalid) = invalid_return_in_expr(cond, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_return_in_stmt(post, signature, env)
+            {
+                return Some(invalid);
+            }
+            invalid_return_in_block(&for_stmt.body, signature, env)
+        }
+        ast::Stmt::GoStmt(go) => invalid_return_in_call(&go.call, env),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_return_in_stmt(init, signature, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_return_in_expr(&if_stmt.cond, env) {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_return_in_block(&if_stmt.body, signature, env) {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                return invalid_return_in_stmt(else_branch, signature, env);
+            }
+            None
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_return_in_expr(&inc_dec.x, env),
+        ast::Stmt::LabeledStmt(labeled) => invalid_return_in_stmt(&labeled.stmt, signature, env),
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key
+                && let Some(invalid) = invalid_return_in_expr(key, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(value) = &range.value
+                && let Some(invalid) = invalid_return_in_expr(value, env)
+            {
+                return Some(invalid);
+            }
+            invalid_return_in_expr(&range.x, env)
+                .or_else(|| invalid_return_in_block(&range.body, signature, env))
+        }
+        ast::Stmt::ReturnStmt(ret) => invalid_return_stmt(ret, signature, env)
+            .map(|reason| InvalidStatement::Return { reason }),
+        ast::Stmt::SelectStmt(select) => invalid_return_in_block(&select.body, signature, env),
+        ast::Stmt::SendStmt(send) => invalid_return_in_expr(&send.chan, env)
+            .or_else(|| invalid_return_in_expr(&send.value, env)),
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_return_in_stmt(init, signature, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(invalid) = invalid_return_in_expr(tag, env)
+            {
+                return Some(invalid);
+            }
+            invalid_return_in_block(&switch.body, signature, env)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_return_in_stmt(init, signature, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_return_in_stmt(&type_switch.assign, signature, env) {
+                return Some(invalid);
+            }
+            invalid_return_in_block(&type_switch.body, signature, env)
+        }
+    }
+}
+
+fn invalid_return_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    signature: &ReturnSignature,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_return_in_stmt(stmt, signature, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_return_stmt(
+    ret: &ast::ReturnStmt<'_>,
+    signature: &ReturnSignature,
+    env: &TypeEnv,
+) -> Option<InvalidReturnReason> {
+    if ret.results.is_empty() {
+        if signature.count == 0 || signature.named {
+            return None;
+        }
+        return Some(InvalidReturnReason::CountMismatch {
+            expected: signature.count,
+            values: 0,
+        });
+    }
+
+    if signature.count == 0 {
+        let values = if ret.results.len() == 1 {
+            expression_value_count(
+                ret.results.first()?,
+                env,
+                TupleAssignmentMode::AllowTupleOperations,
+            )
+            .unwrap_or(1)
+            .max(1)
+        } else {
+            ret.results.len()
+        };
+        return Some(InvalidReturnReason::CountMismatch {
+            expected: 0,
+            values,
+        });
+    }
+
+    if ret.results.len() == 1 {
+        let mode = if signature.count == 1 {
+            TupleAssignmentMode::SingleValueContext
+        } else {
+            TupleAssignmentMode::AllowTupleOperations
+        };
+        if let Some(values) = expression_value_count(ret.results.first()?, env, mode)
+            && values != signature.count
+        {
+            return Some(InvalidReturnReason::CountMismatch {
+                expected: signature.count,
+                values,
+            });
+        }
+        return None;
+    }
+
+    for expr in &ret.results {
+        if let Some(values) =
+            expression_value_count(expr, env, TupleAssignmentMode::SingleValueContext)
+            && values != 1
+        {
+            return Some(InvalidReturnReason::MultiValueInSingleValueContext);
+        }
+    }
+
+    if ret.results.len() != signature.count {
+        return Some(InvalidReturnReason::CountMismatch {
+            expected: signature.count,
+            values: ret.results.len(),
+        });
+    }
+
+    None
+}
+
+fn invalid_return_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    for spec in &gen_decl.specs {
+        if let Some(invalid) = invalid_return_in_spec(spec, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_return_in_spec(spec: &ast::Spec<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    match spec {
+        ast::Spec::ImportSpec(_) => None,
+        ast::Spec::TypeSpec(type_spec) => invalid_return_in_expr(&type_spec.type_, env),
+        ast::Spec::ValueSpec(value_spec) => {
+            if let Some(type_) = &value_spec.type_
+                && let Some(invalid) = invalid_return_in_expr(type_, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(values) = &value_spec.values {
+                for value in values {
+                    if let Some(invalid) = invalid_return_in_expr(value, env) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    if let Some(invalid) = invalid_return_in_expr(&call.fun, env) {
+        return Some(invalid);
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(invalid) = invalid_return_in_expr(arg, env) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len
+                && let Some(invalid) = invalid_return_in_expr(len, env)
+            {
+                return Some(invalid);
+            }
+            invalid_return_in_expr(&array.elt, env)
+        }
+        ast::Expr::BinaryExpr(binary) => invalid_return_in_expr(&binary.x, env)
+            .or_else(|| invalid_return_in_expr(&binary.y, env)),
+        ast::Expr::CallExpr(call) => invalid_return_in_call(call, env),
+        ast::Expr::ChanType(chan) => invalid_return_in_expr(&chan.value, env),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(type_) = &comp.type_
+                && let Some(invalid) = invalid_return_in_expr(type_, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    if let Some(invalid) = invalid_return_in_expr(elt, env) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|expr| invalid_return_in_expr(expr, env)),
+        ast::Expr::FuncLit(func_lit) => {
+            invalid_return_in_func(&func_lit.type_, &func_lit.body, env)
+        }
+        ast::Expr::FuncType(_) => None,
+        ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
+            .or_else(|| invalid_return_in_expr(&index.index, env)),
+        ast::Expr::IndexListExpr(index) => {
+            if let Some(invalid) = invalid_return_in_expr(&index.x, env) {
+                return Some(invalid);
+            }
+            for index in &index.indices {
+                if let Some(invalid) = invalid_return_in_expr(index, env) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Expr::InterfaceType(interface) => interface.methods.as_ref().and_then(|fields| {
+            for field in &fields.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_return_in_expr(type_, env)
+                {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Expr::KeyValueExpr(kv) => {
+            invalid_return_in_expr(&kv.key, env).or_else(|| invalid_return_in_expr(&kv.value, env))
+        }
+        ast::Expr::MapType(map) => invalid_return_in_expr(&map.key, env)
+            .or_else(|| invalid_return_in_expr(&map.value, env)),
+        ast::Expr::ParenExpr(paren) => invalid_return_in_expr(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_return_in_expr(&selector.x, env),
+        ast::Expr::SliceExpr(slice) => {
+            if let Some(invalid) = invalid_return_in_expr(&slice.x, env) {
+                return Some(invalid);
+            }
+            if let Some(low) = &slice.low
+                && let Some(invalid) = invalid_return_in_expr(low, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(high) = &slice.high
+                && let Some(invalid) = invalid_return_in_expr(high, env)
+            {
+                return Some(invalid);
+            }
+            if let Some(max) = &slice.max
+                && let Some(invalid) = invalid_return_in_expr(max, env)
+            {
+                return Some(invalid);
+            }
+            None
+        }
+        ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env),
+        ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().and_then(|fields| {
+            for field in &fields.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_return_in_expr(type_, env)
+                {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Expr::TypeAssertExpr(assert) => {
+            if let Some(invalid) = invalid_return_in_expr(&assert.x, env) {
+                return Some(invalid);
+            }
+            assert
+                .type_
+                .as_ref()
+                .and_then(|ty| invalid_return_in_expr(ty, env))
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
 }
 
 fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
@@ -8167,6 +8576,162 @@ mod tests {
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
         );
+    }
+
+    #[test]
+    fn rejects_invalid_return_value_counts() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func f() {
+                        return 1
+                    }
+                "#,
+                "f",
+                super::InvalidReturnReason::CountMismatch {
+                    expected: 0,
+                    values: 1,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func f() int {
+                        return
+                    }
+                "#,
+                "f",
+                super::InvalidReturnReason::CountMismatch {
+                    expected: 1,
+                    values: 0,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func f() int {
+                        return pair()
+                    }
+                "#,
+                "f",
+                super::InvalidReturnReason::CountMismatch {
+                    expected: 1,
+                    values: 2,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func f() (int, int, int) {
+                        return pair()
+                    }
+                "#,
+                "f",
+                super::InvalidReturnReason::CountMismatch {
+                    expected: 3,
+                    values: 2,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func f() (int, int, int) {
+                        return pair(), 3
+                    }
+                "#,
+                "f",
+                super::InvalidReturnReason::MultiValueInSingleValueContext,
+            ),
+            (
+                r#"
+                    package main
+
+                    func outer() {
+                        _ = func() int {
+                            return
+                        }
+                    }
+                "#,
+                "outer",
+                super::InvalidReturnReason::CountMismatch {
+                    expected: 1,
+                    values: 0,
+                },
+            ),
+        ];
+
+        for (source, name, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Return { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_return_value_counts() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type myError struct{}
+
+                func pair() (int, int) { return 1, 2 }
+
+                func noResult() {
+                    return
+                }
+
+                func explicit() (int, int) {
+                    return 1, 2
+                }
+
+                func forwarded() (int, int) {
+                    return pair()
+                }
+
+                func named() (n int, _ myError) {
+                    return
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        for name in ["noResult", "explicit", "forwarded", "named"] {
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
+                None
+            );
+        }
     }
 
     #[test]

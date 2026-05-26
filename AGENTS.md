@@ -533,6 +533,10 @@ lowering. It distinguishes single-valued expressions from real multi-valued
 function calls, map indexes, channel receives, and type assertions so invalid
 forms such as `x := pair()` or `x, ok := slice[0]` do not reach Rust codegen as
 tuple destructuring or comma-ok lowering.
+Return statement arity is also validated before backend lowering. Empty returns
+are allowed only for functions with no results or named result parameters, a
+single return expression may forward a matching multi-valued function call, and
+explicit multi-expression returns must contain only single-valued expressions.
 The same statement validation rejects short variable declarations in a `for`
 post statement; Go only permits them in init/simple statement positions.
 Switch, type-switch, and select statements reject multiple `default` clauses in
