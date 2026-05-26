@@ -588,6 +588,10 @@ Backend assignment lowering must use the checked assignment-lhs path, including
 as compiler errors instead of falling back to arbitrary expression codegen. IR
 validation also checks `++`/`--` directly: the operand must be addressable or a
 map index, may not be `_`, and must have numeric type when known.
+Index-expression validation is intentionally conservative around generics and
+unknown named operands, but rejects known non-indexable operands, non-integer
+array/slice/string indexes, and map keys that are not assignable to the map key
+type.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per

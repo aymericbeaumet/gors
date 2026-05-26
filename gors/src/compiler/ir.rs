@@ -1105,6 +1105,7 @@ pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
     InvalidCall { target: String, reason: String },
+    InvalidIndex { reason: String },
     InvalidTypeConversion { target: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
@@ -4610,7 +4611,10 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
         }
         ast::Expr::FuncType(_) => None,
         ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
-            .or_else(|| invalid_return_in_expr(&index.index, env)),
+            .or_else(|| invalid_return_in_expr(&index.index, env))
+            .or_else(|| {
+                invalid_index_expr(index, env).map(|reason| InvalidStatement::Expression { reason })
+            }),
         ast::Expr::IndexListExpr(index) => {
             if let Some(invalid) = invalid_return_in_expr(&index.x, env) {
                 return Some(invalid);
@@ -5310,7 +5314,8 @@ fn invalid_expression_in_expr(
                     .and_then(|results| invalid_expression_in_field_list(results, env))
             }),
         ast::Expr::IndexExpr(index) => invalid_expression_in_expr(&index.x, env)
-            .or_else(|| invalid_expression_in_expr(&index.index, env)),
+            .or_else(|| invalid_expression_in_expr(&index.index, env))
+            .or_else(|| invalid_index_expr(index, env)),
         ast::Expr::IndexListExpr(index) => {
             invalid_expression_in_expr(&index.x, env).or_else(|| {
                 index
@@ -5630,6 +5635,58 @@ fn invalid_ordinary_call(
         invalid_variadic_call_args(call, &signature, variadic_start, env)
     } else {
         invalid_fixed_call_args(call, &signature, env)
+    }
+}
+
+fn invalid_index_expr(index: &ast::IndexExpr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let target = env.resolve_alias(&GoType::infer_expr(&index.x, env));
+    match target {
+        GoType::String | GoType::Slice(_) | GoType::Array(_) => {
+            invalid_integer_index(&index.index, env)
+        }
+        GoType::Pointer(inner) if matches!(inner.as_ref(), GoType::Array(_)) => {
+            invalid_integer_index(&index.index, env)
+        }
+        GoType::Map(key, _) => invalid_map_index_key(&key, &index.index, env),
+        GoType::Unknown | GoType::Named(_) | GoType::Func { .. } => None,
+        other => Some(invalid_index_reason(format!(
+            "cannot index {}",
+            go_type_display_name(&other)
+        ))),
+    }
+}
+
+fn invalid_integer_index(index: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(index, env));
+    if matches!(ty, GoType::Unknown | GoType::Named(_)) || ty.is_integer() {
+        return None;
+    }
+    Some(invalid_index_reason(format!(
+        "index must have integer type, got {}",
+        go_type_display_name(&ty)
+    )))
+}
+
+fn invalid_map_index_key(
+    expected: &GoType,
+    index: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let expected = env.resolve_alias(expected);
+    let actual = env.resolve_alias(&GoType::infer_expr(index, env));
+    if types_are_assignable_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(invalid_index_reason(format!(
+        "key must be assignable to {}, got {}",
+        go_type_display_name(&expected),
+        go_type_display_name(&actual)
+    )))
+}
+
+fn invalid_index_reason(reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidIndex {
+        reason: reason.into(),
     }
 }
 
@@ -11922,6 +11979,99 @@ mod tests {
                     reason: "expects 1 argument, got 0".to_string(),
                 },
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_index_expressions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1[0]
+                    }
+                "#,
+                "cannot index int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        _ = xs["0"]
+                    }
+                "#,
+                "index must have integer type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        m := map[string]int{}
+                        _ = m[1]
+                    }
+                "#,
+                "key must be assignable to string, got int",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidIndex {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_index_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    _ = xs[0]
+                    s := "go"
+                    _ = s[1]
+                    m := map[string]int{"go": 1}
+                    _ = m["go"]
+                    a := [1]int{1}
+                    p := &a
+                    _ = p[0]
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
         );
     }
 
