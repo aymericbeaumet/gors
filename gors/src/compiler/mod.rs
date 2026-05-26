@@ -17516,6 +17516,36 @@ mod tests {
             "#,
             "invalid goto to undefined label Missing",
         );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    goto _
+                _:
+                    println("not a target")
+                }
+            "#,
+            "invalid goto to undefined label _",
+        );
+    }
+
+    #[test]
+    fn it_should_accept_blank_labels() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                _:
+                _:
+                    println("blank labels are ignored")
+                }
+            "#,
+        )
+        .unwrap();
+        compile(parsed).unwrap();
     }
 
     #[test]

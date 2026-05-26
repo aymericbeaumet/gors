@@ -2785,10 +2785,14 @@ fn invalid_branch_in_labeled_stmt(
     labeled: &ast::LabeledStmt<'_>,
     context: &mut BranchContext,
 ) -> Option<InvalidBranch> {
-    let mut labels = vec![labeled.label.name.to_string()];
+    let mut labels: Vec<String> = non_blank_label_name(labeled.label.name)
+        .into_iter()
+        .collect();
     let mut inner = labeled.stmt.as_ref();
     while let ast::Stmt::LabeledStmt(next) = inner {
-        labels.push(next.label.name.to_string());
+        if let Some(label) = non_blank_label_name(next.label.name) {
+            labels.push(label);
+        }
         inner = &next.stmt;
     }
     let target = branch_label_target(inner);
@@ -3578,7 +3582,9 @@ fn collect_labels_in_stmt(stmt: &ast::Stmt<'_>, labels: &mut Vec<String>) {
             }
         }
         ast::Stmt::LabeledStmt(labeled) => {
-            labels.push(labeled.label.name.to_string());
+            if let Some(label) = non_blank_label_name(labeled.label.name) {
+                labels.push(label);
+            }
             collect_labels_in_stmt(&labeled.stmt, labels);
         }
         ast::Stmt::RangeStmt(range) => collect_labels_in_block(&range.body, labels),
@@ -3729,9 +3735,9 @@ fn collect_label_paths_in_stmt(
             }
         }
         ast::Stmt::LabeledStmt(labeled) => {
-            labels
-                .entry(labeled.label.name.to_string())
-                .or_insert_with(|| path.to_vec());
+            if let Some(label) = non_blank_label_name(labeled.label.name) {
+                labels.entry(label).or_insert_with(|| path.to_vec());
+            }
             collect_label_paths_in_stmt(&labeled.stmt, path, idx, labels);
         }
         ast::Stmt::RangeStmt(range) => {
@@ -3871,10 +3877,16 @@ pub fn direct_label_names_in_stmt(stmt: &ast::Stmt<'_>) -> Vec<String> {
     let mut labels = Vec::new();
     let mut current = stmt;
     while let ast::Stmt::LabeledStmt(label) = current {
-        labels.push(label.label.name.to_string());
+        if let Some(label) = non_blank_label_name(label.label.name) {
+            labels.push(label);
+        }
         current = &label.stmt;
     }
     labels
+}
+
+fn non_blank_label_name(name: &str) -> Option<String> {
+    (name != "_").then(|| name.to_string())
 }
 
 fn direct_label_names_in_block(block: &ast::BlockStmt<'_>) -> Vec<String> {
@@ -7260,6 +7272,65 @@ mod tests {
             super::InvalidGoto::UndefinedLabel {
                 label: "Missing".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn treats_blank_labels_as_non_targets() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                _:
+                _:
+                    println("blank labels are ignored")
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let body = func.body.as_ref().expect("body");
+        assert_eq!(super::invalid_label_in_func(body), None);
+        assert_eq!(super::invalid_goto_target_in_func(body), None);
+        assert_eq!(
+            super::direct_label_names_in_stmt(&body.list[0]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn rejects_goto_to_blank_label() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    goto _
+                _:
+                    println("not a target")
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_goto_target_in_func(func.body.as_ref().expect("body")),
+            Some(super::InvalidGoto::UndefinedLabel {
+                label: "_".to_string(),
+            })
         );
     }
 

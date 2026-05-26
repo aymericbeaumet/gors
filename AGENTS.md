@@ -530,6 +530,8 @@ current lexical block. The no-new-name check is scope-based rather than
 `TypeEnv`-based so nested short declarations can still shadow outer bindings.
 Switch, type-switch, and select statements reject multiple `default` clauses in
 the same IR-fronted statement validation pass.
+Blank labels (`_:`) are valid placeholder labels but do not define branch/goto
+targets and are ignored by duplicate/unused label checks and goto-state planning.
 
 Range-over-function support is IR-classified as a function range and backend
 lowered by synthesizing the Go `yield` callback as the same shared function
