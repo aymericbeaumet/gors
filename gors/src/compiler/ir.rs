@@ -1038,6 +1038,109 @@ pub fn func_lit_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capt
         .collect()
 }
 
+pub fn mutable_goroutine_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_mutable_goroutine_capture_names_in_block(block, env, &mut names);
+    names
+}
+
+fn collect_mutable_goroutine_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    for stmt in &block.list {
+        collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+    }
+}
+
+fn collect_mutable_goroutine_capture_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match stmt {
+        ast::Stmt::BlockStmt(block) => {
+            collect_mutable_goroutine_capture_names_in_block(block, env, names);
+        }
+        ast::Stmt::CaseClause(case_clause) => {
+            for stmt in &case_clause.body {
+                collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = &comm_clause.comm {
+                collect_mutable_goroutine_capture_names_in_stmt(comm, env, names);
+            }
+            for stmt in &comm_clause.body {
+                collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_mutable_goroutine_capture_names_in_stmt(post, env, names);
+            }
+            collect_mutable_goroutine_capture_names_in_block(&for_stmt.body, env, names);
+        }
+        ast::Stmt::GoStmt(go_stmt) => {
+            if let ast::Expr::FuncLit(func_lit) = go_stmt.call.fun.as_ref() {
+                names.extend(
+                    func_lit_captures(func_lit, env)
+                        .into_iter()
+                        .filter(|capture| capture.mode == CaptureMode::BorrowMut)
+                        .map(|capture| capture.name),
+                );
+            }
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+            }
+            collect_mutable_goroutine_capture_names_in_block(&if_stmt.body, env, names);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_mutable_goroutine_capture_names_in_stmt(else_branch, env, names);
+            }
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_mutable_goroutine_capture_names_in_stmt(&label.stmt, env, names);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            collect_mutable_goroutine_capture_names_in_block(&range.body, env, names);
+        }
+        ast::Stmt::SelectStmt(select_stmt) => {
+            collect_mutable_goroutine_capture_names_in_block(&select_stmt.body, env, names);
+        }
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = &switch_stmt.init {
+                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+            }
+            collect_mutable_goroutine_capture_names_in_block(&switch_stmt.body, env, names);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+            }
+            collect_mutable_goroutine_capture_names_in_stmt(&type_switch.assign, env, names);
+            collect_mutable_goroutine_capture_names_in_block(&type_switch.body, env, names);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
+    }
+}
+
 fn collect_signature_bindings(func_type: &ast::FuncType<'_>, names: &mut BTreeSet<String>) {
     collect_field_names(&func_type.params, names);
     if let Some(results) = &func_type.results {
@@ -1724,6 +1827,43 @@ mod tests {
         };
         assert_eq!(capture.name, "base");
         assert_eq!(capture.mode, CaptureMode::Borrow);
+    }
+
+    #[test]
+    fn records_mutable_goroutine_captures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    done := make(chan bool)
+                    count := 0
+                    label := "ready"
+                    go func() {
+                        count = 7
+                        _ = label
+                        done <- true
+                    }()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_goroutine_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("count"));
+        assert!(!names.contains("done"));
+        assert!(!names.contains("label"));
     }
 
     #[test]

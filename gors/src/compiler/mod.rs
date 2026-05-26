@@ -48,6 +48,7 @@ thread_local! {
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
+    static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 #[derive(Clone)]
@@ -70,6 +71,10 @@ struct MainPackageVarModeGuard {
     previous: bool,
 }
 
+struct SharedCaptureNamesGuard {
+    previous: std::collections::HashSet<String>,
+}
+
 impl MainPackageVarModeGuard {
     fn set(current: bool) -> Self {
         let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
@@ -85,6 +90,25 @@ impl Drop for MainPackageVarModeGuard {
     fn drop(&mut self) {
         MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
             *value.borrow_mut() = self.previous;
+        });
+    }
+}
+
+impl SharedCaptureNamesGuard {
+    fn extend(names: impl IntoIterator<Item = String>) -> Self {
+        let previous = SHARED_CAPTURE_NAMES.with(|shared| {
+            let previous = shared.borrow().clone();
+            shared.borrow_mut().extend(names);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for SharedCaptureNamesGuard {
+    fn drop(&mut self) {
+        SHARED_CAPTURE_NAMES.with(|shared| {
+            *shared.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -8154,7 +8178,8 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
             final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
         } else if variadic_is_any {
             let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
-            final_args.push(syn::parse_quote! { Box::new(#arg.clone()) as Box<dyn std::any::Any> });
+            final_args
+                .push(syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> });
         } else {
             final_args.push(compile_expr_with_expected(arg, variadic_elem.as_ref()));
         }
@@ -9038,6 +9063,9 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     }
     match expr {
         ast::Expr::Ident(ident) => {
+            if let Some(expr) = shared_capture_lvalue_expr(ident.name) {
+                return Some(expr);
+            }
             let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
             Some(syn::parse_quote! { #ident })
         }
@@ -9167,6 +9195,51 @@ fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
             }
         }),
         _ => false,
+    }
+}
+
+fn is_shared_capture_name(name: &str) -> bool {
+    SHARED_CAPTURE_NAMES.with(|shared| shared.borrow().contains(name))
+}
+
+fn shared_capture_init_expr(name: &str, init: syn::Expr) -> syn::Expr {
+    if is_shared_capture_name(name) {
+        syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#init)) }
+    } else {
+        init
+    }
+}
+
+fn shared_capture_type(name: &str, ty: syn::Type) -> syn::Type {
+    if is_shared_capture_name(name) {
+        syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#ty>> }
+    } else {
+        ty
+    }
+}
+
+fn shared_capture_lvalue_expr(name: &str) -> Option<syn::Expr> {
+    if !is_shared_capture_name(name) {
+        return None;
+    }
+    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+    Some(syn::parse_quote! { *#ident.lock().unwrap() })
+}
+
+fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
+    if !is_shared_capture_name(name) {
+        return None;
+    }
+    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+    let go_type = TYPE_ENV.with(|env| {
+        env.borrow()
+            .get_var(name)
+            .unwrap_or(typeinfer::GoType::Unknown)
+    });
+    if go_type_is_copy(&go_type) {
+        Some(syn::parse_quote! { *#ident.lock().unwrap() })
+    } else {
+        Some(syn::parse_quote! { #ident.lock().unwrap().clone() })
     }
 }
 
@@ -10852,6 +10925,9 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     type Error = CompilerError;
 
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
+        let shared_capture_names = TYPE_ENV
+            .with(|env| ir::mutable_goroutine_capture_names_in_block(&block_stmt, &env.borrow()));
+        let _shared_capture_names = SharedCaptureNamesGuard::extend(shared_capture_names);
         let mut stmts = vec![];
         for stmt in block_stmt.list {
             stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
@@ -10990,6 +11066,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
             }
             ast::Expr::Ident(ident) => {
                 let ident_name = ident.name;
+                if let Some(expr) = shared_capture_read_expr(ident_name) {
+                    return expr;
+                }
                 let is_top_level_var = TYPE_ENV.with(|env| {
                     let env = env.borrow();
                     !MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| *value.borrow())
@@ -12630,7 +12709,7 @@ fn is_catch_panic_defer(call: &ast::CallExpr) -> bool {
 
 impl From<ast::IncDecStmt<'_>> for Vec<syn::Stmt> {
     fn from(inc_dec_stmt: ast::IncDecStmt) -> Self {
-        let x: syn::Expr = inc_dec_stmt.x.into();
+        let x = compile_assignment_lhs(inc_dec_stmt.x);
         match inc_dec_stmt.tok {
             token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
             token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
@@ -13080,7 +13159,10 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
 
                         let init = init_expr
                             .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()));
+                        let name = ident.to_string();
+                        let init = shared_capture_init_expr(&name, init);
                         if let Some(ref ty) = rust_type {
+                            let ty = shared_capture_type(&name, ty.clone());
                             stmts.push(syn::parse_quote! {
                                 let mut #ident: #ty = #init;
                             });
@@ -13680,6 +13762,31 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // a := 1
         // b, c := 2, 3
         if assign_stmt.tok == token::Token::DEFINE {
+            if assign_stmt
+                .lhs
+                .iter()
+                .any(|expr| matches!(expr, ast::Expr::Ident(ident) if is_shared_capture_name(ident.name)))
+            {
+                let mut out = vec![];
+                for (lhs, rhs) in assign_stmt.lhs.into_iter().zip(assign_stmt.rhs) {
+                    let ast::Expr::Ident(ident) = lhs else {
+                        return Err(CompilerError::InvalidAssignment(
+                            "expected identifier on lhs of :=".to_string(),
+                        ));
+                    };
+                    let init: syn::Expr = rhs.into();
+                    if ident.name == "_" {
+                        out.push(syn::parse_quote! { let _ = #init; });
+                    } else {
+                        let name = ident.name;
+                        let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                        let init = shared_capture_init_expr(name, init);
+                        out.push(syn::parse_quote! { let mut #ident = #init; });
+                    }
+                }
+                return Ok(out);
+            }
+
             let pat = match assign_stmt.lhs.len() {
                 1 => {
                     let first_lhs =
@@ -13889,7 +13996,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
                 compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
             };
-            let left: syn::Expr = lhs_ast.into();
+            let left = compile_assignment_lhs(lhs_ast);
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
         }

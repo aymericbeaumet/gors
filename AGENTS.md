@@ -84,6 +84,9 @@ gors-builtin/
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are boxed
   behind the shared `Arc<Mutex<dyn FnMut(...) -> ... + Send>>` representation.
+- Goroutine function literals use IR capture analysis. Mutable outer captures are
+  promoted to `Arc<Mutex<T>>` in the enclosing block and cloned into the spawned
+  closure so synchronized goroutine writes are visible after channel joins.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
