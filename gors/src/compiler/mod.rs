@@ -2820,6 +2820,9 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     if let Some(invalid) = ir::invalid_signature_in_file(&file) {
         return Err(invalid_signature_error(invalid));
     }
+    if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
+        return Err(invalid_declaration_error(invalid));
+    }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -2850,6 +2853,9 @@ pub fn compile_with_type_env_and_import_renames(
     set_import_renames(import_renames);
     if let Some(invalid) = ir::invalid_signature_in_file(&file) {
         return Err(invalid_signature_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
+        return Err(invalid_declaration_error(invalid));
     }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -12782,6 +12788,25 @@ fn signature_list_name(list: ir::SignatureList) -> &'static str {
     }
 }
 
+fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidDeclaration::DuplicateMethod { base, method } => {
+            format!("duplicate method {method} for receiver base type {base}")
+        }
+        ir::InvalidDeclaration::DuplicateStructField { type_name, field } => {
+            if let Some(type_name) = type_name {
+                format!("duplicate field {field} in struct {type_name}")
+            } else {
+                format!("duplicate field {field} in anonymous struct")
+            }
+        }
+        ir::InvalidDeclaration::MethodFieldConflict { base, name } => {
+            format!("method {name} conflicts with field on struct {base}")
+        }
+    };
+    CompilerError::UnsupportedConstruct(message)
+}
+
 fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
@@ -17633,6 +17658,40 @@ mod tests {
                 var _ = func(a int, a int) {}
             "#,
             "duplicate parameter/result name a",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_struct_and_method_declarations() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                type S struct {
+                    X int
+                    X string
+                }
+            "#,
+            "duplicate field X in struct S",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                type S struct{}
+                func (S) M() {}
+                func (*S) M() {}
+            "#,
+            "duplicate method M for receiver base type S",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                type S struct { M int }
+                func (S) M() {}
+            "#,
+            "method M conflicts with field on struct S",
         );
     }
 

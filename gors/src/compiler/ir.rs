@@ -1021,6 +1021,22 @@ pub enum SignatureList {
     Result,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidDeclaration {
+    DuplicateMethod {
+        base: String,
+        method: String,
+    },
+    DuplicateStructField {
+        type_name: Option<String>,
+        field: String,
+    },
+    MethodFieldConflict {
+        base: String,
+        name: String,
+    },
+}
+
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
     let mut label_positions = BTreeMap::new();
     for (idx, stmt) in block.list.iter().enumerate() {
@@ -1097,6 +1113,17 @@ pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignatur
         }
     }
     None
+}
+
+pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    invalid_method_names_in_file(file).or_else(|| {
+        for decl in &file.decls {
+            if let Some(invalid) = invalid_declaration_in_decl(decl) {
+                return Some(invalid);
+            }
+        }
+        None
+    })
 }
 
 pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
@@ -1540,6 +1567,478 @@ fn invalid_signature_in_expr(expr: &ast::Expr<'_>) -> Option<InvalidSignature> {
         }
         ast::Expr::UnaryExpr(unary) => invalid_signature_in_expr(&unary.x),
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_method_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    let struct_fields = top_level_struct_fields(file);
+    let mut methods_by_base = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for decl in &file.decls {
+        let ast::Decl::FuncDecl(func) = decl else {
+            continue;
+        };
+        if func.name.name == "_" {
+            continue;
+        }
+        let Some(recv) = &func.recv else {
+            continue;
+        };
+        let Some(base) = receiver_base_type_name(recv) else {
+            continue;
+        };
+        let method = func.name.name.to_string();
+        let methods = methods_by_base.entry(base.clone()).or_default();
+        if !methods.insert(method.clone()) {
+            return Some(InvalidDeclaration::DuplicateMethod { base, method });
+        }
+        if struct_fields
+            .get(&base)
+            .is_some_and(|fields| fields.contains(&method))
+        {
+            return Some(InvalidDeclaration::MethodFieldConflict { base, name: method });
+        }
+    }
+
+    None
+}
+
+fn top_level_struct_fields(file: &ast::File<'_>) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out = BTreeMap::new();
+    for decl in &file.decls {
+        let ast::Decl::GenDecl(gen_decl) = decl else {
+            continue;
+        };
+        for spec in &gen_decl.specs {
+            let ast::Spec::TypeSpec(type_spec) = spec else {
+                continue;
+            };
+            let Some(name) = &type_spec.name else {
+                continue;
+            };
+            let Some(struct_type) = struct_type_from_expr(&type_spec.type_) else {
+                continue;
+            };
+            out.insert(name.name.to_string(), struct_field_name_set(struct_type));
+        }
+    }
+    out
+}
+
+fn struct_type_from_expr<'src>(expr: &'src ast::Expr<'src>) -> Option<&'src ast::StructType<'src>> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => struct_type_from_expr(&paren.x),
+        ast::Expr::StructType(struct_type) => Some(struct_type),
+        _ => None,
+    }
+}
+
+fn struct_field_name_set(struct_type: &ast::StructType<'_>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(fields) = &struct_type.fields {
+        for field in &fields.list {
+            for name in struct_field_names(field) {
+                if name != "_" {
+                    out.insert(name);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn receiver_base_type_name(recv: &ast::FieldList<'_>) -> Option<String> {
+    let field = recv.list.first()?;
+    receiver_type_base_name(field.type_.as_ref()?)
+}
+
+fn receiver_type_base_name(expr: &ast::Expr<'_>) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::IndexExpr(index) => receiver_type_base_name(&index.x),
+        ast::Expr::IndexListExpr(index) => receiver_type_base_name(&index.x),
+        ast::Expr::ParenExpr(paren) => receiver_type_base_name(&paren.x),
+        ast::Expr::StarExpr(star) => receiver_type_base_name(&star.x),
+        _ => None,
+    }
+}
+
+fn invalid_declaration_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidDeclaration> {
+    match decl {
+        ast::Decl::FuncDecl(func) => func.body.as_ref().and_then(invalid_declaration_in_block),
+        ast::Decl::GenDecl(gen_decl) => invalid_declaration_in_gen_decl(gen_decl),
+    }
+}
+
+fn invalid_declaration_in_gen_decl(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDeclaration> {
+    for spec in &gen_decl.specs {
+        if let Some(invalid) = invalid_declaration_in_spec(spec) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_declaration_in_spec(spec: &ast::Spec<'_>) -> Option<InvalidDeclaration> {
+    match spec {
+        ast::Spec::ImportSpec(_) => None,
+        ast::Spec::TypeSpec(type_spec) => invalid_declaration_in_expr_with_struct_name(
+            &type_spec.type_,
+            type_spec.name.as_ref().map(|name| name.name),
+        ),
+        ast::Spec::ValueSpec(value_spec) => {
+            if let Some(type_) = &value_spec.type_
+                && let Some(invalid) = invalid_declaration_in_expr(type_)
+            {
+                return Some(invalid);
+            }
+            if let Some(values) = &value_spec.values {
+                for value in values {
+                    if let Some(invalid) = invalid_declaration_in_expr(value) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+fn invalid_declaration_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidDeclaration> {
+    for stmt in &block.list {
+        if let Some(invalid) = invalid_declaration_in_stmt(stmt) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_declaration_in_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidDeclaration> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                if let Some(invalid) = invalid_declaration_in_expr(expr) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::BlockStmt(block) => invalid_declaration_in_block(block),
+        ast::Stmt::BranchStmt(_) => None,
+        ast::Stmt::CaseClause(case) => invalid_declaration_in_case_clause(case),
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_declaration_in_stmt(comm)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_stmt_list(&comm.body)
+        }
+        ast::Stmt::DeclStmt(decl) => invalid_declaration_in_gen_decl(&decl.decl),
+        ast::Stmt::DeferStmt(defer) => invalid_declaration_in_call(&defer.call),
+        ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::ExprStmt(expr) => invalid_declaration_in_expr(&expr.x),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_declaration_in_stmt(init)
+            {
+                return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(invalid) = invalid_declaration_in_expr(cond)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_declaration_in_stmt(post)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_block(&for_stmt.body)
+        }
+        ast::Stmt::GoStmt(go) => invalid_declaration_in_call(&go.call),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_declaration_in_stmt(init)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_declaration_in_expr(&if_stmt.cond) {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_declaration_in_block(&if_stmt.body) {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                return invalid_declaration_in_stmt(else_branch);
+            }
+            None
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_declaration_in_expr(&inc_dec.x),
+        ast::Stmt::LabeledStmt(labeled) => invalid_declaration_in_stmt(&labeled.stmt),
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key
+                && let Some(invalid) = invalid_declaration_in_expr(key)
+            {
+                return Some(invalid);
+            }
+            if let Some(value) = &range.value
+                && let Some(invalid) = invalid_declaration_in_expr(value)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_expr(&range.x)
+                .or_else(|| invalid_declaration_in_block(&range.body))
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                if let Some(invalid) = invalid_declaration_in_expr(expr) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::SelectStmt(select) => invalid_declaration_in_block(&select.body),
+        ast::Stmt::SendStmt(send) => invalid_declaration_in_expr(&send.chan)
+            .or_else(|| invalid_declaration_in_expr(&send.value)),
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_declaration_in_stmt(init)
+            {
+                return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(invalid) = invalid_declaration_in_expr(tag)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_block(&switch.body)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_declaration_in_stmt(init)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_stmt(&type_switch.assign)
+                .or_else(|| invalid_declaration_in_block(&type_switch.body))
+        }
+    }
+}
+
+fn invalid_declaration_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Option<InvalidDeclaration> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_declaration_in_stmt(stmt) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_declaration_in_case_clause(case: &ast::CaseClause<'_>) -> Option<InvalidDeclaration> {
+    if let Some(list) = &case.list {
+        for expr in list {
+            if let Some(invalid) = invalid_declaration_in_expr(expr) {
+                return Some(invalid);
+            }
+        }
+    }
+    invalid_declaration_in_stmt_list(&case.body)
+}
+
+fn invalid_declaration_in_call(call: &ast::CallExpr<'_>) -> Option<InvalidDeclaration> {
+    if let Some(invalid) = invalid_declaration_in_expr(&call.fun) {
+        return Some(invalid);
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(invalid) = invalid_declaration_in_expr(arg) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_declaration_in_expr(expr: &ast::Expr<'_>) -> Option<InvalidDeclaration> {
+    invalid_declaration_in_expr_with_struct_name(expr, None)
+}
+
+fn invalid_declaration_in_expr_with_struct_name(
+    expr: &ast::Expr<'_>,
+    struct_name: Option<&str>,
+) -> Option<InvalidDeclaration> {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len
+                && let Some(invalid) = invalid_declaration_in_expr(len)
+            {
+                return Some(invalid);
+            }
+            invalid_declaration_in_expr(&array.elt)
+        }
+        ast::Expr::BinaryExpr(binary) => invalid_declaration_in_expr(&binary.x)
+            .or_else(|| invalid_declaration_in_expr(&binary.y)),
+        ast::Expr::CallExpr(call) => invalid_declaration_in_call(call),
+        ast::Expr::ChanType(chan) => invalid_declaration_in_expr(&chan.value),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(type_) = &comp.type_
+                && let Some(invalid) = invalid_declaration_in_expr(type_)
+            {
+                return Some(invalid);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    if let Some(invalid) = invalid_declaration_in_expr(elt) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|expr| invalid_declaration_in_expr(expr)),
+        ast::Expr::FuncLit(func_lit) => invalid_declaration_in_block(&func_lit.body),
+        ast::Expr::FuncType(func_type) => {
+            for field in &func_type.params.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_declaration_in_expr(type_)
+                {
+                    return Some(invalid);
+                }
+            }
+            if let Some(results) = &func_type.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_
+                        && let Some(invalid) = invalid_declaration_in_expr(type_)
+                    {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::IndexExpr(index) => invalid_declaration_in_expr(&index.x)
+            .or_else(|| invalid_declaration_in_expr(&index.index)),
+        ast::Expr::IndexListExpr(index) => {
+            if let Some(invalid) = invalid_declaration_in_expr(&index.x) {
+                return Some(invalid);
+            }
+            for index in &index.indices {
+                if let Some(invalid) = invalid_declaration_in_expr(index) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Expr::InterfaceType(interface) => interface.methods.as_ref().and_then(|fields| {
+            for field in &fields.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_declaration_in_expr(type_)
+                {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Expr::KeyValueExpr(kv) => {
+            invalid_declaration_in_expr(&kv.key).or_else(|| invalid_declaration_in_expr(&kv.value))
+        }
+        ast::Expr::MapType(map) => invalid_declaration_in_expr(&map.key)
+            .or_else(|| invalid_declaration_in_expr(&map.value)),
+        ast::Expr::ParenExpr(paren) => {
+            invalid_declaration_in_expr_with_struct_name(&paren.x, struct_name)
+        }
+        ast::Expr::SelectorExpr(selector) => invalid_declaration_in_expr(&selector.x),
+        ast::Expr::SliceExpr(slice) => {
+            if let Some(invalid) = invalid_declaration_in_expr(&slice.x) {
+                return Some(invalid);
+            }
+            if let Some(low) = &slice.low
+                && let Some(invalid) = invalid_declaration_in_expr(low)
+            {
+                return Some(invalid);
+            }
+            if let Some(high) = &slice.high
+                && let Some(invalid) = invalid_declaration_in_expr(high)
+            {
+                return Some(invalid);
+            }
+            if let Some(max) = &slice.max
+                && let Some(invalid) = invalid_declaration_in_expr(max)
+            {
+                return Some(invalid);
+            }
+            None
+        }
+        ast::Expr::StarExpr(star) => invalid_declaration_in_expr(&star.x),
+        ast::Expr::StructType(struct_type) => invalid_struct_declaration(struct_type, struct_name),
+        ast::Expr::TypeAssertExpr(assert) => {
+            if let Some(invalid) = invalid_declaration_in_expr(&assert.x) {
+                return Some(invalid);
+            }
+            assert
+                .type_
+                .as_ref()
+                .and_then(|ty| invalid_declaration_in_expr(ty))
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_declaration_in_expr(&unary.x),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_struct_declaration(
+    struct_type: &ast::StructType<'_>,
+    type_name: Option<&str>,
+) -> Option<InvalidDeclaration> {
+    let Some(fields) = &struct_type.fields else {
+        return None;
+    };
+    let mut seen = BTreeSet::new();
+    for field in &fields.list {
+        for name in struct_field_names(field) {
+            if name == "_" {
+                continue;
+            }
+            if !seen.insert(name.clone()) {
+                return Some(InvalidDeclaration::DuplicateStructField {
+                    type_name: type_name.map(str::to_string),
+                    field: name,
+                });
+            }
+        }
+        if let Some(type_) = &field.type_
+            && let Some(invalid) = invalid_declaration_in_expr(type_)
+        {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn struct_field_names(field: &ast::Field<'_>) -> Vec<String> {
+    if let Some(names) = &field.names {
+        return names.iter().map(|name| name.name.to_string()).collect();
+    }
+    field
+        .type_
+        .as_ref()
+        .and_then(embedded_field_name)
+        .into_iter()
+        .collect()
+}
+
+fn embedded_field_name(expr: &ast::Expr<'_>) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::IndexExpr(index) => embedded_field_name(&index.x),
+        ast::Expr::IndexListExpr(index) => embedded_field_name(&index.x),
+        ast::Expr::ParenExpr(paren) => embedded_field_name(&paren.x),
+        ast::Expr::SelectorExpr(selector) => Some(selector.sel.name.to_string()),
+        ast::Expr::StarExpr(star) => embedded_field_name(&star.x),
+        _ => None,
     }
 }
 
@@ -5047,6 +5546,94 @@ mod tests {
 
                     func ok(_ int, _ string, nums ...int) (_ int, _ bool) {
                         return 0, true
+                    }
+                "#,
+            ),
+            None
+        );
+    }
+
+    fn invalid_declaration(source: &str) -> Option<super::InvalidDeclaration> {
+        let file = parse_file("test.go", source).unwrap();
+        super::invalid_declaration_in_file(&file)
+    }
+
+    #[test]
+    fn rejects_duplicate_struct_fields_and_methods() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type S struct {
+                        X int
+                        X string
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateStructField {
+                type_name: Some("S".to_string()),
+                field: "X".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type Inner struct{}
+                    type S struct {
+                        Inner
+                        *Inner
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateStructField {
+                type_name: Some("S".to_string()),
+                field: "Inner".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type S struct{}
+                    func (S) M() {}
+                    func (*S) M() {}
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateMethod {
+                base: "S".to_string(),
+                method: "M".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type S struct { M int }
+                    func (S) M() {}
+                "#,
+            ),
+            Some(super::InvalidDeclaration::MethodFieldConflict {
+                base: "S".to_string(),
+                name: "M".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_blank_struct_fields() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type S struct {
+                        _ int
+                        _ string
                     }
                 "#,
             ),
