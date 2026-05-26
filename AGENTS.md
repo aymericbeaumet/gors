@@ -568,7 +568,8 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 - Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
-- Source maps are single-file only (not yet supported for multi-file output)
+- Source maps can track multiple files in the main package, but imported/local
+  package modules do not yet get separate source-map output.
 
 ## Conventions
 

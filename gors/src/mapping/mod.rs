@@ -12,6 +12,8 @@ use std::collections::HashMap;
 /// Contains Go source position and optional name, waiting for Rust position.
 #[derive(Debug, Clone)]
 pub struct PendingMapping {
+    /// Source file for this original position
+    pub source: Option<String>,
     /// Original line (1-based)
     pub orig_line: u32,
     /// Original column (1-based)
@@ -25,12 +27,10 @@ pub struct PendingMapping {
 pub struct SourceMapTracker {
     /// Pending mappings collected during compilation
     pending: Vec<PendingMapping>,
-    /// Go source file path
-    go_file: Option<String>,
+    /// Go source files and optional contents
+    sources: Vec<(String, Option<String>)>,
     /// Rust output file path
     rust_file: Option<String>,
-    /// Go source content
-    go_source: Option<String>,
 }
 
 impl SourceMapTracker {
@@ -40,27 +40,48 @@ impl SourceMapTracker {
 
     /// Start tracking for a compilation.
     pub fn start(&mut self, go_file: &str, rust_file: &str, go_source: Option<&str>) {
+        self.start_many(
+            vec![(go_file.to_string(), go_source.map(ToString::to_string))],
+            rust_file,
+        );
+    }
+
+    /// Start tracking for a compilation with multiple Go source files.
+    pub fn start_many(&mut self, sources: Vec<(String, Option<String>)>, rust_file: &str) {
         self.pending.clear();
-        self.go_file = Some(go_file.to_string());
+        self.sources = sources;
         self.rust_file = Some(rust_file.to_string());
-        self.go_source = go_source.map(|s| s.to_string());
     }
 
     /// Check if tracking is active.
     pub fn is_active(&self) -> bool {
-        self.go_file.is_some()
+        !self.sources.is_empty()
     }
 
     /// Record a Go position during compilation.
     /// The Rust position will be determined during code generation.
     pub fn record(&mut self, orig_line: u32, orig_col: u32, name: Option<&str>) {
-        if self.go_file.is_some() {
-            self.pending.push(PendingMapping {
-                orig_line,
-                orig_col,
-                name: name.map(|s| s.to_string()),
-            });
+        let source = self.sources.first().map(|(source, _)| source.clone());
+        self.record_for_source(source, orig_line, orig_col, name);
+    }
+
+    /// Record a Go position for a specific source file.
+    pub fn record_for_source(
+        &mut self,
+        source: Option<String>,
+        orig_line: u32,
+        orig_col: u32,
+        name: Option<&str>,
+    ) {
+        if self.sources.is_empty() {
+            return;
         }
+        self.pending.push(PendingMapping {
+            source,
+            orig_line,
+            orig_col,
+            name: name.map(|s| s.to_string()),
+        });
     }
 
     /// Get pending mappings (for use during codegen).
@@ -73,11 +94,20 @@ impl SourceMapTracker {
     pub fn build_source_map(&self, rust_source: &str) -> SourceMap {
         let mut builder = SourceMapBuilder::new(self.rust_file.as_deref());
 
-        let go_file = self.go_file.as_deref().unwrap_or("input.go");
-        let src_idx = builder.add_source(go_file);
-        if let Some(ref content) = self.go_source {
-            builder.set_source_contents(src_idx, Some(content.as_str()));
+        let mut source_indices = HashMap::new();
+        if self.sources.is_empty() {
+            let src_idx = builder.add_source("input.go");
+            source_indices.insert("input.go".to_string(), src_idx);
+        } else {
+            for (source, content) in &self.sources {
+                let src_idx = builder.add_source(source);
+                if let Some(content) = content {
+                    builder.set_source_contents(src_idx, Some(content.as_str()));
+                }
+                source_indices.insert(source.clone(), src_idx);
+            }
         }
+        let fallback_source_idx = source_indices.values().next().copied();
 
         // Extract tokens from the Rust source
         let tokens = extract_tokens(rust_source);
@@ -103,12 +133,18 @@ impl SourceMapTracker {
                     if let Some(token) = matching_tokens.get(*idx) {
                         // Store the Go name in the source map (not the Rust name)
                         let name_idx = builder.add_name(go_name);
+                        let src_idx = pending
+                            .source
+                            .as_ref()
+                            .and_then(|source| source_indices.get(source))
+                            .copied()
+                            .or(fallback_source_idx);
                         builder.add_raw(
                             token.start_line.saturating_sub(1),   // generated line (0-based)
                             token.start_column.saturating_sub(1), // generated column (0-based)
                             pending.orig_line.saturating_sub(1),  // original line (0-based)
                             pending.orig_col.saturating_sub(1),   // original column (0-based)
-                            Some(src_idx),
+                            src_idx,
                             Some(name_idx),
                             false, // is_range: false for point mappings
                         );
@@ -124,9 +160,8 @@ impl SourceMapTracker {
     /// Clear the tracker state.
     pub fn clear(&mut self) {
         self.pending.clear();
-        self.go_file = None;
+        self.sources.clear();
         self.rust_file = None;
-        self.go_source = None;
     }
 }
 
@@ -377,6 +412,30 @@ mod tests {
         assert!(parsed.get_token_count() > 0);
         assert_eq!(parsed.get_source(0), Some("test.go"));
         assert_eq!(parsed.get_file(), Some("test.rs"));
+    }
+
+    #[test]
+    fn test_source_map_tracker_multiple_sources() {
+        let mut tracker = SourceMapTracker::new();
+        tracker.start_many(
+            vec![
+                ("main.go".to_string(), Some("package main".to_string())),
+                ("helper.go".to_string(), Some("package main".to_string())),
+            ],
+            "main.rs",
+        );
+
+        tracker.record_for_source(Some("main.go".to_string()), 3, 1, Some("main"));
+        tracker.record_for_source(Some("helper.go".to_string()), 3, 1, Some("helper"));
+
+        let sm = tracker.build_source_map("fn main() { helper(); }\nfn helper() {}\n");
+        let mut buf = Vec::new();
+        sm.to_writer(&mut buf).unwrap();
+        let parsed = SourceMap::from_reader(&buf[..]).unwrap();
+
+        assert_eq!(parsed.get_source(0), Some("main.go"));
+        assert_eq!(parsed.get_source(1), Some("helper.go"));
+        assert!(parsed.get_token_count() >= 2);
     }
 
     #[test]

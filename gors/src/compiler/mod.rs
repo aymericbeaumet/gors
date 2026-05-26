@@ -787,9 +787,16 @@ fn is_active_selector_string_const_fn(selector_expr: &ast::SelectorExpr) -> bool
 
 /// Record a mapping if tracking is enabled.
 fn record_mapping(pos: &token::Position, name: Option<&str>) {
+    let source = if pos.file.is_empty() {
+        None
+    } else if pos.file.starts_with('/') {
+        Some(pos.file.to_string())
+    } else {
+        Some(format!("{}/{}", pos.directory, pos.file))
+    };
     TRACKER.with(|t| {
         t.borrow_mut()
-            .record(pos.line as u32, pos.column as u32, name);
+            .record_for_source(source, pos.line as u32, pos.column as u32, name);
     });
 }
 
@@ -2856,12 +2863,24 @@ pub fn compile_program_multi_with_source_map(
     go_file: &str,
     go_source: &str,
 ) -> Result<CompiledProgram, CompilerError> {
-    compile_program_impl(program, Some((go_file, go_source)))
+    compile_program_impl(
+        program,
+        Some(vec![(go_file.to_string(), go_source.to_string())]),
+    )
+}
+
+/// Like [`compile_program_multi`] but starts source map tracking for every file
+/// in the main package.
+pub fn compile_program_multi_with_source_maps(
+    program: crate::parser::ParsedProgram,
+) -> Result<CompiledProgram, CompilerError> {
+    let sources = program.main_package.files.clone();
+    compile_program_impl(program, Some(sources))
 }
 
 fn compile_program_impl(
     program: crate::parser::ParsedProgram,
-    source_map_config: Option<(&str, &str)>,
+    source_map_config: Option<Vec<(String, String)>>,
 ) -> Result<CompiledProgram, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
@@ -2996,9 +3015,15 @@ fn compile_program_impl(
         );
     }
 
-    if let Some((go_file, go_source)) = source_map_config {
+    if let Some(sources) = source_map_config {
         TRACKER.with(|t| {
-            t.borrow_mut().start(go_file, "output.rs", Some(go_source));
+            t.borrow_mut().start_many(
+                sources
+                    .into_iter()
+                    .map(|(file, source)| (file, Some(source)))
+                    .collect(),
+                "main.rs",
+            );
         });
     }
 
@@ -17169,6 +17194,52 @@ func main() {
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod builtin"));
         assert!(!lib_rs.contains("pub mod fmt"));
+    }
+
+    #[test]
+    fn compile_program_multi_source_map_tracks_main_package_files() {
+        clear_source_map_tracker();
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func main() {
+	helper()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("helper.go").as_path(),
+            r#"
+package main
+
+func helper() {
+	println("helper")
+}
+"#,
+        );
+
+        let program = crate::parser::parse_program(tmp.path().to_str().unwrap()).unwrap();
+        let expected_sources: std::collections::HashSet<_> = program
+            .main_package
+            .files
+            .iter()
+            .map(|(file, _)| file.clone())
+            .collect();
+        let compiled = super::compile_program_multi_with_source_maps(program).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
+        let main_rs = output.files.get("main.rs").unwrap();
+        let sm = build_source_map(main_rs);
+        let mut buf = Vec::new();
+        sm.to_writer(&mut buf).unwrap();
+        let parsed_sm = sourcemap::SourceMap::from_reader(&buf[..]).unwrap();
+        let actual_sources: std::collections::HashSet<_> = (0..expected_sources.len())
+            .filter_map(|idx| parsed_sm.get_source(idx as u32).map(ToString::to_string))
+            .collect();
+
+        assert_eq!(actual_sources, expected_sources);
     }
 
     #[test]
