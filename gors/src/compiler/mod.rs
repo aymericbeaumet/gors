@@ -12925,6 +12925,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidIndex { reason } => {
             format!("invalid index expression: {reason}")
         }
+        ir::InvalidStatementReason::InvalidMapType { reason } => {
+            format!("invalid map type: {reason}")
+        }
         ir::InvalidStatementReason::InvalidSlice { reason } => {
             format!("invalid slice expression: {reason}")
         }

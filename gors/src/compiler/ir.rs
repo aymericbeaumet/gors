@@ -1152,6 +1152,7 @@ pub enum InvalidStatementReason {
     InvalidCall { target: String, reason: String },
     InvalidCompositeLiteral { reason: String },
     InvalidIndex { reason: String },
+    InvalidMapType { reason: String },
     InvalidSlice { reason: String },
     InvalidTypeConversion { target: String, reason: String },
     InvalidUnary { op: String, reason: String },
@@ -5313,9 +5314,7 @@ fn invalid_expression_switch(
         Some(tag) => env.resolve_alias(&GoType::infer_expr(tag, env)),
         None => GoType::Bool,
     };
-    if !type_is_comparable_for_validation(&tag_type)
-        && !matches!(tag_type, GoType::Unknown | GoType::Named(_))
-    {
+    if !type_is_comparable_for_validation(&tag_type, env) {
         return Some(InvalidSwitchReason::NonComparableTag {
             type_name: go_type_display_name(&tag_type),
         });
@@ -5356,9 +5355,7 @@ fn invalid_expression_switch_case(
             }
         });
     }
-    if !type_is_comparable_for_validation(&case_type)
-        && !matches!(case_type, GoType::Unknown | GoType::Named(_))
-    {
+    if !type_is_comparable_for_validation(&case_type, env) {
         return Some(InvalidSwitchReason::NonComparableCase {
             type_name: go_type_display_name(&case_type),
         });
@@ -5371,6 +5368,18 @@ fn invalid_expression_switch_case(
     Some(InvalidSwitchReason::CaseTypeMismatch {
         expected: go_type_display_name(tag_type),
         actual: go_type_display_name(&case_type),
+    })
+}
+
+fn invalid_map_type(map: &ast::MapType<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    if type_expr_is_comparable_for_validation(&map.key, env) {
+        return None;
+    }
+    Some(InvalidStatementReason::InvalidMapType {
+        reason: format!(
+            "key type {} is not comparable",
+            type_expr_display_name(&map.key, env)
+        ),
     })
 }
 
@@ -5693,7 +5702,8 @@ fn invalid_expression_in_expr(
         ast::Expr::KeyValueExpr(kv) => invalid_expression_in_expr(&kv.key, env)
             .or_else(|| invalid_expression_in_expr(&kv.value, env)),
         ast::Expr::MapType(map) => invalid_expression_in_expr(&map.key, env)
-            .or_else(|| invalid_expression_in_expr(&map.value, env)),
+            .or_else(|| invalid_expression_in_expr(&map.value, env))
+            .or_else(|| invalid_map_type(map, env)),
         ast::Expr::ParenExpr(paren) => invalid_expression_in_expr(&paren.x, env),
         ast::Expr::SelectorExpr(selector) => invalid_expression_in_expr(&selector.x, env),
         ast::Expr::SliceExpr(slice) => invalid_expression_in_expr(&slice.x, env)
@@ -6189,7 +6199,9 @@ fn invalid_binary_expr(
 ) -> Option<InvalidStatementReason> {
     let left = env.resolve_alias(&GoType::infer_expr(&binary.x, env));
     let right = env.resolve_alias(&GoType::infer_expr(&binary.y, env));
-    if binary_type_is_unknown_or_named(&left) || binary_type_is_unknown_or_named(&right) {
+    if binary_type_should_skip_validation(&left, binary.op)
+        || binary_type_should_skip_validation(&right, binary.op)
+    {
         return None;
     }
     match binary.op {
@@ -6216,8 +6228,9 @@ fn invalid_binary_expr(
     }
 }
 
-fn binary_type_is_unknown_or_named(ty: &GoType) -> bool {
-    matches!(ty, GoType::Unknown | GoType::Named(_))
+fn binary_type_should_skip_validation(ty: &GoType, op: token::Token) -> bool {
+    matches!(ty, GoType::Unknown)
+        || (matches!(ty, GoType::Named(_)) && !matches!(op, token::Token::EQL | token::Token::NEQ))
 }
 
 fn binary_bool_operands(
@@ -6372,7 +6385,9 @@ fn binary_equality_operands(
     if binary_side_is_nil(&binary.x) || binary_side_is_nil(&binary.y) {
         return None;
     }
-    if !type_is_comparable_for_validation(left) || !type_is_comparable_for_validation(right) {
+    if !type_is_comparable_for_validation(left, env)
+        || !type_is_comparable_for_validation(right, env)
+    {
         return Some(invalid_binary_reason(
             binary.op,
             format!(
@@ -6423,11 +6438,90 @@ fn binary_side_is_nil(expr: &ast::Expr<'_>) -> bool {
     matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
 }
 
-fn type_is_comparable_for_validation(ty: &GoType) -> bool {
-    !matches!(
-        ty,
-        GoType::Slice(_) | GoType::Map(_, _) | GoType::Func { .. }
-    )
+fn type_is_comparable_for_validation(ty: &GoType, env: &TypeEnv) -> bool {
+    let mut visiting = BTreeSet::new();
+    type_is_comparable_for_validation_inner(ty, env, &mut visiting)
+}
+
+fn type_is_comparable_for_validation_inner(
+    ty: &GoType,
+    env: &TypeEnv,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    let ty = env.resolve_alias(ty);
+    match &ty {
+        GoType::Slice(_) | GoType::Map(_, _) | GoType::Func { .. } => false,
+        GoType::Array(elem) => type_is_comparable_for_validation_inner(elem, env, visiting),
+        GoType::Named(name) if matches!(env.get_type_kind(name), Some(TypeKind::Struct)) => {
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let comparable = env
+                .get_struct_fields(name)
+                .iter()
+                .all(|(_, field)| type_is_comparable_for_validation_inner(field, env, visiting));
+            visiting.remove(name);
+            comparable
+        }
+        GoType::Unknown | GoType::Named(_) => true,
+        GoType::Bool
+        | GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr
+        | GoType::Float32
+        | GoType::Float64
+        | GoType::Complex64
+        | GoType::Complex128
+        | GoType::String
+        | GoType::Pointer(_)
+        | GoType::Chan { .. }
+        | GoType::Interface(_)
+        | GoType::Any
+        | GoType::Error => true,
+    }
+}
+
+fn type_expr_is_comparable_for_validation(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::ArrayType(array) => {
+            array.len.is_some() && type_expr_is_comparable_for_validation(&array.elt, env)
+        }
+        ast::Expr::MapType(_) | ast::Expr::FuncType(_) => false,
+        ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().is_none_or(|fields| {
+            fields.list.iter().all(|field| {
+                field
+                    .type_
+                    .as_ref()
+                    .is_some_and(|type_| type_expr_is_comparable_for_validation(type_, env))
+            })
+        }),
+        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => {
+            type_is_comparable_for_validation(&GoType::from_expr(expr), env)
+        }
+        ast::Expr::StarExpr(_) | ast::Expr::ChanType(_) | ast::Expr::InterfaceType(_) => true,
+        _ => true,
+    }
+}
+
+fn type_expr_display_name(expr: &ast::Expr<'_>, env: &TypeEnv) -> String {
+    match unparen_expr(expr) {
+        ast::Expr::FuncType(_) => "func".to_string(),
+        ast::Expr::MapType(map) => format!(
+            "map[{}]{}",
+            type_expr_display_name(&map.key, env),
+            type_expr_display_name(&map.value, env)
+        ),
+        ast::Expr::StructType(_) => "struct".to_string(),
+        _ => go_type_display_name(&env.resolve_alias(&GoType::from_expr(expr))),
+    }
 }
 
 fn invalid_binary_reason(op: token::Token, reason: impl Into<String>) -> InvalidStatementReason {
@@ -13352,6 +13446,90 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_map_key_types() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    var _ map[[]int]int
+                "#,
+                "key type slice(int) is not comparable",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ map[map[string]int]int
+                "#,
+                "key type map[string]int is not comparable",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ map[func()]int
+                "#,
+                "key type func is not comparable",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ map[struct { X []int }]int
+                "#,
+                "key type struct is not comparable",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { X []int }
+                    var _ map[T]int
+                "#,
+                "key type T is not comparable",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            assert_eq!(
+                super::invalid_expression_in_file(&file, &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidMapType {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_map_key_types() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type T struct { X int }
+
+                var _ map[int]int
+                var _ map[[2]string]int
+                var _ map[struct { X int; Y string }]int
+                var _ map[T]int
+                var _ map[chan int]int
+                var _ map[any]int
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        assert_eq!(super::invalid_expression_in_file(&file, &env), None);
+    }
+
+    #[test]
     fn rejects_invalid_slice_expressions() {
         let cases = vec![
             (
@@ -13514,6 +13692,21 @@ mod tests {
                 "#,
                 "==",
                 "operands must be comparable, got slice(int) and slice(int)",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { X []int }
+
+                    func main() {
+                        var a T
+                        var b T
+                        _ = a == b
+                    }
+                "#,
+                "==",
+                "operands must be comparable, got T and T",
             ),
             (
                 r#"
@@ -14907,6 +15100,22 @@ mod tests {
                 "#,
                 super::InvalidSwitchReason::NonComparableTag {
                     type_name: "slice(int)".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { X []int }
+
+                    func main() {
+                        var x T
+                        switch x {
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::NonComparableTag {
+                    type_name: "T".to_string(),
                 },
             ),
             (
