@@ -9004,6 +9004,10 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
 }
 
 fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
+    compile_func_lit_with_capture_mode(func_lit, false)
+}
+
+fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool) -> syn::Expr {
     let mut params = syn::punctuated::Punctuated::<syn::Pat, Token![,]>::new();
     let mut param_types = Vec::new();
 
@@ -9050,16 +9054,28 @@ fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
     });
 
     if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
-        syn::parse_quote! { move || #block }
+        if move_capture {
+            syn::parse_quote! { move || #block }
+        } else {
+            syn::parse_quote! { || #block }
+        }
     } else if param_types.is_empty() {
-        syn::parse_quote! { move || #ret #block }
+        if move_capture {
+            syn::parse_quote! { move || #ret #block }
+        } else {
+            syn::parse_quote! { || #ret #block }
+        }
     } else {
         let typed_params: Vec<proc_macro2::TokenStream> = params
             .iter()
             .zip(param_types.iter())
             .map(|(p, t)| quote::quote! { #p: #t })
             .collect();
-        syn::parse_quote! { move |#(#typed_params),*| #ret #block }
+        if move_capture {
+            syn::parse_quote! { move |#(#typed_params),*| #ret #block }
+        } else {
+            syn::parse_quote! { |#(#typed_params),*| #ret #block }
+        }
     }
 }
 
@@ -9428,6 +9444,17 @@ fn compile_expr_with_expected(
             }
             _ => syn::parse_quote! { Default::default() },
         };
+    }
+
+    if matches!(expected, Some(typeinfer::GoType::Func { .. })) {
+        match expr {
+            ast::Expr::FuncLit(func_lit) => {
+                return compile_func_lit_with_capture_mode(func_lit, true);
+            }
+            other => {
+                expr = other;
+            }
+        }
     }
 
     if let ast::Expr::CompositeLit(mut comp_lit) = expr {
@@ -15270,7 +15297,7 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    let mut f = move || { let mut x = 1; };
+                    let mut f = || { let mut x = 1; };
                 }
             },
         );

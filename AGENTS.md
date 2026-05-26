@@ -80,6 +80,10 @@ gors-builtin/
   calls go through `crate::builtin::lock_func`. Do not reintroduce
   `Rc<RefCell<dyn FnMut>>`; keep the representation thread-safe so goroutine
   lowering can share the same value model.
+- Ordinary Go function literals lower to borrowing Rust closures so local
+  captures can be mutated across calls. Only function literals being stored
+  behind generated function types should use `move`, because those are boxed
+  behind the shared `Arc<Mutex<dyn FnMut(...) -> ... + Send>>` representation.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
