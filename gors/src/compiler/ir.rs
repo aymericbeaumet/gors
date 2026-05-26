@@ -1189,6 +1189,7 @@ pub enum InvalidLabel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidSignature {
+    DuplicateInterfaceMethod { name: String },
     DuplicateName { name: String },
     MixedNamedUnnamed { list: SignatureList },
     ReceiverCount { count: usize },
@@ -1764,16 +1765,7 @@ fn invalid_signature_in_expr(expr: &ast::Expr<'_>) -> Option<InvalidSignature> {
             }
             None
         }
-        ast::Expr::InterfaceType(interface) => interface.methods.as_ref().and_then(|fields| {
-            for field in &fields.list {
-                if let Some(type_) = &field.type_
-                    && let Some(invalid) = invalid_signature_in_expr(type_)
-                {
-                    return Some(invalid);
-                }
-            }
-            None
-        }),
+        ast::Expr::InterfaceType(interface) => invalid_signature_in_interface_type(interface),
         ast::Expr::KeyValueExpr(kv) => {
             invalid_signature_in_expr(&kv.key).or_else(|| invalid_signature_in_expr(&kv.value))
         }
@@ -1826,6 +1818,30 @@ fn invalid_signature_in_expr(expr: &ast::Expr<'_>) -> Option<InvalidSignature> {
         ast::Expr::UnaryExpr(unary) => invalid_signature_in_expr(&unary.x),
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
     }
+}
+
+fn invalid_signature_in_interface_type(
+    interface: &ast::InterfaceType<'_>,
+) -> Option<InvalidSignature> {
+    let fields = interface.methods.as_ref()?;
+    let mut names = BTreeSet::new();
+    for field in &fields.list {
+        if let Some(field_names) = &field.names {
+            for name in field_names {
+                if !names.insert(name.name.to_string()) {
+                    return Some(InvalidSignature::DuplicateInterfaceMethod {
+                        name: name.name.to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(type_) = &field.type_
+            && let Some(invalid) = invalid_signature_in_expr(type_)
+        {
+            return Some(invalid);
+        }
+    }
+    None
 }
 
 fn invalid_method_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
@@ -11179,6 +11195,21 @@ mod tests {
             ),
             Some(super::InvalidSignature::DuplicateName {
                 name: "a".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type I interface {
+                        M()
+                        M()
+                    }
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateInterfaceMethod {
+                name: "M".to_string(),
             })
         );
     }

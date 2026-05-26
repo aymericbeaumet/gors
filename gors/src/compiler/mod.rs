@@ -13081,6 +13081,9 @@ fn invalid_label_error(invalid: ir::InvalidLabel) -> CompilerError {
 
 fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
     let message = match invalid {
+        ir::InvalidSignature::DuplicateInterfaceMethod { name } => {
+            format!("duplicate interface method {name}")
+        }
         ir::InvalidSignature::DuplicateName { name } => {
             format!("duplicate parameter/result name {}", name)
         }

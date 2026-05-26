@@ -753,6 +753,9 @@ the interface method set.
 Type-assertion validation applies the same interface operand and implementor
 checks for `x.(T)`: the operand must be an interface, and obvious concrete
 assertion targets must implement the named source interface.
+Interface type validation rejects duplicate directly declared method names while
+recursing through method signatures. Embedded interface duplicate detection still
+needs fuller interface method-set modeling.
 
 ## Compiler passes (in order)
 
