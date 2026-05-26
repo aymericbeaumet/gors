@@ -724,6 +724,24 @@ pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressabilit
     }
 }
 
+pub fn is_string_concat_binary_expr(binary_expr: &ast::BinaryExpr<'_>, env: &TypeEnv) -> bool {
+    binary_expr.op == token::Token::ADD
+        && is_string_concat_operand(&binary_expr.x, env)
+        && is_string_concat_operand(&binary_expr.y, env)
+}
+
+fn is_string_concat_operand(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match expr {
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
+            is_string_concat_binary_expr(binary, env)
+        }
+        _ => matches!(
+            env.resolve_alias(&GoType::infer_expr(expr, env)),
+            GoType::String
+        ),
+    }
+}
+
 fn lower_assign_op(tok: token::Token) -> AssignOp {
     match tok {
         token::Token::DEFINE => AssignOp::Define,
@@ -1201,6 +1219,52 @@ mod tests {
         };
         assert_eq!(expr.addressability, Addressability::NotAddressable);
         assert!(matches!(expr.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn classifies_string_concat_from_types() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const prefix = "a"
+                const suffix = "b"
+
+                func main() {
+                    _ = prefix + suffix
+                    _ = 1 + 2
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(crate::ast::Stmt::AssignStmt(string_assign)) =
+            func.body.as_ref().and_then(|body| body.list.first())
+        else {
+            panic!("expected string assignment");
+        };
+        let Some(crate::ast::Expr::BinaryExpr(string_binary)) = string_assign.rhs.first() else {
+            panic!("expected string binary expression");
+        };
+        assert!(super::is_string_concat_binary_expr(string_binary, &env));
+
+        let Some(crate::ast::Stmt::AssignStmt(numeric_assign)) =
+            func.body.as_ref().and_then(|body| body.list.get(1))
+        else {
+            panic!("expected numeric assignment");
+        };
+        let Some(crate::ast::Expr::BinaryExpr(numeric_binary)) = numeric_assign.rhs.first() else {
+            panic!("expected numeric binary expression");
+        };
+        assert!(!super::is_string_concat_binary_expr(numeric_binary, &env));
     }
 
     #[test]

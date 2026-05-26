@@ -10471,29 +10471,8 @@ fn compile_binary_side_for_parent(
     parenthesize_binary_child_if_needed(compiled, child_op, parent_op, side)
 }
 
-fn is_string_concat_operand(expr: &ast::Expr, env: &typeinfer::TypeEnv) -> bool {
-    match expr {
-        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
-            is_string_concat_binary_expr_with_env(binary, env)
-        }
-        _ => matches!(
-            env.resolve_alias(&typeinfer::GoType::infer_expr(expr, env)),
-            typeinfer::GoType::String
-        ),
-    }
-}
-
-fn is_string_concat_binary_expr_with_env(
-    binary_expr: &ast::BinaryExpr,
-    env: &typeinfer::TypeEnv,
-) -> bool {
-    binary_expr.op == token::Token::ADD
-        && is_string_concat_operand(&binary_expr.x, env)
-        && is_string_concat_operand(&binary_expr.y, env)
-}
-
 fn is_string_concat_binary_expr(binary_expr: &ast::BinaryExpr) -> bool {
-    TYPE_ENV.with(|env| is_string_concat_binary_expr_with_env(binary_expr, &env.borrow()))
+    TYPE_ENV.with(|env| ir::is_string_concat_binary_expr(binary_expr, &env.borrow()))
 }
 
 fn collect_string_concat_operands<'src>(
