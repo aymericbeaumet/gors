@@ -1236,6 +1236,7 @@ fn generics_for_idents(idents: &[syn::Ident]) -> syn::Generics {
 #[derive(Clone, Debug)]
 enum ConstValue {
     Bool(bool),
+    Complex(f64, f64),
     Float(f64),
     Int(i128),
     Str(String),
@@ -1250,7 +1251,10 @@ impl ConstValue {
             ConstValue::Float(value) if value.is_finite() && value.fract() == 0.0 => {
                 Some(*value as i128)
             }
-            ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
+            ConstValue::Bool(_)
+            | ConstValue::Complex(_, _)
+            | ConstValue::Float(_)
+            | ConstValue::Str(_) => None,
         }
     }
 
@@ -1263,7 +1267,10 @@ impl ConstValue {
             {
                 Some(*value as u128)
             }
-            ConstValue::Bool(_) | ConstValue::Float(_) | ConstValue::Str(_) => None,
+            ConstValue::Bool(_)
+            | ConstValue::Complex(_, _)
+            | ConstValue::Float(_)
+            | ConstValue::Str(_) => None,
         }
     }
 
@@ -1272,13 +1279,28 @@ impl ConstValue {
             ConstValue::Float(value) => Some(*value),
             ConstValue::Int(value) => Some(*value as f64),
             ConstValue::Uint(value, _) => Some(*value as f64),
+            ConstValue::Bool(_) | ConstValue::Complex(_, _) | ConstValue::Str(_) => None,
+        }
+    }
+
+    fn as_complex128(&self) -> Option<(f64, f64)> {
+        match self {
+            ConstValue::Complex(re, im) => Some((*re, *im)),
+            ConstValue::Float(value) => Some((*value, 0.0)),
+            ConstValue::Int(value) => Some((*value as f64, 0.0)),
+            ConstValue::Uint(value, _) => Some((*value as f64, 0.0)),
             ConstValue::Bool(_) | ConstValue::Str(_) => None,
         }
+    }
+
+    fn is_complex(&self) -> bool {
+        matches!(self, ConstValue::Complex(_, _))
     }
 
     fn rust_type(&self) -> syn::Type {
         match self {
             ConstValue::Bool(_) => syn::parse_quote! { bool },
+            ConstValue::Complex(_, _) => syn::parse_quote! { crate::builtin::Complex128 },
             ConstValue::Float(_) => syn::parse_quote! { f64 },
             ConstValue::Str(_) => syn::parse_quote! { &str },
             ConstValue::Int(value) if *value >= 0 && *value > isize::MAX as i128 => {
@@ -1318,6 +1340,11 @@ impl ConstValue {
                 let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
                 syn::parse_quote! { #lit }
             }
+            ConstValue::Complex(re, im) => {
+                let re = ConstValue::Float(*re).to_expr();
+                let im = ConstValue::Float(*im).to_expr();
+                syn::parse_quote! { crate::builtin::complex128(#re, #im) }
+            }
             ConstValue::Str(value) => {
                 let lit = syn::LitStr::new(value, Span::mixed_site());
                 syn::parse_quote! { #lit }
@@ -1327,6 +1354,17 @@ impl ConstValue {
                 syn::parse_quote! { #lit }
             }
         }
+    }
+}
+
+fn const_value_to_expr_for_type(value: &ConstValue, type_name: Option<&str>) -> syn::Expr {
+    match (value, type_name) {
+        (ConstValue::Complex(re, im), Some("complex64")) => {
+            let re = ConstValue::Float(*re).to_expr();
+            let im = ConstValue::Float(*im).to_expr();
+            syn::parse_quote! { crate::builtin::complex64((#re as f32), (#im as f32)) }
+        }
+        _ => value.to_expr(),
     }
 }
 
@@ -1444,6 +1482,10 @@ fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstVal
             _ => None,
         },
         "float32" | "float64" => Some(ConstValue::Float(value.as_f64()?)),
+        "complex64" | "complex128" => {
+            let (re, im) = value.as_complex128()?;
+            Some(ConstValue::Complex(re, im))
+        }
         "int" => Some(ConstValue::Int(value.as_i128()? as isize as i128)),
         "int8" => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
         "int16" => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
@@ -1467,6 +1509,9 @@ fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstVal
 }
 
 fn const_binary_expr(lhs: ConstValue, op: token::Token, rhs: ConstValue) -> Option<ConstValue> {
+    if lhs.is_complex() || rhs.is_complex() {
+        return const_complex_binary_expr(lhs, op, rhs);
+    }
     match op {
         token::Token::ADD => match (lhs, rhs) {
             (ConstValue::Str(lhs), ConstValue::Str(rhs)) => Some(ConstValue::Str(lhs + &rhs)),
@@ -1624,6 +1669,33 @@ fn const_binary_expr(lhs: ConstValue, op: token::Token, rhs: ConstValue) -> Opti
     }
 }
 
+fn const_complex_binary_expr(
+    lhs: ConstValue,
+    op: token::Token,
+    rhs: ConstValue,
+) -> Option<ConstValue> {
+    let (lhs_re, lhs_im) = lhs.as_complex128()?;
+    let (rhs_re, rhs_im) = rhs.as_complex128()?;
+    match op {
+        token::Token::ADD => Some(ConstValue::Complex(lhs_re + rhs_re, lhs_im + rhs_im)),
+        token::Token::SUB => Some(ConstValue::Complex(lhs_re - rhs_re, lhs_im - rhs_im)),
+        token::Token::MUL => Some(ConstValue::Complex(
+            lhs_re.mul_add(rhs_re, -(lhs_im * rhs_im)),
+            lhs_re.mul_add(rhs_im, lhs_im * rhs_re),
+        )),
+        token::Token::QUO => {
+            let denom = rhs_re.mul_add(rhs_re, rhs_im * rhs_im);
+            Some(ConstValue::Complex(
+                lhs_re.mul_add(rhs_re, lhs_im * rhs_im) / denom,
+                lhs_im.mul_add(rhs_re, -(lhs_re * rhs_im)) / denom,
+            ))
+        }
+        token::Token::EQL => Some(ConstValue::Bool(lhs_re == rhs_re && lhs_im == rhs_im)),
+        token::Token::NEQ => Some(ConstValue::Bool(lhs_re != rhs_re || lhs_im != rhs_im)),
+        _ => None,
+    }
+}
+
 fn const_eval_expr(
     expr: &ast::Expr,
     iota_value: i64,
@@ -1633,6 +1705,9 @@ fn const_eval_expr(
         ast::Expr::BasicLit(lit) => match lit.kind {
             token::Token::INT => parse_go_int_literal(lit.value),
             token::Token::FLOAT => parse_go_float_literal(lit.value).map(ConstValue::Float),
+            token::Token::IMAG => {
+                parse_go_imaginary_literal(lit.value).map(|imag| ConstValue::Complex(0.0, imag))
+            }
             token::Token::STRING => {
                 let raw = lit.value;
                 let inner = &raw[1..raw.len() - 1];
@@ -1665,13 +1740,11 @@ fn const_eval_expr(
         ast::Expr::UnaryExpr(unary) => {
             let value = const_eval_expr(&unary.x, iota_value, values)?;
             match unary.op {
-                token::Token::SUB => {
-                    if let ConstValue::Float(value) = value {
-                        Some(ConstValue::Float(-value))
-                    } else {
-                        Some(ConstValue::Int(value.as_i128()?.checked_neg()?))
-                    }
-                }
+                token::Token::SUB => match value {
+                    ConstValue::Complex(re, im) => Some(ConstValue::Complex(-re, -im)),
+                    ConstValue::Float(value) => Some(ConstValue::Float(-value)),
+                    value => Some(ConstValue::Int(value.as_i128()?.checked_neg()?)),
+                },
                 token::Token::ADD => Some(value),
                 token::Token::NOT => {
                     let ConstValue::Bool(value) = value else {
@@ -1921,7 +1994,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
 
             let mut value: syn::Expr = if let Some(expr) = value_expr {
                 if let Some(evaluated) = &evaluated {
-                    evaluated.to_expr()
+                    const_value_to_expr_for_type(evaluated, type_name_str)
                 } else if let ast::Expr::BasicLit(lit) = expr {
                     match lit.kind {
                         token::Token::STRING => {
@@ -17481,12 +17554,14 @@ package main
 
 const wide = 0123i
 const small complex64 = 2.5i
+const combo = 1 + 2i
+const tiny complex64 = 3 + 4i
 
 func main() {
 	z := 0x1p-2i
 	sum := 1 + 2i
 	var narrowed complex64 = 3 + 4i
-	_, _, _, _, _ = wide, small, z, sum, narrowed
+	_, _, _, _, _, _, _ = wide, small, combo, tiny, z, sum, narrowed
 }
 "#;
         let parsed = parse_file("test.go", go_source).unwrap();
@@ -17494,7 +17569,7 @@ func main() {
         let output = printer::generate(compiled).unwrap();
 
         assert!(output.contains("crate::builtin::complex128(0.0"));
-        assert!(output.contains("crate::builtin::complex64(0.0"));
+        assert!(output.contains("crate::builtin::complex64"));
         assert!(output.contains("crate::builtin::to_complex64"));
         assert!(!output.contains("unsupported literal"));
     }
