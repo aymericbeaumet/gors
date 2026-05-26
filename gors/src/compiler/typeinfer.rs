@@ -209,7 +209,16 @@ impl GoType {
             ast::Expr::Ident(id) => match id.name {
                 "true" | "false" => GoType::Bool,
                 "nil" => GoType::Any,
-                name => env.get_var(name).unwrap_or(GoType::Unknown),
+                name => env.get_var(name).unwrap_or_else(|| {
+                    if env.has_func(name) {
+                        GoType::Func {
+                            params: env.get_func_params(name),
+                            results: env.get_func_returns(name),
+                        }
+                    } else {
+                        GoType::Unknown
+                    }
+                }),
             },
             ast::Expr::FuncLit(func_lit) => GoType::from_func_type(&func_lit.type_),
             ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {

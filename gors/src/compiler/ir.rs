@@ -298,6 +298,7 @@ pub enum RangeKind {
     Indexed,
     Map,
     Channel,
+    Function,
     Other,
 }
 
@@ -466,6 +467,7 @@ pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
         GoType::Slice(_) | GoType::Array(_) => RangeKind::Indexed,
         GoType::Map(_, _) => RangeKind::Map,
         GoType::Chan(_) => RangeKind::Channel,
+        GoType::Func { .. } => RangeKind::Function,
         _ => RangeKind::Other,
     }
 }
@@ -2926,10 +2928,12 @@ mod tests {
                     nums := []int{1}
                     dict := map[string]int{"a": 1}
                     ch := make(chan int)
+                    iter := func(yield func(int) bool) {}
                     text := "go"
                     for range nums {}
                     for range dict {}
                     for range ch {}
+                    for range iter {}
                     for range text {}
                     for range 3 {}
                 }
@@ -2950,7 +2954,7 @@ mod tests {
             .expect("expected body")
             .list
             .iter()
-            .take(4)
+            .take(5)
         {
             if let crate::ast::Stmt::AssignStmt(assign) = stmt
                 && let Some(crate::ast::Expr::Ident(ident)) = assign.lhs.first()
@@ -2976,6 +2980,7 @@ mod tests {
                 super::RangeKind::Indexed,
                 super::RangeKind::Map,
                 super::RangeKind::Channel,
+                super::RangeKind::Function,
                 super::RangeKind::String,
                 super::RangeKind::Integer,
             ]

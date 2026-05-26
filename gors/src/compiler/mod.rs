@@ -10056,6 +10056,9 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
 }
 
 fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
+    if is_function_item_expr(fun) {
+        return None;
+    }
     let ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(fun, &env.borrow()));
     match resolved_go_type(&ty) {
         typeinfer::GoType::Func { params, .. } => Some(params),
@@ -10380,27 +10383,81 @@ fn set_range_bindings(
     }
 }
 
+fn range_function_yield_params(range_type: &typeinfer::GoType) -> Option<Vec<typeinfer::GoType>> {
+    let typeinfer::GoType::Func { params, results } = resolved_go_type(range_type) else {
+        return None;
+    };
+    if !results.is_empty() || params.len() != 1 {
+        return None;
+    }
+    let yield_type = params.into_iter().next()?;
+    let typeinfer::GoType::Func {
+        params: yield_params,
+        results: yield_results,
+    } = resolved_go_type(&yield_type)
+    else {
+        return None;
+    };
+    matches!(yield_results.as_slice(), [typeinfer::GoType::Bool]).then_some(yield_params)
+}
+
+fn set_range_function_bindings(
+    key: Option<&ast::Expr>,
+    value: Option<&ast::Expr>,
+    yield_params: &[typeinfer::GoType],
+) {
+    if let Some(first) = yield_params.first() {
+        set_range_binding(key, first.clone());
+    }
+    if let Some(second) = yield_params.get(1) {
+        set_range_binding(value, second.clone());
+    }
+}
+
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
     let range_kind = TYPE_ENV.with(|env| ir::range_kind(&range_stmt.x, &env.borrow()));
     let is_string = matches!(range_kind, ir::RangeKind::String);
     let is_int = matches!(range_kind, ir::RangeKind::Integer);
+    let range_function_yield_params = range_function_yield_params(&inferred_range_type);
     let env_snapshot = TYPE_ENV.with(|env| env.borrow().clone());
-    set_range_bindings(
-        range_stmt.key.as_ref(),
-        range_stmt.value.as_ref(),
-        &inferred_range_type,
-        is_string,
-        is_int,
-    );
+    if let Some(yield_params) = &range_function_yield_params {
+        set_range_function_bindings(
+            range_stmt.key.as_ref(),
+            range_stmt.value.as_ref(),
+            yield_params,
+        );
+    } else {
+        set_range_bindings(
+            range_stmt.key.as_ref(),
+            range_stmt.value.as_ref(),
+            &inferred_range_type,
+            is_string,
+            is_int,
+        );
+    }
     let body = range_stmt.body.try_into();
     TYPE_ENV.with(|env| {
         *env.borrow_mut() = env_snapshot;
     });
     let body: syn::Block = body?;
+    let is_function_item_range =
+        range_function_yield_params.is_some() && is_function_item_expr(&range_stmt.x);
     let x: syn::Expr = range_stmt.x.into();
     let range_tok = range_stmt.tok;
+
+    if let Some(yield_params) = range_function_yield_params {
+        return compile_range_function_stmt(
+            x,
+            is_function_item_range,
+            range_stmt.key,
+            range_stmt.value,
+            range_tok,
+            yield_params,
+            body,
+        );
+    }
 
     match (range_stmt.key, range_stmt.value) {
         // for i, v := range x
@@ -10538,6 +10595,141 @@ fn range_pat_and_body(
     });
     body.stmts.splice(0..0, assignments);
     (pat, body)
+}
+
+fn range_function_targets<'a>(
+    key: Option<ast::Expr<'a>>,
+    value: Option<ast::Expr<'a>>,
+    yield_arity: usize,
+) -> Vec<Option<ast::Expr<'a>>> {
+    let mut targets = Vec::with_capacity(yield_arity);
+    if yield_arity > 0 {
+        targets.push(key);
+    }
+    if yield_arity > 1 {
+        targets.push(value);
+    }
+    while targets.len() < yield_arity {
+        targets.push(None);
+    }
+    targets
+}
+
+fn range_function_param_pat(
+    idx: usize,
+    target: Option<&ast::Expr>,
+    tok: Option<token::Token>,
+) -> syn::Pat {
+    if tok != Some(token::Token::ASSIGN)
+        && let Some(ast::Expr::Ident(ident)) = target
+    {
+        if ident.name == "_" {
+            return syn::parse_quote! { _ };
+        }
+        let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+        return syn::parse_quote! { mut #ident };
+    }
+    let ident = quote::format_ident!("__gors_range_arg_{}", idx);
+    syn::parse_quote! { mut #ident }
+}
+
+fn range_function_assignment_stmts(
+    targets: Vec<Option<ast::Expr>>,
+    tok: Option<token::Token>,
+) -> Vec<syn::Stmt> {
+    if tok != Some(token::Token::ASSIGN) {
+        return Vec::new();
+    }
+    targets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, target)| {
+            let target = target?;
+            if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
+                return None;
+            }
+            let left = compile_assignment_lhs(target);
+            let right = quote::format_ident!("__gors_range_arg_{}", idx);
+            Some(syn::parse_quote! { #left = #right; })
+        })
+        .collect()
+}
+
+fn compile_range_function_call_stmt(
+    fun_expr: syn::Expr,
+    is_function_item: bool,
+    yield_value: syn::Expr,
+) -> syn::Stmt {
+    if is_function_item {
+        syn::parse_quote! {
+            #fun_expr(#yield_value);
+        }
+    } else {
+        syn::parse_quote! {{
+            let __gors_func = {
+                let __gors_func = crate::builtin::lock_func(&(#fun_expr));
+                match __gors_func.as_ref() {
+                    Some(__gors_func) => __gors_func.clone(),
+                    None => panic!("nil function"),
+                }
+            };
+            (&*__gors_func)(#yield_value);
+        }}
+    }
+}
+
+fn compile_range_function_stmt(
+    fun: syn::Expr,
+    is_function_item: bool,
+    key: Option<ast::Expr>,
+    value: Option<ast::Expr>,
+    tok: Option<token::Token>,
+    yield_params: Vec<typeinfer::GoType>,
+    mut body: syn::Block,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    if yield_params.len() > 2 {
+        return Err(CompilerError::UnsupportedConstruct(
+            "range over function with more than two yield values".to_string(),
+        ));
+    }
+
+    let targets = range_function_targets(key, value, yield_params.len());
+    let param_pats: Vec<syn::Pat> = targets
+        .iter()
+        .enumerate()
+        .map(|(idx, target)| range_function_param_pat(idx, target.as_ref(), tok))
+        .collect();
+    let assignments = range_function_assignment_stmts(targets, tok);
+    if !assignments.is_empty() {
+        let mut stmts = assignments;
+        stmts.extend(body.stmts);
+        body.stmts = stmts;
+    }
+    let param_types: Vec<syn::Type> = yield_params
+        .iter()
+        .map(rust_type_from_inferred_go_type)
+        .collect();
+    let typed_params: Vec<proc_macro2::TokenStream> = param_pats
+        .iter()
+        .zip(param_types.iter())
+        .map(|(pat, ty)| quote::quote! { #pat: #ty })
+        .collect();
+    let yield_go_type = typeinfer::GoType::Func {
+        params: yield_params,
+        results: vec![typeinfer::GoType::Bool],
+    };
+    let yield_ty = shared_func_box_type_from_go_type(&yield_go_type).ok_or_else(|| {
+        CompilerError::InvalidFunctionSignature("invalid range function yield type".to_string())
+    })?;
+    let yield_value: syn::Expr = syn::parse_quote! {{
+        let __gors_func: #yield_ty = std::sync::Arc::new(move |#(#typed_params),*| -> bool {
+            #body
+            true
+        });
+        std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
+    }};
+    let call_stmt = compile_range_function_call_stmt(fun, is_function_item, yield_value);
+    Ok(vec![call_stmt])
 }
 
 fn is_indexed_range_type(ty: &typeinfer::GoType) -> bool {

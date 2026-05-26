@@ -451,6 +451,11 @@ a short declaration or `var` initializer is a `func` value, compile the
 initializer with that expected Go type so calls use the same `lock_func` lowering
 as named function-typed variables and returned function values.
 
+Range-over-function support is IR-classified as a function range and backend
+lowered by synthesizing the Go `yield` callback as the same shared function
+value representation. Normal function items still call directly; only actual
+function-typed values should use `lock_func` call lowering.
+
 Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
@@ -535,6 +540,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 ## Known limitations
 
 - Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
+- Range-over-function loop bodies with `break`, `continue`, or `return` still need yield-aware control-flow lowering.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
