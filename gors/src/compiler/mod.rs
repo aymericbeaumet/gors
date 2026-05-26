@@ -7698,11 +7698,6 @@ fn compile_method(
     ))
 }
 
-const BUILTINS: &[&str] = &[
-    "len", "cap", "append", "make", "new", "copy", "delete", "clear", "close", "panic", "println",
-    "print", "max", "min", "complex", "real", "imag", "recover",
-];
-
 fn extract_type_name(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Ident(id) => Some(id.name.to_string()),
@@ -8191,41 +8186,11 @@ fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Typ
 }
 
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
-    if let ast::Expr::Ident(ident) = &*call_expr.fun {
-        BUILTINS.contains(&ident.name)
-    } else {
-        false
-    }
-}
-
-fn call_func_key(fun: &ast::Expr) -> Option<String> {
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        match fun {
-            ast::Expr::Ident(id) => Some(id.name.to_string()),
-            ast::Expr::SelectorExpr(sel) => {
-                if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
-                    let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
-                    if !env.get_func_params(&package_key).is_empty()
-                        || env.get_func_variadic_start(&package_key).is_some()
-                    {
-                        return Some(package_key);
-                    }
-
-                    if let Some(typeinfer::GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
-                        return Some(format!("{}.{}", name, sel.sel.name));
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    })
+    ir::builtin_call_kind(call_expr).is_some()
 }
 
 fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
-    let key = call_func_key(&call_expr.fun)?;
-    TYPE_ENV.with(|env| env.borrow().get_func_variadic_start(&key))
+    TYPE_ENV.with(|env| ir::variadic_call_start(call_expr, &env.borrow()))
 }
 
 fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {

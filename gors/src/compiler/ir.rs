@@ -383,6 +383,33 @@ pub fn builtin_call_kind(call_expr: &ast::CallExpr<'_>) -> Option<BuiltinCallKin
     }
 }
 
+pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    match fun {
+        ast::Expr::Ident(id) => Some(id.name.to_string()),
+        ast::Expr::SelectorExpr(sel) => {
+            if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
+                if !env.get_func_params(&package_key).is_empty()
+                    || env.get_func_variadic_start(&package_key).is_some()
+                {
+                    return Some(package_key);
+                }
+
+                if let Some(GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
+                    return Some(format!("{}.{}", name, sel.sel.name));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<usize> {
+    let key = call_func_key(&call_expr.fun, env)?;
+    env.get_func_variadic_start(&key)
+}
+
 fn lower_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<Item> {
     match decl {
         ast::Decl::FuncDecl(func) => Some(Item::Func(lower_func_decl(func, env))),
@@ -1385,6 +1412,52 @@ mod tests {
             panic!("expected user call");
         };
         assert_eq!(super::builtin_call_kind(user_call), None);
+    }
+
+    #[test]
+    fn classifies_variadic_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func sum(nums ...int) int { return 0 }
+                func add(a int, b int) int { return a + b }
+
+                func main() {
+                    _ = sum(1, 2)
+                    _ = add(1, 2)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let Some(crate::ast::Stmt::AssignStmt(variadic_assign)) =
+            func.body.as_ref().and_then(|body| body.list.first())
+        else {
+            panic!("expected variadic assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(variadic_call)) = variadic_assign.rhs.first() else {
+            panic!("expected variadic call");
+        };
+        assert_eq!(super::variadic_call_start(variadic_call, &env), Some(0));
+
+        let Some(crate::ast::Stmt::AssignStmt(fixed_assign)) =
+            func.body.as_ref().and_then(|body| body.list.get(1))
+        else {
+            panic!("expected fixed assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(fixed_call)) = fixed_assign.rhs.first() else {
+            panic!("expected fixed call");
+        };
+        assert_eq!(super::variadic_call_start(fixed_call, &env), None);
     }
 
     #[test]
