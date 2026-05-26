@@ -985,6 +985,9 @@ pub enum InvalidStatement {
     Defer {
         reason: InvalidStatementReason,
     },
+    Declaration {
+        reason: InvalidDeclaration,
+    },
     DuplicateDefault {
         kind: DefaultClauseKind,
     },
@@ -1082,6 +1085,10 @@ pub enum SignatureList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidDeclaration {
+    ConstValueCount {
+        names: usize,
+        values: usize,
+    },
     DuplicateMethod {
         base: String,
         method: String,
@@ -1093,6 +1100,13 @@ pub enum InvalidDeclaration {
     MethodFieldConflict {
         base: String,
         name: String,
+    },
+    MissingConstInitializer,
+    VarMissingTypeOrInitializer,
+    VarMultiValueInSingleValueContext,
+    VarValueCount {
+        names: usize,
+        values: usize,
     },
 }
 
@@ -1191,6 +1205,21 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
         }
         None
     })
+}
+
+pub fn invalid_value_declaration_in_file(
+    file: &ast::File<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    for decl in &file.decls {
+        let ast::Decl::GenDecl(gen_decl) = decl else {
+            continue;
+        };
+        if let Some(invalid) = invalid_value_declaration_in_gen_decl(gen_decl, env) {
+            return Some(invalid);
+        }
+    }
+    None
 }
 
 pub fn invalid_short_var_redeclaration_in_file(file: &ast::File<'_>) -> Option<InvalidStatement> {
@@ -3206,6 +3235,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_stmt_list(&comm.body, &mut comm_env)
         }
         ast::Stmt::DeclStmt(decl) => {
+            if let Some(reason) = invalid_value_declaration_in_gen_decl(&decl.decl, env) {
+                return Some(InvalidStatement::Declaration { reason });
+            }
             record_decl_bindings(&decl.decl, env);
             None
         }
@@ -3932,6 +3964,101 @@ fn invalid_type_switch_guard(stmt: &ast::Stmt<'_>) -> Option<InvalidTypeSwitchGu
         }
         _ => Some(InvalidTypeSwitchGuardReason::InvalidExpression),
     }
+}
+
+fn invalid_value_declaration_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    match gen_decl.tok {
+        token::Token::CONST => invalid_const_declaration(gen_decl),
+        token::Token::VAR => {
+            for spec in &gen_decl.specs {
+                let ast::Spec::ValueSpec(value_spec) = spec else {
+                    continue;
+                };
+                if let Some(invalid) = invalid_var_value_spec(value_spec, env) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn invalid_const_declaration(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDeclaration> {
+    let mut previous_values = None;
+    let mut saw_value_spec = false;
+    for spec in &gen_decl.specs {
+        let ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        saw_value_spec = true;
+        let names = value_spec.names.len();
+        if let Some(values) = &value_spec.values {
+            let values = values.len();
+            if names != values {
+                return Some(InvalidDeclaration::ConstValueCount { names, values });
+            }
+            previous_values = Some(values);
+        } else {
+            let Some(values) = previous_values else {
+                return Some(InvalidDeclaration::MissingConstInitializer);
+            };
+            if names != values {
+                return Some(InvalidDeclaration::ConstValueCount { names, values });
+            }
+        }
+    }
+    if saw_value_spec && previous_values.is_none() {
+        Some(InvalidDeclaration::MissingConstInitializer)
+    } else {
+        None
+    }
+}
+
+fn invalid_var_value_spec(
+    value_spec: &ast::ValueSpec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    let names = value_spec.names.len();
+    let Some(values) = &value_spec.values else {
+        return value_spec
+            .type_
+            .is_none()
+            .then_some(InvalidDeclaration::VarMissingTypeOrInitializer);
+    };
+
+    if values.len() == 1 {
+        if let Some(values) = expression_value_count(
+            values.first()?,
+            env,
+            TupleAssignmentMode::AllowTupleOperations,
+        ) && values != names
+        {
+            return Some(InvalidDeclaration::VarValueCount { names, values });
+        }
+        return None;
+    }
+
+    for expr in values {
+        if let Some(values) =
+            expression_value_count(expr, env, TupleAssignmentMode::SingleValueContext)
+            && values != 1
+        {
+            return Some(InvalidDeclaration::VarMultiValueInSingleValueContext);
+        }
+    }
+
+    if names != values.len() {
+        return Some(InvalidDeclaration::VarValueCount {
+            names,
+            values: values.len(),
+        });
+    }
+
+    None
 }
 
 fn is_type_switch_guard_expr(expr: &ast::Expr<'_>) -> bool {
@@ -6852,6 +6979,13 @@ mod tests {
         super::invalid_declaration_in_file(&file)
     }
 
+    fn invalid_value_declaration(source: &str) -> Option<super::InvalidDeclaration> {
+        let file = parse_file("test.go", source).unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        super::invalid_value_declaration_in_file(&file, &env)
+    }
+
     #[test]
     fn rejects_duplicate_struct_fields_and_methods() {
         assert_eq!(
@@ -6915,6 +7049,115 @@ mod tests {
                 base: "S".to_string(),
                 name: "M".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_value_declaration_counts() {
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const A, B = 1
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstValueCount {
+                names: 2,
+                values: 1,
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const (
+                        A = 1
+                        B, C
+                    )
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstValueCount {
+                names: 2,
+                values: 1,
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const (
+                        A
+                    )
+                "#,
+            ),
+            Some(super::InvalidDeclaration::MissingConstInitializer)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    var X = pair()
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarValueCount {
+                names: 1,
+                values: 2,
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    var X, Y, Z = pair()
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarValueCount {
+                names: 3,
+                values: 2,
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    var X, Y, Z = pair(), 3
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarMultiValueInSingleValueContext)
+        );
+    }
+
+    #[test]
+    fn accepts_valid_value_declaration_counts() {
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    const (
+                        A, B = 1, 2
+                        C, D
+                    )
+
+                    var X, Y = pair()
+                    var Z int
+                "#,
+            ),
+            None
         );
     }
 

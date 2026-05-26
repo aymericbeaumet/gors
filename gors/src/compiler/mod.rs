@@ -2823,6 +2823,9 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
         return Err(invalid_declaration_error(invalid));
     }
+    if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
+        return Err(invalid_declaration_error(invalid));
+    }
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
         return Err(invalid_statement_error(invalid));
     }
@@ -2858,6 +2861,9 @@ pub fn compile_with_type_env_and_import_renames(
         return Err(invalid_signature_error(invalid));
     }
     if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
+        return Err(invalid_declaration_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
         return Err(invalid_declaration_error(invalid));
     }
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
@@ -12716,6 +12722,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_statement_reason(reason)
             )
         }
+        ir::InvalidStatement::Declaration { reason } => {
+            format!(
+                "invalid declaration: {}",
+                invalid_declaration_reason(reason)
+            )
+        }
         ir::InvalidStatement::DuplicateDefault { kind } => {
             format!(
                 "invalid {} statement: multiple default clauses",
@@ -12890,7 +12902,14 @@ fn signature_list_name(list: ir::SignatureList) -> &'static str {
 }
 
 fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
-    let message = match invalid {
+    CompilerError::UnsupportedConstruct(invalid_declaration_reason(invalid))
+}
+
+fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
+    match invalid {
+        ir::InvalidDeclaration::ConstValueCount { names, values } => {
+            format!("const declaration has {names} name(s) but {values} value(s)")
+        }
         ir::InvalidDeclaration::DuplicateMethod { base, method } => {
             format!("duplicate method {method} for receiver base type {base}")
         }
@@ -12904,8 +12923,19 @@ fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
         ir::InvalidDeclaration::MethodFieldConflict { base, name } => {
             format!("method {name} conflicts with field on struct {base}")
         }
-    };
-    CompilerError::UnsupportedConstruct(message)
+        ir::InvalidDeclaration::MissingConstInitializer => {
+            "const declaration missing initializer".to_string()
+        }
+        ir::InvalidDeclaration::VarMissingTypeOrInitializer => {
+            "var declaration missing type or initializer".to_string()
+        }
+        ir::InvalidDeclaration::VarMultiValueInSingleValueContext => {
+            "multi-valued expression in explicit var initializer list".to_string()
+        }
+        ir::InvalidDeclaration::VarValueCount { names, values } => {
+            format!("var declaration has {names} name(s) but {values} value(s)")
+        }
+    }
 }
 
 fn validate_function_semantics(
@@ -17835,6 +17865,47 @@ mod tests {
                 }
             "#,
             "invalid type switch guard: guard assignment must use :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                const A, B = 1
+
+                func main() {
+                }
+            "#,
+            "const declaration has 2 name(s) but 1 value(s)",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func pair() (int, int) {
+                    return 1, 2
+                }
+
+                var X = pair()
+
+                func main() {
+                }
+            "#,
+            "var declaration has 1 name(s) but 2 value(s)",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func pair() (int, int) {
+                    return 1, 2
+                }
+
+                func main() {
+                    var x, y, z = pair(), 3
+                    _, _, _ = x, y, z
+                }
+            "#,
+            "invalid declaration: multi-valued expression in explicit var initializer list",
         );
         assert_unsupported_construct(
             r#"
