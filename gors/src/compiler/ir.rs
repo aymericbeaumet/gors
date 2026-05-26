@@ -982,6 +982,7 @@ pub enum InvalidStatement {
     Defer { reason: InvalidStatementReason },
     Expr { reason: InvalidStatementReason },
     Go { reason: InvalidStatementReason },
+    Range { reason: InvalidRangeReason },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -989,6 +990,13 @@ pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
     NonCallOrReceive,
     TypeConversion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidRangeReason {
+    pub kind: RangeKind,
+    pub max: usize,
+    pub got: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1715,6 +1723,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         ast::Stmt::IncDecStmt(_) => None,
         ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
         ast::Stmt::RangeStmt(range) => {
+            if let Some(reason) = invalid_range_clause(range, env) {
+                return Some(InvalidStatement::Range { reason });
+            }
             let mut range_env = env.clone();
             record_range_bindings(range, &mut range_env);
             invalid_statement_in_nested_block(&range.body, &range_env)
@@ -1749,6 +1760,79 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_case_block(&type_switch.body, &switch_env)
         }
     }
+}
+
+fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
+    let got = effective_range_binding_count(range);
+    let (kind, max) = max_range_binding_count(&range.x, env)?;
+    (got > max).then_some(InvalidRangeReason { kind, max, got })
+}
+
+fn effective_range_binding_count(range: &ast::RangeStmt<'_>) -> usize {
+    match (&range.key, &range.value) {
+        (None, None) => 0,
+        (Some(_), None) => 1,
+        (None, Some(value)) => {
+            if is_blank_ident(value) {
+                0
+            } else {
+                1
+            }
+        }
+        (Some(_), Some(value)) => {
+            if is_blank_ident(value) {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+fn max_range_binding_count(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<(RangeKind, usize)> {
+    let ty = env.resolve_alias(&GoType::infer_expr(expr, env));
+    match ty {
+        GoType::String | GoType::Slice(_) | GoType::Array(_) | GoType::Map(_, _) => {
+            Some((range_kind(expr, env), 2))
+        }
+        GoType::Chan(_) => Some((RangeKind::Channel, 1)),
+        GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr => Some((RangeKind::Integer, 1)),
+        GoType::Func { params, .. } => {
+            range_function_max_binding_count(&params).map(|max| (RangeKind::Function, max))
+        }
+        _ => None,
+    }
+}
+
+fn range_function_max_binding_count(params: &[GoType]) -> Option<usize> {
+    let [yield_param] = params else {
+        return None;
+    };
+    let GoType::Func {
+        params: yield_params,
+        results,
+    } = yield_param
+    else {
+        return None;
+    };
+    if !matches!(results.as_slice(), [GoType::Bool]) {
+        return None;
+    }
+    Some(yield_params.len())
+}
+
+fn is_blank_ident(expr: &ast::Expr<'_>) -> bool {
+    matches!(expr, ast::Expr::Ident(ident) if ident.name == "_")
 }
 
 fn invalid_statement_in_stmt_list(
@@ -5716,6 +5800,108 @@ mod tests {
                     clear([]int{1})
                     local := func() {}
                     local()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_range_clauses_with_too_many_bindings() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int)
+                        for i, v := range ch {
+                            _, _ = i, v
+                        }
+                    }
+                "#,
+                super::RangeKind::Channel,
+                1,
+                2,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        for i, v := range 3 {
+                            _, _ = i, v
+                        }
+                    }
+                "#,
+                super::RangeKind::Integer,
+                1,
+                2,
+            ),
+            (
+                r#"
+                    package main
+
+                    func ints(yield func(int) bool) {}
+
+                    func main() {
+                        for i, v := range ints {
+                            _, _ = i, v
+                        }
+                    }
+                "#,
+                super::RangeKind::Function,
+                1,
+                2,
+            ),
+        ];
+
+        for (source, kind, max, got) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Range {
+                    reason: super::InvalidRangeReason { kind, max, got },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_range_clauses_with_blank_second_binding() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int)
+                    for v, _ := range ch {
+                        _ = v
+                    }
+                    for i, _ := range 3 {
+                        _ = i
+                    }
                 }
             "#,
         )

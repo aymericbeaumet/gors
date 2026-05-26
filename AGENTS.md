@@ -463,6 +463,10 @@ IR label validation rejects duplicate labels and labels that are never targeted
 by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
 function body; do not count labels or label uses inside nested function
 literals.
+IR range-clause validation rejects too many iteration variables before backend
+lowering: channels and integer ranges permit one effective binding, while
+function ranges are capped by the yield callback arity. A blank second binding
+is treated as absent per the Go spec.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array

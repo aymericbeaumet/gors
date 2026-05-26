@@ -12702,8 +12702,26 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::Go { reason } => {
             format!("invalid go statement: {}", invalid_statement_reason(reason))
         }
+        ir::InvalidStatement::Range { reason } => format!(
+            "invalid range clause: {} range permits at most {} iteration variable(s), got {}",
+            range_kind_name(reason.kind),
+            reason.max,
+            reason.got
+        ),
     };
     CompilerError::UnsupportedConstruct(message)
+}
+
+fn range_kind_name(kind: ir::RangeKind) -> &'static str {
+    match kind {
+        ir::RangeKind::String => "string",
+        ir::RangeKind::Integer => "integer",
+        ir::RangeKind::Indexed => "array or slice",
+        ir::RangeKind::Map => "map",
+        ir::RangeKind::Channel => "channel",
+        ir::RangeKind::Function => "function",
+        ir::RangeKind::Other => "unknown",
+    }
 }
 
 fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
@@ -17511,6 +17529,35 @@ mod tests {
                 }
             "#,
             "invalid duplicate label Done",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_range_clauses_with_too_many_bindings() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    for i, v := range 3 {
+                        _, _ = i, v
+                    }
+                }
+            "#,
+            "invalid range clause: integer range permits at most 1 iteration variable(s), got 2",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int)
+                    for i, v := range ch {
+                        _, _ = i, v
+                    }
+                }
+            "#,
+            "invalid range clause: channel range permits at most 1 iteration variable(s), got 2",
         );
     }
 
