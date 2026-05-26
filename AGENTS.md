@@ -410,8 +410,6 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 - Closure support is partial
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
-- Interface types as function parameters need `impl Trait` or `&dyn Trait` wrapping
-- Trait downcasting (`x.(InterfaceName)`) only works for concrete types, not trait objects
 
 ## Conventions
 
