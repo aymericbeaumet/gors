@@ -2826,6 +2826,9 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
         return Err(invalid_declaration_error(invalid));
     }
+    if let Some(invalid) = ir::invalid_expression_in_file(&file, &type_env) {
+        return Err(invalid_statement_error(invalid));
+    }
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
         return Err(invalid_statement_error(invalid));
     }
@@ -2865,6 +2868,9 @@ pub fn compile_with_type_env_and_import_renames(
     }
     if let Some(invalid) = ir::invalid_value_declaration_in_file(&file, &type_env) {
         return Err(invalid_declaration_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_expression_in_file(&file, &type_env) {
+        return Err(invalid_statement_error(invalid));
     }
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
         return Err(invalid_statement_error(invalid));
@@ -12747,6 +12753,9 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_statement_reason(reason)
             )
         }
+        ir::InvalidStatement::Expression { reason } => {
+            format!("invalid expression: {}", invalid_statement_reason(reason))
+        }
         ir::InvalidStatement::ForPostShortVarDecl => {
             "invalid for statement: post statement cannot be a short variable declaration"
                 .to_string()
@@ -17921,6 +17930,27 @@ mod tests {
                 }
             "#,
             "invalid expression statement: invalid close call: argument must have channel type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    _ = len(1)
+                }
+            "#,
+            "invalid expression: invalid len call: argument must have string, array, slice, map, or channel type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                var N = copy(1, []int{})
+
+                func main() {
+                }
+            "#,
+            "invalid expression: invalid copy call: first argument must have slice type, got int",
         );
         assert_unsupported_construct(
             r#"

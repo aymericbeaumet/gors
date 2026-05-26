@@ -997,6 +997,9 @@ pub enum InvalidStatement {
     Expr {
         reason: InvalidStatementReason,
     },
+    Expression {
+        reason: InvalidStatementReason,
+    },
     ForPostShortVarDecl,
     Go {
         reason: InvalidStatementReason,
@@ -1302,6 +1305,18 @@ pub fn invalid_value_declaration_in_file(
         };
         if let Some(invalid) = invalid_value_declaration_in_gen_decl(gen_decl, env) {
             return Some(invalid);
+        }
+    }
+    None
+}
+
+pub fn invalid_expression_in_file(file: &ast::File<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    for decl in &file.decls {
+        let ast::Decl::GenDecl(gen_decl) = decl else {
+            continue;
+        };
+        if let Some(reason) = invalid_expression_in_gen_decl(gen_decl, env) {
+            return Some(InvalidStatement::Expression { reason });
         }
     }
     None
@@ -3306,6 +3321,14 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(InvalidStatement::Receive { reason });
             }
+            if let Some(reason) = assign
+                .lhs
+                .iter()
+                .chain(assign.rhs.iter())
+                .find_map(|expr| invalid_expression_in_expr(expr, env))
+            {
+                return Some(InvalidStatement::Expression { reason });
+            }
             if let Some(reason) = invalid_assignment(assign, env) {
                 return Some(InvalidStatement::Assignment { reason });
             }
@@ -3334,21 +3357,32 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             if let Some(reason) = invalid_receive_in_gen_decl(&decl.decl, env) {
                 return Some(InvalidStatement::Receive { reason });
             }
+            if let Some(reason) = invalid_expression_in_gen_decl(&decl.decl, env) {
+                return Some(InvalidStatement::Expression { reason });
+            }
             if let Some(reason) = invalid_value_declaration_in_gen_decl(&decl.decl, env) {
                 return Some(InvalidStatement::Declaration { reason });
             }
             record_decl_bindings(&decl.decl, env);
             None
         }
-        ast::Stmt::DeferStmt(defer) => invalid_call_statement(&defer.call, env)
-            .map(|reason| InvalidStatement::Defer { reason }),
+        ast::Stmt::DeferStmt(defer) => {
+            if let Some(reason) = invalid_call_statement(&defer.call, env) {
+                return Some(InvalidStatement::Defer { reason });
+            }
+            invalid_expression_in_call(&defer.call, env)
+                .map(|reason| InvalidStatement::Expression { reason })
+        }
         ast::Stmt::EmptyStmt(_) => None,
         ast::Stmt::ExprStmt(expr) => {
             if let Some(reason) = invalid_receive_expr(&expr.x, env) {
                 return Some(InvalidStatement::Receive { reason });
             }
-            invalid_expression_statement(&expr.x, env)
-                .map(|reason| InvalidStatement::Expr { reason })
+            if let Some(reason) = invalid_expression_statement(&expr.x, env) {
+                return Some(InvalidStatement::Expr { reason });
+            }
+            invalid_expression_in_expr(&expr.x, env)
+                .map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
@@ -3361,6 +3395,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 && let Some(reason) = invalid_receive_expr(cond, &loop_env)
             {
                 return Some(InvalidStatement::Receive { reason });
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(reason) = invalid_expression_in_expr(cond, &loop_env)
+            {
+                return Some(InvalidStatement::Expression { reason });
             }
             if let Some(cond) = &for_stmt.cond
                 && let Some(reason) = invalid_condition(cond, &loop_env, ConditionKind::For)
@@ -3380,7 +3419,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_nested_block(&for_stmt.body, &loop_env)
         }
         ast::Stmt::GoStmt(go) => {
-            invalid_call_statement(&go.call, env).map(|reason| InvalidStatement::Go { reason })
+            if let Some(reason) = invalid_call_statement(&go.call, env) {
+                return Some(InvalidStatement::Go { reason });
+            }
+            invalid_expression_in_call(&go.call, env)
+                .map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Stmt::IfStmt(if_stmt) => {
             let mut if_env = env.clone();
@@ -3391,6 +3434,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             }
             if let Some(reason) = invalid_receive_expr(&if_stmt.cond, &if_env) {
                 return Some(InvalidStatement::Receive { reason });
+            }
+            if let Some(reason) = invalid_expression_in_expr(&if_stmt.cond, &if_env) {
+                return Some(InvalidStatement::Expression { reason });
             }
             if let Some(reason) = invalid_condition(&if_stmt.cond, &if_env, ConditionKind::If) {
                 return Some(InvalidStatement::Condition { reason });
@@ -3417,6 +3463,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             if let Some(reason) = invalid_range_clause(range, env) {
                 return Some(InvalidStatement::Range { reason });
             }
+            if let Some(reason) = invalid_expression_in_expr(&range.x, env) {
+                return Some(InvalidStatement::Expression { reason });
+            }
             let mut range_env = env.clone();
             record_range_bindings(range, &mut range_env);
             invalid_statement_in_nested_block(&range.body, &range_env)
@@ -3437,6 +3486,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             None
         }
         ast::Stmt::SendStmt(send) => {
+            if let Some(reason) = invalid_expression_in_expr(&send.chan, env)
+                .or_else(|| invalid_expression_in_expr(&send.value, env))
+            {
+                return Some(InvalidStatement::Expression { reason });
+            }
             invalid_send(send, env).map(|reason| InvalidStatement::Send { reason })
         }
         ast::Stmt::SwitchStmt(switch) => {
@@ -3450,6 +3504,11 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
             {
                 return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(reason) = invalid_expression_in_expr(tag, &switch_env)
+            {
+                return Some(InvalidStatement::Expression { reason });
             }
             invalid_statement_in_case_block(&switch.body, &switch_env)
         }
@@ -4479,6 +4538,9 @@ fn invalid_return_in_spec(spec: &ast::Spec<'_>, env: &TypeEnv) -> Option<Invalid
 }
 
 fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    if let Some(reason) = invalid_builtin_call_expression(call, env) {
+        return Some(InvalidStatement::Expression { reason });
+    }
     if let Some(invalid) = invalid_return_in_expr(&call.fun, env) {
         return Some(invalid);
     }
@@ -5130,6 +5192,160 @@ fn invalid_expression_statement(
     }
 }
 
+fn invalid_expression_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for spec in &gen_decl.specs {
+        if let Some(reason) = invalid_expression_in_spec(spec, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_expression_in_spec(
+    spec: &ast::Spec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match spec {
+        ast::Spec::ImportSpec(_) => None,
+        ast::Spec::TypeSpec(type_spec) => invalid_expression_in_expr(&type_spec.type_, env),
+        ast::Spec::ValueSpec(value_spec) => {
+            if let Some(type_) = &value_spec.type_
+                && let Some(reason) = invalid_expression_in_expr(type_, env)
+            {
+                return Some(reason);
+            }
+            value_spec.values.as_ref().and_then(|values| {
+                values
+                    .iter()
+                    .find_map(|value| invalid_expression_in_expr(value, env))
+            })
+        }
+    }
+}
+
+fn invalid_expression_in_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if let Some(reason) = invalid_builtin_call_expression(call, env) {
+        return Some(reason);
+    }
+    invalid_expression_in_expr(&call.fun, env).or_else(|| {
+        call.args.as_ref().and_then(|args| {
+            args.iter()
+                .find_map(|arg| invalid_expression_in_expr(arg, env))
+        })
+    })
+}
+
+fn invalid_expression_in_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match expr {
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_expression_in_expr(len, env))
+            .or_else(|| invalid_expression_in_expr(&array.elt, env)),
+        ast::Expr::BinaryExpr(binary) => invalid_expression_in_expr(&binary.x, env)
+            .or_else(|| invalid_expression_in_expr(&binary.y, env)),
+        ast::Expr::CallExpr(call) => invalid_expression_in_call(call, env),
+        ast::Expr::ChanType(chan) => invalid_expression_in_expr(&chan.value, env),
+        ast::Expr::CompositeLit(comp) => comp
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_expression_in_expr(type_, env))
+            .or_else(|| {
+                comp.elts.as_ref().and_then(|elts| {
+                    elts.iter()
+                        .find_map(|elt| invalid_expression_in_expr(elt, env))
+                })
+            }),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_expression_in_expr(elt, env)),
+        ast::Expr::FuncLit(_) => None,
+        ast::Expr::FuncType(func_type) => invalid_expression_in_field_list(&func_type.params, env)
+            .or_else(|| {
+                func_type
+                    .results
+                    .as_ref()
+                    .and_then(|results| invalid_expression_in_field_list(results, env))
+            }),
+        ast::Expr::IndexExpr(index) => invalid_expression_in_expr(&index.x, env)
+            .or_else(|| invalid_expression_in_expr(&index.index, env)),
+        ast::Expr::IndexListExpr(index) => {
+            invalid_expression_in_expr(&index.x, env).or_else(|| {
+                index
+                    .indices
+                    .iter()
+                    .find_map(|index| invalid_expression_in_expr(index, env))
+            })
+        }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()
+            .and_then(|methods| invalid_expression_in_field_list(methods, env)),
+        ast::Expr::KeyValueExpr(kv) => invalid_expression_in_expr(&kv.key, env)
+            .or_else(|| invalid_expression_in_expr(&kv.value, env)),
+        ast::Expr::MapType(map) => invalid_expression_in_expr(&map.key, env)
+            .or_else(|| invalid_expression_in_expr(&map.value, env)),
+        ast::Expr::ParenExpr(paren) => invalid_expression_in_expr(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_expression_in_expr(&selector.x, env),
+        ast::Expr::SliceExpr(slice) => invalid_expression_in_expr(&slice.x, env)
+            .or_else(|| {
+                slice
+                    .low
+                    .as_ref()
+                    .and_then(|low| invalid_expression_in_expr(low, env))
+            })
+            .or_else(|| {
+                slice
+                    .high
+                    .as_ref()
+                    .and_then(|high| invalid_expression_in_expr(high, env))
+            })
+            .or_else(|| {
+                slice
+                    .max
+                    .as_ref()
+                    .and_then(|max| invalid_expression_in_expr(max, env))
+            }),
+        ast::Expr::StarExpr(star) => invalid_expression_in_expr(&star.x, env),
+        ast::Expr::StructType(struct_type) => struct_type
+            .fields
+            .as_ref()
+            .and_then(|fields| invalid_expression_in_field_list(fields, env)),
+        ast::Expr::TypeAssertExpr(assert) => {
+            invalid_expression_in_expr(&assert.x, env).or_else(|| {
+                assert
+                    .type_
+                    .as_ref()
+                    .and_then(|type_| invalid_expression_in_expr(type_, env))
+            })
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_expression_in_expr(&unary.x, env),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_expression_in_field_list(
+    fields: &ast::FieldList<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    fields.list.iter().find_map(|field| {
+        field
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_expression_in_expr(type_, env))
+    })
+}
+
 fn expr_is_receive_operation(expr: &ast::Expr<'_>) -> bool {
     matches!(unparen_expr(expr), ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW)
 }
@@ -5147,6 +5363,20 @@ fn invalid_call_statement(
     call_is_type_conversion(call, env).then_some(InvalidStatementReason::TypeConversion)
 }
 
+fn invalid_builtin_call_expression(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Cap | BuiltinCallKind::Len => invalid_builtin_len_cap_call(call, env),
+        BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
+        BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
+        BuiltinCallKind::Copy => invalid_builtin_copy_call(call, env),
+        BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
+        _ => None,
+    }
+}
+
 fn invalid_builtin_call_statement(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
@@ -5157,6 +5387,64 @@ fn invalid_builtin_call_statement(
         BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
         _ => None,
     }
+}
+
+fn invalid_builtin_len_cap_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let kind = unshadowed_builtin_call_kind(call, env)?;
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            kind,
+            "expects exactly one argument",
+        ));
+    }
+    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let valid = match kind {
+        BuiltinCallKind::Len => {
+            matches!(
+                &ty,
+                GoType::String
+                    | GoType::Array(_)
+                    | GoType::Slice(_)
+                    | GoType::Map(_, _)
+                    | GoType::Chan { .. }
+                    | GoType::Unknown
+                    | GoType::Named(_)
+            ) || matches!(&ty, GoType::Pointer(inner) if matches!(&**inner, GoType::Array(_)))
+        }
+        BuiltinCallKind::Cap => {
+            matches!(
+                &ty,
+                GoType::Array(_)
+                    | GoType::Slice(_)
+                    | GoType::Chan { .. }
+                    | GoType::Unknown
+                    | GoType::Named(_)
+            ) || matches!(&ty, GoType::Pointer(inner) if matches!(&**inner, GoType::Array(_)))
+        }
+        _ => true,
+    };
+    if valid {
+        return None;
+    }
+    let expected = match kind {
+        BuiltinCallKind::Len => "argument must have string, array, slice, map, or channel type",
+        BuiltinCallKind::Cap => "argument must have array, slice, or channel type",
+        _ => "invalid argument type",
+    };
+    Some(invalid_builtin_call_reason(
+        kind,
+        format!("{expected}, got {}", go_type_display_name(&ty)),
+    ))
 }
 
 fn invalid_builtin_clear_call(
@@ -5213,6 +5501,73 @@ fn invalid_builtin_close_call(
     }
 }
 
+fn invalid_builtin_copy_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Copy,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 2 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Copy,
+            "expects exactly two arguments",
+        ));
+    }
+    let dst = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let dst_elem = match dst {
+        GoType::Slice(dst_elem) => dst_elem,
+        other => {
+            return match other {
+                GoType::Unknown | GoType::Named(_) => None,
+                other => Some(invalid_builtin_call_reason(
+                    BuiltinCallKind::Copy,
+                    format!(
+                        "first argument must have slice type, got {}",
+                        go_type_display_name(&other)
+                    ),
+                )),
+            };
+        }
+    };
+    let src = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+    if matches!((&*dst_elem, &src), (GoType::Uint8, GoType::String)) {
+        return None;
+    }
+    let src_elem = match src {
+        GoType::Slice(src_elem) => src_elem,
+        other => {
+            return match other {
+                GoType::Unknown | GoType::Named(_) => None,
+                other => Some(invalid_builtin_call_reason(
+                    BuiltinCallKind::Copy,
+                    format!(
+                        "second argument must have slice type, got {}",
+                        go_type_display_name(&other)
+                    ),
+                )),
+            };
+        }
+    };
+    let expected = env.resolve_alias(&dst_elem);
+    let actual = env.resolve_alias(&src_elem);
+    if types_are_identical_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(invalid_builtin_call_reason(
+        BuiltinCallKind::Copy,
+        format!(
+            "source element type must match {}, got {}",
+            go_type_display_name(&expected),
+            go_type_display_name(&actual)
+        ),
+    ))
+}
+
 fn invalid_builtin_delete_call(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
@@ -5250,6 +5605,12 @@ fn invalid_builtin_delete_call(
             ),
         )),
     }
+}
+
+fn types_are_identical_for_validation(expected: &GoType, actual: &GoType) -> bool {
+    matches!(expected, GoType::Unknown | GoType::Named(_))
+        || matches!(actual, GoType::Unknown | GoType::Named(_))
+        || expected == actual
 }
 
 fn invalid_builtin_call_reason(
@@ -9722,6 +10083,134 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_expression_builtin_calls() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = len(1)
+                    }
+                "#,
+                "len",
+                "argument must have string, array, slice, map, or channel type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = cap("go")
+                    }
+                "#,
+                "cap",
+                "argument must have array, slice, or channel type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = copy(1, []int{})
+                    }
+                "#,
+                "copy",
+                "first argument must have slice type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = copy([]int{}, []string{})
+                    }
+                "#,
+                "copy",
+                "source element type must match int, got string",
+            ),
+        ];
+
+        for (source, name, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidBuiltinCall {
+                        name: name.to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_top_level_expression_builtin_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                var N = len(1)
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        assert_eq!(
+            super::invalid_expression_in_file(&file, &env),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::InvalidBuiltinCall {
+                    name: "len".to_string(),
+                    reason:
+                        "argument must have string, array, slice, map, or channel type, got int"
+                            .to_string(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_valid_expression_builtin_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = len("go")
+                    _ = cap([]int{1})
+                    _ = copy([]byte{}, "go")
+                    len := func(int) int { return 1 }
+                    _ = len(1)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]
