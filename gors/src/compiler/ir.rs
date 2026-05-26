@@ -1154,6 +1154,7 @@ pub enum InvalidStatementReason {
     InvalidIndex { reason: String },
     InvalidMapType { reason: String },
     InvalidSlice { reason: String },
+    InvalidTypeAssert { reason: String },
     InvalidTypeConversion { target: String, reason: String },
     InvalidUnary { op: String, reason: String },
     NonCallOrReceive,
@@ -4859,11 +4860,11 @@ fn invalid_type_switch_stmt(
 ) -> Option<InvalidTypeSwitchReason> {
     let guard = type_switch_guard_operand(&type_switch.assign)?;
     let guard_type = env.resolve_alias(&GoType::infer_expr(guard, env));
-    let interface_name = match type_switch_interface_name(&guard_type, env) {
-        TypeSwitchInterface::Interface(name) => name,
-        TypeSwitchInterface::Empty => None,
-        TypeSwitchInterface::Unknown => None,
-        TypeSwitchInterface::NonInterface { type_name } => {
+    let interface_name = match interface_operand_name(&guard_type, env) {
+        InterfaceOperand::Interface(name) => name,
+        InterfaceOperand::Empty => None,
+        InterfaceOperand::Unknown => None,
+        InterfaceOperand::NonInterface { type_name } => {
             return Some(InvalidTypeSwitchReason::NonInterfaceGuard { type_name });
         }
     };
@@ -4919,21 +4920,21 @@ fn type_switch_guard_operand_expr<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a ast
     }
 }
 
-enum TypeSwitchInterface {
+enum InterfaceOperand {
     Empty,
     Interface(Option<String>),
     NonInterface { type_name: String },
     Unknown,
 }
 
-fn type_switch_interface_name(ty: &GoType, env: &TypeEnv) -> TypeSwitchInterface {
+fn interface_operand_name(ty: &GoType, env: &TypeEnv) -> InterfaceOperand {
     match ty {
-        GoType::Any | GoType::Error | GoType::Interface(_) => TypeSwitchInterface::Empty,
+        GoType::Any | GoType::Error | GoType::Interface(_) => InterfaceOperand::Empty,
         GoType::Named(name) if env.is_interface(name) => {
-            TypeSwitchInterface::Interface(Some(name.clone()))
+            InterfaceOperand::Interface(Some(name.clone()))
         }
-        GoType::Unknown => TypeSwitchInterface::Unknown,
-        other => TypeSwitchInterface::NonInterface {
+        GoType::Unknown => InterfaceOperand::Unknown,
+        other => InterfaceOperand::NonInterface {
             type_name: go_type_display_name(other),
         },
     }
@@ -4955,37 +4956,14 @@ fn invalid_type_switch_case_implementation(
     {
         return None;
     }
-    let case_type_name = type_switch_case_named_type(expr)?;
-    if env
-        .interface_implementors(interface_name)
-        .iter()
-        .any(|implementor| implementor == &case_type_name)
-    {
+    let case_type_name = type_expr_named_type_for_validation(expr)?;
+    if named_type_implements_interface_for_validation(&case_type_name, interface_name, env) {
         return None;
     }
     Some(InvalidTypeSwitchReason::CaseDoesNotImplement {
         case_type: case_type_name,
         interface_type: interface_name.to_string(),
     })
-}
-
-fn type_switch_case_named_type(expr: &ast::Expr<'_>) -> Option<String> {
-    match unparen_expr(expr) {
-        ast::Expr::Ident(ident) if !is_predeclared_type_name(ident.name) => {
-            Some(ident.name.to_string())
-        }
-        ast::Expr::SelectorExpr(selector) => {
-            if let ast::Expr::Ident(package) = selector.x.as_ref() {
-                Some(format!("{}.{}", package.name, selector.sel.name))
-            } else {
-                Some(selector.sel.name.to_string())
-            }
-        }
-        ast::Expr::StarExpr(star) => type_switch_case_named_type(&star.x),
-        ast::Expr::IndexExpr(index) => type_switch_case_named_type(&index.x),
-        ast::Expr::IndexListExpr(index) => type_switch_case_named_type(&index.x),
-        _ => None,
-    }
 }
 
 fn invalid_value_declaration_in_gen_decl(
@@ -5383,6 +5361,42 @@ fn invalid_map_type(map: &ast::MapType<'_>, env: &TypeEnv) -> Option<InvalidStat
     })
 }
 
+fn invalid_type_assert_expr(
+    assert: &ast::TypeAssertExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let Some(target_type) = &assert.type_ else {
+        return None;
+    };
+    let operand_type = env.resolve_alias(&GoType::infer_expr(&assert.x, env));
+    let interface_name = match interface_operand_name(&operand_type, env) {
+        InterfaceOperand::Interface(name) => name,
+        InterfaceOperand::Empty | InterfaceOperand::Unknown => None,
+        InterfaceOperand::NonInterface { type_name } => {
+            return Some(invalid_type_assert_reason(format!(
+                "operand must have interface type, got {type_name}"
+            )));
+        }
+    };
+    let interface_name = interface_name?;
+    if type_expr_is_interface_for_validation(target_type, env)
+        || type_expr_implements_interface_for_validation(target_type, &interface_name, env)
+    {
+        return None;
+    }
+    Some(invalid_type_assert_reason(format!(
+        "{} does not implement {}",
+        type_expr_display_name(target_type, env),
+        interface_name
+    )))
+}
+
+fn invalid_type_assert_reason(reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidTypeAssert {
+        reason: reason.into(),
+    }
+}
+
 fn expr_is_nil(expr: &ast::Expr<'_>) -> bool {
     matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
 }
@@ -5733,14 +5747,14 @@ fn invalid_expression_in_expr(
             .fields
             .as_ref()
             .and_then(|fields| invalid_expression_in_field_list(fields, env)),
-        ast::Expr::TypeAssertExpr(assert) => {
-            invalid_expression_in_expr(&assert.x, env).or_else(|| {
+        ast::Expr::TypeAssertExpr(assert) => invalid_expression_in_expr(&assert.x, env)
+            .or_else(|| {
                 assert
                     .type_
                     .as_ref()
                     .and_then(|type_| invalid_expression_in_expr(type_, env))
             })
-        }
+            .or_else(|| invalid_type_assert_expr(assert, env)),
         ast::Expr::UnaryExpr(unary) => {
             invalid_expression_in_expr(&unary.x, env).or_else(|| invalid_unary_expr(unary, env))
         }
@@ -6508,6 +6522,53 @@ fn type_expr_is_comparable_for_validation(expr: &ast::Expr<'_>, env: &TypeEnv) -
         }
         ast::Expr::StarExpr(_) | ast::Expr::ChanType(_) | ast::Expr::InterfaceType(_) => true,
         _ => true,
+    }
+}
+
+fn type_expr_is_interface_for_validation(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    if matches!(unparen_expr(expr), ast::Expr::InterfaceType(_)) {
+        return true;
+    }
+    match env.resolve_alias(&GoType::from_expr(expr)) {
+        GoType::Any | GoType::Error | GoType::Interface(_) => true,
+        GoType::Named(name) => env.is_interface(&name),
+        _ => false,
+    }
+}
+
+fn type_expr_implements_interface_for_validation(
+    expr: &ast::Expr<'_>,
+    interface_name: &str,
+    env: &TypeEnv,
+) -> bool {
+    let Some(type_name) = type_expr_named_type_for_validation(expr) else {
+        return false;
+    };
+    named_type_implements_interface_for_validation(&type_name, interface_name, env)
+}
+
+fn named_type_implements_interface_for_validation(
+    type_name: &str,
+    interface_name: &str,
+    env: &TypeEnv,
+) -> bool {
+    env.get_interface_methods(interface_name)
+        .is_none_or(|methods| {
+            methods
+                .iter()
+                .all(|method| env.has_func(&format!("{type_name}.{method}")))
+        })
+}
+
+fn type_expr_named_type_for_validation(expr: &ast::Expr<'_>) -> Option<String> {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => Some(match unparen_expr(&selector.x) {
+            ast::Expr::Ident(package) => format!("{}.{}", package.name, selector.sel.name),
+            _ => selector.sel.name.to_string(),
+        }),
+        ast::Expr::StarExpr(star) => type_expr_named_type_for_validation(&star.x),
+        _ => None,
     }
 }
 
@@ -15419,6 +15480,23 @@ mod tests {
                     interface_type: "I".to_string(),
                 },
             ),
+            (
+                r#"
+                    package main
+
+                    type I interface { M() }
+
+                    func main(x I) {
+                        switch x.(type) {
+                        case string:
+                        }
+                    }
+                "#,
+                super::InvalidTypeSwitchReason::CaseDoesNotImplement {
+                    case_type: "string".to_string(),
+                    interface_type: "I".to_string(),
+                },
+            ),
         ];
 
         for (source, reason) in cases {
@@ -15458,6 +15536,102 @@ mod tests {
                     switch y.(type) {
                     case T:
                     }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_type_assertions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x int
+                        _ = x.(int)
+                    }
+                "#,
+                "operand must have interface type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    type I interface { M() }
+
+                    func main(x I) {
+                        _ = x.(string)
+                    }
+                "#,
+                "string does not implement I",
+            ),
+            (
+                r#"
+                    package main
+
+                    type I interface { M() }
+                    type T struct {}
+
+                    func main(x I) {
+                        _ = x.(T)
+                    }
+                "#,
+                "T does not implement I",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidTypeAssert {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_type_assertions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type I interface { M() }
+                type T struct {}
+                func (T) M() {}
+
+                func main(x any, y I) {
+                    _ = x.(int)
+                    _ = y.(T)
+                    _ = y.(interface { M() })
+                    _, _ = y.(T)
                 }
             "#,
         )

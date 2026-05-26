@@ -746,6 +746,9 @@ Type-switch validation checks semantic constraints after the guard shape check:
 the guard operand must be an interface, `nil` and concrete case types must not
 be duplicated, and obvious concrete cases for named interfaces must implement
 the interface method set.
+Type-assertion validation applies the same interface operand and implementor
+checks for `x.(T)`: the operand must be an interface, and obvious concrete
+assertion targets must implement the named source interface.
 
 ## Compiler passes (in order)
 

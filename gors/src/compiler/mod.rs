@@ -12931,6 +12931,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidSlice { reason } => {
             format!("invalid slice expression: {reason}")
         }
+        ir::InvalidStatementReason::InvalidTypeAssert { reason } => {
+            format!("invalid type assertion: {reason}")
+        }
         ir::InvalidStatementReason::InvalidTypeConversion { target, reason } => {
             format!("invalid type conversion to {target}: {reason}")
         }
