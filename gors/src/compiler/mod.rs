@@ -2885,6 +2885,10 @@ fn inject_post_prune_stdlib_helpers(
                         },
                         syn::parse_quote! {
                             impl crate::io::Writer for File {
+                                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                                    Some(self)
+                                }
+
                                 fn Write(&mut self, b: Vec<u8>) -> (isize, String) {
                                     let mut stdout = std::io::stdout();
                                     match std::io::Write::write_all(&mut stdout, &b) {
@@ -4947,7 +4951,9 @@ fn reachable_item_for_names(
         let mut filtered = item_trait.clone();
         filtered.items.retain(|trait_item| match trait_item {
             syn::TraitItem::Fn(func) => {
-                trait_item_name_reachable(&trait_name, &func.sig.ident.to_string(), names)
+                let name = func.sig.ident.to_string();
+                is_runtime_interface_hook(&name)
+                    || trait_item_name_reachable(&trait_name, &name, names)
             }
             syn::TraitItem::Const(konst) => {
                 trait_item_name_reachable(&trait_name, &konst.ident.to_string(), names)
@@ -5015,7 +5021,9 @@ fn reachable_item_for_names(
             }
             filtered.items.retain(|impl_item| match impl_item {
                 syn::ImplItem::Fn(func) => {
-                    trait_item_name_reachable(&trait_name, &func.sig.ident.to_string(), names)
+                    let name = func.sig.ident.to_string();
+                    is_runtime_interface_hook(&name)
+                        || trait_item_name_reachable(&trait_name, &name, names)
                 }
                 syn::ImplItem::Const(konst) => {
                     trait_item_name_reachable(&trait_name, &konst.ident.to_string(), names)
@@ -6113,6 +6121,10 @@ fn is_ambient_trait_name(name: &str) -> bool {
     )
 }
 
+fn is_runtime_interface_hook(name: &str) -> bool {
+    name == "__gors_as_any"
+}
+
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
 ///
 /// This is like [`compile`], but also enables source map tracking.
@@ -6777,9 +6789,15 @@ fn embedded_interface_impls(
                 }
 
                 let mut sig = trait_fn.sig.clone();
+                let is_hook = is_runtime_interface_hook(&sig.ident.to_string());
                 if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                    receiver.mutability = Some(<Token![mut]>::default());
-                    *receiver.ty = syn::parse_quote! { &mut Self };
+                    if is_hook {
+                        receiver.mutability = None;
+                        *receiver.ty = syn::parse_quote! { &Self };
+                    } else {
+                        receiver.mutability = Some(<Token![mut]>::default());
+                        *receiver.ty = syn::parse_quote! { &mut Self };
+                    }
                 }
                 let method_ident = sig.ident.clone();
                 let field_ident = field.field_ident.clone();
@@ -8534,6 +8552,28 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#src) }
             }
         }
+        ir::BuiltinCallKind::Delete if raw_args.len() == 2 => {
+            let mut raw_args = raw_args.into_iter();
+            let Some(map_raw) = raw_args.next() else {
+                return compile_error_expr("delete requires a map argument");
+            };
+            let Some(key_raw) = raw_args.next() else {
+                return compile_error_expr("delete requires a key argument");
+            };
+            let key_ty = TYPE_ENV.with(|env| {
+                let env = env.borrow();
+                match env.resolve_alias(&typeinfer::GoType::infer_expr(&map_raw, &env)) {
+                    typeinfer::GoType::Map(key, _) => Some(*key),
+                    _ => None,
+                }
+            });
+            let map = compile_expr_with_expected(map_raw, None);
+            let key = compile_expr_with_expected(key_raw, key_ty.as_ref());
+            syn::parse_quote! {{
+                let __gors_delete_key = #key;
+                crate::builtin::delete(&mut #map, &__gors_delete_key)
+            }}
+        }
         _ => {
             let ordered_expected_type = match kind {
                 ir::BuiltinCallKind::Max | ir::BuiltinCallKind::Min => {
@@ -8552,9 +8592,6 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
                 ir::BuiltinCallKind::Cap if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::cap(&#x) }
-                }
-                ir::BuiltinCallKind::Delete if let [map, key] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::delete(&mut #map, &#key) }
                 }
                 ir::BuiltinCallKind::Clear if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::clear(&mut #x) }
@@ -8920,6 +8957,25 @@ fn compile_array_literal(array_type: &ast::ArrayType, raw_elts: Vec<ast::Expr>) 
     }
 }
 
+fn compile_map_literal(map_type: &ast::MapType, raw_elts: Vec<ast::Expr>) -> syn::Expr {
+    let key_go_type = typeinfer::GoType::from_expr(&map_type.key);
+    let value_go_type = typeinfer::GoType::from_expr(&map_type.value);
+    let elts = raw_elts
+        .into_iter()
+        .filter_map(|elt| {
+            let ast::Expr::KeyValueExpr(kv) = elt else {
+                return None;
+            };
+            let key = compile_expr_with_expected(*kv.key, Some(&key_go_type));
+            let value = compile_expr_with_expected(*kv.value, Some(&value_go_type));
+            Some(syn::parse_quote! { (#key, #value) })
+        })
+        .collect::<Vec<syn::Expr>>();
+    syn::parse_quote! {
+        std::collections::HashMap::from([#(#elts),*])
+    }
+}
+
 fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
     let raw_elts = comp_lit.elts.unwrap_or_default();
 
@@ -9016,13 +9072,9 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 // Slice/array literal: []T{e1, e2, ...} → vec![e1, e2, ...]
                 compile_array_literal(&array_type, raw_elts)
             }
-            ast::Expr::MapType(_) => {
+            ast::Expr::MapType(map_type) => {
                 // Map literal: map[K]V{k1: v1, ...}
-                // elts are already (key, value) tuples from KeyValueExpr
-                let elts = compile_raw_elts(raw_elts);
-                syn::parse_quote! {
-                    std::collections::HashMap::from([#(#elts),*])
-                }
+                compile_map_literal(&map_type, raw_elts)
             }
             _ => {
                 // Fallback: treat as array/vec
@@ -14346,12 +14398,22 @@ fn compile_comma_ok(
     let rhs_expr: syn::Expr = match kind {
         CommaOkKind::MapIndex => {
             if let ast::Expr::IndexExpr(ie) = rhs {
+                let key_ty = TYPE_ENV.with(|env| {
+                    let env = env.borrow();
+                    match env.resolve_alias(&typeinfer::GoType::infer_expr(&ie.x, &env)) {
+                        typeinfer::GoType::Map(key, _) => Some(*key),
+                        _ => None,
+                    }
+                });
                 let map_e: syn::Expr = (*ie.x).into();
-                let key_e: syn::Expr = (*ie.index).into();
+                let key_e = compile_expr_with_expected(*ie.index, key_ty.as_ref());
                 syn::parse_quote! {
-                    match (#map_e).get(&#key_e) {
-                        Some(__v) => (__v.clone(), true),
-                        None => (Default::default(), false),
+                    {
+                        let __gors_map_key = #key_e;
+                        match (#map_e).get(&__gors_map_key) {
+                            Some(__v) => (__v.clone(), true),
+                            None => (Default::default(), false),
+                        }
                     }
                 }
             } else {
@@ -15018,14 +15080,21 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| CompilerError::InvalidAssignment("empty rhs".to_string()))?;
+            let lhs_ty =
+                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
+            if assign_stmt.tok == token::Token::ADD_ASSIGN
+                && matches!(resolved_go_type(&lhs_ty), typeinfer::GoType::String)
+            {
+                let right = compile_expr_with_expected(rhs_ast, Some(&typeinfer::GoType::String));
+                let left = compile_assignment_lhs(lhs_ast);
+                return Ok(vec![syn::parse_quote! { #left.push_str(&#right); }]);
+            }
             let right = if matches!(
                 assign_stmt.tok,
                 token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN
             ) {
                 rhs_ast.into()
             } else {
-                let lhs_ty =
-                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
                 compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
             };
             let left = compile_assignment_lhs(lhs_ast);
@@ -15983,6 +16052,52 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_map_literal_keys_with_expected_type() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]int{"a": 1}
+                    _ = m
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::from([("a".to_string(), 1)]);
+                    let _ = m;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_map_comma_ok_key_with_expected_type() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]int{"alice": 25}
+                    val, ok := m["alice"]
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::from([("alice".to_string(), 25)]);
+                    let (mut val, mut ok) = {
+                        let __gors_map_key = "alice".to_string();
+                        match (m).get(&__gors_map_key) {
+                            Some(__v) => (__v.clone(), true),
+                            None => (Default::default(), false),
+                        }
+                    };
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_map_byte_type() {
         test(
             r#"
@@ -16301,6 +16416,28 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_string_add_assign_by_borrowing_rhs() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := ""
+                    part := "go"
+                    s += part
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = "".to_string();
+                    let mut part = "go".to_string();
+                    s.push_str(&(part).clone());
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_compile_address_of_as_box() {
         test(
             r#"
@@ -16399,6 +16536,29 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_delete_key_with_expected_type() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]int{"a": 1}
+                    delete(m, "a")
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::from([("a".to_string(), 1)]);
+                    {
+                        let __gors_delete_key = "a".to_string();
+                        crate::builtin::delete(&mut m, &__gors_delete_key)
+                    };
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_compile_builtin_panic() {
         test(
             r#"
@@ -16461,6 +16621,70 @@ func main() {
         assert!(names.contains("NeededTrait"));
         assert!(names.contains("make_impl"));
         assert_eq!(keep.len(), 4);
+    }
+
+    #[test]
+    fn it_should_preserve_runtime_interface_hooks_during_dce() {
+        let file: syn::File = rust! {
+            pub trait Interface {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Len(&mut self) -> isize;
+            }
+
+            pub struct Values;
+
+            impl Interface for Values {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn Len(&mut self) -> isize {
+                    0
+                }
+            }
+
+            pub fn root(mut value: Values) -> isize {
+                Interface::Len(&mut value)
+            }
+        };
+        let roots = std::collections::HashSet::from(["root".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+
+        let trait_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Trait(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names)
+            })
+            .and_then(|item| match item {
+                syn::Item::Trait(item_trait) => Some(item_trait),
+                _ => None,
+            })
+            .expect("expected trait");
+        assert!(trait_item.items.iter().any(|item| {
+            matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "__gors_as_any")
+        }));
+
+        let impl_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Impl(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names)
+            })
+            .and_then(|item| match item {
+                syn::Item::Impl(item_impl) => Some(item_impl),
+                _ => None,
+            })
+            .expect("expected impl");
+        assert!(impl_item.items.iter().any(|item| {
+            matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "__gors_as_any")
+        }));
     }
 
     #[test]

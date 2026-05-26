@@ -102,6 +102,17 @@ gors-builtin/
   bindings and avoids Rust moves such as `d := c` invalidating later uses of
   `c`. Function values and pointers stay cheap-copy through their existing
   representations.
+- Map literals, comma-ok map indexes, map assignments, and `delete` calls must
+  compile keys and values with the expected map key/value Go types. This keeps
+  `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
+  keys instead of accidentally inferring `&str` keys from Rust literals.
+- String `+=` lowers to `String::push_str(&rhs)` rather than Rust `+=`, because
+  Go accepts string operands by value while Rust's `String` add-assign expects a
+  borrowed string slice.
+- Runtime interface downcast hooks (`__gors_as_any`) are part of the generated
+  interface contract. DCE must preserve the hook on reachable traits and trait
+  impls, and any injected structural stdlib helper that implements a Go
+  interface, such as `os.File` for `io.Writer`, must implement the hook too.
 - Backward `goto Label` targeting the immediately labeled statement is lowered
   by wrapping that statement in a generated Rust labeled `loop` and translating
   the `goto` to `continue 'Label`. Do not use this for arbitrary forward gotos;
