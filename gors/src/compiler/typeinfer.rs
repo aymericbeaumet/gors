@@ -519,6 +519,33 @@ impl TypeEnv {
             .collect()
     }
 
+    pub fn interface_implementors(&self, name: &str) -> Vec<std::string::String> {
+        let Some(required_methods) = self.interface_methods.get(name) else {
+            return Vec::new();
+        };
+        if required_methods.is_empty() {
+            return Vec::new();
+        }
+        let mut implementors: Vec<_> = self
+            .type_kinds
+            .iter()
+            .filter_map(|(type_name, kind)| {
+                matches!(kind, TypeKind::Struct)
+                    .then_some(type_name)
+                    .filter(|type_name| {
+                        required_methods.iter().all(|method| {
+                            let method_key = format!("{type_name}.{method}");
+                            self.funcs.contains_key(&method_key)
+                                || self.func_params.contains_key(&method_key)
+                        })
+                    })
+                    .cloned()
+            })
+            .collect();
+        implementors.sort();
+        implementors
+    }
+
     pub fn resolve_alias(&self, ty: &GoType) -> GoType {
         match ty {
             GoType::Named(name) => match self.type_kinds.get(name) {

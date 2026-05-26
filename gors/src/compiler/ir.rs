@@ -727,6 +727,90 @@ pub fn stmt_completion(stmt: &Stmt) -> Completion {
     stmt_completion_with_label(stmt, None)
 }
 
+pub fn ast_stmt_has_goto_to_label(stmt: &ast::Stmt<'_>, label: &str) -> bool {
+    match stmt {
+        ast::Stmt::BranchStmt(branch) => {
+            branch.tok == token::Token::GOTO
+                && branch
+                    .label
+                    .as_ref()
+                    .is_some_and(|target| target.name == label)
+        }
+        ast::Stmt::BlockStmt(block) => ast_block_has_goto_to_label(block, label),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(|stmt| ast_stmt_has_goto_to_label(stmt, label)),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || comm
+                    .body
+                    .iter()
+                    .any(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || ast_block_has_goto_to_label(&for_stmt.body, label)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || ast_block_has_goto_to_label(&if_stmt.body, label)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+        }
+        ast::Stmt::LabeledStmt(labeled) => ast_stmt_has_goto_to_label(&labeled.stmt, label),
+        ast::Stmt::RangeStmt(range) => ast_block_has_goto_to_label(&range.body, label),
+        ast::Stmt::SelectStmt(select) => ast_block_has_goto_to_label(&select.body, label),
+        ast::Stmt::SwitchStmt(switch) => {
+            switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || ast_block_has_goto_to_label(&switch.body, label)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+                || ast_stmt_has_goto_to_label(&type_switch.assign, label)
+                || ast_block_has_goto_to_label(&type_switch.body, label)
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => false,
+    }
+}
+
+fn ast_block_has_goto_to_label(block: &ast::BlockStmt<'_>, label: &str) -> bool {
+    block
+        .list
+        .iter()
+        .any(|stmt| ast_stmt_has_goto_to_label(stmt, label))
+}
+
 fn stmt_completion_with_label(stmt: &Stmt, label: Option<&str>) -> Completion {
     match stmt {
         Stmt::Return(_)
@@ -1314,106 +1398,259 @@ pub fn func_lit_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capt
         .collect()
 }
 
-pub fn mutable_goroutine_capture_names_in_block(
+pub fn mutable_func_lit_capture_names_in_block(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    collect_mutable_goroutine_capture_names_in_block(block, env, &mut names);
+    collect_mutable_func_lit_capture_names_in_block(block, env, &mut names);
     names
 }
 
-fn collect_mutable_goroutine_capture_names_in_block(
+fn collect_mutable_func_lit_capture_names_in_block(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
     names: &mut BTreeSet<String>,
 ) {
     for stmt in &block.list {
-        collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+        collect_mutable_func_lit_capture_names_in_stmt(stmt, env, names);
     }
 }
 
-fn collect_mutable_goroutine_capture_names_in_stmt(
+fn collect_mutable_func_lit_capture_names_in_stmt(
     stmt: &ast::Stmt<'_>,
     env: &TypeEnv,
     names: &mut BTreeSet<String>,
 ) {
     match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_mutable_func_lit_capture_names_in_expr(expr, env, names);
+            }
+        }
         ast::Stmt::BlockStmt(block) => {
-            collect_mutable_goroutine_capture_names_in_block(block, env, names);
+            collect_mutable_func_lit_capture_names_in_block(block, env, names);
         }
         ast::Stmt::CaseClause(case_clause) => {
+            if let Some(exprs) = &case_clause.list {
+                for expr in exprs {
+                    collect_mutable_func_lit_capture_names_in_expr(expr, env, names);
+                }
+            }
             for stmt in &case_clause.body {
-                collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(stmt, env, names);
             }
         }
         ast::Stmt::CommClause(comm_clause) => {
             if let Some(comm) = &comm_clause.comm {
-                collect_mutable_goroutine_capture_names_in_stmt(comm, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(comm, env, names);
             }
             for stmt in &comm_clause.body {
-                collect_mutable_goroutine_capture_names_in_stmt(stmt, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(stmt, env, names);
             }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec {
+                    if let Some(values) = &value.values {
+                        for expr in values {
+                            collect_mutable_func_lit_capture_names_in_expr(expr, env, names);
+                        }
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer_stmt) => {
+            collect_mutable_func_lit_capture_names_in_call(&defer_stmt.call, env, names);
+        }
+        ast::Stmt::ExprStmt(expr) => {
+            collect_mutable_func_lit_capture_names_in_expr(&expr.x, env, names);
         }
         ast::Stmt::ForStmt(for_stmt) => {
             if let Some(init) = &for_stmt.init {
-                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_mutable_func_lit_capture_names_in_expr(cond, env, names);
             }
             if let Some(post) = &for_stmt.post {
-                collect_mutable_goroutine_capture_names_in_stmt(post, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(post, env, names);
             }
-            collect_mutable_goroutine_capture_names_in_block(&for_stmt.body, env, names);
+            collect_mutable_func_lit_capture_names_in_block(&for_stmt.body, env, names);
         }
         ast::Stmt::GoStmt(go_stmt) => {
-            if let ast::Expr::FuncLit(func_lit) = go_stmt.call.fun.as_ref() {
-                names.extend(
-                    func_lit_captures(func_lit, env)
-                        .into_iter()
-                        .filter(|capture| capture.mode == CaptureMode::BorrowMut)
-                        .map(|capture| capture.name),
-                );
-            }
+            collect_mutable_func_lit_capture_names_in_call(&go_stmt.call, env, names);
         }
         ast::Stmt::IfStmt(if_stmt) => {
             if let Some(init) = if_stmt.init.as_ref().as_ref() {
-                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(init, env, names);
             }
-            collect_mutable_goroutine_capture_names_in_block(&if_stmt.body, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&if_stmt.cond, env, names);
+            collect_mutable_func_lit_capture_names_in_block(&if_stmt.body, env, names);
             if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
-                collect_mutable_goroutine_capture_names_in_stmt(else_branch, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(else_branch, env, names);
             }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_mutable_func_lit_capture_names_in_expr(&inc_dec.x, env, names);
         }
         ast::Stmt::LabeledStmt(label) => {
-            collect_mutable_goroutine_capture_names_in_stmt(&label.stmt, env, names);
+            collect_mutable_func_lit_capture_names_in_stmt(&label.stmt, env, names);
         }
         ast::Stmt::RangeStmt(range) => {
-            collect_mutable_goroutine_capture_names_in_block(&range.body, env, names);
+            if let Some(key) = &range.key {
+                collect_mutable_func_lit_capture_names_in_expr(key, env, names);
+            }
+            if let Some(value) = &range.value {
+                collect_mutable_func_lit_capture_names_in_expr(value, env, names);
+            }
+            collect_mutable_func_lit_capture_names_in_expr(&range.x, env, names);
+            collect_mutable_func_lit_capture_names_in_block(&range.body, env, names);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_mutable_func_lit_capture_names_in_expr(expr, env, names);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_mutable_func_lit_capture_names_in_expr(&send.chan, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&send.value, env, names);
         }
         ast::Stmt::SelectStmt(select_stmt) => {
-            collect_mutable_goroutine_capture_names_in_block(&select_stmt.body, env, names);
+            collect_mutable_func_lit_capture_names_in_block(&select_stmt.body, env, names);
         }
         ast::Stmt::SwitchStmt(switch_stmt) => {
             if let Some(init) = &switch_stmt.init {
-                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(init, env, names);
             }
-            collect_mutable_goroutine_capture_names_in_block(&switch_stmt.body, env, names);
+            if let Some(tag) = &switch_stmt.tag {
+                collect_mutable_func_lit_capture_names_in_expr(tag, env, names);
+            }
+            collect_mutable_func_lit_capture_names_in_block(&switch_stmt.body, env, names);
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
             if let Some(init) = &type_switch.init {
-                collect_mutable_goroutine_capture_names_in_stmt(init, env, names);
+                collect_mutable_func_lit_capture_names_in_stmt(init, env, names);
             }
-            collect_mutable_goroutine_capture_names_in_stmt(&type_switch.assign, env, names);
-            collect_mutable_goroutine_capture_names_in_block(&type_switch.body, env, names);
+            collect_mutable_func_lit_capture_names_in_stmt(&type_switch.assign, env, names);
+            collect_mutable_func_lit_capture_names_in_block(&type_switch.body, env, names);
         }
-        ast::Stmt::AssignStmt(_)
-        | ast::Stmt::BranchStmt(_)
-        | ast::Stmt::DeclStmt(_)
-        | ast::Stmt::DeferStmt(_)
-        | ast::Stmt::EmptyStmt(_)
-        | ast::Stmt::ExprStmt(_)
-        | ast::Stmt::IncDecStmt(_)
-        | ast::Stmt::ReturnStmt(_)
-        | ast::Stmt::SendStmt(_) => {}
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+    }
+}
+
+fn collect_mutable_func_lit_capture_names_in_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    collect_mutable_func_lit_capture_names_in_expr(&call.fun, env, names);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_mutable_func_lit_capture_names_in_expr(arg, env, names);
+        }
+    }
+}
+
+fn collect_mutable_func_lit_capture_names_in_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_mutable_func_lit_capture_names_in_expr(len, env, names);
+            }
+            collect_mutable_func_lit_capture_names_in_expr(&array.elt, env, names);
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            collect_mutable_func_lit_capture_names_in_expr(&binary.x, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&binary.y, env, names);
+        }
+        ast::Expr::CallExpr(call) => {
+            collect_mutable_func_lit_capture_names_in_call(call, env, names);
+        }
+        ast::Expr::ChanType(chan) => {
+            collect_mutable_func_lit_capture_names_in_expr(&chan.value, env, names);
+        }
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(ty) = &comp.type_ {
+                collect_mutable_func_lit_capture_names_in_expr(ty, env, names);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    collect_mutable_func_lit_capture_names_in_expr(elt, env, names);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_mutable_func_lit_capture_names_in_expr(elt, env, names);
+            }
+        }
+        ast::Expr::FuncLit(func_lit) => {
+            names.extend(
+                func_lit_captures(func_lit, env)
+                    .into_iter()
+                    .filter(|capture| capture.mode == CaptureMode::BorrowMut)
+                    .map(|capture| capture.name),
+            );
+            collect_mutable_func_lit_capture_names_in_block(&func_lit.body, env, names);
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_mutable_func_lit_capture_names_in_expr(&index.x, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&index.index, env, names);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_mutable_func_lit_capture_names_in_expr(&index.x, env, names);
+            for index in &index.indices {
+                collect_mutable_func_lit_capture_names_in_expr(index, env, names);
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_mutable_func_lit_capture_names_in_expr(&kv.key, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&kv.value, env, names);
+        }
+        ast::Expr::MapType(map) => {
+            collect_mutable_func_lit_capture_names_in_expr(&map.key, env, names);
+            collect_mutable_func_lit_capture_names_in_expr(&map.value, env, names);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_mutable_func_lit_capture_names_in_expr(&paren.x, env, names);
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            collect_mutable_func_lit_capture_names_in_expr(&selector.x, env, names);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_mutable_func_lit_capture_names_in_expr(&slice.x, env, names);
+            if let Some(low) = &slice.low {
+                collect_mutable_func_lit_capture_names_in_expr(low, env, names);
+            }
+            if let Some(high) = &slice.high {
+                collect_mutable_func_lit_capture_names_in_expr(high, env, names);
+            }
+            if let Some(max) = &slice.max {
+                collect_mutable_func_lit_capture_names_in_expr(max, env, names);
+            }
+        }
+        ast::Expr::StarExpr(star) => {
+            collect_mutable_func_lit_capture_names_in_expr(&star.x, env, names);
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_mutable_func_lit_capture_names_in_expr(&assert.x, env, names);
+            if let Some(ty) = &assert.type_ {
+                collect_mutable_func_lit_capture_names_in_expr(ty, env, names);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            collect_mutable_func_lit_capture_names_in_expr(&unary.x, env, names);
+        }
+        ast::Expr::BasicLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::StructType(_) => {}
     }
 }
 
@@ -2173,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn records_mutable_goroutine_captures() {
+    fn records_mutable_function_literal_captures() {
         let file = parse_file(
             "test.go",
             r#"
@@ -2200,13 +2437,81 @@ mod tests {
         }) else {
             panic!("expected function");
         };
-        let names = super::mutable_goroutine_capture_names_in_block(
+        let names = super::mutable_func_lit_capture_names_in_block(
             func.body.as_ref().expect("expected body"),
             &env,
         );
         assert!(names.contains("count"));
         assert!(!names.contains("done"));
         assert!(!names.contains("label"));
+    }
+
+    #[test]
+    fn records_mutable_function_literal_captures_in_composite_literals() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Runner struct {
+                    Run func()
+                }
+
+                func main() {
+                    count := 0
+                    _ = Runner{Run: func() {
+                        count++
+                    }}
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_func_lit_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("count"));
+    }
+
+    #[test]
+    fn detects_ast_goto_to_label() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                Loop:
+                    if true {
+                        goto Loop
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(crate::ast::Stmt::LabeledStmt(labeled)) =
+            func.body.as_ref().and_then(|body| body.list.first())
+        else {
+            panic!("expected labeled statement");
+        };
+        assert!(super::ast_stmt_has_goto_to_label(
+            &labeled.stmt,
+            labeled.label.name
+        ));
     }
 
     #[test]

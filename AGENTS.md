@@ -91,9 +91,21 @@ gors-builtin/
   arguments or assignments are wrapped as shared function cells by casting the
   inner `Box` to `Box<dyn FnMut(...) -> ... + Send>`; do not cast the outer
   `Arc`, because Rust rejects non-primitive casts between `Arc` instantiations.
-- Goroutine function literals use IR capture analysis. Mutable outer captures are
-  promoted to `Arc<Mutex<T>>` in the enclosing block and cloned into the spawned
-  closure so synchronized goroutine writes are visible after channel joins.
+- Function literals use IR capture analysis for shared mutable captures. Mutable
+  outer captures discovered anywhere in a block, including callback arguments,
+  returned closures, goroutines, and function literals nested inside composite
+  literals, are promoted to `Arc<Mutex<T>>` in the enclosing block. Any `move`
+  closure that captures those cells must clone the `Arc` before constructing the
+  closure so later outer-scope reads still see the same storage.
+- Addressable non-Copy binding initializers are cloned for `var` and `:=`
+  declarations. This preserves Go value-copy semantics for struct/string/array
+  bindings and avoids Rust moves such as `d := c` invalidating later uses of
+  `c`. Function values and pointers stay cheap-copy through their existing
+  representations.
+- Backward `goto Label` targeting the immediately labeled statement is lowered
+  by wrapping that statement in a generated Rust labeled `loop` and translating
+  the `goto` to `continue 'Label`. Do not use this for arbitrary forward gotos;
+  those still require broader CFG restructuring in the IR.
 - Go expression switches without `fallthrough` lower to an exclusive Rust
   `if`/`else` chain inside a generated label so Rust can see moved case values
   are branch-local. Switches containing `fallthrough` still lower through an
@@ -376,6 +388,10 @@ terminate control flow, and `for`/`switch`/`select` termination must reject only
 `break` statements that refer to that specific construct. Keep nested breakable
 statements label-aware so an unlabeled `break` inside a nested switch/select/loop
 does not make the outer construct complete.
+IR also owns capture and simple backward-goto discovery. Keep extending those
+analyses in `ir.rs` before adding backend-only statement walkers; codegen may
+still carry temporary guards for legacy lowering, but the semantic decision
+should come from the IR.
 
 The generated-code fallback pruner must preserve control-flow containers while
 removing only unsupported reflection-dependent branches. When it prunes a local
@@ -471,7 +487,8 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 
-- Closure support is partial; recursive self-capturing function literals still need reentrant function-cell calls.
+- Closure support is partial; capture analysis is not yet scope-precise for all shadowing patterns, and closure/function-value aliasing still uses the generated `Arc<Mutex<Option<Box<dyn FnMut + Send>>>>` cell model rather than a full Go environment object.
+- Arbitrary forward `goto` is not supported; only backward gotos that target the immediately labeled statement are currently lowered.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
 

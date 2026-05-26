@@ -11,7 +11,7 @@
 //! Not all Go constructs can be directly translated to Rust. Currently
 //! unsupported features include:
 //!
-//! - Goto statements
+//! - Arbitrary forward goto statements
 //! - Some complex type expressions
 
 pub mod ir;
@@ -51,6 +51,7 @@ thread_local! {
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 #[derive(Clone)]
@@ -74,6 +75,10 @@ struct MainPackageVarModeGuard {
 }
 
 struct SharedCaptureNamesGuard {
+    previous: std::collections::HashSet<String>,
+}
+
+struct GotoContinueLabelsGuard {
     previous: std::collections::HashSet<String>,
 }
 
@@ -111,6 +116,25 @@ impl Drop for SharedCaptureNamesGuard {
     fn drop(&mut self) {
         SHARED_CAPTURE_NAMES.with(|shared| {
             *shared.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl GotoContinueLabelsGuard {
+    fn extend(names: impl IntoIterator<Item = String>) -> Self {
+        let previous = GOTO_CONTINUE_LABELS.with(|labels| {
+            let previous = labels.borrow().clone();
+            labels.borrow_mut().extend(names);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for GotoContinueLabelsGuard {
+    fn drop(&mut self) {
+        GOTO_CONTINUE_LABELS.with(|labels| {
+            *labels.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -176,6 +200,28 @@ fn interface_trait_path_from_name(name: &str) -> syn::Path {
         leading_colon: None,
         segments,
     }
+}
+
+fn interface_trait_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    is_interface_expr(expr).then(|| type_from_expr_ref(expr))
+}
+
+fn borrowed_interface_value_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    let trait_ty = interface_trait_type_from_expr(expr)?;
+    Some(syn::parse_quote! { &mut dyn #trait_ty })
+}
+
+fn boxed_interface_value_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    let trait_ty = interface_trait_type_from_expr(expr)?;
+    Some(syn::parse_quote! { Box<dyn #trait_ty> })
+}
+
+fn local_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
+    borrowed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
+}
+
+fn static_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
+    boxed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
 }
 
 fn qualify_interface_param_name(
@@ -1938,6 +1984,28 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
             .map(|capture| {
                 let ident =
                     syn::Ident::new(&rust_safe_ident_name(&capture.name), Span::mixed_site());
+                syn::parse_quote! { let #ident = #ident.clone(); }
+            })
+            .collect()
+    })
+}
+
+fn move_closure_shared_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let mut names: std::collections::BTreeSet<_> = ir::func_lit_captures(func_lit, &env)
+            .into_iter()
+            .map(|capture| capture.name)
+            .collect();
+        names.extend(ir::mutable_func_lit_capture_names_in_block(
+            &func_lit.body,
+            &env,
+        ));
+        names
+            .into_iter()
+            .filter(|name| is_shared_capture_name(name))
+            .map(|name| {
+                let ident = syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
                 syn::parse_quote! { let #ident = #ident.clone(); }
             })
             .collect()
@@ -6566,52 +6634,6 @@ fn type_from_struct_field_expr(expr: &ast::Expr, self_ident: &syn::Ident) -> syn
     self_referential_pointer_type(expr, self_ident).unwrap_or_else(|| type_from_expr_ref(expr))
 }
 
-fn interface_mut_ref_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
-    let mut impl_methods = Vec::new();
-    for trait_item in trait_items {
-        let syn::TraitItem::Fn(trait_fn) = trait_item else {
-            continue;
-        };
-        let method = trait_fn.sig.ident.clone();
-        let arg_names = trait_fn
-            .sig
-            .inputs
-            .iter()
-            .skip(1)
-            .filter_map(|arg| {
-                let syn::FnArg::Typed(pat_type) = arg else {
-                    return None;
-                };
-                let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
-                    return None;
-                };
-                Some(pat_ident.ident.clone())
-            })
-            .collect::<Vec<_>>();
-        let sig = trait_fn.sig.clone();
-        let block = if matches!(sig.output, syn::ReturnType::Default) {
-            syn::parse_quote!({ (**self).#method(#(#arg_names),*); })
-        } else {
-            syn::parse_quote!({ (**self).#method(#(#arg_names),*) })
-        };
-        impl_methods.push(syn::ImplItemFn {
-            attrs: vec![],
-            vis: syn::Visibility::Inherited,
-            defaultness: None,
-            sig,
-            block,
-        });
-    }
-    if impl_methods.is_empty() {
-        return None;
-    }
-    Some(syn::parse_quote! {
-        impl<T: #ident + ?Sized> #ident for &mut T {
-            #(#impl_methods)*
-        }
-    })
-}
-
 fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
     let mut impl_methods = Vec::new();
     for trait_item in trait_items {
@@ -6654,6 +6676,43 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
             #(#impl_methods)*
         }
     })
+}
+
+fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Vec<syn::Item> {
+    let noop_ident = syn::Ident::new(&format!("__GorsNoop{ident}"), Span::mixed_site());
+    let mut impl_methods = Vec::new();
+    for trait_item in trait_items {
+        let syn::TraitItem::Fn(trait_fn) = trait_item else {
+            continue;
+        };
+        let sig = trait_fn.sig.clone();
+        let block = if sig.ident == "__gors_as_any" {
+            syn::parse_quote!({ None })
+        } else if matches!(sig.output, syn::ReturnType::Default) {
+            syn::parse_quote!({})
+        } else {
+            syn::parse_quote!({ panic!("called no-op interface method") })
+        };
+        impl_methods.push(syn::ImplItemFn {
+            attrs: vec![],
+            vis: syn::Visibility::Inherited,
+            defaultness: None,
+            sig,
+            block,
+        });
+    }
+
+    vec![
+        syn::parse_quote! {
+            #[derive(Clone, Default)]
+            pub struct #noop_ident;
+        },
+        syn::parse_quote! {
+            impl #ident for #noop_ident {
+                #(#impl_methods)*
+            }
+        },
+    ]
 }
 
 fn collect_trait_method_fns(items: &[syn::Item]) -> BTreeMap<String, Vec<syn::TraitItemFn>> {
@@ -7098,9 +7157,17 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 }
             }
 
-            let has_methods = !trait_items.is_empty();
             let has_supertraits = !supertraits.is_empty();
-            let mut_ref_impl = has_methods.then(|| interface_mut_ref_impl(&ident, &trait_items));
+            let has_go_methods = !trait_items.is_empty();
+            if has_go_methods {
+                trait_items.insert(
+                    0,
+                    syn::parse_quote! {
+                        fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    },
+                );
+            }
+            let has_methods = !trait_items.is_empty();
             let box_impl = has_methods.then(|| interface_box_impl(&ident, &trait_items));
             let trait_item = syn::Item::Trait(syn::ItemTrait {
                 attrs: vec![],
@@ -7114,14 +7181,14 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 colon_token: has_supertraits.then(<Token![:]>::default),
                 supertraits: supertraits.clone(),
                 brace_token: syn::token::Brace::default(),
-                items: trait_items,
+                items: trait_items.clone(),
             });
             let mut items = vec![trait_item];
-            if let Some(Some(mut_ref_impl)) = mut_ref_impl {
-                items.push(mut_ref_impl);
-            }
             if let Some(Some(box_impl)) = box_impl {
                 items.push(box_impl);
+            }
+            if has_methods {
+                items.extend(noop_interface_items(&ident, &trait_items));
             }
             if has_supertraits && !has_methods {
                 items.push(syn::parse_quote! {
@@ -8468,12 +8535,13 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             }
         }
         _ => {
-            let ordered_expected_type =
-                if matches!(kind, ir::BuiltinCallKind::Max | ir::BuiltinCallKind::Min) {
+            let ordered_expected_type = match kind {
+                ir::BuiltinCallKind::Max | ir::BuiltinCallKind::Min => {
                     ordered_builtin_arg_expected_type(&raw_args)
-                } else {
-                    None
-                };
+                }
+                ir::BuiltinCallKind::Complex => Some(typeinfer::GoType::Float64),
+                _ => None,
+            };
             let args: Vec<syn::Expr> = raw_args
                 .into_iter()
                 .map(|arg| compile_expr_with_expected(arg, ordered_expected_type.as_ref()))
@@ -8510,10 +8578,10 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                     syn::parse_quote! { crate::builtin::complex128(#re, #im) }
                 }
                 ir::BuiltinCallKind::Real if let [c] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::real128(#c) }
+                    syn::parse_quote! { crate::builtin::real(#c) }
                 }
                 ir::BuiltinCallKind::Imag if let [c] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::imag128(#c) }
+                    syn::parse_quote! { crate::builtin::imag(#c) }
                 }
                 ir::BuiltinCallKind::Recover => {
                     syn::parse_quote! { String::new() }
@@ -8695,6 +8763,10 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
 fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
+    if let ast::Expr::FuncLit(func_lit) = expr {
+        let compiled = compile_func_lit_with_capture_mode(func_lit, true);
+        return shared_func_value_expr(expected, compiled.clone()).unwrap_or(compiled);
+    }
     let compiled = compile_expr_with_expected(expr, Some(expected));
     if is_function_field_selector {
         return compiled;
@@ -8981,6 +9053,11 @@ fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
 }
 
 fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool) -> syn::Expr {
+    let shared_capture_clones = if move_capture {
+        move_closure_shared_capture_clones(&func_lit)
+    } else {
+        Vec::new()
+    };
     let mut params = syn::punctuated::Punctuated::<syn::Pat, Token![,]>::new();
     let mut param_types = Vec::new();
 
@@ -9031,7 +9108,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     });
     append_missing_return_panic(&mut block, &ret, completion);
 
-    if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
+    let closure: syn::Expr = if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
         if move_capture {
             syn::parse_quote! { move || #block }
         } else {
@@ -9054,6 +9131,15 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         } else {
             syn::parse_quote! { |#(#typed_params),*| #ret #block }
         }
+    };
+
+    if move_capture && !shared_capture_clones.is_empty() {
+        syn::parse_quote! {{
+            #(#shared_capture_clones)*
+            #closure
+        }}
+    } else {
+        closure
     }
 }
 
@@ -9351,6 +9437,10 @@ fn is_shared_capture_name(name: &str) -> bool {
     SHARED_CAPTURE_NAMES.with(|shared| shared.borrow().contains(name))
 }
 
+fn is_goto_continue_label(name: &str) -> bool {
+    GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
+}
+
 fn shared_capture_init_expr(name: &str, init: syn::Expr) -> syn::Expr {
     if is_shared_capture_name(name) {
         syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#init)) }
@@ -9462,6 +9552,22 @@ fn expr_should_clone_for_value_param(
     !go_type_is_copy(&expected) && !go_type_is_copy(&actual)
 }
 
+fn binding_init_should_clone(expr: &ast::Expr) -> bool {
+    if !is_ir_addressable_expr(expr) {
+        return false;
+    }
+    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()));
+    !go_type_is_copy(&actual)
+}
+
+fn maybe_clone_binding_init(should_clone: bool, init: syn::Expr) -> syn::Expr {
+    if should_clone {
+        syn::parse_quote! { (#init).clone() }
+    } else {
+        init
+    }
+}
+
 fn compile_return_expr_with_expected(
     expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
@@ -9561,6 +9667,30 @@ fn compile_expr_with_expected(
         }
     }
 
+    if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
+            return expr.into();
+        }
+        let expr: syn::Expr = expr.into();
+        return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
+    }
+
+    if let Some(typeinfer::GoType::Named(name)) = expected {
+        if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+            if go_type_is_interface_like(&actual) {
+                return expr.into();
+            }
+            let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
+            let expr: syn::Expr = expr.into();
+            if needs_owned_temp {
+                return syn::parse_quote! { &mut (#expr).clone() };
+            }
+            return syn::parse_quote! { &mut #expr };
+        }
+    }
+
     if let ast::Expr::CompositeLit(mut comp_lit) = expr {
         if comp_lit.type_.is_none()
             && let Some(typeinfer::GoType::Named(name)) = expected
@@ -9591,30 +9721,6 @@ fn compile_expr_with_expected(
             other => {
                 expr = other;
             }
-        }
-    }
-
-    if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
-        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
-        if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
-            return expr.into();
-        }
-        let expr: syn::Expr = expr.into();
-        return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
-    }
-
-    if let Some(typeinfer::GoType::Named(name)) = expected {
-        if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
-            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
-            if go_type_is_interface_like(&actual) {
-                return expr.into();
-            }
-            let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
-            let expr: syn::Expr = expr.into();
-            if needs_owned_temp {
-                return syn::parse_quote! { &mut (#expr).clone() };
-            }
-            return syn::parse_quote! { &mut #expr };
         }
     }
 
@@ -10295,7 +10401,7 @@ fn compile_top_level_value_spec(
         let inferred_type = vs
             .type_
             .as_ref()
-            .map(type_from_expr_ref)
+            .map(static_value_type_from_expr)
             .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init));
         let init = init_ast.map(syn::Expr::from);
 
@@ -11179,7 +11285,7 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
 
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
         let shared_capture_names = TYPE_ENV
-            .with(|env| ir::mutable_goroutine_capture_names_in_block(&block_stmt, &env.borrow()));
+            .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
         let _shared_capture_names = SharedCaptureNamesGuard::extend(shared_capture_names);
         let mut stmts = vec![];
         for stmt in block_stmt.list {
@@ -11503,28 +11609,23 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::FuncLit(func_lit) => compile_func_lit(func_lit),
             ast::Expr::SliceExpr(slice_expr) => compile_slice_expr(slice_expr),
             ast::Expr::TypeAssertExpr(ta) => {
-                // x.(T) → downcast or type check
-                let x: syn::Expr = (*ta.x).into();
+                let source_ast = *ta.x;
+                let source_is_borrowable = is_ir_addressable_expr(&source_ast);
+                let source_type =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_ast, &env.borrow()));
+                let x: syn::Expr = source_ast.into();
                 if let Some(type_expr) = ta.type_ {
-                    let ty: syn::Type = (*type_expr).into();
-                    if let Some(inner_ty) = box_inner_type(&ty) {
-                        syn::parse_quote! {{
-                            let __gors_any = (#x) as Box<dyn std::any::Any>;
-                            match __gors_any.downcast::<#ty>() {
-                                Ok(__gors_value) => *__gors_value,
-                                Err(__gors_any) => match __gors_any.downcast::<#inner_ty>() {
-                                    Ok(__gors_value) => Box::new(*__gors_value),
-                                    Err(_) => Default::default(),
-                                },
-                            }
-                        }}
+                    if let Some(interface_name) = interface_name_from_type_expr(&type_expr) {
+                        type_assert_interface_expr(
+                            x,
+                            &source_type,
+                            source_is_borrowable,
+                            &interface_name,
+                            false,
+                        )
                     } else {
-                        syn::parse_quote! {
-                            match ((#x) as Box<dyn std::any::Any>).downcast::<#ty>() {
-                                Ok(__gors_value) => *__gors_value,
-                                Err(_) => Default::default(),
-                            }
-                        }
+                        let ty: syn::Type = (*type_expr).into();
+                        type_assert_concrete_expr(x, &source_type, source_is_borrowable, ty)
                     }
                 } else {
                     // type switch x.(type) — handled at statement level
@@ -11938,6 +12039,25 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
                     // Get method implementations from the methods map
                     let mut impl_items: Vec<syn::ImplItem> = vec![];
+                    let exposes_any = !BORROWED_INTERFACE_STRUCTS
+                        .with(|structs| structs.borrow().contains_key(struct_name))
+                        && method_generics
+                            .get(struct_name)
+                            .is_none_or(std::vec::Vec::is_empty);
+                    let as_any_method: syn::ImplItem = if exposes_any {
+                        syn::parse_quote! {
+                            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                                Some(self)
+                            }
+                        }
+                    } else {
+                        syn::parse_quote! {
+                            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                                None
+                            }
+                        }
+                    };
+                    impl_items.push(as_any_method);
                     if let Some(method_list) = methods.get(struct_name) {
                         for method in method_list {
                             if required_methods.contains(&method.sig.ident.to_string()) {
@@ -13051,8 +13171,26 @@ impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
                     vec![syn::parse_quote! { continue; }]
                 }
             }
-            // Rust doesn't have goto - would need restructuring
-            GOTO => vec![],
+            GOTO => {
+                if let Some(label) = branch_stmt.label {
+                    if is_goto_continue_label(label.name) {
+                        let label_ident: syn::Ident = label.into();
+                        let lifetime = syn::Lifetime {
+                            apostrophe: Span::call_site(),
+                            ident: label_ident,
+                        };
+                        return vec![syn::Stmt::Expr(
+                            syn::Expr::Continue(syn::ExprContinue {
+                                attrs: vec![],
+                                continue_token: <Token![continue]>::default(),
+                                label: Some(lifetime),
+                            }),
+                            Some(<Token![;]>::default()),
+                        )];
+                    }
+                }
+                vec![]
+            }
             // Rust doesn't have fallthrough - switch is match which doesn't fall through
             FALLTHROUGH => vec![],
             _ => vec![],
@@ -13066,10 +13204,35 @@ impl TryFrom<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
     fn try_from(labeled_stmt: ast::LabeledStmt) -> Result<Self, Self::Error> {
         // Convert to Rust labeled block/loop
         let label_ident: syn::Ident = labeled_stmt.label.into();
+        let label_name = label_ident.to_string();
         let stmt = *labeled_stmt.stmt;
         if let ast::Stmt::ForStmt(for_stmt) = stmt {
             return Ok(vec![syn::Stmt::Expr(
                 compile_for_stmt(for_stmt, Some(label_ident))?,
+                None,
+            )]);
+        }
+
+        if ir::ast_stmt_has_goto_to_label(&stmt, &label_name) {
+            let _goto_continue = GotoContinueLabelsGuard::extend([label_name]);
+            let mut inner_stmts: Vec<syn::Stmt> = stmt.try_into()?;
+            inner_stmts.push(syn::parse_quote! { break; });
+            return Ok(vec![syn::Stmt::Expr(
+                syn::Expr::Loop(syn::ExprLoop {
+                    attrs: vec![],
+                    label: Some(syn::Label {
+                        name: syn::Lifetime {
+                            apostrophe: Span::call_site(),
+                            ident: label_ident,
+                        },
+                        colon_token: <Token![:]>::default(),
+                    }),
+                    loop_token: <Token![loop]>::default(),
+                    body: syn::Block {
+                        brace_token: syn::token::Brace::default(),
+                        stmts: inner_stmts,
+                    },
+                }),
                 None,
             )]);
         }
@@ -13832,7 +13995,8 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                     let names = value_spec.names;
                     let type_expr = value_spec.type_;
                     let go_type = type_expr.as_ref().map(typeinfer::GoType::from_expr);
-                    let rust_type: Option<syn::Type> = type_expr.as_ref().map(type_from_expr_ref);
+                    let rust_type: Option<syn::Type> =
+                        type_expr.as_ref().map(local_value_type_from_expr);
                     let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
                     for name in names {
@@ -13851,10 +14015,13 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                             });
                         }
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
+                            let should_clone = binding_init_should_clone(&expr);
                             if let Some(ref go_type) = go_type {
-                                compile_expr_with_expected(expr, Some(go_type))
+                                let init = compile_expr_with_expected(expr, Some(go_type));
+                                maybe_clone_binding_init(should_clone, init)
                             } else {
-                                expr.into()
+                                let init = expr.into();
+                                maybe_clone_binding_init(should_clone, init)
                             }
                         });
 
@@ -13995,6 +14162,155 @@ fn detect_comma_ok(rhs: &ast::Expr) -> Option<CommaOkKind> {
     }
 }
 
+fn type_assert_any_option_expr(source: syn::Expr, source_type: &typeinfer::GoType) -> syn::Expr {
+    if go_type_is_interface_like(source_type)
+        && !matches!(resolved_go_type(source_type), typeinfer::GoType::Any)
+    {
+        syn::parse_quote! { (#source).__gors_as_any() }
+    } else {
+        syn::parse_quote! { Some((#source).as_ref() as &dyn std::any::Any) }
+    }
+}
+
+fn type_assert_with_any_option(
+    source: syn::Expr,
+    source_type: &typeinfer::GoType,
+    source_is_borrowable: bool,
+    body: syn::Expr,
+) -> syn::Expr {
+    if go_type_is_interface_like(source_type)
+        && !matches!(resolved_go_type(source_type), typeinfer::GoType::Any)
+        || source_is_borrowable
+    {
+        let any_option = type_assert_any_option_expr(source, source_type);
+        syn::parse_quote! {{
+            let __gors_any_option = #any_option;
+            #body
+        }}
+    } else {
+        syn::parse_quote! {{
+            let __gors_any_source = #source;
+            let __gors_any_option = Some(__gors_any_source.as_ref() as &dyn std::any::Any);
+            #body
+        }}
+    }
+}
+
+fn type_assert_concrete_expr(
+    source: syn::Expr,
+    source_type: &typeinfer::GoType,
+    source_is_borrowable: bool,
+    asserted_type: syn::Type,
+) -> syn::Expr {
+    let body = syn::parse_quote! {
+        match __gors_any_option.and_then(|__gors_any| __gors_any.downcast_ref::<#asserted_type>()) {
+            Some(__v) => __v.clone(),
+            None => panic!("type assertion failed"),
+        }
+    };
+    type_assert_with_any_option(source, source_type, source_is_borrowable, body)
+}
+
+fn comma_ok_type_assert_concrete_expr(
+    source: syn::Expr,
+    source_type: &typeinfer::GoType,
+    source_is_borrowable: bool,
+    asserted_type: syn::Type,
+) -> syn::Expr {
+    let body = syn::parse_quote! {
+        match __gors_any_option.and_then(|__gors_any| __gors_any.downcast_ref::<#asserted_type>()) {
+            Some(__v) => (__v.clone(), true),
+            None => (Default::default(), false),
+        }
+    };
+    type_assert_with_any_option(source, source_type, source_is_borrowable, body)
+}
+
+fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .interface_implementors(interface_name)
+            .into_iter()
+            .map(|name| named_go_type_path(&name))
+            .collect()
+    })
+}
+
+fn interface_assertion_fallback(
+    trait_path: &syn::Path,
+    interface_name: &str,
+    comma_ok: bool,
+) -> syn::Expr {
+    let noop_ty = noop_interface_type_from_name(interface_name);
+    let value: syn::Expr =
+        syn::parse_quote! { Box::new(#noop_ty::default()) as Box<dyn #trait_path> };
+    if comma_ok {
+        syn::parse_quote! { (#value, false) }
+    } else {
+        value
+    }
+}
+
+fn noop_interface_type_from_name(name: &str) -> syn::Type {
+    let mut parts = name.split('.').collect::<Vec<_>>();
+    let Some(last) = parts.pop() else {
+        return syn::parse_quote! { __GorsNoopInterface };
+    };
+    let noop_name = format!("__GorsNoop{}", rust_safe_ident_name(last));
+    parts.push(Box::leak(noop_name.into_boxed_str()));
+    rust_type_path_from_segments(parts, true)
+}
+
+fn type_assert_interface_expr(
+    source: syn::Expr,
+    source_type: &typeinfer::GoType,
+    source_is_borrowable: bool,
+    interface_name: &str,
+    comma_ok: bool,
+) -> syn::Expr {
+    if interface_name == "error" {
+        return if comma_ok {
+            syn::parse_quote! { (String::new(), false) }
+        } else {
+            syn::parse_quote! { String::new() }
+        };
+    }
+    let trait_path = interface_trait_path_from_name(interface_name);
+    let implementors = interface_assertion_implementors(interface_name);
+    let fallback = interface_assertion_fallback(&trait_path, interface_name, comma_ok);
+    if implementors.is_empty() {
+        return fallback;
+    }
+    let mut result = fallback.clone();
+    for implementor in implementors.iter().rev() {
+        result = if comma_ok {
+            syn::parse_quote! {
+                if let Some(__gors_value) = __gors_any.downcast_ref::<#implementor>() {
+                    (Box::new(__gors_value.clone()) as Box<dyn #trait_path>, true)
+                } else {
+                    #result
+                }
+            }
+        } else {
+            syn::parse_quote! {
+                if let Some(__gors_value) = __gors_any.downcast_ref::<#implementor>() {
+                    Box::new(__gors_value.clone()) as Box<dyn #trait_path>
+                } else {
+                    #result
+                }
+            }
+        };
+    }
+    let body = syn::parse_quote! {
+            if let Some(__gors_any) = __gors_any_option {
+                #result
+            } else {
+                #fallback
+            }
+    };
+    type_assert_with_any_option(source, source_type, source_is_borrowable, body)
+}
+
 fn compile_comma_ok(
     lhs: Vec<ast::Expr>,
     rhs: ast::Expr,
@@ -14027,35 +14343,6 @@ fn compile_comma_ok(
         Some(id) => syn::parse_quote! { mut #id },
     };
 
-    if matches!(kind, CommaOkKind::TypeAssert) {
-        if let Some(interface_name) = type_assert_interface_name(&rhs) {
-            let fallback: syn::Expr = match interface_name.as_str() {
-                "Formatter" | "Stringer" | "GoStringer" => {
-                    syn::parse_quote! { __GorsNoopInterface::default() }
-                }
-                "error" => syn::parse_quote! { String::new() },
-                _ => syn::parse_quote! { Default::default() },
-            };
-            if is_define {
-                return Ok(vec![syn::parse_quote! {
-                    let (#val_pat, #ok_pat) = (#fallback, false);
-                }]);
-            }
-
-            let mut lhs_iter = lhs.into_iter();
-            let val_lhs = lhs_iter.next().ok_or_else(|| {
-                CompilerError::InvalidAssignment("missing comma-ok value lhs".to_string())
-            })?;
-            let ok_lhs = lhs_iter.next().ok_or_else(|| {
-                CompilerError::InvalidAssignment("missing comma-ok ok lhs".to_string())
-            })?;
-            let val_e = comma_ok_lhs_expr(val_lhs);
-            let ok_e = comma_ok_lhs_expr(ok_lhs);
-            let rhs_expr: syn::Expr = syn::parse_quote! { (#fallback, false) };
-            return Ok(comma_ok_assignment_stmts(vec![val_e, ok_e], rhs_expr));
-        }
-    }
-
     let rhs_expr: syn::Expr = match kind {
         CommaOkKind::MapIndex => {
             if let ast::Expr::IndexExpr(ie) = rhs {
@@ -14085,18 +14372,27 @@ fn compile_comma_ok(
         }
         CommaOkKind::TypeAssert => {
             if let ast::Expr::TypeAssertExpr(ta) = rhs {
-                let x_e: syn::Expr = (*ta.x).into();
+                let source_ast = *ta.x;
+                let source_is_borrowable = is_ir_addressable_expr(&source_ast);
+                let source_type =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_ast, &env.borrow()));
+                let x_e: syn::Expr = source_ast.into();
                 let Some(type_expr) = ta.type_ else {
                     return Err(CompilerError::InvalidAssignment(
                         "comma-ok type assertion without asserted type".to_string(),
                     ));
                 };
-                let ty: syn::Type = (*type_expr).into();
-                syn::parse_quote! {
-                    match (&*#x_e as &dyn std::any::Any).downcast_ref::<#ty>() {
-                        Some(__v) => (__v.clone(), true),
-                        None => (Default::default(), false),
-                    }
+                if let Some(interface_name) = interface_name_from_type_expr(&type_expr) {
+                    type_assert_interface_expr(
+                        x_e,
+                        &source_type,
+                        source_is_borrowable,
+                        &interface_name,
+                        true,
+                    )
+                } else {
+                    let ty: syn::Type = (*type_expr).into();
+                    comma_ok_type_assert_concrete_expr(x_e, &source_type, source_is_borrowable, ty)
                 }
             } else {
                 return Err(CompilerError::InvalidAssignment(
@@ -14154,12 +14450,8 @@ fn comma_ok_assignment_stmts(lhs: Vec<Option<syn::Expr>>, rhs_expr: syn::Expr) -
     stmts
 }
 
-fn type_assert_interface_name(rhs: &ast::Expr) -> Option<String> {
-    let ast::Expr::TypeAssertExpr(ta) = rhs else {
-        return None;
-    };
-    let type_expr = ta.type_.as_ref()?;
-    match &**type_expr {
+fn interface_name_from_type_expr(type_expr: &ast::Expr) -> Option<String> {
+    match type_expr {
         ast::Expr::Ident(id) if id.name == "error" => Some(id.name.to_string()),
         ast::Expr::Ident(id) if is_type_interface(id.name) => Some(id.name.to_string()),
         ast::Expr::Ident(id) if TYPE_ENV.with(|env| env.borrow().is_interface(id.name)) => {
@@ -14479,7 +14771,9 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             "expected identifier on lhs of :=".to_string(),
                         ));
                     };
+                    let should_clone = binding_init_should_clone(&rhs);
                     let init: syn::Expr = rhs.into();
+                    let init = maybe_clone_binding_init(should_clone, init);
                     if ident.name == "_" {
                         out.push(syn::parse_quote! { let _ = #init; });
                     } else {
@@ -14559,12 +14853,16 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         assign_stmt.rhs.into_iter().next().ok_or_else(|| {
                             CompilerError::InvalidAssignment("empty rhs".to_string())
                         })?;
-                    first_rhs.into()
+                    let should_clone = binding_init_should_clone(&first_rhs);
+                    let init: syn::Expr = first_rhs.into();
+                    maybe_clone_binding_init(should_clone, init)
                 }
                 _ => {
                     let mut elems = syn::punctuated::Punctuated::new();
                     for expr in assign_stmt.rhs {
-                        elems.push(expr.into())
+                        let should_clone = binding_init_should_clone(&expr);
+                        let init: syn::Expr = expr.into();
+                        elems.push(maybe_clone_binding_init(should_clone, init))
                     }
                     syn::Expr::Tuple(syn::ExprTuple {
                         attrs: vec![],
@@ -15108,6 +15406,22 @@ func main() {
             ),
             "{params:?}"
         );
+    }
+
+    #[test]
+    fn it_should_coerce_complex_builtin_parts() {
+        let go_source = r#"
+package main
+
+func main() {
+	_ = complex(1, 2)
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("crate::builtin::complex128((1 as f64), (2 as f64))"));
     }
 
     #[test]
