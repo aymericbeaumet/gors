@@ -6135,49 +6135,7 @@ fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
 
 fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
     let func_ty = shared_func_type_from_ast(func_type);
-    let mut params = Vec::new();
-    for field in &func_type.params.list {
-        let ty: syn::Type = field
-            .type_
-            .as_ref()
-            .map(type_from_expr_ref)
-            .unwrap_or_else(|| syn::parse_quote! { () });
-        let count = field.names.as_ref().map_or(1, Vec::len);
-        for _ in 0..count {
-            let ident = next_unnamed_arg_ident();
-            params.push(quote::quote! { #ident: #ty });
-        }
-    }
-
-    let body = match func_type
-        .results
-        .as_ref()
-        .map(|results| results.list.as_slice())
-    {
-        None | Some([]) => quote::quote! {},
-        Some([field]) => {
-            let expr = field
-                .type_
-                .as_ref()
-                .map(default_expr_for_type)
-                .unwrap_or_else(|| syn::parse_quote! { Default::default() });
-            quote::quote! { #expr }
-        }
-        Some(fields) => {
-            let values = fields.iter().map(|field| {
-                field
-                    .type_
-                    .as_ref()
-                    .map(default_expr_for_type)
-                    .unwrap_or_else(|| syn::parse_quote! { Default::default() })
-            });
-            quote::quote! { (#(#values),*) }
-        }
-    };
-
-    syn::parse_quote! {
-        std::sync::Arc::new(std::sync::Mutex::new(move |#(#params),*| { #body })) as #func_ty
-    }
+    syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(None)) as #func_ty }
 }
 
 fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
@@ -6380,13 +6338,7 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
 fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<dyn FnMut(#(#params),*) -> #result + Send>> }
-}
-
-fn impl_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
-    let params = func_param_types_from_ast(func_type);
-    let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { impl FnMut(#(#params),*) -> #result }
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(#(#params),*) -> #result + Send>>>> }
 }
 
 fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
@@ -8111,7 +8063,7 @@ fn shared_func_type_from_go_parts(
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<dyn FnMut(#(#params),*) -> #result + Send>> }
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(#(#params),*) -> #result + Send>>>> }
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -8567,7 +8519,7 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
     let func_ty = shared_func_type_from_go_type(expected)?;
     Some(syn::parse_quote! {
-        std::sync::Arc::new(std::sync::Mutex::new(#compiled)) as #func_ty
+        std::sync::Arc::new(std::sync::Mutex::new(Some(Box::new(#compiled)))) as #func_ty
     })
 }
 
@@ -9367,7 +9319,13 @@ fn compile_expr_with_expected(
     if matches!(expected, Some(typeinfer::GoType::Func { .. })) {
         match expr {
             ast::Expr::FuncLit(func_lit) => {
-                return compile_func_lit_with_capture_mode(func_lit, true);
+                let compiled = compile_func_lit_with_capture_mode(func_lit, true);
+                if let Some(expected) = expected
+                    && let Some(func_value) = shared_func_value_expr(expected, compiled.clone())
+                {
+                    return func_value;
+                }
+                return compiled;
             }
             other => {
                 expr = other;
@@ -9419,7 +9377,7 @@ fn compile_expr_with_expected(
         });
         if is_func_var {
             let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-            return syn::parse_quote! { &mut #ident };
+            return syn::parse_quote! { #ident.clone() };
         }
     }
 
@@ -9536,7 +9494,10 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
     }
     Some(syn::parse_quote! {{
         let mut __gors_func = crate::builtin::lock_func(&(#func));
-        (&mut *__gors_func)(#args)
+        match __gors_func.as_mut() {
+            Some(__gors_func) => (&mut **__gors_func)(#args),
+            None => panic!("nil function"),
+        }
     }})
 }
 
@@ -12103,7 +12064,7 @@ fn type_from_param_expr(
                 syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
             }
         }
-        ast::Expr::FuncType(func_type) => impl_func_type_from_ast(func_type),
+        ast::Expr::FuncType(func_type) => shared_func_type_from_ast(func_type),
         _ if type_expr_resolves_to_slice_alias(expr) => {
             let inner = type_from_expr_ref(expr);
             syn::parse_quote! { &mut #inner }
@@ -13927,15 +13888,38 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         lhs_ast, rhs_ast, key_ty, value_ty,
                     )?]);
                 }
-                let rhs_is_func_lit = matches!(rhs_ast, ast::Expr::FuncLit(_));
+                let lhs_func_ty =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&lhs_ast, &env.borrow()));
+                let rhs_ast = match rhs_ast {
+                    ast::Expr::FuncLit(func_lit)
+                        if shared_func_type_from_go_type(&lhs_func_ty).is_some() =>
+                    {
+                        let closure = compile_func_lit_with_capture_mode(func_lit, true);
+                        if let ast::Expr::Ident(ident) = &lhs_ast {
+                            let ident = syn::Ident::new(
+                                &rust_safe_ident_name(ident.name),
+                                Span::mixed_site(),
+                            );
+                            return Ok(vec![syn::parse_quote! {{
+                                let __gors_func_target = #ident.clone();
+                                let #ident = #ident.clone();
+                                *crate::builtin::lock_func(&__gors_func_target) = Some(Box::new(#closure));
+                            }}]);
+                        }
+                        let right =
+                            shared_func_value_expr(&lhs_func_ty, closure).ok_or_else(|| {
+                                CompilerError::InvalidAssignment(
+                                    "invalid function assignment".to_string(),
+                                )
+                            })?;
+                        let left = compile_assignment_lhs(lhs_ast);
+                        return Ok(vec![syn::parse_quote! { #left = #right; }]);
+                    }
+                    other => other,
+                };
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
                 let right_raw = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
-                if rhs_is_func_lit
-                    && let Some(func_value) = shared_func_value_expr(&lhs_ty, right.clone())
-                {
-                    right = func_value;
-                }
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
