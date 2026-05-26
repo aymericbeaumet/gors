@@ -97,6 +97,11 @@ gors-builtin/
   whenever a matching `continue` is present. This covers both unlabeled
   continues and `continue label` targeting the current loop so Go's post clause
   still runs before the next iteration.
+- Select statements wrap generated bodies in a labeled block and rewrite
+  unlabeled select-case `break` statements to that label. Channel select
+  readiness uses `Chan::try_recv` and `Chan::try_send`, so builtin DCE roots must
+  preserve those methods whenever select lowering or channel helpers reference
+  them.
 - Non-void functions and function literals with no explicit final Rust `return`
   get a tail `panic!("gors: missing return")` fallback. Go rejects reachable
   missing-return paths, but valid Go control-flow constructs such as exhaustive
@@ -161,6 +166,8 @@ uses that extracted SDK as the source for generated `go_stdlib.rs` metadata and
 copied `go_stdlib_src/` files under Cargo `OUT_DIR`. The build exports
 `gors::GO_VERSION` and `gors::STDLIB_VERSION` (`gostdlibx.y.z`) so generated
 output manifests and `gors version` change when the embedded stdlib changes.
+It must also rerun when `../gors-builtin/src/lib.rs` changes because compiler
+tests and generated programs embed `builtin.rs` from that source.
 
 Integration tests must not call a system `go`. `tests/common.rs::go_command()`
 uses the extracted SDK `bin/go` from the `gors` build, with `GOTOOLCHAIN=local`,

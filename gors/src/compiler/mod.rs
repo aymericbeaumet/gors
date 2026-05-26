@@ -36,6 +36,7 @@ thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
@@ -1945,6 +1946,7 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
 
 /// Compile a Go select statement into Rust.
 fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let select_label = next_select_label();
     let clauses: Vec<ast::CommClause> = select_stmt
         .body
         .list
@@ -1972,13 +1974,15 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
     // Only default case
     if cases.is_empty() {
         if let Some(body) = default_body {
-            let mut stmts = vec![];
-            for stmt in body {
-                stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-            }
-            return Ok(stmts);
+            let stmts = compile_select_case_body(body, &select_label)?;
+            return Ok(vec![select_labeled_block(select_label, stmts)]);
         }
-        return Ok(vec![]);
+        let stmt: syn::Stmt = syn::parse_quote! {
+            loop {
+                std::thread::park();
+            }
+        };
+        return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
     }
 
     // Helper: extract channel expression from a comm statement by consuming it
@@ -2000,32 +2004,26 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
             ));
         };
 
-        let mut case_body_stmts = vec![];
-        for stmt in case.body {
-            case_body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-        }
+        let case_body_stmts = compile_select_case_body(case.body, &select_label)?;
 
         if let Some(default) = default_body.take() {
             // Non-blocking: try_recv/try_send with fallback
-            let mut default_stmts = vec![];
-            for stmt in default {
-                default_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-            }
+            let default_stmts = compile_select_case_body(default, &select_label)?;
 
             match comm {
                 ast::Stmt::ExprStmt(expr_stmt) => {
                     // <-ch in expression position
                     if let Some(ch) = extract_channel_recv(expr_stmt.x) {
-                        return Ok(vec![syn::Stmt::Expr(
-                            syn::parse_quote! {
+                        let stmt: syn::Stmt = syn::parse_quote! {
+                            {
                                 if let Ok(_v) = #ch.try_recv() {
                                     #(#case_body_stmts)*
                                 } else {
                                     #(#default_stmts)*
                                 }
-                            },
-                            None,
-                        )]);
+                            }
+                        };
+                        return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
                     }
                 }
                 ast::Stmt::AssignStmt(assign)
@@ -2036,32 +2034,32 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                     {
                         let lhs_pat = expr_to_pat(lhs);
                         if let Some(ch) = extract_channel_recv(rhs_expr) {
-                            return Ok(vec![syn::Stmt::Expr(
-                                syn::parse_quote! {
+                            let stmt: syn::Stmt = syn::parse_quote! {
+                                {
                                     if let Ok(#lhs_pat) = #ch.try_recv() {
                                         #(#case_body_stmts)*
                                     } else {
                                         #(#default_stmts)*
                                     }
-                                },
-                                None,
-                            )]);
+                                }
+                            };
+                            return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
                         }
                     }
                 }
                 ast::Stmt::SendStmt(send) => {
                     let ch: syn::Expr = send.chan.into();
                     let val: syn::Expr = send.value.into();
-                    return Ok(vec![syn::Stmt::Expr(
-                        syn::parse_quote! {
+                    let stmt: syn::Stmt = syn::parse_quote! {
+                        {
                             if #ch.try_send(#val).is_ok() {
                                 #(#case_body_stmts)*
                             } else {
                                 #(#default_stmts)*
                             }
-                        },
-                        None,
-                    )]);
+                        }
+                    };
+                    return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
                 }
                 _ => {}
             }
@@ -2070,7 +2068,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
             let comm_stmts: Vec<syn::Stmt> = Vec::<syn::Stmt>::try_from(comm)?;
             let mut all_stmts = comm_stmts;
             all_stmts.extend(case_body_stmts);
-            return Ok(all_stmts);
+            return Ok(vec![select_labeled_block(select_label, all_stmts)]);
         }
     }
 
@@ -2080,10 +2078,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         let Some(comm) = case.comm.map(|c| *c) else {
             continue;
         };
-        let mut body_stmts = vec![];
-        for stmt in case.body {
-            body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-        }
+        let body_stmts = compile_select_case_body(case.body, &select_label)?;
 
         match comm {
             ast::Stmt::ExprStmt(expr_stmt) => {
@@ -2131,10 +2126,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
     }
 
     let default_arm = if let Some(body) = default_body {
-        let mut stmts = vec![];
-        for stmt in body {
-            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-        }
+        let stmts = compile_select_case_body(body, &select_label)?;
         quote::quote! {
             #(#stmts)*
             break;
@@ -2145,15 +2137,166 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         }
     };
 
-    Ok(vec![syn::Stmt::Expr(
-        syn::parse_quote! {
+    let stmt: syn::Stmt = syn::parse_quote! {
+        {
             loop {
                 #(#arms)*
                 #default_arm
             }
+        }
+    };
+    Ok(vec![select_labeled_block(select_label, vec![stmt])])
+}
+
+fn select_labeled_block(label: syn::Lifetime, stmts: Vec<syn::Stmt>) -> syn::Stmt {
+    syn::Stmt::Expr(
+        syn::Expr::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: Some(syn::Label {
+                name: label,
+                colon_token: <Token![:]>::default(),
+            }),
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts,
+            },
+        }),
+        Some(<Token![;]>::default()),
+    )
+}
+
+fn compile_select_case_body(
+    body: Vec<ast::Stmt>,
+    select_label: &syn::Lifetime,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    compile_breakable_stmt_list(body, select_label)
+}
+
+fn compile_breakable_stmt_list(
+    body: Vec<ast::Stmt>,
+    break_label: &syn::Lifetime,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let mut stmts = vec![];
+    for stmt in body {
+        stmts.extend(compile_breakable_stmt(stmt, break_label)?);
+    }
+    Ok(stmts)
+}
+
+fn compile_breakable_stmt(
+    stmt: ast::Stmt,
+    break_label: &syn::Lifetime,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    match stmt {
+        ast::Stmt::BranchStmt(branch)
+            if branch.tok == token::Token::BREAK && branch.label.is_none() =>
+        {
+            Ok(vec![syn::Stmt::Expr(
+                syn::Expr::Break(syn::ExprBreak {
+                    attrs: vec![],
+                    break_token: <Token![break]>::default(),
+                    label: Some(break_label.clone()),
+                    expr: None,
+                }),
+                Some(<Token![;]>::default()),
+            )])
+        }
+        ast::Stmt::BlockStmt(block) => {
+            let stmts = compile_breakable_stmt_list(block.list, break_label)?;
+            Ok(vec![syn::Stmt::Expr(
+                syn::Expr::Block(syn::ExprBlock {
+                    attrs: vec![],
+                    label: None,
+                    block: syn::Block {
+                        brace_token: syn::token::Brace::default(),
+                        stmts,
+                    },
+                }),
+                None,
+            )])
+        }
+        ast::Stmt::IfStmt(if_stmt) => compile_breakable_if_stmt(if_stmt, break_label),
+        other => Vec::<syn::Stmt>::try_from(other),
+    }
+}
+
+fn compile_breakable_if_stmt(
+    if_stmt: ast::IfStmt,
+    break_label: &syn::Lifetime,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let has_init = if_stmt.init.is_some();
+    let init_stmts: Vec<syn::Stmt> = if let Some(init) = *if_stmt.init {
+        Vec::<syn::Stmt>::try_from(init)?
+    } else {
+        vec![]
+    };
+
+    let then_stmts = compile_breakable_stmt_list(if_stmt.body.list, break_label)?;
+    let else_branch = if let Some(else_) = *if_stmt.else_ {
+        Some((
+            <Token![else]>::default(),
+            Box::new(match else_ {
+                ast::Stmt::IfStmt(nested) => {
+                    let nested_stmts = compile_breakable_if_stmt(nested, break_label)?;
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts: nested_stmts,
+                        },
+                    })
+                }
+                ast::Stmt::BlockStmt(block) => {
+                    let stmts = compile_breakable_stmt_list(block.list, break_label)?;
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts,
+                        },
+                    })
+                }
+                _ => {
+                    return Err(CompilerError::UnsupportedConstruct(
+                        "unsupported else branch type".to_string(),
+                    ));
+                }
+            }),
+        ))
+    } else {
+        None
+    };
+
+    let if_expr = syn::Expr::If(syn::ExprIf {
+        attrs: vec![],
+        if_token: <Token![if]>::default(),
+        cond: Box::new(if_stmt.cond.into()),
+        then_branch: syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: then_stmts,
         },
-        None,
-    )])
+        else_branch,
+    });
+
+    if has_init {
+        let mut block_stmts = init_stmts;
+        block_stmts.push(syn::Stmt::Expr(if_expr, None));
+        Ok(vec![syn::Stmt::Expr(
+            syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: None,
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: block_stmts,
+                },
+            }),
+            None,
+        )])
+    } else {
+        Ok(vec![syn::Stmt::Expr(if_expr, None)])
+    }
 }
 
 /// Convert a Go comment group to Rust doc attributes.
@@ -2257,6 +2400,7 @@ fn compile_error_expr(message: impl AsRef<str>) -> syn::Expr {
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     set_import_renames(BTreeMap::new());
     // Pre-scan the AST to build a type environment
@@ -2284,6 +2428,7 @@ pub fn compile_with_type_env_and_import_renames(
 ) -> Result<syn::File, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     set_import_renames(import_renames);
     let _ir = ir::lower_file(&file, &type_env);
@@ -2423,6 +2568,7 @@ fn compile_program_impl(
 ) -> Result<CompiledProgram, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
@@ -3708,9 +3854,13 @@ fn expand_builtin_roots(
                 | "send"
                 | "recv"
                 | "recv_with_ok"
+                | "try_send"
+                | "try_recv"
                 | "Chan::send"
                 | "Chan::recv"
                 | "Chan::recv_with_ok"
+                | "Chan::try_send"
+                | "Chan::try_recv"
                 | "Chan::len"
                 | "Chan::cap"
         )
@@ -3724,10 +3874,14 @@ fn expand_builtin_roots(
             "Chan::send",
             "Chan::recv",
             "Chan::recv_with_ok",
+            "Chan::try_send",
+            "Chan::try_recv",
             "new",
             "send",
             "recv",
             "recv_with_ok",
+            "try_send",
+            "try_recv",
         ] {
             expanded.insert(root.to_string());
         }
@@ -13225,6 +13379,16 @@ fn next_switch_label() -> syn::Lifetime {
     syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
 }
 
+fn next_select_label() -> syn::Lifetime {
+    let n = SELECT_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    syn::Lifetime::new(&format!("'__gors_select_{n}"), Span::mixed_site())
+}
+
 fn next_loop_body_label() -> syn::Lifetime {
     let n = LOOP_BODY_COUNTER.with(|c| {
         let mut val = c.borrow_mut();
@@ -16095,6 +16259,23 @@ func main() {
         assert!(
             rust_src.contains("make_chan(5)"),
             "Expected make_chan(5) in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_empty_select_as_blocking() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func main() {
+                select {}
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("std::thread::park();"),
+            "Expected empty select to park forever:\n{}",
             rust_src
         );
     }

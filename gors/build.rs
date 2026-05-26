@@ -605,6 +605,7 @@ fn is_unix_goos(value: &str) -> bool {
 fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={GO_VERSION_FILE}");
+    println!("cargo:rerun-if-changed=../gors-builtin/src/lib.rs");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
 
     let go_version = read_go_version()?;

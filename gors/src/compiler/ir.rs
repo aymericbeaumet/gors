@@ -743,9 +743,22 @@ pub fn stmt_completion(stmt: &Stmt) -> Completion {
             };
             stmt_completion(else_branch)
         }
+        Stmt::Select { cases } => select_completion(cases),
         Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => switch_completion(cases),
         _ => Completion::MayComplete,
     }
+}
+
+fn select_completion(cases: &[CommCase]) -> Completion {
+    if cases.is_empty() {
+        return Completion::Terminates;
+    }
+    for case in cases {
+        if stmts_completion(&case.body) != Completion::Terminates {
+            return Completion::MayComplete;
+        }
+    }
+    Completion::Terminates
 }
 
 fn switch_completion(cases: &[Case]) -> Completion {
@@ -2072,6 +2085,52 @@ mod tests {
         assert_eq!(cases.len(), 3);
         assert!(!cases.first().is_some_and(|case| case.is_default));
         assert!(cases.get(2).is_some_and(|case| case.is_default));
+    }
+
+    #[test]
+    fn classifies_select_completion() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(ch chan int) {
+                    select {}
+                    select {
+                    case <-ch:
+                        return
+                    }
+                    select {
+                    default:
+                        return
+                    }
+                    select {
+                    default:
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(
+            super::stmt_completion(&body.stmts[0]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[1]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[2]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[3]),
+            Completion::MayComplete
+        );
     }
 
     #[test]

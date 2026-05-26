@@ -986,6 +986,33 @@ impl<T> Chan<T> {
         }
     }
 
+    pub fn try_send(&self, val: T) -> Result<(), T> {
+        let (lock, rx_cv, _) = &*self.inner;
+        let mut inner = lock_chan(lock);
+        if inner.closed || inner.capacity == 0 || inner.buf.len() >= inner.capacity {
+            return Err(val);
+        }
+        inner.buf.push_back(val);
+        rx_cv.notify_one();
+        Ok(())
+    }
+
+    pub fn try_recv(&self) -> Result<T, ()>
+    where
+        T: Default,
+    {
+        let (lock, _, tx_cv) = &*self.inner;
+        let mut inner = lock_chan(lock);
+        if let Some(val) = inner.buf.pop_front() {
+            tx_cv.notify_one();
+            Ok(val)
+        } else if inner.closed {
+            Ok(T::default())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn recv_with_ok(&self) -> (T, bool)
     where
         T: Default,
@@ -1355,6 +1382,21 @@ mod tests {
         send(&iter_ch, 2);
         close(&iter_ch);
         assert_eq!(iter_ch.into_iter().collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn channel_try_helpers_are_non_blocking() {
+        let ch = make_chan(1);
+        assert_eq!(ch.try_recv(), Err(()));
+        assert_eq!(ch.try_send(1), Ok(()));
+        assert_eq!(ch.try_send(2), Err(2));
+        assert_eq!(ch.try_recv(), Ok(1));
+        assert_eq!(ch.try_recv(), Err(()));
+        close(&ch);
+        assert_eq!(ch.try_recv(), Ok(0));
+
+        let unbuffered = make_chan(0);
+        assert_eq!(unbuffered.try_send(3), Err(3));
     }
 
     #[test]
