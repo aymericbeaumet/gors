@@ -578,7 +578,11 @@ signature is known to `TypeEnv`: fixed-arity calls must match parameter count,
 single multi-result calls may forward results to matching parameters, variadic
 calls validate fixed arguments plus element/spread assignability, and function
 literals are checked from their AST signature. Unknown callees stay permissive
-until type inference can prove their signature.
+until type inference can prove their signature. Return statements must walk
+returned expressions before only checking result count/type, so `return f(bad)`
+gets the same call validation as assignments and expression statements. Type
+conversion calls are a separate IR validation path: they require exactly one
+single-valued argument and reject spread arguments before backend lowering.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.

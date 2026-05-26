@@ -12879,6 +12879,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidCall { target, reason } => {
             format!("invalid call to {target}: {reason}")
         }
+        ir::InvalidStatementReason::InvalidTypeConversion { target, reason } => {
+            format!("invalid type conversion to {target}: {reason}")
+        }
         ir::InvalidStatementReason::NonCallOrReceive => {
             "expected a function call, method call, or receive operation".to_string()
         }

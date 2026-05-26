@@ -1104,6 +1104,7 @@ pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
     InvalidCall { target: String, reason: String },
+    InvalidTypeConversion { target: String, reason: String },
     NonCallOrReceive,
     TypeConversion,
 }
@@ -4337,8 +4338,15 @@ fn invalid_return_in_stmt(
             record_range_bindings(range, &mut range_env);
             invalid_return_in_block(&range.body, signature, &mut range_env)
         }
-        ast::Stmt::ReturnStmt(ret) => invalid_return_stmt(ret, signature, env)
-            .map(|reason| InvalidStatement::Return { reason }),
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                if let Some(invalid) = invalid_return_in_expr(expr, env) {
+                    return Some(invalid);
+                }
+            }
+            invalid_return_stmt(ret, signature, env)
+                .map(|reason| InvalidStatement::Return { reason })
+        }
         ast::Stmt::SelectStmt(select) => {
             let mut select_env = env.clone();
             invalid_return_in_block(&select.body, signature, &mut select_env)
@@ -4549,6 +4557,12 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
                 return Some(invalid);
             }
         }
+    }
+    if let Some(reason) = invalid_type_conversion_call(call, env) {
+        return Some(InvalidStatement::Expression { reason });
+    }
+    if let Some(reason) = invalid_ordinary_call(call, env) {
+        return Some(InvalidStatement::Expression { reason });
     }
     None
 }
@@ -5249,6 +5263,9 @@ fn invalid_expression_in_call(
     }) {
         return Some(reason);
     }
+    if call_is_type_conversion(call, env) {
+        return invalid_type_conversion_call(call, env);
+    }
     invalid_ordinary_call(call, env)
 }
 
@@ -5609,6 +5626,62 @@ fn invalid_ordinary_call(
         invalid_variadic_call_args(call, &signature, variadic_start, env)
     } else {
         invalid_fixed_call_args(call, &signature, env)
+    }
+}
+
+fn invalid_type_conversion_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if !call_is_type_conversion(call, env) {
+        return None;
+    }
+    let target = type_conversion_target_name(&call.fun, env);
+    if call.ellipsis.is_some() {
+        return Some(invalid_type_conversion_reason(
+            &target,
+            "cannot use spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_type_conversion_reason(
+            &target,
+            format!("expects 1 argument, got {}", args.len()),
+        ));
+    }
+    if let Some(values) =
+        expression_value_count(args.first()?, env, TupleAssignmentMode::SingleValueContext)
+            .filter(|values| *values != 1)
+    {
+        return Some(invalid_type_conversion_reason(
+            &target,
+            format!("expects 1 argument, got {values} values"),
+        ));
+    }
+    None
+}
+
+fn type_conversion_target_name(fun: &ast::Expr<'_>, env: &TypeEnv) -> String {
+    match unparen_expr(fun) {
+        ast::Expr::Ident(ident) => ident.name.to_string(),
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
+                return format!("{}.{}", pkg.name, selector.sel.name);
+            }
+            selector.sel.name.to_string()
+        }
+        other => go_type_display_name(&env.resolve_alias(&GoType::from_expr(other))),
+    }
+}
+
+fn invalid_type_conversion_reason(
+    target: &str,
+    reason: impl Into<String>,
+) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidTypeConversion {
+        target: target.to_string(),
+        reason: reason.into(),
     }
 }
 
@@ -11720,6 +11793,131 @@ mod tests {
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_type_conversion_calls() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = int()
+                    }
+                "#,
+                "int",
+                "expects 1 argument, got 0",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = int(1, 2)
+                    }
+                "#,
+                "int",
+                "expects 1 argument, got 2",
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func main() {
+                        _ = int(pair())
+                    }
+                "#,
+                "int",
+                "expects 1 argument, got 2 values",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{}
+                        _ = int(xs...)
+                    }
+                "#,
+                "int",
+                "cannot use spread arguments",
+            ),
+        ];
+
+        for (source, target, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidTypeConversion {
+                        target: target.to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn validates_calls_inside_return_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func takes(a int) int { return a }
+
+                func badCall() int {
+                    return takes("go")
+                }
+
+                func badConversion() int {
+                    return int()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let invalid_return = |name: &str| {
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function {name}");
+            };
+            super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env)
+        };
+
+        assert_eq!(
+            invalid_return("badCall"),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::InvalidCall {
+                    target: "takes".to_string(),
+                    reason: "argument 1 must be assignable to int, got string".to_string(),
+                },
+            })
+        );
+        assert_eq!(
+            invalid_return("badConversion"),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::InvalidTypeConversion {
+                    target: "int".to_string(),
+                    reason: "expects 1 argument, got 0".to_string(),
+                },
+            })
         );
     }
 
