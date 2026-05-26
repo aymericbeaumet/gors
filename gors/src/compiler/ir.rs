@@ -5806,8 +5806,10 @@ fn invalid_binary_expr(
         | token::Token::AND
         | token::Token::OR
         | token::Token::XOR
-        | token::Token::AND_NOT => binary_integer_operands(binary.op, &left, &right),
-        token::Token::SHL | token::Token::SHR => binary_shift_operands(binary.op, &left, &right),
+        | token::Token::AND_NOT => binary_integer_operands(binary.op, &left, &right, binary),
+        token::Token::SHL | token::Token::SHR => {
+            binary_shift_operands(binary.op, &left, &right, binary)
+        }
         token::Token::EQL | token::Token::NEQ => {
             binary_equality_operands(binary, &left, &right, env)
         }
@@ -5878,8 +5880,9 @@ fn binary_integer_operands(
     op: token::Token,
     left: &GoType,
     right: &GoType,
+    binary: &ast::BinaryExpr<'_>,
 ) -> Option<InvalidStatementReason> {
-    if left.is_integer() && right.is_integer() {
+    if binary_operand_is_integer(left, &binary.x) && binary_operand_is_integer(right, &binary.y) {
         return None;
     }
     Some(invalid_binary_reason(
@@ -5896,8 +5899,9 @@ fn binary_shift_operands(
     op: token::Token,
     left: &GoType,
     right: &GoType,
+    binary: &ast::BinaryExpr<'_>,
 ) -> Option<InvalidStatementReason> {
-    if left.is_integer() && right.is_integer() {
+    if binary_operand_is_integer(left, &binary.x) && binary_operand_is_integer(right, &binary.y) {
         return None;
     }
     Some(invalid_binary_reason(
@@ -5908,6 +5912,59 @@ fn binary_shift_operands(
             go_type_display_name(right)
         ),
     ))
+}
+
+fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
+    ty.is_integer() || (ty.is_float() && expr_is_integer_constant(expr))
+}
+
+fn expr_is_integer_constant(expr: &ast::Expr<'_>) -> bool {
+    match expr {
+        ast::Expr::BasicLit(lit) => basic_lit_is_integer_constant(lit),
+        ast::Expr::ParenExpr(paren) => expr_is_integer_constant(&paren.x),
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            expr_is_integer_constant(&unary.x)
+        }
+        _ => false,
+    }
+}
+
+fn basic_lit_is_integer_constant(lit: &ast::BasicLit<'_>) -> bool {
+    match lit.kind {
+        token::Token::INT => true,
+        token::Token::FLOAT => decimal_float_literal_is_integer(lit.value),
+        _ => false,
+    }
+}
+
+fn decimal_float_literal_is_integer(value: &str) -> bool {
+    let value = value.replace('_', "").to_ascii_lowercase();
+    if value.starts_with("0x") || value.contains('p') {
+        return false;
+    }
+
+    let (mantissa, exponent) = value
+        .split_once('e')
+        .map_or((value.as_str(), 0), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().unwrap_or(0))
+        });
+    let mantissa = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{int_part}{frac_part}");
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let shift = exponent - frac_part.len() as i32;
+    if shift >= 0 {
+        return true;
+    }
+    digits
+        .bytes()
+        .rev()
+        .take((-shift) as usize)
+        .all(|byte| byte == b'0')
 }
 
 fn binary_equality_operands(
@@ -12661,7 +12718,10 @@ mod tests {
                     _ = "go" + "rs"
                     _ = 1.5 / 2
                     _ = 3 % 2
+                    var u uint64
+                    _ = u % 1e9
                     _ = 1 << 2
+                    _ = u >> 1.0
                     _ = true && false
                     _ = "go" < "rs"
                     _ = 1 == 2

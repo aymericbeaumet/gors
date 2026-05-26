@@ -2481,7 +2481,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         let Some(comm) = case.comm.map(|c| *c) else {
             continue;
         };
-        let body_stmts = compile_select_case_body(case.body, &select_label)?;
+        let body_stmts = non_tail_stmt_list(compile_select_case_body(case.body, &select_label)?);
 
         match comm {
             ast::Stmt::ExprStmt(expr_stmt) => {
@@ -2529,7 +2529,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
     }
 
     let default_arm = if let Some(body) = default_body {
-        let stmts = compile_select_case_body(body, &select_label)?;
+        let stmts = non_tail_stmt_list(compile_select_case_body(body, &select_label)?);
         quote::quote! {
             #(#stmts)*
             break;
@@ -2540,14 +2540,14 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         }
     };
 
-    let stmt: syn::Stmt = syn::parse_quote! {
+    let stmt = parse_select_stmt(quote::quote! {
         {
             loop {
                 #(#arms)*
                 #default_arm
             }
         }
-    };
+    })?;
     Ok(vec![select_labeled_block(select_label, vec![stmt])])
 }
 
@@ -2566,6 +2566,23 @@ fn select_labeled_block(label: syn::Lifetime, stmts: Vec<syn::Stmt>) -> syn::Stm
         }),
         Some(<Token![;]>::default()),
     )
+}
+
+fn non_tail_stmt_list(mut stmts: Vec<syn::Stmt>) -> Vec<syn::Stmt> {
+    for stmt in &mut stmts {
+        if let syn::Stmt::Expr(_, semi) = stmt
+            && semi.is_none()
+        {
+            *semi = Some(<Token![;]>::default());
+        }
+    }
+    stmts
+}
+
+fn parse_select_stmt(tokens: proc_macro2::TokenStream) -> Result<syn::Stmt, CompilerError> {
+    syn::parse2(tokens).map_err(|err| {
+        CompilerError::UnsupportedConstruct(format!("failed to lower select statement: {err}"))
+    })
 }
 
 fn compile_select_case_body(
@@ -20465,6 +20482,37 @@ func main() {
         assert!(
             rust_src.contains("std::thread::park();"),
             "Expected empty select to park forever:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_compile_multi_case_select_with_block_body() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+
+            func main() {
+                ch := make(chan int, 1)
+                ch <- 1
+                select {
+                case <-ch:
+                    {
+                        println("first")
+                    }
+                case <-ch:
+                    println("second")
+                default:
+                    {
+                        println("default")
+                    }
+                }
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("try_recv"),
+            "Expected try_recv in output:\n{}",
             rust_src
         );
     }

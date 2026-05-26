@@ -603,7 +603,12 @@ require integer left and right operands.
 Binary expression validation is conservative for unknown/named operands, but it
 checks known operands for logical bool operators, numeric/string `+`, numeric
 arithmetic, integer bitwise/remainder, integer shifts, comparable equality, and
-ordered numeric/string comparisons.
+ordered numeric/string comparisons. Integer-only binary operators must still
+accept integer-valued untyped numeric literals such as `1e9` when the other
+operand has an integer type.
+Select lowering appends synthetic `break;` statements to multi-case arms, so
+case-body statements embedded before that break must be emitted as non-tail Rust
+statements; otherwise block expression bodies can make Syn report `expected ;`.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per
