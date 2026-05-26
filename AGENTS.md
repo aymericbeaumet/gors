@@ -441,6 +441,11 @@ IR also owns capture and goto discovery. Keep extending those analyses in
 `ir.rs` before adding backend-only statement walkers; codegen may still carry
 temporary guards for legacy lowering, but the semantic decision should come from
 the IR.
+IR addressability follows the Go spec rule rather than treating every selector
+or index expression as assignable: constants and predeclared identifiers are not
+addressable, map/string indexes are not addressable, array indexes require an
+addressable array operand, and field selectors require an addressable value or a
+pointer operand.
 
 The generated-code fallback pruner must preserve control-flow containers while
 removing only unsupported reflection-dependent branches. When it prunes a local

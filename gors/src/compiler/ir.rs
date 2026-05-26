@@ -1458,7 +1458,7 @@ fn lower_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Call {
 pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressability {
     match expr {
         ast::Expr::Ident(ident)
-            if !matches!(ident.name, "_" | "nil" | "true" | "false" | "iota") =>
+            if !is_predeclared_name(ident.name) && !env.is_const(ident.name) =>
         {
             Addressability::Addressable
         }
@@ -1466,11 +1466,20 @@ pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressabilit
             let container = GoType::infer_expr(&index.x, env);
             match env.resolve_alias(&container) {
                 GoType::Map(_, _) | GoType::String => Addressability::NotAddressable,
+                GoType::Array(_) => expr_addressability(&index.x, env),
                 _ => Addressability::Addressable,
             }
         }
         ast::Expr::ParenExpr(paren) => expr_addressability(&paren.x, env),
-        ast::Expr::SelectorExpr(_) | ast::Expr::StarExpr(_) => Addressability::Addressable,
+        ast::Expr::SelectorExpr(selector) => {
+            let target_type = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
+            if matches!(target_type, GoType::Pointer(_)) {
+                Addressability::Addressable
+            } else {
+                expr_addressability(&selector.x, env)
+            }
+        }
+        ast::Expr::StarExpr(_) => Addressability::Addressable,
         _ => Addressability::NotAddressable,
     }
 }
@@ -3061,6 +3070,85 @@ mod tests {
         };
         assert_eq!(expr.addressability, Addressability::NotAddressable);
         assert!(matches!(expr.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn lower_expr_uses_spec_addressability_for_selectors_and_arrays() {
+        let ir = lower(
+            r#"
+                package main
+
+                type S struct { X int }
+                var arr [1]int
+
+                func main() {
+                    s := S{X: 1}
+                    _ = s.X
+                    _ = S{X: 1}.X
+                    _ = arr[0]
+                    _ = [1]int{1}[0]
+                }
+            "#,
+        );
+        let Some(func) = ir.items.iter().find_map(|item| match item {
+            Item::Func(func) if func.name.as_deref() == Some("main") => Some(func),
+            Item::Func(_) | Item::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+
+        let addressability = |index| {
+            let Some(Stmt::Assign(assign)) = body.stmts.get(index) else {
+                panic!("expected assignment at {index}");
+            };
+            assign
+                .rhs
+                .first()
+                .map(|expr| expr.addressability)
+                .expect("expected rhs")
+        };
+
+        assert_eq!(addressability(1), Addressability::Addressable);
+        assert_eq!(addressability(2), Addressability::NotAddressable);
+        assert_eq!(addressability(3), Addressability::Addressable);
+        assert_eq!(addressability(4), Addressability::NotAddressable);
+    }
+
+    #[test]
+    fn lower_expr_marks_constants_and_builtins_not_addressable() {
+        let ir = lower(
+            r#"
+                package main
+
+                const c = 1
+
+                func main() {
+                    _ = c
+                    _ = len
+                }
+            "#,
+        );
+        let Some(func) = ir.items.iter().find_map(|item| match item {
+            Item::Func(func) if func.name.as_deref() == Some("main") => Some(func),
+            Item::Func(_) | Item::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        for index in [0, 1] {
+            let Some(Stmt::Assign(assign)) = body.stmts.get(index) else {
+                panic!("expected assignment at {index}");
+            };
+            let Some(expr) = assign.rhs.first() else {
+                panic!("expected rhs");
+            };
+            assert_eq!(expr.addressability, Addressability::NotAddressable);
+        }
     }
 
     #[test]
