@@ -439,6 +439,11 @@ Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
 not `vec![..]` macros, so dependency discovery and later AST passes can see
 module references inside variadic arguments.
 
+Deferred calls evaluate their argument expressions at the `defer` statement, not
+inside the generated drop guard. The compiler saves deferred arguments in
+per-defer temporaries, cloning addressable non-Copy values where needed so later
+statements can still use or mutate the original Go variable.
+
 Function-literal capture analysis lives in `gors/src/compiler/ir.rs` and uses a
 lexical scope stack rather than whole-body declaration/reference set subtraction.
 Keep nested shadowing cases there: a name declared in an inner block must not

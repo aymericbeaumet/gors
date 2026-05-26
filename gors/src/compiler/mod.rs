@@ -12072,6 +12072,84 @@ fn compile_call_function_expr(fun: ast::Expr) -> syn::Expr {
     }
 }
 
+fn synthetic_ident_expr<'a>(name: String) -> ast::Expr<'a> {
+    let name: &'static str = Box::leak(name.into_boxed_str());
+    ast::Expr::Ident(ast::Ident {
+        name_pos: token::Position::default(),
+        name,
+        obj: None,
+    })
+}
+
+fn concrete_defer_arg_type(expected: Option<&typeinfer::GoType>) -> Option<syn::Type> {
+    let expected = expected?;
+    if matches!(
+        expected,
+        typeinfer::GoType::Any | typeinfer::GoType::Interface(_) | typeinfer::GoType::Unknown
+    ) {
+        return None;
+    }
+    Some(rust_type_from_inferred_go_type(expected))
+}
+
+fn compile_defer_arg_init(
+    arg: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> (syn::Expr, Option<syn::Type>) {
+    let temp_ty = concrete_defer_arg_type(expected);
+    let expected = temp_ty.as_ref().and(expected);
+    let should_clone = binding_init_should_clone(&arg);
+    let init = compile_expr_with_expected(arg, expected);
+    (maybe_clone_binding_init(should_clone, init), temp_ty)
+}
+
+fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
+    let n = DEFER_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    let defer_ident = quote::format_ident!("_defer_{}", n);
+    let param_types = call_param_types(&call.fun);
+    let variadic_start = is_variadic_call(&call);
+    let mut prelude = Vec::new();
+    if let Some(args) = call.args.take() {
+        let mut saved_args = Vec::with_capacity(args.len());
+        for (idx, arg) in args.into_iter().enumerate() {
+            let expected = if variadic_start.is_some_and(|start| idx >= start) {
+                None
+            } else {
+                param_types.get(idx)
+            };
+            let (init, temp_ty) = compile_defer_arg_init(arg, expected);
+            let temp_ident = quote::format_ident!("_defer_{}_arg_{}", n, idx);
+            if let Some(temp_ty) = temp_ty {
+                prelude.push(syn::parse_quote! {
+                    let #temp_ident: #temp_ty = #init;
+                });
+            } else {
+                prelude.push(syn::parse_quote! {
+                    let #temp_ident = #init;
+                });
+            }
+            saved_args.push(synthetic_ident_expr(temp_ident.to_string()));
+        }
+        call.args = Some(saved_args);
+    }
+    let call: syn::Expr = ast::Expr::CallExpr(call).into();
+    prelude.push(syn::parse_quote! {
+        let #defer_ident = {
+            struct __Defer<F: FnOnce()>(Option<F>);
+            impl<F: FnOnce()> Drop for __Defer<F> {
+                fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
+            }
+            __Defer(Some(move || { #call; }))
+        };
+    });
+    prelude
+}
+
 impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     type Error = CompilerError;
 
@@ -14123,23 +14201,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 if is_catch_panic_defer(&s.call) {
                     return Ok(vec![]);
                 }
-                let call: syn::Expr = ast::Expr::CallExpr(s.call).into();
-                let n = DEFER_COUNTER.with(|c| {
-                    let mut val = c.borrow_mut();
-                    let n = *val;
-                    *val += 1;
-                    n
-                });
-                let defer_ident = quote::format_ident!("_defer_{}", n);
-                Ok(vec![syn::parse_quote! {
-                    let #defer_ident = {
-                        struct __Defer<F: FnOnce()>(Option<F>);
-                        impl<F: FnOnce()> Drop for __Defer<F> {
-                            fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
-                        }
-                        __Defer(Some(move || { #call; }))
-                    };
-                }])
+                Ok(compile_defer_stmt(s.call))
             }
             ast::Stmt::EmptyStmt(_) => Ok(vec![]),
             ast::Stmt::ExprStmt(s) => Ok(vec![syn::Stmt::Expr(
