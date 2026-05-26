@@ -8902,6 +8902,10 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
         let e = syn::Expr::from(*h);
         syn::parse_quote! { (#e) as usize }
     });
+    let max: Option<syn::Expr> = slice_expr.max.map(|m| {
+        let e = syn::Expr::from(*m);
+        syn::parse_quote! { (#e) as usize }
+    });
 
     if is_byte_seq_type_param(&x_go_type) {
         let start: syn::Expr = low
@@ -8927,6 +8931,31 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
                 syn::parse_quote! { (#x).into_iter().skip(#lo).take(#hi - #lo).collect::<Vec<_>>() }
             }
         };
+    }
+
+    if let Some(max) = max {
+        let start: syn::Expr = low
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| syn::parse_quote! { 0usize });
+        let end: syn::Expr = high.as_ref().cloned().unwrap_or_else(|| {
+            syn::parse_quote! { crate::builtin::len(__gors_source) as usize }
+        });
+        if is_string_slice {
+            return compile_error_expr("full slice expression is not valid for strings");
+        }
+        return syn::parse_quote! {{
+            let __gors_source = &#x;
+            let __gors_start = #start;
+            let __gors_end = #end;
+            let __gors_max = #max;
+            let mut __gors_slice = (__gors_source[__gors_start..__gors_end]).to_vec();
+            let __gors_cap = __gors_max.saturating_sub(__gors_start);
+            if __gors_slice.capacity() < __gors_cap {
+                __gors_slice.reserve_exact(__gors_cap - __gors_slice.capacity());
+            }
+            __gors_slice
+        }};
     }
 
     let slice: syn::Expr = match (low, high) {

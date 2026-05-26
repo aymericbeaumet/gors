@@ -343,6 +343,11 @@ written through by index, or passed to another mutable slice parameter, to
 `&mut Vec<T>` and rewrites call sites to borrow the caller's buffer. Do not apply
 that rewrite to functions returning a slice; those need Go's returned slice
 value semantics.
+Slice expressions currently materialize owned `Vec` copies. Full slice
+expressions (`a[low:high:max]`) preserve observable `len`/`cap` by reserving
+capacity for `max-low`, but they still do not share the original Go backing
+array; fixing shared backing-array semantics belongs in the IR/value model, not
+in another ad hoc slice codegen special case.
 
 ## Compiler passes (in order)
 
