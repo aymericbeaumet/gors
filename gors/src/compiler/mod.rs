@@ -2817,6 +2817,9 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
+    if let Some(invalid) = ir::invalid_signature_in_file(&file) {
+        return Err(invalid_signature_error(invalid));
+    }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -2845,6 +2848,9 @@ pub fn compile_with_type_env_and_import_renames(
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
+    if let Some(invalid) = ir::invalid_signature_in_file(&file) {
+        return Err(invalid_signature_error(invalid));
+    }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -12746,6 +12752,36 @@ fn invalid_label_error(invalid: ir::InvalidLabel) -> CompilerError {
     CompilerError::UnsupportedConstruct(message)
 }
 
+fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidSignature::DuplicateName { name } => {
+            format!("duplicate parameter/result name {}", name)
+        }
+        ir::InvalidSignature::MixedNamedUnnamed { list } => {
+            format!(
+                "{} list mixes named and unnamed entries",
+                signature_list_name(list)
+            )
+        }
+        ir::InvalidSignature::ReceiverCount { count } => {
+            format!("method receiver must declare exactly one parameter, got {count}")
+        }
+        ir::InvalidSignature::ReceiverVariadic => "method receiver cannot be variadic".to_string(),
+        ir::InvalidSignature::VariadicNotFinal => {
+            "variadic parameter must be the final incoming parameter".to_string()
+        }
+        ir::InvalidSignature::VariadicResult => "result parameter cannot be variadic".to_string(),
+    };
+    CompilerError::InvalidFunctionSignature(message)
+}
+
+fn signature_list_name(list: ir::SignatureList) -> &'static str {
+    match list {
+        ir::SignatureList::Parameter => "parameter",
+        ir::SignatureList::Result => "result",
+    }
+}
+
 fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
@@ -17237,6 +17273,17 @@ mod tests {
         }
     }
 
+    fn assert_invalid_function_signature(go_input: &str, message: &str) {
+        let parsed = parse_file("test.go", go_input).unwrap();
+        match compile(parsed) {
+            Err(super::CompilerError::InvalidFunctionSignature(err)) => {
+                assert!(err.contains(message), "{err:?}");
+            }
+            Err(err) => panic!("expected invalid function signature, got {err:?}"),
+            Ok(_) => panic!("expected invalid function signature, got success"),
+        }
+    }
+
     fn write_fixture_file(path: &Path, source: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -17558,6 +17605,34 @@ mod tests {
                 }
             "#,
             "invalid range clause: channel range permits at most 1 iteration variable(s), got 2",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_function_signatures() {
+        assert_invalid_function_signature(
+            r#"
+                package main
+
+                func main(a int, a string) {}
+            "#,
+            "duplicate parameter/result name a",
+        );
+        assert_invalid_function_signature(
+            r#"
+                package main
+
+                func main(nums ...int, label string) {}
+            "#,
+            "variadic parameter must be the final incoming parameter",
+        );
+        assert_invalid_function_signature(
+            r#"
+                package main
+
+                var _ = func(a int, a int) {}
+            "#,
+            "duplicate parameter/result name a",
         );
     }
 

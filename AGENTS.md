@@ -516,6 +516,12 @@ a short declaration or `var` initializer is a `func` value, compile the
 initializer with that expected Go type so calls use the same `lock_func` lowering
 as named function-typed variables and returned function values.
 
+Function signature validation is an IR-fronted compiler check in
+`gors/src/compiler/ir.rs`. It rejects duplicate non-blank parameter/result names,
+mixed named and unnamed parameter/result lists, variadic results, non-final or
+multi-name variadic parameters, and receivers that are variadic or declare other
+than one parameter before backend lowering.
+
 Range-over-function support is IR-classified as a function range and backend
 lowered by synthesizing the Go `yield` callback as the same shared function
 value representation. Normal function items still call directly; only actual
