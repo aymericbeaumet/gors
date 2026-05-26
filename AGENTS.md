@@ -88,11 +88,13 @@ gors-builtin/
 - Goroutine function literals use IR capture analysis. Mutable outer captures are
   promoted to `Arc<Mutex<T>>` in the enclosing block and cloned into the spawned
   closure so synchronized goroutine writes are visible after channel joins.
-- Go expression switches lower through an explicit selected-case slot plus a
-  fallthrough flag. This preserves source-order case expression evaluation,
-  lets `default` appear anywhere while still running only when no case matches,
-  executes only explicit `fallthrough` chains, and maps unlabeled case-level
-  `break` to the generated Rust switch block label.
+- Go expression switches without `fallthrough` lower to an exclusive Rust
+  `if`/`else` chain inside a generated label so Rust can see moved case values
+  are branch-local. Switches containing `fallthrough` still lower through an
+  explicit selected-case slot plus a fallthrough flag. Both paths preserve
+  source-order case expression evaluation, let `default` appear anywhere while
+  still running only when no case matches, and map unlabeled case-level `break`
+  to the generated Rust switch block label.
 - `for` loops with post statements wrap the body in a generated labeled block
   whenever a matching `continue` is present. This covers both unlabeled
   continues and `continue label` targeting the current loop so Go's post clause
@@ -358,6 +360,11 @@ terminate control flow, and `for`/`switch`/`select` termination must reject only
 `break` statements that refer to that specific construct. Keep nested breakable
 statements label-aware so an unlabeled `break` inside a nested switch/select/loop
 does not make the outer construct complete.
+
+The generated-code fallback pruner must preserve control-flow containers while
+removing only unsupported reflection-dependent branches. When it prunes a local
+initialized from unsupported reflection, it also drops later statements in that
+block that depend on the pruned binding so generated Rust remains type-checkable.
 
 Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
 `get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.

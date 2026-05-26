@@ -13145,6 +13145,10 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
         }
 
         let switch_label = next_switch_label();
+        if !clauses.iter().any(case_clause_contains_fallthrough) {
+            return compile_non_fallthrough_switch(clauses, switch_stmt.tag, switch_label);
+        }
+
         let fallthrough_ident = syn::Ident::new("__gors_switch_fallthrough", Span::mixed_site());
         let selected_ident = syn::Ident::new("__gors_switch_selected", Span::mixed_site());
         let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
@@ -13211,6 +13215,105 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
                 stmts,
             },
         }))
+    }
+}
+
+fn compile_non_fallthrough_switch(
+    clauses: Vec<ast::CaseClause>,
+    tag: Option<ast::Expr>,
+    switch_label: syn::Lifetime,
+) -> Result<syn::Expr, CompilerError> {
+    let mut prefix_stmts = vec![];
+    let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+    let tag_syn: Option<syn::Expr> = if let Some(tag) = tag {
+        let tag_expr: syn::Expr = tag.into();
+        prefix_stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
+        Some(syn::parse_quote! { #tag_ident })
+    } else {
+        None
+    };
+
+    let mut cases = vec![];
+    let mut default_body = None;
+    for case in clauses {
+        if case.list.is_none() {
+            default_body = Some(case.body);
+        } else {
+            cases.push(case);
+        }
+    }
+
+    let mut result: Option<syn::Expr> = default_body
+        .map(|body| switch_case_expr_block(body, &switch_label))
+        .transpose()?;
+    for case in cases.into_iter().rev() {
+        let cond = build_case_condition(case.list, tag_syn.as_ref())?;
+        let then_stmts = compile_breakable_stmt_list(case.body, &switch_label)?;
+        result = Some(syn::Expr::If(syn::ExprIf {
+            attrs: vec![],
+            if_token: <Token![if]>::default(),
+            cond: Box::new(cond),
+            then_branch: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: then_stmts,
+            },
+            else_branch: result.map(|expr| (<Token![else]>::default(), Box::new(expr))),
+        }));
+    }
+
+    if let Some(result) = result {
+        prefix_stmts.push(syn::Stmt::Expr(result, None));
+    }
+
+    Ok(syn::Expr::Block(syn::ExprBlock {
+        attrs: vec![],
+        label: Some(syn::Label {
+            name: switch_label,
+            colon_token: <Token![:]>::default(),
+        }),
+        block: syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: prefix_stmts,
+        },
+    }))
+}
+
+fn switch_case_expr_block(
+    body: Vec<ast::Stmt>,
+    switch_label: &syn::Lifetime,
+) -> Result<syn::Expr, CompilerError> {
+    let stmts = compile_breakable_stmt_list(body, switch_label)?;
+    Ok(syn::Expr::Block(syn::ExprBlock {
+        attrs: vec![],
+        label: None,
+        block: syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts,
+        },
+    }))
+}
+
+fn case_clause_contains_fallthrough(case: &ast::CaseClause<'_>) -> bool {
+    stmts_contain_fallthrough(&case.body)
+}
+
+fn stmts_contain_fallthrough(stmts: &[ast::Stmt<'_>]) -> bool {
+    stmts.iter().any(stmt_contains_fallthrough)
+}
+
+fn stmt_contains_fallthrough(stmt: &ast::Stmt<'_>) -> bool {
+    match stmt {
+        ast::Stmt::BranchStmt(branch) => branch.tok == token::Token::FALLTHROUGH,
+        ast::Stmt::BlockStmt(block) => stmts_contain_fallthrough(&block.list),
+        ast::Stmt::IfStmt(if_stmt) => {
+            stmts_contain_fallthrough(&if_stmt.body.list)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(stmt_contains_fallthrough)
+        }
+        _ => false,
     }
 }
 

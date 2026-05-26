@@ -45,6 +45,7 @@ impl VisitMut for CoerceTypes {
         self.generic_value_params.pop();
         self.mutable_ref_params.pop();
 
+        prune_static_false_branches(&mut func.block.stmts);
         prune_print_arg_reflection_fallback(&mut func.block.stmts);
 
         if func.sig.ident == "newPrinter" && tokens_contain(&func.block, "ppFree") {
@@ -91,10 +92,12 @@ impl VisitMut for CoerceTypes {
         }
 
         if func.sig.ident != "printArg" {
+            prune_static_false_branches(&mut func.block.stmts);
             prune_print_arg_reflection_fallback(&mut func.block.stmts);
             return;
         }
 
+        prune_static_false_branches(&mut func.block.stmts);
         prune_print_arg_reflection_fallback(&mut func.block.stmts);
         prune_print_arg_unsupported_cases(func);
     }
@@ -442,10 +445,16 @@ fn prune_print_arg_unsupported_stmt(stmt: syn::Stmt) -> Option<syn::Stmt> {
 
 fn prune_print_arg_unsupported_expr(expr: syn::Expr) -> Option<syn::Expr> {
     match expr {
+        syn::Expr::Block(expr_block) => prune_print_arg_unsupported_expr_block(expr_block),
         syn::Expr::If(expr_if) => prune_print_arg_unsupported_if(expr_if),
         other if print_arg_tokens_need_unsupported_fmt(&other) => None,
         other => Some(other),
     }
+}
+
+fn prune_print_arg_unsupported_expr_block(mut expr_block: syn::ExprBlock) -> Option<syn::Expr> {
+    expr_block.block = prune_print_arg_unsupported_block(expr_block.block);
+    (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
 }
 
 fn prune_print_arg_unsupported_if(mut expr_if: syn::ExprIf) -> Option<syn::Expr> {
@@ -509,10 +518,16 @@ fn prune_print_arg_stmt(stmt: syn::Stmt) -> Option<syn::Stmt> {
 
 fn prune_print_arg_expr(expr: syn::Expr) -> Option<syn::Expr> {
     match expr {
+        syn::Expr::Block(expr_block) => prune_print_arg_expr_block(expr_block),
         syn::Expr::If(expr_if) => prune_print_arg_if(expr_if),
         other if print_arg_tokens_need_reflection(&other) => None,
         other => Some(other),
     }
+}
+
+fn prune_print_arg_expr_block(mut expr_block: syn::ExprBlock) -> Option<syn::Expr> {
+    expr_block.block = prune_print_arg_block(expr_block.block);
+    (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
 }
 
 fn prune_print_arg_if(mut expr_if: syn::ExprIf) -> Option<syn::Expr> {
@@ -538,12 +553,181 @@ fn prune_print_arg_if(mut expr_if: syn::ExprIf) -> Option<syn::Expr> {
 }
 
 fn prune_print_arg_block(mut block: syn::Block) -> syn::Block {
-    block.stmts = block
-        .stmts
-        .into_iter()
-        .filter_map(prune_print_arg_stmt)
-        .collect();
+    let mut dropped_names = std::collections::HashSet::new();
+    let mut stmts = vec![];
+    for stmt in block.stmts {
+        let bound_names = stmt_bound_names(&stmt);
+        if stmt_mentions_any_name(&stmt, &dropped_names) {
+            dropped_names.extend(bound_names);
+            continue;
+        }
+        if let Some(stmt) = prune_print_arg_stmt(stmt) {
+            stmts.push(stmt);
+        } else {
+            dropped_names.extend(bound_names);
+        }
+    }
+    block.stmts = stmts;
     block
+}
+
+fn prune_static_false_branches(stmts: &mut Vec<syn::Stmt>) {
+    let mut false_names = std::collections::HashSet::new();
+    prune_static_false_branches_with(stmts, &mut false_names);
+}
+
+fn prune_static_false_branches_with(
+    stmts: &mut Vec<syn::Stmt>,
+    false_names: &mut std::collections::HashSet<String>,
+) {
+    let old_stmts = std::mem::take(stmts);
+    *stmts = old_stmts
+        .into_iter()
+        .filter_map(|stmt| prune_static_false_stmt(stmt, false_names))
+        .collect();
+}
+
+fn prune_static_false_stmt(
+    stmt: syn::Stmt,
+    false_names: &mut std::collections::HashSet<String>,
+) -> Option<syn::Stmt> {
+    match stmt {
+        syn::Stmt::Local(local) => {
+            collect_false_local_names(&local, false_names);
+            Some(syn::Stmt::Local(local))
+        }
+        syn::Stmt::Expr(expr, semi) => {
+            prune_static_false_expr(expr, false_names).map(|expr| syn::Stmt::Expr(expr, semi))
+        }
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => Some(stmt),
+    }
+}
+
+fn prune_static_false_expr(
+    expr: syn::Expr,
+    false_names: &mut std::collections::HashSet<String>,
+) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::Block(mut expr_block) => {
+            let mut scoped_false_names = false_names.clone();
+            prune_static_false_branches_with(&mut expr_block.block.stmts, &mut scoped_false_names);
+            Some(syn::Expr::Block(expr_block))
+        }
+        syn::Expr::If(mut expr_if) => {
+            if condition_is_static_false(&expr_if.cond, false_names) {
+                return expr_if
+                    .else_branch
+                    .and_then(|(_, else_expr)| prune_static_false_expr(*else_expr, false_names));
+            }
+            let mut then_false_names = false_names.clone();
+            prune_static_false_branches_with(&mut expr_if.then_branch.stmts, &mut then_false_names);
+            expr_if.else_branch = expr_if.else_branch.and_then(|(else_token, else_expr)| {
+                prune_static_false_expr(*else_expr, false_names)
+                    .map(|expr| (else_token, Box::new(expr)))
+            });
+            Some(syn::Expr::If(expr_if))
+        }
+        other => Some(other),
+    }
+}
+
+fn condition_is_static_false(
+    expr: &syn::Expr,
+    false_names: &std::collections::HashSet<String>,
+) -> bool {
+    if is_false_lit_expr(expr) {
+        return true;
+    }
+    path_ident_name(expr).is_some_and(|name| false_names.contains(&name))
+}
+
+fn collect_false_local_names(
+    local: &syn::Local,
+    false_names: &mut std::collections::HashSet<String>,
+) {
+    let Some(init) = &local.init else {
+        return;
+    };
+    collect_false_bindings(&local.pat, &init.expr, false_names);
+}
+
+fn collect_false_bindings(
+    pat: &syn::Pat,
+    expr: &syn::Expr,
+    false_names: &mut std::collections::HashSet<String>,
+) {
+    match (pat, expr) {
+        (syn::Pat::Ident(pat_ident), expr) if is_false_lit_expr(expr) => {
+            false_names.insert(pat_ident.ident.to_string());
+        }
+        (syn::Pat::Tuple(pat_tuple), syn::Expr::Tuple(expr_tuple)) => {
+            for (pat, expr) in pat_tuple.elems.iter().zip(&expr_tuple.elems) {
+                collect_false_bindings(pat, expr, false_names);
+            }
+        }
+        (syn::Pat::Type(pat_type), expr) => {
+            collect_false_bindings(&pat_type.pat, expr, false_names);
+        }
+        _ => {}
+    }
+}
+
+fn stmt_bound_names(stmt: &syn::Stmt) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    if let syn::Stmt::Local(local) = stmt {
+        collect_pat_names(&local.pat, &mut names);
+    }
+    names
+}
+
+fn collect_pat_names(pat: &syn::Pat, names: &mut std::collections::HashSet<String>) {
+    match pat {
+        syn::Pat::Ident(pat_ident) => {
+            names.insert(pat_ident.ident.to_string());
+        }
+        syn::Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_pat_names(elem, names);
+            }
+        }
+        syn::Pat::Type(pat_type) => collect_pat_names(&pat_type.pat, names),
+        _ => {}
+    }
+}
+
+fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<String>) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+
+    struct Visitor<'a> {
+        names: &'a std::collections::HashSet<String>,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Visitor<'_> {
+        fn visit_expr_path(&mut self, expr_path: &syn::ExprPath) {
+            if expr_path.path.leading_colon.is_none()
+                && expr_path.path.segments.len() == 1
+                && expr_path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|seg| self.names.contains(&seg.ident.to_string()))
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_path(self, expr_path);
+        }
+    }
+
+    let mut visitor = Visitor {
+        names,
+        found: false,
+    };
+    syn::visit::Visit::visit_stmt(&mut visitor, stmt);
+    visitor.found
 }
 
 fn print_arg_tokens_need_reflection<T: quote::ToTokens>(node: &T) -> bool {
@@ -1217,4 +1401,43 @@ fn is_integer_type(ty: &syn::Type) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_prunes_reflection_fallback_inside_generated_block() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            '__gors_switch: {
+                let mut __gors_switch_selected: isize = -1;
+                if __gors_switch_selected == -1 {
+                    __gors_switch_selected = 0;
+                }
+                if __gors_switch_selected == 0 {
+                    self.fmt.fmtBs(v);
+                }
+                if __gors_switch_selected == 1 {
+                    self.printValue(crate::reflect::ValueOf(v), verb, 0);
+                }
+            };
+        }];
+
+        prune_print_arg_reflection_fallback(&mut stmts);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            tokens.contains("fmtBs"),
+            "expected non-reflection switch case to remain: {tokens}"
+        );
+        assert!(
+            !tokens.contains("printValue"),
+            "expected reflection fallback to be pruned: {tokens}"
+        );
+        assert!(
+            !tokens.contains("crate :: reflect"),
+            "expected reflect dependency to be pruned: {tokens}"
+        );
+    }
 }
