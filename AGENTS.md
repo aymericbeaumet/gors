@@ -595,6 +595,11 @@ type.
 Slice-expression validation follows the same boundary: known non-sliceable
 operands fail, bounds must have integer type when known, and full slice
 expressions on strings are rejected before lowering.
+Compound assignments are validated in IR after left-side/addressability and
+value-count checks: the right operand must be assignable to the left type, `+=`
+allows numeric and string left operands, arithmetic compound ops require numeric
+left operands, bitwise/remainder ops require integer left operands, and shifts
+require integer left and right operands.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per

@@ -12833,6 +12833,11 @@ fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
         ir::InvalidAssignmentReason::CompoundBlankIdentifier => {
             "compound assignment left side must not be blank identifier".to_string()
         }
+        ir::InvalidAssignmentReason::CompoundInvalidOperand {
+            op,
+            side,
+            type_name,
+        } => format!("{side} operand of {op} has invalid type {type_name}"),
         ir::InvalidAssignmentReason::CompoundOperandCount { lhs, rhs } => format!(
             "compound assignment requires exactly one left and right operand, got {lhs} left and {rhs} right"
         ),

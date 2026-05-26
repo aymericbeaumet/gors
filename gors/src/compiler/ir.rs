@@ -1032,11 +1032,25 @@ pub enum InvalidStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidAssignmentReason {
     CompoundBlankIdentifier,
-    CompoundOperandCount { lhs: usize, rhs: usize },
-    CountMismatch { lhs: usize, values: usize },
+    CompoundInvalidOperand {
+        op: String,
+        side: String,
+        type_name: String,
+    },
+    CompoundOperandCount {
+        lhs: usize,
+        rhs: usize,
+    },
+    CountMismatch {
+        lhs: usize,
+        values: usize,
+    },
     InvalidLeftOperand,
     MultiValueInSingleValueContext,
-    TypeMismatch { expected: String, actual: String },
+    TypeMismatch {
+        expected: String,
+        actual: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3587,6 +3601,9 @@ fn invalid_assignment(
         {
             return Some(InvalidAssignmentReason::CountMismatch { lhs: 1, values });
         }
+        if let Some(reason) = invalid_compound_assignment(assign, env) {
+            return Some(reason);
+        }
         return None;
     }
 
@@ -3670,6 +3687,78 @@ fn invalid_assignment_type_mismatch(
                 }
             })
         })
+}
+
+fn invalid_compound_assignment(
+    assign: &ast::AssignStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidAssignmentReason> {
+    let lhs = assign.lhs.first()?;
+    let rhs = assign.rhs.first()?;
+    let lhs_ty = env.resolve_alias(&GoType::infer_expr(lhs, env));
+    let rhs_ty = env.resolve_alias(&GoType::infer_expr(rhs, env));
+    if !types_are_assignable_for_validation(&lhs_ty, &rhs_ty) {
+        return Some(InvalidAssignmentReason::TypeMismatch {
+            expected: go_type_display_name(&lhs_ty),
+            actual: go_type_display_name(&rhs_ty),
+        });
+    }
+    if matches!(lhs_ty, GoType::Unknown | GoType::Named(_))
+        || matches!(rhs_ty, GoType::Unknown | GoType::Named(_))
+    {
+        return None;
+    }
+    let op = compound_assignment_op_name(assign.tok).to_string();
+    match assign.tok {
+        token::Token::ADD_ASSIGN if go_type_is_numeric(&lhs_ty) || lhs_ty.is_string() => None,
+        token::Token::SUB_ASSIGN | token::Token::MUL_ASSIGN | token::Token::QUO_ASSIGN
+            if go_type_is_numeric(&lhs_ty) =>
+        {
+            None
+        }
+        token::Token::REM_ASSIGN
+        | token::Token::AND_ASSIGN
+        | token::Token::OR_ASSIGN
+        | token::Token::XOR_ASSIGN
+        | token::Token::AND_NOT_ASSIGN
+            if lhs_ty.is_integer() =>
+        {
+            None
+        }
+        token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN if lhs_ty.is_integer() => {
+            if rhs_ty.is_integer() {
+                None
+            } else {
+                Some(invalid_compound_operand(&op, "right", &rhs_ty))
+            }
+        }
+        _ => Some(invalid_compound_operand(&op, "left", &lhs_ty)),
+    }
+}
+
+fn invalid_compound_operand(op: &str, side: &str, ty: &GoType) -> InvalidAssignmentReason {
+    InvalidAssignmentReason::CompoundInvalidOperand {
+        op: op.to_string(),
+        side: side.to_string(),
+        type_name: go_type_display_name(ty),
+    }
+}
+
+fn compound_assignment_op_name(tok: token::Token) -> &'static str {
+    match tok {
+        token::Token::ADD_ASSIGN => "+=",
+        token::Token::SUB_ASSIGN => "-=",
+        token::Token::MUL_ASSIGN => "*=",
+        token::Token::QUO_ASSIGN => "/=",
+        token::Token::REM_ASSIGN => "%=",
+        token::Token::AND_ASSIGN => "&=",
+        token::Token::OR_ASSIGN => "|=",
+        token::Token::XOR_ASSIGN => "^=",
+        token::Token::SHL_ASSIGN => "<<=",
+        token::Token::SHR_ASSIGN => ">>=",
+        token::Token::AND_NOT_ASSIGN => "&^=",
+        _ => "compound assignment",
+    }
 }
 
 fn assignment_rhs_types(assign: &ast::AssignStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
@@ -13742,6 +13831,102 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_compound_assignment_operands() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ok := true
+                        ok += true
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundInvalidOperand {
+                    op: "+=".to_string(),
+                    side: "left".to_string(),
+                    type_name: "bool".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        s := "go"
+                        s -= "g"
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundInvalidOperand {
+                    op: "-=".to_string(),
+                    side: "left".to_string(),
+                    type_name: "string".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        f := 1.5
+                        f %= 1.0
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundInvalidOperand {
+                    op: "%=".to_string(),
+                    side: "left".to_string(),
+                    type_name: "float64".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x <<= 1.5
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundInvalidOperand {
+                    op: "<<=".to_string(),
+                    side: "right".to_string(),
+                    type_name: "float64".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x += "go"
+                    }
+                "#,
+                super::InvalidAssignmentReason::TypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "string".to_string(),
+                },
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Assignment { reason })
+            );
+        }
+    }
+
+    #[test]
     fn accepts_assignment_values_with_compatible_known_types() {
         let file = parse_file(
             "test.go",
@@ -13765,6 +13950,11 @@ mod tests {
                     count = 1
                     xs := []int{1}
                     xs = nil
+                    x += 1
+                    f /= 2
+                    s += "!"
+                    count <<= 1
+                    count &= 3
                     y := 0
                     z := ""
                     y, z = pair()
