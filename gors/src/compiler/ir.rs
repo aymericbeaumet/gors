@@ -1148,6 +1148,7 @@ pub enum SignatureList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidDeclaration {
+    ConstNonConstantInitializer,
     ConstTypeMismatch {
         expected: String,
         actual: String,
@@ -4668,6 +4669,9 @@ fn invalid_const_declaration(
             if names != values {
                 return Some(InvalidDeclaration::ConstValueCount { names, values });
             }
+            if let Some(invalid) = invalid_const_initializer(value_spec, env) {
+                return Some(invalid);
+            }
             if let Some(invalid) = invalid_const_type_mismatch(value_spec, env) {
                 return Some(invalid);
             }
@@ -4685,6 +4689,125 @@ fn invalid_const_declaration(
         Some(InvalidDeclaration::MissingConstInitializer)
     } else {
         None
+    }
+}
+
+fn invalid_const_initializer(
+    value_spec: &ast::ValueSpec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    value_spec
+        .values
+        .as_ref()?
+        .iter()
+        .any(|value| expr_is_known_non_constant(value, env))
+        .then_some(InvalidDeclaration::ConstNonConstantInitializer)
+}
+
+fn expr_is_known_non_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(_) => false,
+        ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => false,
+        ast::Expr::Ident(ident) => ident.name == "nil" || known_ident_is_runtime_value(ident, env),
+        ast::Expr::SelectorExpr(selector) => selector_is_known_runtime_value(selector, env),
+        ast::Expr::ParenExpr(paren) => expr_is_known_non_constant(&paren.x, env),
+        ast::Expr::UnaryExpr(unary) => match unary.op {
+            token::Token::ADD | token::Token::SUB | token::Token::NOT | token::Token::XOR => {
+                expr_is_known_non_constant(&unary.x, env)
+            }
+            _ => true,
+        },
+        ast::Expr::BinaryExpr(binary) => {
+            expr_is_known_non_constant(&binary.x, env) || expr_is_known_non_constant(&binary.y, env)
+        }
+        ast::Expr::CallExpr(call) => const_call_is_known_non_constant(call, env),
+        ast::Expr::CompositeLit(_)
+        | ast::Expr::Ellipsis(_)
+        | ast::Expr::FuncLit(_)
+        | ast::Expr::IndexExpr(_)
+        | ast::Expr::IndexListExpr(_)
+        | ast::Expr::KeyValueExpr(_)
+        | ast::Expr::SliceExpr(_)
+        | ast::Expr::StarExpr(_)
+        | ast::Expr::TypeAssertExpr(_) => true,
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => false,
+    }
+}
+
+fn known_ident_is_runtime_value(ident: &ast::Ident<'_>, env: &TypeEnv) -> bool {
+    if env.is_const(ident.name) {
+        return false;
+    }
+    env.get_var(ident.name).is_some() || env.has_func(ident.name)
+}
+
+fn selector_is_known_runtime_value(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> bool {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return expr_is_known_non_constant(&selector.x, env);
+    };
+    let key = format!("{}.{}", base.name, selector.sel.name);
+    if env.is_const(&key) {
+        return false;
+    }
+    env.get_var(&key).is_some() || env.has_func(&key)
+}
+
+fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> bool {
+    if call.ellipsis.is_some() {
+        return true;
+    }
+    if call_is_type_conversion(call, env) {
+        let Some(args) = &call.args else {
+            return true;
+        };
+        return args.len() != 1 || expr_is_known_non_constant(&args[0], env);
+    }
+
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env) {
+        let Some(args) = &call.args else {
+            return true;
+        };
+        return match kind {
+            BuiltinCallKind::Complex => {
+                args.len() != 2 || args.iter().any(|arg| expr_is_known_non_constant(arg, env))
+            }
+            BuiltinCallKind::Imag | BuiltinCallKind::Real => {
+                args.len() != 1 || expr_is_known_non_constant(&args[0], env)
+            }
+            BuiltinCallKind::Len | BuiltinCallKind::Cap => {
+                args.len() != 1 || expr_is_known_non_constant(&args[0], env)
+            }
+            BuiltinCallKind::Max | BuiltinCallKind::Min => {
+                args.is_empty() || args.iter().any(|arg| expr_is_known_non_constant(arg, env))
+            }
+            BuiltinCallKind::Append
+            | BuiltinCallKind::Clear
+            | BuiltinCallKind::Close
+            | BuiltinCallKind::Copy
+            | BuiltinCallKind::Delete
+            | BuiltinCallKind::Make
+            | BuiltinCallKind::New
+            | BuiltinCallKind::Panic
+            | BuiltinCallKind::Print
+            | BuiltinCallKind::Println
+            | BuiltinCallKind::Recover => true,
+        };
+    }
+
+    call_fun_is_known_runtime_value(&call.fun, env)
+}
+
+fn call_fun_is_known_runtime_value(fun: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(fun) {
+        ast::Expr::Ident(ident) => known_ident_is_runtime_value(ident, env),
+        ast::Expr::SelectorExpr(selector) => selector_is_known_runtime_value(selector, env),
+        ast::Expr::FuncLit(_) => true,
+        _ => expr_is_known_non_constant(fun, env),
     }
 }
 
@@ -7942,6 +8065,29 @@ mod tests {
                 r#"
                     package main
 
+                    func f() int { return 1 }
+
+                    const X = f()
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstNonConstantInitializer)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var y = 1
+                    const X = y
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstNonConstantInitializer)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     const X int = "go"
                 "#,
             ),
@@ -7979,6 +8125,7 @@ mod tests {
                         C, D
                     )
                     const U, V float32 = 0, 3
+                    const Converted = int(1)
 
                     var X, Y = pair()
                     var Z int

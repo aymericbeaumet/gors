@@ -523,6 +523,10 @@ multi-result function call, using that same conservative assignability helper.
 IR const-declaration validation uses the same conservative helper for explicitly
 typed const initializers, so known scalar mismatches such as assigning a string
 constant to an `int` const are rejected before backend lowering.
+Const declarations also reject known runtime initializers such as user-function
+calls or references to known variables; ambiguous imported selectors and
+unsafe-style constants stay permissive until the type environment can prove
+their value category.
 IR return validation rejects simple known scalar mismatches for explicit result
 expressions and single multi-result function calls, using the same conservative
 assignability helper as channel send validation. It remains permissive for
