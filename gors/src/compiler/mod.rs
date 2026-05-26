@@ -2823,6 +2823,9 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
         return Err(invalid_declaration_error(invalid));
     }
+    if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
+        return Err(invalid_statement_error(invalid));
+    }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -2856,6 +2859,9 @@ pub fn compile_with_type_env_and_import_renames(
     }
     if let Some(invalid) = ir::invalid_declaration_in_file(&file) {
         return Err(invalid_declaration_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(&file) {
+        return Err(invalid_statement_error(invalid));
     }
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -12761,6 +12767,9 @@ fn invalid_short_var_decl_reason(reason: ir::InvalidShortVarDeclReason) -> Strin
         ir::InvalidShortVarDeclReason::DuplicateName(name) => {
             format!("name {name} appears more than once on left side of :=")
         }
+        ir::InvalidShortVarDeclReason::NoNewVariables => {
+            "no new variables on left side of :=".to_string()
+        }
     }
 }
 
@@ -17609,6 +17618,29 @@ mod tests {
                 }
             "#,
             "invalid short variable declaration: name i appears more than once on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x := 2
+                    _ = x
+                }
+            "#,
+            "invalid short variable declaration: no new variables on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func f(x int) {
+                    x := 1
+                    _ = x
+                }
+            "#,
+            "invalid short variable declaration: no new variables on left side of :=",
         );
     }
 

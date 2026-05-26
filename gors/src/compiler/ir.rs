@@ -1003,6 +1003,7 @@ pub struct InvalidRangeReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidShortVarDeclReason {
     DuplicateName(String),
+    NoNewVariables,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1130,6 +1131,15 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
         }
         None
     })
+}
+
+pub fn invalid_short_var_redeclaration_in_file(file: &ast::File<'_>) -> Option<InvalidStatement> {
+    for decl in &file.decls {
+        if let Some(invalid) = invalid_short_var_redeclaration_in_decl(decl) {
+            return Some(invalid);
+        }
+    }
+    None
 }
 
 pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
@@ -2045,6 +2055,489 @@ fn embedded_field_name(expr: &ast::Expr<'_>) -> Option<String> {
         ast::Expr::SelectorExpr(selector) => Some(selector.sel.name.to_string()),
         ast::Expr::StarExpr(star) => embedded_field_name(&star.x),
         _ => None,
+    }
+}
+
+fn invalid_short_var_redeclaration_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidStatement> {
+    match decl {
+        ast::Decl::FuncDecl(func) => invalid_short_var_redeclaration_in_func_decl(func),
+        ast::Decl::GenDecl(gen_decl) => invalid_short_var_redeclaration_in_gen_decl(gen_decl),
+    }
+}
+
+fn invalid_short_var_redeclaration_in_func_decl(
+    func: &ast::FuncDecl<'_>,
+) -> Option<InvalidStatement> {
+    let body = func.body.as_ref()?;
+    let mut scopes = ShortVarScopes::new();
+    if let Some(recv) = &func.recv {
+        seed_field_names_in_short_var_scope(recv, &mut scopes);
+    }
+    seed_field_names_in_short_var_scope(&func.type_.params, &mut scopes);
+    if let Some(results) = &func.type_.results {
+        seed_field_names_in_short_var_scope(results, &mut scopes);
+    }
+    invalid_short_var_redeclaration_in_stmt_list(&body.list, &mut scopes)
+}
+
+fn seed_field_names_in_short_var_scope(fields: &ast::FieldList<'_>, scopes: &mut ShortVarScopes) {
+    for field in &fields.list {
+        if let Some(names) = &field.names {
+            for name in names {
+                scopes.declare(name.name);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ShortVarScopes {
+    scopes: Vec<BTreeSet<String>>,
+}
+
+impl ShortVarScopes {
+    fn new() -> Self {
+        Self {
+            scopes: vec![BTreeSet::new()],
+        }
+    }
+
+    fn contains_current(&self, name: &str) -> bool {
+        self.scopes.last().is_some_and(|scope| scope.contains(name))
+    }
+
+    fn declare(&mut self, name: &str) {
+        if name != "_"
+            && let Some(scope) = self.scopes.last_mut()
+        {
+            scope.insert(name.to_string());
+        }
+    }
+
+    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.scopes.push(BTreeSet::new());
+        let out = f(self);
+        self.scopes.pop();
+        out
+    }
+}
+
+fn invalid_short_var_redeclaration_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+) -> Option<InvalidStatement> {
+    let mut scopes = ShortVarScopes::new();
+    for spec in &gen_decl.specs {
+        if let Some(invalid) = invalid_short_var_redeclaration_in_spec(spec, &mut scopes) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_short_var_redeclaration_in_spec(
+    spec: &ast::Spec<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    match spec {
+        ast::Spec::ImportSpec(_) => None,
+        ast::Spec::TypeSpec(type_spec) => {
+            invalid_short_var_redeclaration_in_expr(&type_spec.type_, scopes)
+        }
+        ast::Spec::ValueSpec(value_spec) => {
+            if let Some(type_) = &value_spec.type_
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(type_, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(values) = &value_spec.values {
+                for value in values {
+                    if let Some(invalid) = invalid_short_var_redeclaration_in_expr(value, scopes) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            for name in &value_spec.names {
+                scopes.declare(name.name);
+            }
+            None
+        }
+    }
+}
+
+fn invalid_short_var_redeclaration_in_block(
+    block: &ast::BlockStmt<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    scopes.with_scope(|scopes| invalid_short_var_redeclaration_in_stmt_list(&block.list, scopes))
+}
+
+fn invalid_short_var_redeclaration_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_short_var_redeclaration_in_stmt(stmt, scopes) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_short_var_redeclaration_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => invalid_short_var_redeclaration_in_assign(assign, scopes),
+        ast::Stmt::BlockStmt(block) => invalid_short_var_redeclaration_in_block(block, scopes),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::CaseClause(case) => scopes.with_scope(|scopes| {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    if let Some(invalid) = invalid_short_var_redeclaration_in_expr(expr, scopes) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            invalid_short_var_redeclaration_in_stmt_list(&case.body, scopes)
+        }),
+        ast::Stmt::CommClause(comm) => scopes.with_scope(|scopes| {
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(comm, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_short_var_redeclaration_in_stmt_list(&comm.body, scopes)
+        }),
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let Some(invalid) = invalid_short_var_redeclaration_in_spec(spec, scopes) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::DeferStmt(defer) => invalid_short_var_redeclaration_in_call(&defer.call, scopes),
+        ast::Stmt::ExprStmt(expr) => invalid_short_var_redeclaration_in_expr(&expr.x, scopes),
+        ast::Stmt::ForStmt(for_stmt) => scopes.with_scope(|scopes| {
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(cond, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(post, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_short_var_redeclaration_in_block(&for_stmt.body, scopes)
+        }),
+        ast::Stmt::GoStmt(go) => invalid_short_var_redeclaration_in_call(&go.call, scopes),
+        ast::Stmt::IfStmt(if_stmt) => scopes.with_scope(|scopes| {
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&if_stmt.cond, scopes) {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_short_var_redeclaration_in_block(&if_stmt.body, scopes) {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                return invalid_short_var_redeclaration_in_stmt(else_branch, scopes);
+            }
+            None
+        }),
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            invalid_short_var_redeclaration_in_expr(&inc_dec.x, scopes)
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            invalid_short_var_redeclaration_in_stmt(&labeled.stmt, scopes)
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&range.x, scopes) {
+                return Some(invalid);
+            }
+            scopes.with_scope(|scopes| {
+                if range.tok == Some(token::Token::DEFINE) {
+                    if let Some(reason) = invalid_range_short_var_decl_names(range) {
+                        return Some(InvalidStatement::ShortVarDecl { reason });
+                    }
+                    if !range_short_var_decl_has_new_name(range) {
+                        return Some(InvalidStatement::ShortVarDecl {
+                            reason: InvalidShortVarDeclReason::NoNewVariables,
+                        });
+                    }
+                    declare_range_short_var_names(range, scopes);
+                }
+                invalid_short_var_redeclaration_in_block(&range.body, scopes)
+            })
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                if let Some(invalid) = invalid_short_var_redeclaration_in_expr(expr, scopes) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::SelectStmt(select) => {
+            invalid_short_var_redeclaration_in_block(&select.body, scopes)
+        }
+        ast::Stmt::SendStmt(send) => invalid_short_var_redeclaration_in_expr(&send.chan, scopes)
+            .or_else(|| invalid_short_var_redeclaration_in_expr(&send.value, scopes)),
+        ast::Stmt::SwitchStmt(switch) => scopes.with_scope(|scopes| {
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(tag, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_short_var_redeclaration_in_block(&switch.body, scopes)
+        }),
+        ast::Stmt::TypeSwitchStmt(type_switch) => scopes.with_scope(|scopes| {
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_short_var_redeclaration_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) =
+                invalid_short_var_redeclaration_in_stmt(&type_switch.assign, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_short_var_redeclaration_in_block(&type_switch.body, scopes)
+        }),
+    }
+}
+
+fn invalid_short_var_redeclaration_in_assign(
+    assign: &ast::AssignStmt<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+        if let Some(invalid) = invalid_short_var_redeclaration_in_expr(expr, scopes) {
+            return Some(invalid);
+        }
+    }
+    if assign.tok != token::Token::DEFINE {
+        return None;
+    }
+    if let Some(reason) = invalid_short_var_decl_names(&assign.lhs) {
+        return Some(InvalidStatement::ShortVarDecl { reason });
+    }
+    let mut has_new = false;
+    for expr in &assign.lhs {
+        let Some(name) = short_var_decl_ident_name(expr) else {
+            continue;
+        };
+        if name == "_" {
+            continue;
+        }
+        if !scopes.contains_current(name) {
+            has_new = true;
+        }
+    }
+    if !has_new {
+        return Some(InvalidStatement::ShortVarDecl {
+            reason: InvalidShortVarDeclReason::NoNewVariables,
+        });
+    }
+    for expr in &assign.lhs {
+        if let Some(name) = short_var_decl_ident_name(expr) {
+            scopes.declare(name);
+        }
+    }
+    None
+}
+
+fn range_short_var_decl_has_new_name(range: &ast::RangeStmt<'_>) -> bool {
+    [range.key.as_ref(), range.value.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter_map(short_var_decl_ident_name)
+        .any(|name| name != "_")
+}
+
+fn declare_range_short_var_names(range: &ast::RangeStmt<'_>, scopes: &mut ShortVarScopes) {
+    if let Some(key) = &range.key
+        && let Some(name) = short_var_decl_ident_name(key)
+    {
+        scopes.declare(name);
+    }
+    if let Some(value) = &range.value
+        && let Some(name) = short_var_decl_ident_name(value)
+    {
+        scopes.declare(name);
+    }
+}
+
+fn invalid_short_var_redeclaration_in_call(
+    call: &ast::CallExpr<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&call.fun, scopes) {
+        return Some(invalid);
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(arg, scopes) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_short_var_redeclaration_in_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(len, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_short_var_redeclaration_in_expr(&array.elt, scopes)
+        }
+        ast::Expr::BinaryExpr(binary) => invalid_short_var_redeclaration_in_expr(&binary.x, scopes)
+            .or_else(|| invalid_short_var_redeclaration_in_expr(&binary.y, scopes)),
+        ast::Expr::CallExpr(call) => invalid_short_var_redeclaration_in_call(call, scopes),
+        ast::Expr::ChanType(chan) => invalid_short_var_redeclaration_in_expr(&chan.value, scopes),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(type_) = &comp.type_
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(type_, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    if let Some(invalid) = invalid_short_var_redeclaration_in_expr(elt, scopes) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|expr| invalid_short_var_redeclaration_in_expr(expr, scopes)),
+        ast::Expr::FuncLit(func_lit) => {
+            let mut func_scopes = ShortVarScopes::new();
+            seed_field_names_in_short_var_scope(&func_lit.type_.params, &mut func_scopes);
+            if let Some(results) = &func_lit.type_.results {
+                seed_field_names_in_short_var_scope(results, &mut func_scopes);
+            }
+            invalid_short_var_redeclaration_in_stmt_list(&func_lit.body.list, &mut func_scopes)
+        }
+        ast::Expr::FuncType(func_type) => {
+            for field in &func_type.params.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_short_var_redeclaration_in_expr(type_, scopes)
+                {
+                    return Some(invalid);
+                }
+            }
+            if let Some(results) = &func_type.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_
+                        && let Some(invalid) =
+                            invalid_short_var_redeclaration_in_expr(type_, scopes)
+                    {
+                        return Some(invalid);
+                    }
+                }
+            }
+            None
+        }
+        ast::Expr::IndexExpr(index) => invalid_short_var_redeclaration_in_expr(&index.x, scopes)
+            .or_else(|| invalid_short_var_redeclaration_in_expr(&index.index, scopes)),
+        ast::Expr::IndexListExpr(index) => {
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&index.x, scopes) {
+                return Some(invalid);
+            }
+            for index in &index.indices {
+                if let Some(invalid) = invalid_short_var_redeclaration_in_expr(index, scopes) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Expr::InterfaceType(interface) => interface.methods.as_ref().and_then(|fields| {
+            for field in &fields.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_short_var_redeclaration_in_expr(type_, scopes)
+                {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Expr::KeyValueExpr(kv) => invalid_short_var_redeclaration_in_expr(&kv.key, scopes)
+            .or_else(|| invalid_short_var_redeclaration_in_expr(&kv.value, scopes)),
+        ast::Expr::MapType(map) => invalid_short_var_redeclaration_in_expr(&map.key, scopes)
+            .or_else(|| invalid_short_var_redeclaration_in_expr(&map.value, scopes)),
+        ast::Expr::ParenExpr(paren) => invalid_short_var_redeclaration_in_expr(&paren.x, scopes),
+        ast::Expr::SelectorExpr(selector) => {
+            invalid_short_var_redeclaration_in_expr(&selector.x, scopes)
+        }
+        ast::Expr::SliceExpr(slice) => {
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&slice.x, scopes) {
+                return Some(invalid);
+            }
+            if let Some(low) = &slice.low
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(low, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(high) = &slice.high
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(high, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(max) = &slice.max
+                && let Some(invalid) = invalid_short_var_redeclaration_in_expr(max, scopes)
+            {
+                return Some(invalid);
+            }
+            None
+        }
+        ast::Expr::StarExpr(star) => invalid_short_var_redeclaration_in_expr(&star.x, scopes),
+        ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().and_then(|fields| {
+            for field in &fields.list {
+                if let Some(type_) = &field.type_
+                    && let Some(invalid) = invalid_short_var_redeclaration_in_expr(type_, scopes)
+                {
+                    return Some(invalid);
+                }
+            }
+            None
+        }),
+        ast::Expr::TypeAssertExpr(assert) => {
+            if let Some(invalid) = invalid_short_var_redeclaration_in_expr(&assert.x, scopes) {
+                return Some(invalid);
+            }
+            assert
+                .type_
+                .as_ref()
+                .and_then(|ty| invalid_short_var_redeclaration_in_expr(ty, scopes))
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_short_var_redeclaration_in_expr(&unary.x, scopes),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
     }
 }
 
@@ -7018,6 +7511,91 @@ mod tests {
                 })
             );
         }
+    }
+
+    fn invalid_short_var_redeclaration(source: &str) -> Option<super::InvalidStatement> {
+        let file = parse_file("test.go", source).unwrap();
+        super::invalid_short_var_redeclaration_in_file(&file)
+    }
+
+    #[test]
+    fn rejects_short_var_decls_without_new_names_in_current_block() {
+        for source in [
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x := 2
+                    _ = x
+                }
+            "#,
+            r#"
+                package main
+
+                func f(x int) {
+                    x := 1
+                    _ = x
+                }
+            "#,
+            r#"
+                package main
+
+                func f() (x int) {
+                    x := 1
+                    return x
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    for _ := range []int{1} {
+                    }
+                }
+            "#,
+        ] {
+            assert_eq!(
+                invalid_short_var_redeclaration(source),
+                Some(super::InvalidStatement::ShortVarDecl {
+                    reason: super::InvalidShortVarDeclReason::NoNewVariables,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_short_var_decls_with_new_names_and_nested_shadowing() {
+        assert_eq!(
+            invalid_short_var_redeclaration(
+                r#"
+                    package main
+
+                    func f(x int) {
+                        x, y := 1, 2
+                        _ = y
+                        {
+                            x := 3
+                            _ = x
+                        }
+                        if z := x; z > 0 {
+                            z := 4
+                            _ = z
+                        }
+                        for i := 0; i < 1; i++ {
+                            i := 2
+                            _ = i
+                        }
+                        for i := range []int{1} {
+                            _ = i
+                            i := 2
+                            _ = i
+                        }
+                    }
+                "#,
+            ),
+            None
+        );
     }
 
     #[test]
