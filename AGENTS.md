@@ -517,6 +517,9 @@ plain assignments and range clauses. Plain `=` assignments also reject simple
 known scalar mismatches, including values forwarded from a single multi-result
 function call, through the conservative assignability helper shared with
 channel sends and returns.
+IR value-declaration validation rejects simple known scalar mismatches for
+explicitly typed `var` initializers, including values forwarded from a single
+multi-result function call, using that same conservative assignability helper.
 IR return validation rejects simple known scalar mismatches for explicit result
 expressions and single multi-result function calls, using the same conservative
 assignability helper as channel send validation. It remains permissive for

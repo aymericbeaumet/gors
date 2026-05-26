@@ -13035,6 +13035,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::VarMultiValueInSingleValueContext => {
             "multi-valued expression in explicit var initializer list".to_string()
         }
+        ir::InvalidDeclaration::VarTypeMismatch { expected, actual } => {
+            format!("cannot initialize {expected} variable with {actual}")
+        }
         ir::InvalidDeclaration::VarValueCount { names, values } => {
             format!("var declaration has {names} name(s) but {values} value(s)")
         }
@@ -18173,6 +18176,17 @@ mod tests {
                 }
             "#,
             "invalid declaration: multi-valued expression in explicit var initializer list",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                var X int = "go"
+
+                func main() {
+                }
+            "#,
+            "cannot initialize int variable with string",
         );
         assert_unsupported_construct(
             r#"

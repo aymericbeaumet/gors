@@ -1167,6 +1167,10 @@ pub enum InvalidDeclaration {
     MissingConstInitializer,
     VarMissingTypeOrInitializer,
     VarMultiValueInSingleValueContext,
+    VarTypeMismatch {
+        expected: String,
+        actual: String,
+    },
     VarValueCount {
         names: usize,
         values: usize,
@@ -4695,6 +4699,9 @@ fn invalid_var_value_spec(
         {
             return Some(InvalidDeclaration::VarValueCount { names, values });
         }
+        if let Some(invalid) = invalid_var_type_mismatch(value_spec, env) {
+            return Some(invalid);
+        }
         return None;
     }
 
@@ -4714,7 +4721,48 @@ fn invalid_var_value_spec(
         });
     }
 
+    if let Some(invalid) = invalid_var_type_mismatch(value_spec, env) {
+        return Some(invalid);
+    }
+
     None
+}
+
+fn invalid_var_type_mismatch(
+    value_spec: &ast::ValueSpec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    let expected = value_spec.type_.as_ref().map(GoType::from_expr)?;
+    let actual_types = var_initializer_types(value_spec, env)?;
+    if actual_types.len() != value_spec.names.len() {
+        return None;
+    }
+    actual_types.iter().find_map(|actual| {
+        let expected = env.resolve_alias(&expected);
+        let actual = env.resolve_alias(actual);
+        (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+            InvalidDeclaration::VarTypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: go_type_display_name(&actual),
+            }
+        })
+    })
+}
+
+fn var_initializer_types(value_spec: &ast::ValueSpec<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
+    let values = value_spec.values.as_ref()?;
+    if values.len() == 1 && value_spec.names.len() > 1 {
+        let ast::Expr::CallExpr(call) = unparen_expr(values.first()?) else {
+            return None;
+        };
+        return call_result_types(call, env).filter(|types| types.len() == value_spec.names.len());
+    }
+    (values.len() == value_spec.names.len()).then(|| {
+        values
+            .iter()
+            .map(|expr| GoType::infer_expr(expr, env))
+            .collect()
+    })
 }
 
 fn is_type_switch_guard_expr(expr: &ast::Expr<'_>) -> bool {
@@ -7833,6 +7881,34 @@ mod tests {
             ),
             Some(super::InvalidDeclaration::VarMultiValueInSingleValueContext)
         );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var X int = "go"
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "int".to_string(),
+                actual: "string".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    func pair() (int, string) { return 1, "go" }
+
+                    var X, Y int = pair()
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "int".to_string(),
+                actual: "string".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -7851,6 +7927,8 @@ mod tests {
 
                     var X, Y = pair()
                     var Z int
+                    var S string = "go"
+                    var F float64 = 1
                 "#,
             ),
             None
