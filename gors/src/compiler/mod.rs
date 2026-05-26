@@ -9720,15 +9720,6 @@ fn is_string_literal(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING)
 }
 
-fn is_integer_expr(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::BasicLit(lit) => lit.kind == token::Token::INT,
-        ast::Expr::Ident(_) => false,
-        ast::Expr::CallExpr(_) => false,
-        _ => false,
-    }
-}
-
 fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, body: syn::Block) -> Vec<syn::Stmt> {
     vec![syn::Stmt::Expr(
         syn::Expr::ForLoop(syn::ExprForLoop {
@@ -9801,10 +9792,9 @@ fn set_range_bindings(
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
-    let is_string = is_string_literal(&range_stmt.x) || inferred_range_type.is_string();
-    let is_int = is_integer_expr(&range_stmt.x)
-        || inferred_range_type.is_integer()
-        || matches!(inferred_range_type, typeinfer::GoType::Uintptr);
+    let range_kind = TYPE_ENV.with(|env| ir::range_kind(&range_stmt.x, &env.borrow()));
+    let is_string = matches!(range_kind, ir::RangeKind::String);
+    let is_int = matches!(range_kind, ir::RangeKind::Integer);
     let env_snapshot = TYPE_ENV.with(|env| env.borrow().clone());
     set_range_bindings(
         range_stmt.key.as_ref(),
@@ -9845,6 +9835,12 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     syn::parse_quote! { (#x).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) },
                     body,
                 ))
+            } else if matches!(range_kind, ir::RangeKind::Map) {
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! { (#x).iter().map(|(k, v)| (k.clone(), v.clone())) },
+                    body,
+                ))
             } else {
                 Ok(make_for_loop(
                     pat,
@@ -9878,6 +9874,12 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                         syn::parse_quote! { 0..(crate::builtin::len(&#x) as isize) },
                         body,
                     ))
+                } else if matches!(range_kind, ir::RangeKind::Map) {
+                    Ok(make_for_loop(
+                        key_pat,
+                        syn::parse_quote! { (#x).keys().cloned() },
+                        body,
+                    ))
                 } else {
                     Ok(make_for_loop(
                         key_pat,
@@ -9898,6 +9900,8 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                 ))
             } else if is_string {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
+            } else if matches!(range_kind, ir::RangeKind::Map) {
+                Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter() }, body))
             } else {
                 Ok(make_for_loop(pat, x, body))
             }

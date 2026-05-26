@@ -291,6 +291,16 @@ pub enum ChannelDirection {
     Receive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeKind {
+    String,
+    Integer,
+    Indexed,
+    Map,
+    Channel,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
     pub fun: Box<Expr>,
@@ -431,6 +441,27 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
 pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<usize> {
     let key = call_func_key(&call_expr.fun, env)?;
     env.get_func_variadic_start(&key)
+}
+
+pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
+    match env.resolve_alias(&GoType::infer_expr(expr, env)) {
+        GoType::String => RangeKind::String,
+        GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr => RangeKind::Integer,
+        GoType::Slice(_) | GoType::Array(_) => RangeKind::Indexed,
+        GoType::Map(_, _) => RangeKind::Map,
+        GoType::Chan(_) => RangeKind::Channel,
+        _ => RangeKind::Other,
+    }
 }
 
 pub fn special_type_conversion(call_expr: &ast::CallExpr<'_>) -> Option<SpecialTypeConversionKind> {
@@ -1679,6 +1710,73 @@ mod tests {
             panic!("expected fixed call");
         };
         assert_eq!(super::variadic_call_start(fixed_call, &env), None);
+    }
+
+    #[test]
+    fn classifies_range_kinds() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    nums := []int{1}
+                    dict := map[string]int{"a": 1}
+                    ch := make(chan int)
+                    text := "go"
+                    for range nums {}
+                    for range dict {}
+                    for range ch {}
+                    for range text {}
+                    for range 3 {}
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        for stmt in func
+            .body
+            .as_ref()
+            .expect("expected body")
+            .list
+            .iter()
+            .take(4)
+        {
+            if let crate::ast::Stmt::AssignStmt(assign) = stmt
+                && let Some(crate::ast::Expr::Ident(ident)) = assign.lhs.first()
+                && let Some(value) = assign.rhs.first()
+            {
+                env.set_var(ident.name, GoType::infer_expr(value, &env));
+            }
+        }
+        let kinds: Vec<_> = func
+            .body
+            .as_ref()
+            .expect("expected body")
+            .list
+            .iter()
+            .filter_map(|stmt| match stmt {
+                crate::ast::Stmt::RangeStmt(range) => Some(super::range_kind(&range.x, &env)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                super::RangeKind::Indexed,
+                super::RangeKind::Map,
+                super::RangeKind::Channel,
+                super::RangeKind::String,
+                super::RangeKind::Integer,
+            ]
+        );
     }
 
     #[test]
