@@ -327,10 +327,13 @@ Large stdlib fixtures such as `gostdlib_net_http` can overflow the default test
 thread stack while parsing and compiling real Go stdlib packages.
 Each generated-program worker starts its Go reference `go run` child before the
 generated Rust compile/run path so Go, gors, and rustc work overlap across the
-whole Rayon pool. Keep child-process capture on temp files plus polling and
-kill-on-abort behavior so parallel fail-fast does not deadlock on stdout/stderr
-pipes, and still wait for the Go reference before reporting generated Rust
-failures so invalid Go fixtures skip instead of failing gors.
+whole Rayon pool. By default the run harness uses twice the detected CPU count
+because workers often block on child processes and filesystem work; keep the
+`GORS_TEST_RUN_THREADS` override as the exact concurrency control for local CPU
+saturation experiments. Keep child-process capture on temp files plus polling
+and kill-on-abort behavior so parallel fail-fast does not deadlock on
+stdout/stderr pipes, and still wait for the Go reference before reporting
+generated Rust failures so invalid Go fixtures skip instead of failing gors.
 
 ### Environment variables for test tuning
 
@@ -341,10 +344,10 @@ failures so invalid Go fixtures skip instead of failing gors.
 - `GORS_TEST_THREADS=N` — worker threads for lexer/parser integration tests
   and an explicit generated-program run-test fallback
 - `GORS_TEST_RUN_THREADS=N` — worker threads for generated-program run tests;
-  defaults to `GORS_TEST_THREADS` when set, otherwise all available CPUs. Use
-  this run-specific override for CPU-saturation experiments; higher values can
-  increase reported CPU use while slowing the suite through allocation and cache
-  contention.
+  defaults to `GORS_TEST_THREADS` when set, otherwise twice all available CPUs.
+  Use this run-specific override for exact CPU-saturation experiments; higher
+  values can increase reported CPU use while slowing the suite through
+  allocation and cache contention.
 - `GORS_TEST_GO_RUN_TIMEOUT_SECS=N` — override the generated-program harness
   timeout for Go reference runs (default: 30 seconds)
 - `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS=N` — override the generated-program

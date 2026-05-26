@@ -43,9 +43,14 @@ fn configured_thread_count(name: &str) -> Option<usize> {
 }
 
 fn default_run_test_thread_count() -> usize {
-    std::thread::available_parallelism()
+    let cpus = std::thread::available_parallelism()
         .map(|threads| threads.get())
-        .unwrap_or(1)
+        .unwrap_or(1);
+    default_run_test_thread_count_for_cpus(cpus)
+}
+
+fn default_run_test_thread_count_for_cpus(cpus: usize) -> usize {
+    cpus.max(1).saturating_mul(2)
 }
 
 struct ProgramRunResult {
@@ -492,6 +497,13 @@ fn workspace_root() -> PathBuf {
         .parent()
         .expect("gors crate should live under workspace root")
         .to_path_buf()
+}
+
+#[test]
+fn default_run_workers_oversubscribe_cpus() {
+    assert_eq!(default_run_test_thread_count_for_cpus(0), 2);
+    assert_eq!(default_run_test_thread_count_for_cpus(1), 2);
+    assert_eq!(default_run_test_thread_count_for_cpus(8), 16);
 }
 
 #[test]
