@@ -451,8 +451,9 @@ binding. Selector targets with unknown type information remain permissive until
 IR local type flow is complete; this keeps real stdlib code compiling instead of
 rejecting valid selector assignments because the legacy type environment has not
 learned the local type yet. Backend assignment lowering must use the checked
-assignment-lhs path so known non-addressable operands fail as compiler errors
-instead of falling back to arbitrary expression codegen.
+assignment-lhs path, including `++`/`--` and `for ... = range` targets, so known
+non-addressable operands fail as compiler errors instead of falling back to
+arbitrary expression codegen.
 
 The generated-code fallback pruner must preserve control-flow containers while
 removing only unsupported reflection-dependent branches. When it prunes a local

@@ -10676,7 +10676,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
     match (range_stmt.key, range_stmt.value) {
         // for i, v := range x
         (Some(key_expr), Some(val_expr)) => {
-            let (pat, body) = range_pat_and_body(vec![key_expr, val_expr], range_tok, body);
+            let (pat, body) = range_pat_and_body(vec![key_expr, val_expr], range_tok, body)?;
             if is_string {
                 // range over string: iterate (byte_index, rune)
                 Ok(make_for_loop(
@@ -10712,7 +10712,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         }
         // for i := range x  OR  for v := range ch
         (Some(key_expr), None) => {
-            let (key_pat, body) = range_pat_and_body(vec![key_expr], range_tok, body);
+            let (key_pat, body) = range_pat_and_body(vec![key_expr], range_tok, body)?;
             if is_int {
                 Ok(make_for_loop(
                     key_pat,
@@ -10777,17 +10777,17 @@ fn range_pat_and_body(
     targets: Vec<ast::Expr>,
     tok: Option<token::Token>,
     mut body: syn::Block,
-) -> (syn::Pat, syn::Block) {
+) -> Result<(syn::Pat, syn::Block), CompilerError> {
     if tok != Some(token::Token::ASSIGN) {
         let pats: Vec<syn::Pat> = targets.iter().map(expr_to_pat).collect();
-        return match pats.as_slice() {
+        return Ok(match pats.as_slice() {
             [pat] => (pat.clone(), body),
             [key_pat, val_pat] => {
                 let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
                 (pat, body)
             }
             _ => (syn::parse_quote! { _ }, body),
-        };
+        });
     }
 
     let temps: Vec<syn::Ident> = (0..targets.len())
@@ -10799,16 +10799,22 @@ fn range_pat_and_body(
         _ => syn::parse_quote! { _ },
     };
 
-    let assignments = targets.into_iter().zip(temps).filter_map(|(target, tmp)| {
-        if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
-            None
-        } else {
-            let lhs = compile_assignment_lhs(target);
-            Some(syn::parse_quote! { #lhs = #tmp; })
-        }
-    });
+    let assignments = targets
+        .into_iter()
+        .zip(temps)
+        .filter_map(|(target, tmp)| {
+            if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
+                None
+            } else {
+                Some(
+                    compile_assignment_lhs_checked(target)
+                        .map(|lhs| syn::parse_quote! { #lhs = #tmp; }),
+                )
+            }
+        })
+        .collect::<Result<Vec<syn::Stmt>, _>>()?;
     body.stmts.splice(0..0, assignments);
-    (pat, body)
+    Ok((pat, body))
 }
 
 fn range_function_targets<'a>(
@@ -10850,9 +10856,9 @@ fn range_function_param_pat(
 fn range_function_assignment_stmts(
     targets: Vec<Option<ast::Expr>>,
     tok: Option<token::Token>,
-) -> Vec<syn::Stmt> {
+) -> Result<Vec<syn::Stmt>, CompilerError> {
     if tok != Some(token::Token::ASSIGN) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     targets
         .into_iter()
@@ -10862,9 +10868,11 @@ fn range_function_assignment_stmts(
             if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
                 return None;
             }
-            let left = compile_assignment_lhs(target);
             let right = quote::format_ident!("__gors_range_arg_{}", idx);
-            Some(syn::parse_quote! { #left = #right; })
+            Some(
+                compile_assignment_lhs_checked(target)
+                    .map(|left| syn::parse_quote! { #left = #right; }),
+            )
         })
         .collect()
 }
@@ -11173,7 +11181,7 @@ fn compile_range_function_stmt(
         .enumerate()
         .map(|(idx, target)| range_function_param_pat(idx, target.as_ref(), tok))
         .collect();
-    let assignments = range_function_assignment_stmts(targets, tok);
+    let assignments = range_function_assignment_stmts(targets, tok)?;
     if !assignments.is_empty() {
         let mut stmts = assignments;
         stmts.extend(body.stmts);
@@ -14604,7 +14612,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     Ok(vec![syn::Stmt::Expr(if_expr, None)])
                 }
             }
-            ast::Stmt::IncDecStmt(s) => Ok(s.into()),
+            ast::Stmt::IncDecStmt(s) => compile_inc_dec_stmt(s),
             ast::Stmt::LabeledStmt(s) => s.try_into(),
             ast::Stmt::ReturnStmt(s) => {
                 Ok(vec![syn::Stmt::Expr(syn::Expr::Return(s.into()), None)])
@@ -14643,15 +14651,13 @@ fn is_catch_panic_defer(call: &ast::CallExpr) -> bool {
     )
 }
 
-impl From<ast::IncDecStmt<'_>> for Vec<syn::Stmt> {
-    fn from(inc_dec_stmt: ast::IncDecStmt) -> Self {
-        let x = compile_assignment_lhs(inc_dec_stmt.x);
-        match inc_dec_stmt.tok {
-            token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
-            token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
-            _ => vec![],
-        }
-    }
+fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let x = compile_assignment_lhs_checked(inc_dec_stmt.x)?;
+    Ok(match inc_dec_stmt.tok {
+        token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
+        token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
+        _ => vec![],
+    })
 }
 
 impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
@@ -16967,6 +16973,29 @@ mod tests {
 
                 func main() {
                     [1]int{1}[0] = 2
+                }
+            "#,
+        );
+        assert_invalid_assignment(
+            r#"
+                package main
+
+                const c = 1
+
+                func main() {
+                    c++
+                }
+            "#,
+        );
+        assert_invalid_assignment(
+            r#"
+                package main
+
+                const c = 1
+
+                func main() {
+                    for c = range []int{1} {
+                    }
                 }
             "#,
         );
