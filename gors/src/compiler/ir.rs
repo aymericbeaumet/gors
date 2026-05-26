@@ -1011,6 +1011,9 @@ pub enum InvalidStatement {
     Return {
         reason: InvalidReturnReason,
     },
+    Receive {
+        reason: InvalidReceiveReason,
+    },
     Send {
         reason: InvalidSendReason,
     },
@@ -1045,6 +1048,11 @@ pub enum ConditionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidIncDecReason {
     NonNumericOperand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidReceiveReason {
+    NonChannel { type_name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3260,6 +3268,14 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(InvalidStatement::ShortVarDecl { reason });
             }
+            if let Some(reason) = assign
+                .lhs
+                .iter()
+                .chain(assign.rhs.iter())
+                .find_map(|expr| invalid_receive_expr(expr, env))
+            {
+                return Some(InvalidStatement::Receive { reason });
+            }
             if let Some(reason) = invalid_assignment(assign, env) {
                 return Some(InvalidStatement::Assignment { reason });
             }
@@ -3282,6 +3298,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             invalid_statement_in_stmt_list(&comm.body, &mut comm_env)
         }
         ast::Stmt::DeclStmt(decl) => {
+            if let Some(reason) = invalid_receive_in_gen_decl(&decl.decl, env) {
+                return Some(InvalidStatement::Receive { reason });
+            }
             if let Some(reason) = invalid_value_declaration_in_gen_decl(&decl.decl, env) {
                 return Some(InvalidStatement::Declaration { reason });
             }
@@ -3291,14 +3310,24 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         ast::Stmt::DeferStmt(defer) => invalid_call_statement(&defer.call, env)
             .map(|reason| InvalidStatement::Defer { reason }),
         ast::Stmt::EmptyStmt(_) => None,
-        ast::Stmt::ExprStmt(expr) => invalid_expression_statement(&expr.x, env)
-            .map(|reason| InvalidStatement::Expr { reason }),
+        ast::Stmt::ExprStmt(expr) => {
+            if let Some(reason) = invalid_receive_expr(&expr.x, env) {
+                return Some(InvalidStatement::Receive { reason });
+            }
+            invalid_expression_statement(&expr.x, env)
+                .map(|reason| InvalidStatement::Expr { reason })
+        }
         ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
             if let Some(init) = &for_stmt.init
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut loop_env)
             {
                 return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(reason) = invalid_receive_expr(cond, &loop_env)
+            {
+                return Some(InvalidStatement::Receive { reason });
             }
             if let Some(cond) = &for_stmt.cond
                 && let Some(reason) = invalid_condition(cond, &loop_env, ConditionKind::For)
@@ -3326,6 +3355,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 && let Some(invalid) = invalid_statement_in_stmt(init, &mut if_env)
             {
                 return Some(invalid);
+            }
+            if let Some(reason) = invalid_receive_expr(&if_stmt.cond, &if_env) {
+                return Some(InvalidStatement::Receive { reason });
             }
             if let Some(reason) = invalid_condition(&if_stmt.cond, &if_env, ConditionKind::If) {
                 return Some(InvalidStatement::Condition { reason });
@@ -3514,6 +3546,180 @@ fn invalid_send(send: &ast::SendStmt<'_>, env: &TypeEnv) -> Option<InvalidSendRe
     }
     Some(InvalidSendReason::NonChannel {
         type_name: go_type_display_name(&ty),
+    })
+}
+
+fn invalid_receive_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidReceiveReason> {
+    match expr {
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_receive_expr(len, env))
+            .or_else(|| invalid_receive_expr(&array.elt, env)),
+        ast::Expr::BinaryExpr(binary) => {
+            invalid_receive_expr(&binary.x, env).or_else(|| invalid_receive_expr(&binary.y, env))
+        }
+        ast::Expr::CallExpr(call) => invalid_receive_expr(&call.fun, env).or_else(|| {
+            call.args
+                .as_ref()
+                .and_then(|args| args.iter().find_map(|arg| invalid_receive_expr(arg, env)))
+        }),
+        ast::Expr::ChanType(chan) => invalid_receive_expr(&chan.value, env),
+        ast::Expr::CompositeLit(comp) => comp
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_receive_expr(type_, env))
+            .or_else(|| {
+                comp.elts
+                    .as_ref()
+                    .and_then(|elts| elts.iter().find_map(|elt| invalid_receive_expr(elt, env)))
+            }),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_receive_expr(elt, env)),
+        ast::Expr::FuncLit(func_lit) => invalid_receive_in_block(&func_lit.body, env),
+        ast::Expr::FuncType(func_type) => invalid_receive_in_field_list(&func_type.params, env)
+            .or_else(|| {
+                func_type
+                    .results
+                    .as_ref()
+                    .and_then(|results| invalid_receive_in_field_list(results, env))
+            }),
+        ast::Expr::IndexExpr(index) => {
+            invalid_receive_expr(&index.x, env).or_else(|| invalid_receive_expr(&index.index, env))
+        }
+        ast::Expr::IndexListExpr(index) => invalid_receive_expr(&index.x, env).or_else(|| {
+            index
+                .indices
+                .iter()
+                .find_map(|index| invalid_receive_expr(index, env))
+        }),
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()
+            .and_then(|methods| invalid_receive_in_field_list(methods, env)),
+        ast::Expr::KeyValueExpr(kv) => {
+            invalid_receive_expr(&kv.key, env).or_else(|| invalid_receive_expr(&kv.value, env))
+        }
+        ast::Expr::MapType(map) => {
+            invalid_receive_expr(&map.key, env).or_else(|| invalid_receive_expr(&map.value, env))
+        }
+        ast::Expr::ParenExpr(paren) => invalid_receive_expr(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_receive_expr(&selector.x, env),
+        ast::Expr::SliceExpr(slice) => invalid_receive_expr(&slice.x, env)
+            .or_else(|| {
+                slice
+                    .low
+                    .as_ref()
+                    .and_then(|low| invalid_receive_expr(low, env))
+            })
+            .or_else(|| {
+                slice
+                    .high
+                    .as_ref()
+                    .and_then(|high| invalid_receive_expr(high, env))
+            })
+            .or_else(|| {
+                slice
+                    .max
+                    .as_ref()
+                    .and_then(|max| invalid_receive_expr(max, env))
+            }),
+        ast::Expr::StarExpr(star) => invalid_receive_expr(&star.x, env),
+        ast::Expr::StructType(struct_type) => struct_type
+            .fields
+            .as_ref()
+            .and_then(|fields| invalid_receive_in_field_list(fields, env)),
+        ast::Expr::TypeAssertExpr(assert) => invalid_receive_expr(&assert.x, env).or_else(|| {
+            assert
+                .type_
+                .as_ref()
+                .and_then(|type_| invalid_receive_expr(type_, env))
+        }),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW => {
+            let ty = env.resolve_alias(&GoType::infer_expr(&unary.x, env));
+            if matches!(ty, GoType::Chan(_) | GoType::Unknown | GoType::Named(_)) {
+                invalid_receive_expr(&unary.x, env)
+            } else {
+                Some(InvalidReceiveReason::NonChannel {
+                    type_name: go_type_display_name(&ty),
+                })
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_receive_expr(&unary.x, env),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_receive_in_field_list(
+    fields: &ast::FieldList<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidReceiveReason> {
+    fields.list.iter().find_map(|field| {
+        field
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_receive_expr(type_, env))
+    })
+}
+
+fn invalid_receive_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidReceiveReason> {
+    let mut block_env = env.clone();
+    for stmt in &block.list {
+        if let Some(reason) = invalid_receive_in_stmt(stmt, &mut block_env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_receive_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidReceiveReason> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            let invalid = assign
+                .lhs
+                .iter()
+                .chain(assign.rhs.iter())
+                .find_map(|expr| invalid_receive_expr(expr, env));
+            record_define_bindings(assign, env);
+            invalid
+        }
+        ast::Stmt::BlockStmt(block) => invalid_receive_in_block(block, env),
+        ast::Stmt::DeclStmt(decl) => {
+            let invalid = invalid_receive_in_gen_decl(&decl.decl, env);
+            record_decl_bindings(&decl.decl, env);
+            invalid
+        }
+        ast::Stmt::ExprStmt(expr) => invalid_receive_expr(&expr.x, env),
+        _ => None,
+    }
+}
+
+fn invalid_receive_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidReceiveReason> {
+    gen_decl.specs.iter().find_map(|spec| match spec {
+        ast::Spec::ValueSpec(value_spec) => value_spec
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_receive_expr(type_, env))
+            .or_else(|| {
+                value_spec.values.as_ref().and_then(|values| {
+                    values
+                        .iter()
+                        .find_map(|value| invalid_receive_expr(value, env))
+                })
+            }),
+        ast::Spec::TypeSpec(type_spec) => invalid_receive_expr(&type_spec.type_, env),
+        ast::Spec::ImportSpec(_) => None,
     })
 }
 
@@ -8874,6 +9080,106 @@ mod tests {
                 func main() {
                     ch := make(chan int, 1)
                     ch <- 1
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_receive_operations_with_non_channel_operands() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        <-1
+                    }
+                "#,
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        s := "go"
+                        x := <-s
+                        _ = x
+                    }
+                "#,
+                "string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var x = <-true
+                        _ = x
+                    }
+                "#,
+                "bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        if <-1 {
+                        }
+                    }
+                "#,
+                "int",
+            ),
+        ];
+
+        for (source, type_name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Receive {
+                    reason: super::InvalidReceiveReason::NonChannel {
+                        type_name: type_name.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_receive_operations_with_channel_operands() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan bool, 1)
+                    ch <- true
+                    if <-ch {
+                    }
                 }
             "#,
         )

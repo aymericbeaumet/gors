@@ -225,6 +225,14 @@ impl GoType {
             ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {
                 GoType::Pointer(Box::new(GoType::infer_expr(&u.x, env)))
             }
+            ast::Expr::UnaryExpr(u) if u.op == token::Token::ARROW => {
+                let operand = GoType::infer_expr(&u.x, env);
+                match env.resolve_alias(&operand) {
+                    GoType::Chan(elem) => *elem,
+                    GoType::Unknown | GoType::Named(_) => GoType::Unknown,
+                    _ => GoType::Unknown,
+                }
+            }
             ast::Expr::UnaryExpr(u) => GoType::infer_expr(&u.x, env),
             ast::Expr::BinaryExpr(bin) => {
                 let left = GoType::infer_expr(&bin.x, env);

@@ -483,6 +483,11 @@ invalid.
 IR send-statement validation rejects known non-channel channel operands before
 backend lowering; channel direction and send-value assignability remain future
 type-system work.
+IR receive validation rejects known non-channel receive operands in statement,
+assignment, and value-declaration contexts. Receive expression type inference
+returns the channel element type for known channel operands so boolean channel
+receives are valid in `if`/`for` conditions; broader nested receive validation is
+still limited by legacy expression traversal.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array

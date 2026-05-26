@@ -12774,6 +12774,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 format!("invalid range clause: cannot range over {type_name}")
             }
         },
+        ir::InvalidStatement::Receive { reason } => {
+            format!(
+                "invalid receive operation: {}",
+                invalid_receive_reason(reason)
+            )
+        }
         ir::InvalidStatement::Return { reason } => {
             format!(
                 "invalid return statement: {}",
@@ -12870,6 +12876,14 @@ fn invalid_return_reason(reason: ir::InvalidReturnReason) -> String {
         }
         ir::InvalidReturnReason::MultiValueInSingleValueContext => {
             "multi-valued expression in explicit return list".to_string()
+        }
+    }
+}
+
+fn invalid_receive_reason(reason: ir::InvalidReceiveReason) -> String {
+    match reason {
+        ir::InvalidReceiveReason::NonChannel { type_name } => {
+            format!("operand must have channel type, got {type_name}")
         }
     }
 }
@@ -17852,6 +17866,16 @@ mod tests {
                 }
             "#,
             "invalid send statement: channel operand must have channel type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    <-1
+                }
+            "#,
+            "invalid receive operation: operand must have channel type, got int",
         );
         assert_unsupported_construct(
             r#"
