@@ -351,6 +351,11 @@ before compilation to collect variable types, function signatures, struct fields
 and interface declarations. The `GoType` enum represents Go types. Used during
 code generation for type-aware decisions (string indexing, numeric casts,
 interface detection).
+Package-level function signatures and method signatures live in separate
+`TypeEnv` namespaces. Methods must be registered only as receiver-qualified keys
+such as `StringSlice.Search`, never as plain `Search`, because Go permits package
+functions and methods to share the same simple name and call-site lowering needs
+the package function signature for `func(...)` argument coercions.
 
 `gors/src/compiler/ir.rs` is the typed Go IR layer being introduced between the
 parser AST and Rust `syn` backend. Current compile entrypoints build this IR as

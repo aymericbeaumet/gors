@@ -768,7 +768,8 @@ impl TypeEnv {
             })
             .unwrap_or_default();
 
-        // If it's a method, register with receiver type prefix
+        let is_method = fd.recv.is_some();
+
         if let Some(ref recv) = fd.recv {
             if let Some(recv_field) = recv.list.first() {
                 if let Some(ref recv_type) = recv_field.type_ {
@@ -782,10 +783,12 @@ impl TypeEnv {
                 }
             }
         }
-        self.set_func_params(name, params);
-        self.set_func(name, returns);
-        if let Some(start) = variadic_start {
-            self.set_func_variadic_start(name, start);
+        if !is_method {
+            self.set_func_params(name, params);
+            self.set_func(name, returns);
+            if let Some(start) = variadic_start {
+                self.set_func_variadic_start(name, start);
+            }
         }
 
         // Register parameter types

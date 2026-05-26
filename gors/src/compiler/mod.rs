@@ -15094,6 +15094,23 @@ func main() {
     }
 
     #[test]
+    fn stdlib_sort_type_env_records_search_function_parameter() {
+        let (_, env) = crate::resolve::scan_type_env("sort").unwrap();
+        let params = env.get_func_params("Search");
+
+        assert!(
+            matches!(
+                params.as_slice(),
+                [
+                    super::typeinfer::GoType::Int,
+                    super::typeinfer::GoType::Func { .. }
+                ]
+            ),
+            "{params:?}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_builtin_println() {
         let go_source = "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n";
         let ast = parse_file("main.go", go_source).unwrap();
