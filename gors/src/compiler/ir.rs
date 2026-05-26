@@ -952,9 +952,17 @@ pub struct GotoStatePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidGoto {
-    pub label: String,
-    pub skipped_names: Vec<String>,
+pub enum InvalidGoto {
+    SkipsDeclarations {
+        label: String,
+        skipped_names: Vec<String>,
+    },
+    EntersBlock {
+        label: String,
+    },
+    UndefinedLabel {
+        label: String,
+    },
 }
 
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
@@ -983,7 +991,7 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
                 collect_direct_declared_names_in_stmt(skipped, &mut skipped_names);
             }
             if !skipped_names.is_empty() {
-                return Some(InvalidGoto {
+                return Some(InvalidGoto::SkipsDeclarations {
                     label: target,
                     skipped_names: skipped_names.into_iter().collect(),
                 });
@@ -991,6 +999,184 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
         }
     }
     None
+}
+
+pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
+    let mut labels = BTreeMap::new();
+    collect_label_paths_in_block(block, &[], &mut labels);
+    let mut gotos = Vec::new();
+    collect_goto_paths_in_block(block, &[], &mut gotos);
+
+    for (label, goto_path) in gotos {
+        let Some(label_path) = labels.get(&label) else {
+            return Some(InvalidGoto::UndefinedLabel { label });
+        };
+        if !goto_path.starts_with(label_path) {
+            return Some(InvalidGoto::EntersBlock { label });
+        }
+    }
+    None
+}
+
+fn child_path(path: &[usize], idx: usize, child: usize) -> Vec<usize> {
+    let mut next = path.to_vec();
+    next.push(idx);
+    next.push(child);
+    next
+}
+
+fn collect_label_paths_in_block(
+    block: &ast::BlockStmt<'_>,
+    path: &[usize],
+    labels: &mut BTreeMap<String, Vec<usize>>,
+) {
+    for (idx, stmt) in block.list.iter().enumerate() {
+        collect_label_paths_in_stmt(stmt, path, idx, labels);
+    }
+}
+
+fn collect_label_paths_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    path: &[usize],
+    idx: usize,
+    labels: &mut BTreeMap<String, Vec<usize>>,
+) {
+    match stmt {
+        ast::Stmt::BlockStmt(block) => {
+            collect_label_paths_in_block(block, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::CaseClause(case) => {
+            collect_label_paths_in_stmt_list(&case.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::CommClause(comm) => {
+            collect_label_paths_in_stmt_list(&comm.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            collect_label_paths_in_block(&for_stmt.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            collect_label_paths_in_block(&if_stmt.body, &child_path(path, idx, 0), labels);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_label_paths_in_stmt(else_branch, &child_path(path, idx, 1), 0, labels);
+            }
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            labels
+                .entry(labeled.label.name.to_string())
+                .or_insert_with(|| path.to_vec());
+            collect_label_paths_in_stmt(&labeled.stmt, path, idx, labels);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            collect_label_paths_in_block(&range.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::SelectStmt(select) => {
+            collect_label_paths_in_block(&select.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            collect_label_paths_in_block(&switch.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            collect_label_paths_in_block(&type_switch.body, &child_path(path, idx, 0), labels);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
+    }
+}
+
+fn collect_label_paths_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    path: &[usize],
+    labels: &mut BTreeMap<String, Vec<usize>>,
+) {
+    for (idx, stmt) in stmts.iter().enumerate() {
+        collect_label_paths_in_stmt(stmt, path, idx, labels);
+    }
+}
+
+fn collect_goto_paths_in_block(
+    block: &ast::BlockStmt<'_>,
+    path: &[usize],
+    gotos: &mut Vec<(String, Vec<usize>)>,
+) {
+    for (idx, stmt) in block.list.iter().enumerate() {
+        collect_goto_paths_in_stmt(stmt, path, idx, gotos);
+    }
+}
+
+fn collect_goto_paths_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    path: &[usize],
+    idx: usize,
+    gotos: &mut Vec<(String, Vec<usize>)>,
+) {
+    match stmt {
+        ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::GOTO => {
+            if let Some(label) = &branch.label {
+                gotos.push((label.name.to_string(), path.to_vec()));
+            }
+        }
+        ast::Stmt::BlockStmt(block) => {
+            collect_goto_paths_in_block(block, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::CaseClause(case) => {
+            collect_goto_paths_in_stmt_list(&case.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::CommClause(comm) => {
+            collect_goto_paths_in_stmt_list(&comm.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            collect_goto_paths_in_block(&for_stmt.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            collect_goto_paths_in_block(&if_stmt.body, &child_path(path, idx, 0), gotos);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_goto_paths_in_stmt(else_branch, &child_path(path, idx, 1), 0, gotos);
+            }
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            collect_goto_paths_in_stmt(&labeled.stmt, path, idx, gotos);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            collect_goto_paths_in_block(&range.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::SelectStmt(select) => {
+            collect_goto_paths_in_block(&select.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            collect_goto_paths_in_block(&switch.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            collect_goto_paths_in_block(&type_switch.body, &child_path(path, idx, 0), gotos);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
+    }
+}
+
+fn collect_goto_paths_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    path: &[usize],
+    gotos: &mut Vec<(String, Vec<usize>)>,
+) {
+    for (idx, stmt) in stmts.iter().enumerate() {
+        collect_goto_paths_in_stmt(stmt, path, idx, gotos);
+    }
 }
 
 pub fn goto_state_plan_for_block(block: &ast::BlockStmt<'_>) -> Option<GotoStatePlan> {
@@ -4166,8 +4352,79 @@ mod tests {
         else {
             panic!("expected invalid goto");
         };
-        assert_eq!(invalid.label, "Done");
-        assert_eq!(invalid.skipped_names, vec!["x"]);
+        assert_eq!(
+            invalid,
+            super::InvalidGoto::SkipsDeclarations {
+                label: "Done".to_string(),
+                skipped_names: vec!["x".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_goto_into_nested_block() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    goto Inside
+                    if true {
+                    Inside:
+                        println("inside")
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(invalid) = super::invalid_goto_target_in_func(func.body.as_ref().expect("body"))
+        else {
+            panic!("expected invalid goto");
+        };
+        assert_eq!(
+            invalid,
+            super::InvalidGoto::EntersBlock {
+                label: "Inside".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_goto_to_undefined_label() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    goto Missing
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(invalid) = super::invalid_goto_target_in_func(func.body.as_ref().expect("body"))
+        else {
+            panic!("expected invalid goto");
+        };
+        assert_eq!(
+            invalid,
+            super::InvalidGoto::UndefinedLabel {
+                label: "Missing".to_string()
+            }
+        );
     }
 
     #[test]

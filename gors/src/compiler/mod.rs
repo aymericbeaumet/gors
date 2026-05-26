@@ -8164,6 +8164,7 @@ fn compile_method(
     let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
     let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
     let block_result = if let Some(body) = func_decl.body {
+        validate_function_gotos(&body)?;
         body.try_into()
     } else {
         Ok(syn::Block {
@@ -12551,6 +12552,33 @@ fn prepend_defer_stack(block: &mut syn::Block) {
     block.stmts.splice(0..0, [defer_stack_decl_stmt()]);
 }
 
+fn invalid_goto_error(invalid: ir::InvalidGoto) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidGoto::SkipsDeclarations {
+            label,
+            skipped_names,
+        } => format!(
+            "invalid goto to {} skips declarations: {}",
+            label,
+            skipped_names.join(", ")
+        ),
+        ir::InvalidGoto::EntersBlock { label } => {
+            format!("invalid goto to {} enters a nested block", label)
+        }
+        ir::InvalidGoto::UndefinedLabel { label } => {
+            format!("invalid goto to undefined label {}", label)
+        }
+    };
+    CompilerError::UnsupportedConstruct(message)
+}
+
+fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
+    if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
+        return Err(invalid_goto_error(invalid));
+    }
+    Ok(())
+}
+
 impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     type Error = CompilerError;
 
@@ -12568,11 +12596,7 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
                 .chain(address_taken_names),
         );
         if let Some(invalid) = ir::invalid_forward_goto_in_block(&block_stmt) {
-            return Err(CompilerError::UnsupportedConstruct(format!(
-                "invalid goto to {} skips declarations: {}",
-                invalid.label,
-                invalid.skipped_names.join(", ")
-            )));
+            return Err(invalid_goto_error(invalid));
         }
         if let Some(goto_plan) = ir::goto_state_plan_for_block(&block_stmt) {
             return Ok(Self {
@@ -14439,6 +14463,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
         let block_result = if let Some(body) = func_decl.body {
+            validate_function_gotos(&body)?;
             body.try_into()
         } else {
             Ok(bodyless_function_block(&output, &inputs))
@@ -17153,6 +17178,38 @@ mod tests {
                 }
             "#,
             "invalid goto to Done skips declarations: x",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_goto_into_nested_block() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    goto Inside
+                    if true {
+                    Inside:
+                        println("inside")
+                    }
+                }
+            "#,
+            "invalid goto to Inside enters a nested block",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_goto_to_undefined_label() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    goto Missing
+                }
+            "#,
+            "invalid goto to undefined label Missing",
         );
     }
 
