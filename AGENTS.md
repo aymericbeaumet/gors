@@ -505,6 +505,11 @@ lowering pass see local shadowing. Selector targets with unknown type
 information remain permissive until IR local type flow is complete; this keeps
 real stdlib code compiling instead of rejecting valid selector assignments
 because the legacy type environment has not learned every local type yet.
+IR assignment validation rejects non-assignable left operands before backend
+lowering; blank identifiers and map-index operands are valid assignment targets,
+but string indexes, literals, calls, constants, and unshadowed predeclared names
+are not. Short variable declarations reject non-identifier left operands in
+plain assignments and range clauses.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.

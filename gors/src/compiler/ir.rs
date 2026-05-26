@@ -1033,6 +1033,7 @@ pub enum InvalidAssignmentReason {
     CompoundBlankIdentifier,
     CompoundOperandCount { lhs: usize, rhs: usize },
     CountMismatch { lhs: usize, values: usize },
+    InvalidLeftOperand,
     MultiValueInSingleValueContext,
 }
 
@@ -1116,6 +1117,7 @@ pub enum InvalidRangeReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidShortVarDeclReason {
     DuplicateName(String),
+    NonIdentifier,
     NoNewVariables,
 }
 
@@ -3492,6 +3494,13 @@ fn invalid_assignment(
         if assign.lhs.first().is_some_and(is_blank_ident) {
             return Some(InvalidAssignmentReason::CompoundBlankIdentifier);
         }
+        if assign
+            .lhs
+            .first()
+            .is_some_and(|lhs| !assignment_lhs_is_valid(lhs, env))
+        {
+            return Some(InvalidAssignmentReason::InvalidLeftOperand);
+        }
         if let Some(values) = expression_value_count(
             assign.rhs.first()?,
             env,
@@ -3502,6 +3511,15 @@ fn invalid_assignment(
             return Some(InvalidAssignmentReason::CountMismatch { lhs: 1, values });
         }
         return None;
+    }
+
+    if assign.tok == token::Token::ASSIGN
+        && assign
+            .lhs
+            .iter()
+            .any(|lhs| !assignment_lhs_is_valid(lhs, env))
+    {
+        return Some(InvalidAssignmentReason::InvalidLeftOperand);
     }
 
     if assign.rhs.len() == 1 {
@@ -3538,6 +3556,22 @@ fn invalid_assignment(
     }
 
     None
+}
+
+fn assignment_lhs_is_valid(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    is_blank_ident(expr)
+        || is_map_index_expr(expr, env)
+        || expr_addressability(expr, env) == Addressability::Addressable
+}
+
+fn is_map_index_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    let ast::Expr::IndexExpr(index) = unparen_expr(expr) else {
+        return false;
+    };
+    matches!(
+        env.resolve_alias(&GoType::infer_expr(&index.x, env)),
+        GoType::Map(_, _)
+    )
 }
 
 fn invalid_condition(
@@ -4438,7 +4472,7 @@ fn invalid_short_var_decl_names(lhs: &[ast::Expr<'_>]) -> Option<InvalidShortVar
     let mut names = BTreeSet::new();
     for expr in lhs {
         let Some(name) = short_var_decl_ident_name(expr) else {
-            continue;
+            return Some(InvalidShortVarDeclReason::NonIdentifier);
         };
         if name == "_" {
             continue;
@@ -4472,7 +4506,7 @@ fn record_short_var_decl_name<'src>(
     names: &mut BTreeSet<&'src str>,
 ) -> Option<InvalidShortVarDeclReason> {
     let Some(name) = short_var_decl_ident_name(expr) else {
-        return None;
+        return Some(InvalidShortVarDeclReason::NonIdentifier);
     };
     if name == "_" {
         return None;
@@ -9787,6 +9821,148 @@ mod tests {
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
         );
+    }
+
+    #[test]
+    fn rejects_invalid_assignment_left_operands() {
+        let cases = vec![
+            r#"
+                package main
+
+                func main() {
+                    1 = 2
+                }
+            "#,
+            r#"
+                package main
+
+                func f() int { return 1 }
+
+                func main() {
+                    f() = 2
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    "go"[0] = 'G'
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    len = 1
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    1 += 2
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Assignment {
+                    reason: super::InvalidAssignmentReason::InvalidLeftOperand,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_assignment_left_operands() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type T struct { N int }
+
+                func main() {
+                    x := 1
+                    _ = x
+                    xs := []int{1}
+                    xs[0] = 2
+                    arr := [1]int{1}
+                    arr[0] = 2
+                    m := map[string]int{"x": 1}
+                    m["x"] = 2
+                    m["x"] += 1
+                    p := &T{}
+                    p.N = 3
+                    _ = 4
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_short_var_declarations_with_non_identifiers() {
+        let cases = vec![
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    xs[0] := 2
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    for xs[0] := range xs {
+                    }
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::ShortVarDecl {
+                    reason: super::InvalidShortVarDeclReason::NonIdentifier,
+                })
+            );
+        }
     }
 
     #[test]

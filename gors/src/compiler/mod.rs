@@ -12835,6 +12835,9 @@ fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
         ir::InvalidAssignmentReason::CountMismatch { lhs, values } => {
             format!("assignment count mismatch: {lhs} left operand(s), {values} value(s)")
         }
+        ir::InvalidAssignmentReason::InvalidLeftOperand => {
+            "left side is not assignable".to_string()
+        }
         ir::InvalidAssignmentReason::MultiValueInSingleValueContext => {
             "multi-valued expression in single-value assignment context".to_string()
         }
@@ -12944,6 +12947,9 @@ fn invalid_short_var_decl_reason(reason: ir::InvalidShortVarDeclReason) -> Strin
     match reason {
         ir::InvalidShortVarDeclReason::DuplicateName(name) => {
             format!("name {name} appears more than once on left side of :=")
+        }
+        ir::InvalidShortVarDeclReason::NonIdentifier => {
+            "left side of := must be identifiers".to_string()
         }
         ir::InvalidShortVarDeclReason::NoNewVariables => {
             "no new variables on left side of :=".to_string()
@@ -17541,7 +17547,9 @@ mod tests {
         let parsed = parse_file("test.go", go_input).unwrap();
         match compile(parsed) {
             Err(super::CompilerError::InvalidAssignment(_)) => {}
-            Err(err) => panic!("expected invalid assignment, got {err:?}"),
+            Err(super::CompilerError::UnsupportedConstruct(err))
+                if err.contains("left side is not assignable") => {}
+            Err(err) => panic!("expected invalid assignment rejection, got {err:?}"),
             Ok(_) => panic!("expected invalid assignment, got success"),
         }
     }
@@ -17986,6 +17994,27 @@ mod tests {
                 }
             "#,
             "invalid short variable declaration: no new variables on left side of :=",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    1 = 2
+                }
+            "#,
+            "invalid assignment: left side is not assignable",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    xs[0] := 2
+                }
+            "#,
+            "invalid short variable declaration: left side of := must be identifiers",
         );
         assert_unsupported_construct(
             r#"
