@@ -439,6 +439,12 @@ Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
 not `vec![..]` macros, so dependency discovery and later AST passes can see
 module references inside variadic arguments.
 
+Function-literal capture analysis lives in `gors/src/compiler/ir.rs` and uses a
+lexical scope stack rather than whole-body declaration/reference set subtraction.
+Keep nested shadowing cases there: a name declared in an inner block must not
+mask a later reference to an outer captured name, and nested function literals
+must propagate their free-variable uses to the enclosing literal.
+
 Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
@@ -522,7 +528,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 
-- Closure support is partial; capture analysis is not yet scope-precise for all shadowing patterns, and closure/function-value aliasing still uses generated shared cells rather than a full Go environment object.
+- Closure support is partial; function-value aliasing still uses generated shared cells rather than a full Go environment object.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
