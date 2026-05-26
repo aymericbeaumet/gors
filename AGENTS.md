@@ -447,13 +447,15 @@ identifiers are not addressable, map/string indexes are not addressable, array
 indexes require an addressable array operand, and field selectors require an
 addressable value or a pointer operand when the target type is known. Shadowed
 predeclared names are addressable when the type environment has recorded their
-binding. Selector targets with unknown type information remain permissive until
-IR local type flow is complete; this keeps real stdlib code compiling instead of
-rejecting valid selector assignments because the legacy type environment has not
-learned the local type yet. Backend assignment lowering must use the checked
-assignment-lhs path, including `++`/`--` and `for ... = range` targets, so known
-non-addressable operands fail as compiler errors instead of falling back to
-arbitrary expression codegen.
+binding. IR block lowering updates a cloned type environment for local `var`,
+`const`, `:=`, and `for ... := range` bindings so later expressions in the same
+lowering pass see local shadowing. Selector targets with unknown type
+information remain permissive until IR local type flow is complete; this keeps
+real stdlib code compiling instead of rejecting valid selector assignments
+because the legacy type environment has not learned every local type yet.
+Backend assignment lowering must use the checked assignment-lhs path, including
+`++`/`--` and `for ... = range` targets, so known non-addressable operands fail
+as compiler errors instead of falling back to arbitrary expression codegen.
 
 The generated-code fallback pruner must preserve control-flow containers while
 removing only unsupported reflection-dependent branches. When it prunes a local

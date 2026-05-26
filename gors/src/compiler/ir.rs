@@ -575,6 +575,8 @@ fn lower_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<Item> {
 }
 
 fn lower_func_decl(func: &ast::FuncDecl<'_>, env: &TypeEnv) -> Func {
+    let mut body_env = env.clone();
+    seed_func_bindings(func.recv.as_ref(), &func.type_, &mut body_env);
     Func {
         name: Some(func.name.name.to_string()),
         receiver: func
@@ -582,18 +584,63 @@ fn lower_func_decl(func: &ast::FuncDecl<'_>, env: &TypeEnv) -> Func {
             .as_ref()
             .map_or_else(Vec::new, |receiver| lower_fields(receiver)),
         signature: lower_signature(&func.type_),
-        body: func.body.as_ref().map(|body| lower_block(body, env)),
+        body: func
+            .body
+            .as_ref()
+            .map(|body| lower_block_with_env(body, &mut body_env)),
         captures: Vec::new(),
     }
 }
 
 fn lower_func_lit(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Func {
+    let mut body_env = env.clone();
+    seed_func_bindings(None, &func_lit.type_, &mut body_env);
     Func {
         name: None,
         receiver: Vec::new(),
         signature: lower_signature(&func_lit.type_),
-        body: Some(lower_block(&func_lit.body, env)),
+        body: Some(lower_block_with_env(&func_lit.body, &mut body_env)),
         captures: func_lit_captures(func_lit, env),
+    }
+}
+
+fn seed_func_bindings(
+    recv: Option<&ast::FieldList<'_>>,
+    sig: &ast::FuncType<'_>,
+    env: &mut TypeEnv,
+) {
+    if let Some(recv) = recv {
+        for field in &recv.list {
+            let ty = field
+                .type_
+                .as_ref()
+                .map(GoType::from_expr)
+                .unwrap_or(GoType::Unknown);
+            if let Some(names) = &field.names {
+                for name in names {
+                    env.set_var(name.name, ty.clone());
+                }
+            }
+        }
+    }
+    seed_field_bindings(&sig.params, env);
+    if let Some(results) = &sig.results {
+        seed_field_bindings(results, env);
+    }
+}
+
+fn seed_field_bindings(fields: &ast::FieldList<'_>, env: &mut TypeEnv) {
+    for field in &fields.list {
+        let ty = field
+            .type_
+            .as_ref()
+            .map(GoType::from_expr)
+            .unwrap_or(GoType::Unknown);
+        if let Some(names) = &field.names {
+            for name in names {
+                env.set_var(name.name, ty.clone());
+            }
+        }
     }
 }
 
@@ -700,12 +747,104 @@ fn lower_spec(spec: &ast::Spec<'_>, env: &TypeEnv) -> Option<Spec> {
 }
 
 fn lower_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> Block {
+    let mut env = env.clone();
+    lower_block_with_env(block, &mut env)
+}
+
+fn lower_block_with_env(block: &ast::BlockStmt<'_>, env: &mut TypeEnv) -> Block {
     Block {
         stmts: block
             .list
             .iter()
             .filter_map(|stmt| lower_stmt(stmt, env))
             .collect(),
+    }
+}
+
+fn record_decl_bindings(gen_decl: &ast::GenDecl<'_>, env: &mut TypeEnv) {
+    for spec in &gen_decl.specs {
+        let ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        let explicit_type = value_spec.type_.as_ref().map(GoType::from_expr);
+        for (idx, name) in value_spec.names.iter().enumerate() {
+            if name.name == "_" {
+                continue;
+            }
+            let ty = explicit_type.clone().unwrap_or_else(|| {
+                value_spec
+                    .values
+                    .as_ref()
+                    .and_then(|values| values.get(idx))
+                    .map(|expr| GoType::infer_expr(expr, env))
+                    .unwrap_or(GoType::Unknown)
+            });
+            if gen_decl.tok == token::Token::CONST {
+                env.set_const_type(name.name, ty.clone());
+                env.set_var(name.name, ty);
+            } else {
+                env.set_var(name.name, ty);
+            }
+        }
+    }
+}
+
+fn record_define_bindings(assign: &ast::AssignStmt<'_>, env: &mut TypeEnv) {
+    if assign.tok != token::Token::DEFINE {
+        return;
+    }
+    let inferred = if assign.lhs.len() == assign.rhs.len() {
+        assign
+            .rhs
+            .iter()
+            .map(|rhs| GoType::infer_expr(rhs, env))
+            .collect::<Vec<_>>()
+    } else {
+        vec![GoType::Unknown; assign.lhs.len()]
+    };
+    for (lhs, ty) in assign.lhs.iter().zip(inferred) {
+        if let ast::Expr::Ident(ident) = lhs
+            && ident.name != "_"
+        {
+            env.set_var(ident.name, ty);
+        }
+    }
+}
+
+fn record_range_bindings(range: &ast::RangeStmt<'_>, env: &mut TypeEnv) {
+    if range.tok != Some(token::Token::DEFINE) {
+        return;
+    }
+    let range_type = env.resolve_alias(&GoType::infer_expr(&range.x, env));
+    let (key_type, value_type) = match range_type {
+        GoType::String => (GoType::Int, Some(GoType::Int32)),
+        GoType::Slice(elem) | GoType::Array(elem) => (GoType::Int, Some(*elem)),
+        GoType::Map(key, value) => (*key, Some(*value)),
+        GoType::Chan(value) => (*value, None),
+        GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr => (GoType::Int, None),
+        _ => (GoType::Unknown, Some(GoType::Unknown)),
+    };
+    record_range_binding(range.key.as_ref(), key_type, env);
+    if let Some(value_type) = value_type {
+        record_range_binding(range.value.as_ref(), value_type, env);
+    }
+}
+
+fn record_range_binding(target: Option<&ast::Expr<'_>>, ty: GoType, env: &mut TypeEnv) {
+    if let Some(ast::Expr::Ident(ident)) = target
+        && ident.name != "_"
+    {
+        env.set_var(ident.name, ty);
     }
 }
 
@@ -1202,21 +1341,25 @@ fn comm_cases_have_labeled_break_referring_to_current(
     })
 }
 
-fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
+fn lower_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<Stmt> {
     match stmt {
-        ast::Stmt::AssignStmt(assign) => Some(Stmt::Assign(Assign {
-            lhs: assign
-                .lhs
-                .iter()
-                .map(|expr| lower_expr(expr, env))
-                .collect(),
-            op: lower_assign_op(assign.tok),
-            rhs: assign
-                .rhs
-                .iter()
-                .map(|expr| lower_expr(expr, env))
-                .collect(),
-        })),
+        ast::Stmt::AssignStmt(assign) => {
+            let lowered = Stmt::Assign(Assign {
+                lhs: assign
+                    .lhs
+                    .iter()
+                    .map(|expr| lower_expr(expr, env))
+                    .collect(),
+                op: lower_assign_op(assign.tok),
+                rhs: assign
+                    .rhs
+                    .iter()
+                    .map(|expr| lower_expr(expr, env))
+                    .collect(),
+            });
+            record_define_bindings(assign, env);
+            Some(lowered)
+        }
         ast::Stmt::BlockStmt(block) => Some(Stmt::Block(lower_block(block, env))),
         ast::Stmt::BranchStmt(branch) => Some(Stmt::Branch {
             kind: lower_branch_kind(branch.tok),
@@ -1224,37 +1367,56 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
         }),
         ast::Stmt::CaseClause(case) => Some(Stmt::Case(lower_case(case, env))),
         ast::Stmt::CommClause(comm) => Some(Stmt::Comm(lower_comm_case(comm, env))),
-        ast::Stmt::DeclStmt(decl) => Some(Stmt::Decl(lower_gen_decl(&decl.decl, env))),
+        ast::Stmt::DeclStmt(decl) => {
+            let lowered = lower_gen_decl(&decl.decl, env);
+            record_decl_bindings(&decl.decl, env);
+            Some(Stmt::Decl(lowered))
+        }
         ast::Stmt::DeferStmt(defer) => Some(Stmt::Defer(lower_call(&defer.call, env))),
         ast::Stmt::EmptyStmt(_) => Some(Stmt::Empty),
         ast::Stmt::ExprStmt(expr) => Some(Stmt::Expr(lower_expr(&expr.x, env))),
-        ast::Stmt::ForStmt(for_stmt) => Some(Stmt::For {
-            init: for_stmt
-                .init
-                .as_ref()
-                .and_then(|init| lower_stmt(init, env).map(Box::new)),
-            cond: for_stmt.cond.as_ref().map(|cond| lower_expr(cond, env)),
-            post: for_stmt
-                .post
-                .as_ref()
-                .and_then(|post| lower_stmt(post, env).map(Box::new)),
-            body: lower_block(&for_stmt.body, env),
-        }),
+        ast::Stmt::ForStmt(for_stmt) => {
+            let mut loop_env = env.clone();
+            Some(Stmt::For {
+                init: for_stmt
+                    .init
+                    .as_ref()
+                    .and_then(|init| lower_stmt(init, &mut loop_env).map(Box::new)),
+                cond: for_stmt
+                    .cond
+                    .as_ref()
+                    .map(|cond| lower_expr(cond, &loop_env)),
+                post: for_stmt
+                    .post
+                    .as_ref()
+                    .and_then(|post| lower_stmt(post, &mut loop_env).map(Box::new)),
+                body: lower_block_with_env(&for_stmt.body, &mut loop_env),
+            })
+        }
         ast::Stmt::GoStmt(go) => Some(Stmt::Go(lower_call(&go.call, env))),
-        ast::Stmt::IfStmt(if_stmt) => Some(Stmt::If {
-            init: if_stmt
+        ast::Stmt::IfStmt(if_stmt) => {
+            let mut if_env = env.clone();
+            let init = if_stmt
                 .init
                 .as_ref()
                 .as_ref()
-                .and_then(|init| lower_stmt(init, env).map(Box::new)),
-            cond: lower_expr(&if_stmt.cond, env),
-            body: lower_block(&if_stmt.body, env),
-            else_branch: if_stmt
+                .and_then(|init| lower_stmt(init, &mut if_env).map(Box::new));
+            let cond = lower_expr(&if_stmt.cond, &if_env);
+            let mut body_env = if_env.clone();
+            let body = lower_block_with_env(&if_stmt.body, &mut body_env);
+            let mut else_env = if_env;
+            let else_branch = if_stmt
                 .else_
                 .as_ref()
                 .as_ref()
-                .and_then(|else_branch| lower_stmt(else_branch, env).map(Box::new)),
-        }),
+                .and_then(|else_branch| lower_stmt(else_branch, &mut else_env).map(Box::new));
+            Some(Stmt::If {
+                init,
+                cond,
+                body,
+                else_branch,
+            })
+        }
         ast::Stmt::IncDecStmt(inc_dec) => Some(Stmt::IncDec {
             expr: lower_expr(&inc_dec.x, env),
             op: lower_inc_dec_op(inc_dec.tok),
@@ -1263,13 +1425,17 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
             name: label.label.name.to_string(),
             stmt: Box::new(stmt),
         }),
-        ast::Stmt::RangeStmt(range) => Some(Stmt::Range {
-            key: range.key.as_ref().map(|key| lower_expr(key, env)),
-            value: range.value.as_ref().map(|value| lower_expr(value, env)),
-            define: matches!(range.tok, Some(token::Token::DEFINE)),
-            expr: lower_expr(&range.x, env),
-            body: lower_block(&range.body, env),
-        }),
+        ast::Stmt::RangeStmt(range) => {
+            let mut range_env = env.clone();
+            record_range_bindings(range, &mut range_env);
+            Some(Stmt::Range {
+                key: range.key.as_ref().map(|key| lower_expr(key, env)),
+                value: range.value.as_ref().map(|value| lower_expr(value, env)),
+                define: matches!(range.tok, Some(token::Token::DEFINE)),
+                expr: lower_expr(&range.x, env),
+                body: lower_block_with_env(&range.body, &mut range_env),
+            })
+        }
         ast::Stmt::ReturnStmt(ret) => Some(Stmt::Return(
             ret.results
                 .iter()
@@ -1327,6 +1493,7 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
 }
 
 fn lower_case(case: &ast::CaseClause<'_>, env: &TypeEnv) -> Case {
+    let mut body_env = env.clone();
     Case {
         exprs: case.list.as_ref().map_or_else(Vec::new, |exprs| {
             exprs.iter().map(|expr| lower_expr(expr, env)).collect()
@@ -1334,22 +1501,25 @@ fn lower_case(case: &ast::CaseClause<'_>, env: &TypeEnv) -> Case {
         body: case
             .body
             .iter()
-            .filter_map(|stmt| lower_stmt(stmt, env))
+            .filter_map(|stmt| lower_stmt(stmt, &mut body_env))
             .collect(),
         is_default: case.list.is_none(),
     }
 }
 
 fn lower_comm_case(comm: &ast::CommClause<'_>, env: &TypeEnv) -> CommCase {
+    let mut comm_env = env.clone();
+    let lowered_comm = comm
+        .comm
+        .as_ref()
+        .and_then(|stmt| lower_stmt(stmt, &mut comm_env).map(Box::new));
+    let mut body_env = comm_env;
     CommCase {
-        comm: comm
-            .comm
-            .as_ref()
-            .and_then(|stmt| lower_stmt(stmt, env).map(Box::new)),
+        comm: lowered_comm,
         body: comm
             .body
             .iter()
-            .filter_map(|stmt| lower_stmt(stmt, env))
+            .filter_map(|stmt| lower_stmt(stmt, &mut body_env))
             .collect(),
         is_default: comm.comm.is_none(),
     }
@@ -3192,6 +3362,36 @@ mod tests {
     }
 
     #[test]
+    fn lower_block_tracks_local_define_bindings_for_addressability() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    len := 1
+                    _ = len
+                }
+            "#,
+        );
+        let Some(func) = ir.items.iter().find_map(|item| match item {
+            Item::Func(func) if func.name.as_deref() == Some("main") => Some(func),
+            Item::Func(_) | Item::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected rhs");
+        };
+        assert_eq!(expr.addressability, Addressability::Addressable);
+    }
+
+    #[test]
     fn classifies_string_concat_from_types() {
         let file = parse_file(
             "test.go",
@@ -3507,7 +3707,7 @@ mod tests {
         };
         assert_eq!(capture.name, "count");
         assert_eq!(capture.mode, CaptureMode::BorrowMut);
-        assert_eq!(capture.ty, GoType::Unknown);
+        assert_eq!(capture.ty, GoType::Int);
     }
 
     #[test]
