@@ -12685,12 +12685,50 @@ fn invalid_branch_error(invalid: ir::InvalidBranch) -> CompilerError {
     CompilerError::UnsupportedConstruct(message)
 }
 
+fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidStatement::Defer { reason } => {
+            format!(
+                "invalid defer statement: {}",
+                invalid_statement_reason(reason)
+            )
+        }
+        ir::InvalidStatement::Expr { reason } => {
+            format!(
+                "invalid expression statement: {}",
+                invalid_statement_reason(reason)
+            )
+        }
+        ir::InvalidStatement::Go { reason } => {
+            format!("invalid go statement: {}", invalid_statement_reason(reason))
+        }
+    };
+    CompilerError::UnsupportedConstruct(message)
+}
+
+fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
+    match reason {
+        ir::InvalidStatementReason::DisallowedBuiltin(name) => {
+            format!("{} is not permitted in statement context", name)
+        }
+        ir::InvalidStatementReason::NonCallOrReceive => {
+            "expected a function call, method call, or receive operation".to_string()
+        }
+        ir::InvalidStatementReason::TypeConversion => {
+            "type conversions are not permitted in statement context".to_string()
+        }
+    }
+}
+
 fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
     }
     if let Some(invalid) = ir::invalid_branch_in_func(body) {
         return Err(invalid_branch_error(invalid));
+    }
+    if let Some(invalid) = TYPE_ENV.with(|env| ir::invalid_statement_in_func(body, &env.borrow())) {
+        return Err(invalid_statement_error(invalid));
     }
     Ok(())
 }
@@ -17380,6 +17418,60 @@ mod tests {
                 }
             "#,
             "invalid fallthrough in final switch case",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_statement_context_expressions() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    1 + 2
+                }
+            "#,
+            "invalid expression statement: expected a function call, method call, or receive operation",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    len("go")
+                }
+            "#,
+            "invalid expression statement: len is not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    string(65)
+                }
+            "#,
+            "invalid expression statement: type conversions are not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    go len("go")
+                }
+            "#,
+            "invalid go statement: len is not permitted in statement context",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    defer int(1)
+                }
+            "#,
+            "invalid defer statement: type conversions are not permitted in statement context",
         );
     }
 

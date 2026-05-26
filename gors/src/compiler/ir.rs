@@ -977,6 +977,20 @@ pub enum InvalidBranch {
     FallthroughOutsideSwitch,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidStatement {
+    Defer { reason: InvalidStatementReason },
+    Expr { reason: InvalidStatementReason },
+    Go { reason: InvalidStatementReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidStatementReason {
+    DisallowedBuiltin(String),
+    NonCallOrReceive,
+    TypeConversion,
+}
+
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
     let mut label_positions = BTreeMap::new();
     for (idx, stmt) in block.list.iter().enumerate() {
@@ -1016,6 +1030,14 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
 pub fn invalid_branch_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidBranch> {
     let mut context = BranchContext::default();
     invalid_branch_in_block(block, &mut context)
+}
+
+pub fn invalid_statement_in_func(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    let mut env = env.clone();
+    invalid_statement_in_block(block, &mut env)
 }
 
 pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
@@ -1578,6 +1600,272 @@ fn invalid_branch_in_expr(
         | ast::Expr::Ident(_)
         | ast::Expr::InterfaceType(_)
         | ast::Expr::StructType(_) => None,
+    }
+}
+
+fn invalid_statement_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in &block.list {
+        if let Some(invalid) = invalid_statement_in_stmt(stmt, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_statement_in_nested_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    let mut block_env = env.clone();
+    invalid_statement_in_block(block, &mut block_env)
+}
+
+fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<InvalidStatement> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            record_define_bindings(assign, env);
+            None
+        }
+        ast::Stmt::BlockStmt(block) => invalid_statement_in_nested_block(block, env),
+        ast::Stmt::BranchStmt(_) => None,
+        ast::Stmt::CaseClause(case) => {
+            let mut case_env = env.clone();
+            invalid_statement_in_stmt_list(&case.body, &mut case_env)
+        }
+        ast::Stmt::CommClause(comm) => {
+            let mut comm_env = env.clone();
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_statement_in_stmt(comm, &mut comm_env)
+            {
+                return Some(invalid);
+            }
+            invalid_statement_in_stmt_list(&comm.body, &mut comm_env)
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            record_decl_bindings(&decl.decl, env);
+            None
+        }
+        ast::Stmt::DeferStmt(defer) => invalid_call_statement(&defer.call, env)
+            .map(|reason| InvalidStatement::Defer { reason }),
+        ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::ExprStmt(expr) => invalid_expression_statement(&expr.x, env)
+            .map(|reason| InvalidStatement::Expr { reason }),
+        ast::Stmt::ForStmt(for_stmt) => {
+            let mut loop_env = env.clone();
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_statement_in_stmt(init, &mut loop_env)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_statement_in_stmt(post, &mut loop_env)
+            {
+                return Some(invalid);
+            }
+            invalid_statement_in_nested_block(&for_stmt.body, &loop_env)
+        }
+        ast::Stmt::GoStmt(go) => {
+            invalid_call_statement(&go.call, env).map(|reason| InvalidStatement::Go { reason })
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            let mut if_env = env.clone();
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_statement_in_stmt(init, &mut if_env)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_statement_in_nested_block(&if_stmt.body, &if_env) {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                let mut else_env = if_env;
+                return invalid_statement_in_stmt(else_branch, &mut else_env);
+            }
+            None
+        }
+        ast::Stmt::IncDecStmt(_) => None,
+        ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
+        ast::Stmt::RangeStmt(range) => {
+            let mut range_env = env.clone();
+            record_range_bindings(range, &mut range_env);
+            invalid_statement_in_nested_block(&range.body, &range_env)
+        }
+        ast::Stmt::ReturnStmt(_) => None,
+        ast::Stmt::SelectStmt(select) => {
+            let mut select_env = env.clone();
+            for stmt in &select.body.list {
+                if let Some(invalid) = invalid_statement_in_stmt(stmt, &mut select_env) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::SendStmt(_) => None,
+        ast::Stmt::SwitchStmt(switch) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
+            {
+                return Some(invalid);
+            }
+            invalid_statement_in_case_block(&switch.body, &switch_env)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
+            {
+                return Some(invalid);
+            }
+            invalid_statement_in_case_block(&type_switch.body, &switch_env)
+        }
+    }
+}
+
+fn invalid_statement_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    env: &mut TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_statement_in_stmt(stmt, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_statement_in_case_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in &block.list {
+        let ast::Stmt::CaseClause(case) = stmt else {
+            continue;
+        };
+        let mut case_env = env.clone();
+        if let Some(invalid) = invalid_statement_in_stmt_list(&case.body, &mut case_env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_expression_statement(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match unparen_expr(expr) {
+        ast::Expr::CallExpr(call) => invalid_call_statement(call, env),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW => None,
+        _ => Some(InvalidStatementReason::NonCallOrReceive),
+    }
+}
+
+fn invalid_call_statement(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if let Some(name) = disallowed_builtin_statement_name(call, env) {
+        return Some(InvalidStatementReason::DisallowedBuiltin(name));
+    }
+    call_is_type_conversion(call, env).then_some(InvalidStatementReason::TypeConversion)
+}
+
+fn disallowed_builtin_statement_name(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<String> {
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env)
+        && builtin_disallowed_in_statement(kind)
+    {
+        return Some(kind.name().to_string());
+    }
+    unsafe_disallowed_builtin_statement_name(call)
+}
+
+fn unshadowed_builtin_call_kind(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<BuiltinCallKind> {
+    let ast::Expr::Ident(ident) = call.fun.as_ref() else {
+        return None;
+    };
+    if env.get_var(ident.name).is_some()
+        || env.has_func(ident.name)
+        || env.get_type_kind(ident.name).is_some()
+    {
+        return None;
+    }
+    builtin_call_kind(call)
+}
+
+fn builtin_disallowed_in_statement(kind: BuiltinCallKind) -> bool {
+    matches!(
+        kind,
+        BuiltinCallKind::Append
+            | BuiltinCallKind::Cap
+            | BuiltinCallKind::Complex
+            | BuiltinCallKind::Imag
+            | BuiltinCallKind::Len
+            | BuiltinCallKind::Make
+            | BuiltinCallKind::New
+            | BuiltinCallKind::Real
+    )
+}
+
+fn unsafe_disallowed_builtin_statement_name(call: &ast::CallExpr<'_>) -> Option<String> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+        return None;
+    };
+    if pkg.name != "unsafe" {
+        return None;
+    }
+    matches!(
+        selector.sel.name,
+        "Add" | "Alignof" | "Offsetof" | "Sizeof" | "Slice" | "SliceData" | "String" | "StringData"
+    )
+    .then(|| format!("unsafe.{}", selector.sel.name))
+}
+
+fn call_is_type_conversion(call: &ast::CallExpr<'_>, env: &TypeEnv) -> bool {
+    let fun = unparen_expr(&call.fun);
+    match fun {
+        ast::Expr::Ident(ident) => {
+            env.get_var(ident.name).is_none()
+                && !env.has_func(ident.name)
+                && (is_predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some())
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
+                let name = format!("{}.{}", pkg.name, selector.sel.name);
+                return env.get_type_kind(&name).is_some() && !env.has_func(&name);
+            }
+            false
+        }
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StarExpr(_)
+        | ast::Expr::StructType(_) => true,
+        ast::Expr::IndexExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name).cloned())
+            .is_some(),
+        ast::Expr::IndexListExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name).cloned())
+            .is_some(),
+        _ => false,
+    }
+}
+
+fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => unparen_expr(&paren.x),
+        _ => expr,
     }
 }
 
@@ -5149,6 +5437,124 @@ mod tests {
         };
         assert_eq!(
             super::invalid_branch_in_func(func.body.as_ref().expect("body")),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_statement_context_expressions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        1 + 2
+                    }
+                "#,
+                super::InvalidStatement::Expr {
+                    reason: super::InvalidStatementReason::NonCallOrReceive,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        len("go")
+                    }
+                "#,
+                super::InvalidStatement::Expr {
+                    reason: super::InvalidStatementReason::DisallowedBuiltin("len".to_string()),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        string(65)
+                    }
+                "#,
+                super::InvalidStatement::Expr {
+                    reason: super::InvalidStatementReason::TypeConversion,
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        go len("go")
+                    }
+                "#,
+                super::InvalidStatement::Go {
+                    reason: super::InvalidStatementReason::DisallowedBuiltin("len".to_string()),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        defer int(1)
+                    }
+                "#,
+                super::InvalidStatement::Defer {
+                    reason: super::InvalidStatementReason::TypeConversion,
+                },
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_statement_context_calls_receives_and_shadowed_builtins() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func len(s string) {}
+
+                func main() {
+                    ch := make(chan int, 1)
+                    len("go")
+                    (<-ch)
+                    <-ch
+                    println("ok")
+                    clear([]int{1})
+                    local := func() {}
+                    local()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
         );
     }
