@@ -734,6 +734,10 @@ map key/value assignability, required map keys, array/slice index keys, struct
 field names, duplicate simple constant keys, and struct field value
 assignability. Keep these checks conservative when the type environment cannot
 prove the literal's underlying type.
+Expression-switch validation checks the switch tag and case expressions before
+case-body compilation: nil tags are rejected, tags and cases must be comparable,
+case expressions must be single-valued, and each case must be comparable to the
+tag or to implicit `true` when the tag is omitted.
 
 ## Compiler passes (in order)
 

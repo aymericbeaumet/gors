@@ -1024,6 +1024,9 @@ pub enum InvalidStatement {
     ShortVarDecl {
         reason: InvalidShortVarDeclReason,
     },
+    Switch {
+        reason: InvalidSwitchReason,
+    },
     TypeSwitchGuard {
         reason: InvalidTypeSwitchGuardReason,
     },
@@ -1089,6 +1092,15 @@ pub enum InvalidSendReason {
     NonChannel { type_name: String },
     ReceiveOnlyChannel,
     ValueTypeMismatch { expected: String, actual: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidSwitchReason {
+    CaseMultiValue { values: usize },
+    CaseTypeMismatch { expected: String, actual: String },
+    NilTag,
+    NonComparableCase { type_name: String },
+    NonComparableTag { type_name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3530,6 +3542,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(InvalidStatement::Expression { reason });
             }
+            if let Some(reason) = invalid_expression_switch(switch, &switch_env) {
+                return Some(InvalidStatement::Switch { reason });
+            }
             invalid_statement_in_case_block(&switch.body, &switch_env)
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
@@ -5130,6 +5145,94 @@ fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Inv
         });
     };
     (got > max).then_some(InvalidRangeReason::BindingCount { kind, max, got })
+}
+
+fn invalid_expression_switch(
+    switch: &ast::SwitchStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidSwitchReason> {
+    let tag = switch.tag.as_ref();
+    let tag_type = match tag {
+        Some(tag) if expr_is_nil(tag) => return Some(InvalidSwitchReason::NilTag),
+        Some(tag) => env.resolve_alias(&GoType::infer_expr(tag, env)),
+        None => GoType::Bool,
+    };
+    if !type_is_comparable_for_validation(&tag_type)
+        && !matches!(tag_type, GoType::Unknown | GoType::Named(_))
+    {
+        return Some(InvalidSwitchReason::NonComparableTag {
+            type_name: go_type_display_name(&tag_type),
+        });
+    }
+    for stmt in &switch.body.list {
+        let ast::Stmt::CaseClause(case) = stmt else {
+            continue;
+        };
+        let Some(exprs) = &case.list else {
+            continue;
+        };
+        for expr in exprs {
+            if let Some(values) =
+                expression_value_count(expr, env, TupleAssignmentMode::SingleValueContext)
+                    .filter(|values| *values != 1)
+            {
+                return Some(InvalidSwitchReason::CaseMultiValue { values });
+            }
+            if let Some(reason) = invalid_expression_switch_case(&tag_type, expr, env) {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_expression_switch_case(
+    tag_type: &GoType,
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidSwitchReason> {
+    let case_type = env.resolve_alias(&GoType::infer_expr(expr, env));
+    if expr_is_nil(expr) {
+        return (!type_can_compare_to_nil(tag_type)).then(|| {
+            InvalidSwitchReason::CaseTypeMismatch {
+                expected: go_type_display_name(tag_type),
+                actual: "nil".to_string(),
+            }
+        });
+    }
+    if !type_is_comparable_for_validation(&case_type)
+        && !matches!(case_type, GoType::Unknown | GoType::Named(_))
+    {
+        return Some(InvalidSwitchReason::NonComparableCase {
+            type_name: go_type_display_name(&case_type),
+        });
+    }
+    if types_are_assignable_for_validation(tag_type, &case_type)
+        || types_are_assignable_for_validation(&case_type, tag_type)
+    {
+        return None;
+    }
+    Some(InvalidSwitchReason::CaseTypeMismatch {
+        expected: go_type_display_name(tag_type),
+        actual: go_type_display_name(&case_type),
+    })
+}
+
+fn expr_is_nil(expr: &ast::Expr<'_>) -> bool {
+    matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
+}
+
+fn type_can_compare_to_nil(ty: &GoType) -> bool {
+    matches!(
+        ty,
+        GoType::Any
+            | GoType::Error
+            | GoType::Interface(_)
+            | GoType::Pointer(_)
+            | GoType::Chan { .. }
+            | GoType::Unknown
+            | GoType::Named(_)
+    )
 }
 
 fn invalid_short_var_decl_names(lhs: &[ast::Expr<'_>]) -> Option<InvalidShortVarDeclReason> {
@@ -12037,8 +12140,8 @@ mod tests {
         )
         .unwrap();
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) => Some(func),
-            crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -12202,8 +12305,8 @@ mod tests {
         )
         .unwrap();
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) => Some(func),
-            crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -12863,8 +12966,8 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
-            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -13175,8 +13278,8 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
-            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -13336,8 +13439,8 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
-            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -13741,8 +13844,8 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
-            crate::ast::Decl::FuncDecl(func) => Some(func),
-            crate::ast::Decl::GenDecl(_) => None,
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");
         };
@@ -14621,6 +14724,175 @@ mod tests {
                 Some(super::InvalidStatement::DuplicateDefault { kind })
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_expression_switch_cases() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch nil {
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::NilTag,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch []int{} {
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::NonComparableTag {
+                    type_name: "slice(int)".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func main() {
+                        switch 1 {
+                        case pair():
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseMultiValue { values: 2 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        case "go":
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseTypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "string".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch {
+                        case 1:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseTypeMismatch {
+                    expected: "bool".to_string(),
+                    actual: "int".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        case []int{}:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::NonComparableCase {
+                    type_name: "slice(int)".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        case nil:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseTypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "nil".to_string(),
+                },
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Switch { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_expression_switch_cases() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+
+                func main() {
+                    switch 1 {
+                    case 1, 2:
+                    }
+                    switch "go" {
+                    case "go":
+                    }
+                    switch {
+                    case true, 1 < 2:
+                    default:
+                    }
+                    var c Count
+                    switch c {
+                    case 1:
+                    }
+                    var p *int
+                    switch p {
+                    case nil:
+                    }
+                    var x any
+                    switch x {
+                    case nil, 1, "go":
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]

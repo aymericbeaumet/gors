@@ -12819,6 +12819,12 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_short_var_decl_reason(reason)
             )
         }
+        ir::InvalidStatement::Switch { reason } => {
+            format!(
+                "invalid switch statement: {}",
+                invalid_switch_reason(reason)
+            )
+        }
         ir::InvalidStatement::TypeSwitchGuard { reason } => {
             format!(
                 "invalid type switch guard: {}",
@@ -12966,6 +12972,24 @@ fn invalid_send_reason(reason: ir::InvalidSendReason) -> String {
         }
         ir::InvalidSendReason::ValueTypeMismatch { expected, actual } => {
             format!("cannot send {actual} to channel of {expected}")
+        }
+    }
+}
+
+fn invalid_switch_reason(reason: ir::InvalidSwitchReason) -> String {
+    match reason {
+        ir::InvalidSwitchReason::CaseMultiValue { values } => {
+            format!("case expression must be single-valued, got {values} value(s)")
+        }
+        ir::InvalidSwitchReason::CaseTypeMismatch { expected, actual } => {
+            format!("case expression must be comparable to {expected}, got {actual}")
+        }
+        ir::InvalidSwitchReason::NilTag => "switch expression cannot be nil".to_string(),
+        ir::InvalidSwitchReason::NonComparableCase { type_name } => {
+            format!("case expression type {type_name} is not comparable")
+        }
+        ir::InvalidSwitchReason::NonComparableTag { type_name } => {
+            format!("switch expression type {type_name} is not comparable")
         }
     }
 }
