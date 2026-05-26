@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{TestConfig, discover_program_dirs, fixtures_dir, go_command};
+use common::{TestConfig, discover_program_dirs, fixtures_dir, go_command, test_thread_count};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -399,11 +399,20 @@ fn run_programs_generated_rust() {
 
     let abort = Arc::new(AtomicBool::new(false));
     let metrics = Arc::new(RunMetrics::default());
+    let worker_count = test_thread_count();
     let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
         .stack_size(PROGRAM_TEST_STACK_SIZE)
         .build()
         .expect("failed to build program test thread pool");
     let results: Vec<_> = pool.install(|| {
+        if config.verbose {
+            eprintln!(
+                "Testing {} programs on {} workers...",
+                dirs.len(),
+                rayon::current_num_threads()
+            );
+        }
         dirs.par_iter()
             .map(|dir| run_generated_rust_program(dir, &config, &abort, &metrics))
             .collect()

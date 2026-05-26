@@ -9,6 +9,7 @@
 //! - `GORS_TEST_FILTER`: Only test files matching this substring
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
 //! - `GORS_TEST_FAIL_FAST`: Cancel queued/running tests after the first failure where supported
+//! - `GORS_TEST_THREADS`: Worker threads for integration tests (default: all available CPUs)
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -51,6 +52,18 @@ impl TestConfig {
                 .unwrap_or(false),
         }
     }
+}
+
+pub fn test_thread_count() -> usize {
+    std::env::var("GORS_TEST_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|threads| threads.get())
+                .unwrap_or(1)
+        })
 }
 
 /// Result of testing a single file.
@@ -820,7 +833,9 @@ fn test_must_error_file_batch(
 /// Test files with the given command, running in parallel.
 /// Returns a summary with all results.
 pub fn test_files_parallel(command: &str, files: &[PathBuf], config: &TestConfig) -> TestSummary {
+    let worker_count = test_thread_count();
     let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
         .stack_size(FILE_TEST_STACK_SIZE)
         .build()
         .expect("failed to build file test thread pool");
@@ -861,8 +876,10 @@ fn test_files_parallel_in_pool(
 
     if config.verbose {
         eprintln!(
-            "Testing {} files with command '{}'...",
-            total_files, command
+            "Testing {} files with command '{}' on {} workers...",
+            total_files,
+            command,
+            rayon::current_num_threads()
         );
     }
 

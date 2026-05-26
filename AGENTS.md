@@ -305,6 +305,9 @@ thread stack while parsing and compiling real Go stdlib packages.
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
 - `GORS_TEST_FAIL_FAST=1` — cancel queued/running integration work after the first failure where supported
+- `GORS_TEST_THREADS=N` — override integration-test worker threads; by default
+  generated-program and corpus integration tests size their Rayon pools to all
+  CPUs reported by `std::thread::available_parallelism()`
 
 ## Run patterns
 
