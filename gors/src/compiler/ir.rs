@@ -301,6 +301,12 @@ pub enum RangeKind {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completion {
+    MayComplete,
+    Terminates,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
     pub fun: Box<Expr>,
@@ -699,6 +705,79 @@ fn lower_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> Block {
             .filter_map(|stmt| lower_stmt(stmt, env))
             .collect(),
     }
+}
+
+pub fn ast_block_completion(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> Completion {
+    block_completion(&lower_block(block, env))
+}
+
+pub fn block_completion(block: &Block) -> Completion {
+    stmts_completion(&block.stmts)
+}
+
+fn stmts_completion(stmts: &[Stmt]) -> Completion {
+    for stmt in stmts {
+        if stmt_completion(stmt) == Completion::Terminates {
+            return Completion::Terminates;
+        }
+    }
+    Completion::MayComplete
+}
+
+pub fn stmt_completion(stmt: &Stmt) -> Completion {
+    match stmt {
+        Stmt::Return(_)
+        | Stmt::Branch {
+            kind: BranchKind::Goto,
+            ..
+        } => Completion::Terminates,
+        Stmt::Block(block) => block_completion(block),
+        Stmt::If {
+            body, else_branch, ..
+        } => {
+            if block_completion(body) != Completion::Terminates {
+                return Completion::MayComplete;
+            }
+            let Some(else_branch) = else_branch.as_deref() else {
+                return Completion::MayComplete;
+            };
+            stmt_completion(else_branch)
+        }
+        Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => switch_completion(cases),
+        _ => Completion::MayComplete,
+    }
+}
+
+fn switch_completion(cases: &[Case]) -> Completion {
+    if cases.is_empty() || !cases.iter().any(|case| case.is_default) {
+        return Completion::MayComplete;
+    }
+    for idx in 0..cases.len() {
+        if case_completion(cases, idx) != Completion::Terminates {
+            return Completion::MayComplete;
+        }
+    }
+    Completion::Terminates
+}
+
+fn case_completion(cases: &[Case], idx: usize) -> Completion {
+    let Some(case) = cases.get(idx) else {
+        return Completion::MayComplete;
+    };
+    if case_ends_with_fallthrough(case) {
+        return case_completion(cases, idx + 1);
+    }
+    stmts_completion(&case.body)
+}
+
+fn case_ends_with_fallthrough(case: &Case) -> bool {
+    matches!(
+        case.body.last(),
+        Some(Stmt::Branch {
+            kind: BranchKind::Fallthrough,
+            ..
+        })
+    )
 }
 
 fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
@@ -1485,7 +1564,7 @@ fn is_predeclared_name(name: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{Addressability, CaptureMode, ExprKind, Item, Stmt, lower_file};
+    use super::{Addressability, CaptureMode, Completion, ExprKind, Item, Stmt, lower_file};
     use crate::compiler::typeinfer::{GoType, TypeEnv};
     use crate::parser::parse_file;
 
@@ -2023,5 +2102,67 @@ mod tests {
         assert_eq!(cases.len(), 2);
         assert!(!cases.first().is_some_and(|case| case.is_default));
         assert!(cases.get(1).is_some_and(|case| case.is_default));
+    }
+
+    #[test]
+    fn classifies_control_flow_completion() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(x int) {
+                    if x > 0 {
+                        return
+                    } else {
+                        return
+                    }
+                    if x > 0 {
+                        return
+                    }
+                    switch x {
+                    case 1:
+                        return
+                    default:
+                        return
+                    }
+                    switch x {
+                    case 1:
+                        return
+                    }
+                    switch x {
+                    case 1:
+                        fallthrough
+                    default:
+                        return
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(
+            super::stmt_completion(&body.stmts[0]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[1]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[2]),
+            Completion::Terminates
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[3]),
+            Completion::MayComplete
+        );
+        assert_eq!(
+            super::stmt_completion(&body.stmts[4]),
+            Completion::Terminates
+        );
     }
 }

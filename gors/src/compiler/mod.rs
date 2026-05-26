@@ -8828,6 +8828,10 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
 
     let previous_return_types =
         RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let completion = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        Some(ir::ast_block_completion(&func_lit.body, &env))
+    });
     let block_result = func_lit.body.try_into();
     RETURN_TYPES.with(|types| {
         *types.borrow_mut() = previous_return_types;
@@ -8836,7 +8840,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         brace_token: syn::token::Brace::default(),
         stmts: vec![],
     });
-    append_missing_return_panic(&mut block, &ret);
+    append_missing_return_panic(&mut block, &ret, completion);
 
     if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
         if move_capture {
@@ -12252,13 +12256,22 @@ fn block_ends_with_return(block: &syn::Block) -> bool {
         .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)))
 }
 
-fn append_missing_return_panic(block: &mut syn::Block, output: &syn::ReturnType) {
+fn append_missing_return_panic(
+    block: &mut syn::Block,
+    output: &syn::ReturnType,
+    completion: Option<ir::Completion>,
+) {
     if matches!(output, syn::ReturnType::Default) || block_ends_with_return(block) {
         return;
     }
 
+    let message = if completion == Some(ir::Completion::Terminates) {
+        "gors: unreachable missing return"
+    } else {
+        "gors: missing return"
+    };
     let panic_expr: syn::Expr = syn::parse_quote! {
-        panic!("gors: missing return")
+        panic!(#message)
     };
     block.stmts.push(syn::Stmt::Expr(panic_expr, None));
 }
@@ -12354,6 +12367,12 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
         let previous_return_types =
             RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+        let body_completion = func_decl.body.as_ref().map(|body| {
+            TYPE_ENV.with(|env| {
+                let env = env.borrow();
+                ir::ast_block_completion(body, &env)
+            })
+        });
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
         } else {
@@ -12419,7 +12438,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 }
             }
         } else {
-            append_missing_return_panic(&mut block, &output);
+            append_missing_return_panic(&mut block, &output, body_completion);
         }
 
         // Convert type parameters to Rust generics (Go 1.18+ generics)

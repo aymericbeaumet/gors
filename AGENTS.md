@@ -334,6 +334,10 @@ language-semantic work moving into the IR first, especially addressability,
 capture modes, control-flow shape, and type-directed expression lowering; the
 Rust backend should consume those semantics instead of rediscovering them with
 ad hoc AST checks.
+IR control-flow completion (`ast_block_completion`, `block_completion`,
+`stmt_completion`) classifies whether lowered blocks can complete normally.
+Use it for backend decisions that need Go reachability or return-shape
+semantics instead of duplicating statement-shape checks in codegen.
 
 Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
 `get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.
