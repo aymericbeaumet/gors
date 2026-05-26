@@ -538,13 +538,16 @@ constants until the type environment preserves full assignability details.
 IR statement validation checks unshadowed builtin `clear`, `close`, and `delete`
 calls in expression, `go`, and `defer` statement contexts: `clear` requires one
 map or slice argument, `close` requires one send-capable channel argument, and
-`delete` requires a map plus an assignable key. Keep other builtin argument
-validation conservative until the IR has complete local type flow.
+`delete` requires a map plus an assignable key.
 IR expression validation also walks top-level declarations and function bodies
-for unshadowed `len`, `cap`, and `copy` calls: `len` accepts string, array,
-slice, map, and channel operands; `cap` accepts array, slice, and channel
-operands; `copy` requires a destination slice plus a source slice with matching
-element type, with the Go `[]byte`/`string` exception.
+for unshadowed builtin calls. `len` accepts string, array, slice, map, and
+channel operands; `cap` accepts array, slice, and channel operands; `copy`
+requires a destination slice plus a source slice with matching element type,
+with the Go `[]byte`/`string` exception; `append` requires a destination slice
+and assignable elements or a matching spread slice, with the Go `[]byte`/string
+spread exception; `make` requires a slice, map, or channel type with the
+spec-defined argument counts and integer-like size arguments; `new` rejects
+spread calls, missing/extra arguments, and `nil`.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.

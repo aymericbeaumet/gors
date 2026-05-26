@@ -5368,11 +5368,14 @@ fn invalid_builtin_call_expression(
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Append => invalid_builtin_append_call(call, env),
         BuiltinCallKind::Cap | BuiltinCallKind::Len => invalid_builtin_len_cap_call(call, env),
         BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
         BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
         BuiltinCallKind::Copy => invalid_builtin_copy_call(call, env),
         BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
+        BuiltinCallKind::Make => invalid_builtin_make_call(call, env),
+        BuiltinCallKind::New => invalid_builtin_new_call(call),
         _ => None,
     }
 }
@@ -5387,6 +5390,96 @@ fn invalid_builtin_call_statement(
         BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
         _ => None,
     }
+}
+
+fn invalid_builtin_append_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.is_empty() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Append,
+            "expects at least one argument",
+        ));
+    }
+    let dst = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    let dst_elem = match dst {
+        GoType::Slice(elem) => *elem,
+        GoType::Unknown | GoType::Named(_) => return None,
+        other => {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Append,
+                format!(
+                    "first argument must have slice type, got {}",
+                    go_type_display_name(&other)
+                ),
+            ));
+        }
+    };
+
+    if call.ellipsis.is_some() {
+        return invalid_builtin_append_spread_call(args, &dst_elem, env);
+    }
+
+    let expected = env.resolve_alias(&dst_elem);
+    for value in &args[1..] {
+        let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+        if !types_are_assignable_for_validation(&expected, &actual) {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Append,
+                format!(
+                    "argument must be assignable to {}, got {}",
+                    go_type_display_name(&expected),
+                    go_type_display_name(&actual)
+                ),
+            ));
+        }
+    }
+    None
+}
+
+fn invalid_builtin_append_spread_call(
+    args: &[ast::Expr<'_>],
+    dst_elem: &GoType,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if args.len() != 2 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Append,
+            "spread form expects exactly two arguments",
+        ));
+    }
+    let src = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+    if matches!((dst_elem, &src), (GoType::Uint8, GoType::String)) {
+        return None;
+    }
+    let src_elem = match src {
+        GoType::Slice(elem) => *elem,
+        GoType::Unknown | GoType::Named(_) => return None,
+        other => {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Append,
+                format!(
+                    "spread argument must have slice type or string for []byte, got {}",
+                    go_type_display_name(&other)
+                ),
+            ));
+        }
+    };
+    let expected = env.resolve_alias(dst_elem);
+    let actual = env.resolve_alias(&src_elem);
+    if types_are_identical_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(invalid_builtin_call_reason(
+        BuiltinCallKind::Append,
+        format!(
+            "spread argument element type must match {}, got {}",
+            go_type_display_name(&expected),
+            go_type_display_name(&actual)
+        ),
+    ))
 }
 
 fn invalid_builtin_len_cap_call(
@@ -5445,6 +5538,221 @@ fn invalid_builtin_len_cap_call(
         kind,
         format!("{expected}, got {}", go_type_display_name(&ty)),
     ))
+}
+
+#[derive(Clone, Copy)]
+enum MakeTypeKind {
+    Slice,
+    Map,
+    Channel,
+}
+
+enum MakeTypeArg {
+    Type(MakeTypeKind),
+    NonMakeType(GoType),
+    NonType,
+    Unknown,
+}
+
+fn invalid_builtin_make_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.is_empty() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "expects a type argument",
+        ));
+    }
+
+    let kind = match make_type_arg(&args[0], env) {
+        MakeTypeArg::Type(kind) => kind,
+        MakeTypeArg::NonMakeType(ty) => {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Make,
+                format!(
+                    "first argument must have slice, map, or channel type, got {}",
+                    go_type_display_name(&ty)
+                ),
+            ));
+        }
+        MakeTypeArg::NonType => {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Make,
+                "first argument must be a type",
+            ));
+        }
+        MakeTypeArg::Unknown => return None,
+    };
+
+    if let Some(reason) = invalid_make_arg_count(kind, args.len()) {
+        return Some(reason);
+    }
+    args[1..]
+        .iter()
+        .find_map(|arg| invalid_make_size_arg(arg, env))
+}
+
+fn invalid_make_arg_count(kind: MakeTypeKind, count: usize) -> Option<InvalidStatementReason> {
+    match kind {
+        MakeTypeKind::Slice if !(2..=3).contains(&count) => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "slice make expects length and optional capacity",
+        )),
+        MakeTypeKind::Map if !(1..=2).contains(&count) => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "map make expects optional size hint",
+        )),
+        MakeTypeKind::Channel if !(1..=2).contains(&count) => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "channel make expects optional buffer size",
+        )),
+        _ => None,
+    }
+}
+
+fn invalid_make_size_arg(arg: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
+    if make_size_arg_is_valid(arg, &ty, env) {
+        return None;
+    }
+    Some(invalid_builtin_call_reason(
+        BuiltinCallKind::Make,
+        format!(
+            "size argument must have integer type, got {}",
+            go_type_display_name(&ty)
+        ),
+    ))
+}
+
+fn make_size_arg_is_valid(arg: &ast::Expr<'_>, ty: &GoType, env: &TypeEnv) -> bool {
+    match unparen_expr(arg) {
+        ast::Expr::BasicLit(lit) => {
+            matches!(
+                lit.kind,
+                token::Token::INT | token::Token::FLOAT | token::Token::CHAR
+            )
+        }
+        ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_numeric(ty) => true,
+        _ => ty.is_integer() || matches!(ty, GoType::Unknown | GoType::Named(_)),
+    }
+}
+
+fn make_type_arg(expr: &ast::Expr<'_>, env: &TypeEnv) -> MakeTypeArg {
+    match unparen_expr(expr) {
+        ast::Expr::ArrayType(array) if array.len.is_none() => {
+            MakeTypeArg::Type(MakeTypeKind::Slice)
+        }
+        ast::Expr::ArrayType(_) => {
+            MakeTypeArg::NonMakeType(GoType::Array(Box::new(GoType::Unknown)))
+        }
+        ast::Expr::MapType(_) => MakeTypeArg::Type(MakeTypeKind::Map),
+        ast::Expr::ChanType(_) => MakeTypeArg::Type(MakeTypeKind::Channel),
+        ast::Expr::Ident(ident) => make_ident_type_arg(ident, env),
+        ast::Expr::SelectorExpr(selector) => make_selector_type_arg(selector, env),
+        ast::Expr::ParenExpr(paren) => make_type_arg(&paren.x, env),
+        ast::Expr::StarExpr(_) => {
+            MakeTypeArg::NonMakeType(GoType::Pointer(Box::new(GoType::Unknown)))
+        }
+        ast::Expr::FuncType(_) => MakeTypeArg::NonMakeType(GoType::Func {
+            params: Vec::new(),
+            results: Vec::new(),
+        }),
+        ast::Expr::InterfaceType(_) => MakeTypeArg::NonMakeType(GoType::Any),
+        ast::Expr::StructType(_) => MakeTypeArg::NonMakeType(GoType::Named("struct".to_string())),
+        _ => MakeTypeArg::NonType,
+    }
+}
+
+fn make_ident_type_arg(ident: &ast::Ident<'_>, env: &TypeEnv) -> MakeTypeArg {
+    if matches!(ident.name, "nil" | "true" | "false")
+        || env.get_var(ident.name).is_some()
+        || env.has_func(ident.name)
+    {
+        return MakeTypeArg::NonType;
+    }
+    if predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some() {
+        return make_type_arg_from_type(GoType::Named(ident.name.to_string()), env);
+    }
+    MakeTypeArg::Unknown
+}
+
+fn make_selector_type_arg(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> MakeTypeArg {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return MakeTypeArg::Unknown;
+    };
+    let name = format!("{}.{}", base.name, selector.sel.name);
+    if env.get_type_kind(&name).is_some() {
+        make_type_arg_from_type(GoType::Named(name), env)
+    } else {
+        MakeTypeArg::Unknown
+    }
+}
+
+fn make_type_arg_from_type(ty: GoType, env: &TypeEnv) -> MakeTypeArg {
+    match env.resolve_alias(&ty) {
+        GoType::Slice(_) => MakeTypeArg::Type(MakeTypeKind::Slice),
+        GoType::Map(_, _) => MakeTypeArg::Type(MakeTypeKind::Map),
+        GoType::Chan { .. } => MakeTypeArg::Type(MakeTypeKind::Channel),
+        other => MakeTypeArg::NonMakeType(other),
+    }
+}
+
+fn predeclared_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "any"
+            | "bool"
+            | "byte"
+            | "complex64"
+            | "complex128"
+            | "error"
+            | "float32"
+            | "float64"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "rune"
+            | "string"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+    )
+}
+
+fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
+    if call.ellipsis.is_some() {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::New,
+            "does not accept spread arguments",
+        ));
+    }
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::New,
+            "expects exactly one argument",
+        ));
+    }
+    if matches!(unparen_expr(&args[0]), ast::Expr::Ident(ident) if ident.name == "nil") {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::New,
+            "argument must not be nil",
+        ));
+    }
+    None
 }
 
 fn invalid_builtin_clear_call(
@@ -10132,6 +10440,95 @@ mod tests {
                 "copy",
                 "source element type must match int, got string",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = append(1, 2)
+                    }
+                "#,
+                "append",
+                "first argument must have slice type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = append([]int{}, "x")
+                    }
+                "#,
+                "append",
+                "argument must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = append([]int{}, []string{}...)
+                    }
+                "#,
+                "append",
+                "spread argument element type must match int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = make(int)
+                    }
+                "#,
+                "make",
+                "first argument must have slice, map, or channel type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = make([]int)
+                    }
+                "#,
+                "make",
+                "slice make expects length and optional capacity",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        n := "bad"
+                        _ = make([]int, n)
+                    }
+                "#,
+                "make",
+                "size argument must have integer type, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = make(map[string]int, 1, 2)
+                    }
+                "#,
+                "make",
+                "map make expects optional size hint",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = new(nil)
+                    }
+                "#,
+                "new",
+                "argument must not be nil",
+            ),
         ];
 
         for (source, name, reason) in cases {
@@ -10193,9 +10590,22 @@ mod tests {
                     _ = len("go")
                     _ = cap([]int{1})
                     _ = copy([]byte{}, "go")
+                    _ = append([]int{}, 1, 2)
+                    _ = append([]int{}, []int{}...)
+                    _ = append([]byte{}, "go"...)
+                    _ = make([]int, N)
+                    _ = make([]int, 1, 2)
+                    _ = make(map[string]int)
+                    _ = make(chan int, 1)
+                    _ = make(Ints, 1)
+                    _ = new(int)
+                    _ = new(123)
                     len := func(int) int { return 1 }
                     _ = len(1)
                 }
+
+                type Ints []int
+                const N = 1e3
             "#,
         )
         .unwrap();
