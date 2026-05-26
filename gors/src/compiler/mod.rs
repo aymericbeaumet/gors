@@ -8346,16 +8346,16 @@ fn compile_variadic_any_arg(
 }
 
 fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
-    let name = match *call_expr.fun {
-        ast::Expr::Ident(ident) => ident.name.to_string(),
-        _ => return compile_error_expr("builtin call without builtin identifier"),
+    let Some(kind) = ir::builtin_call_kind(&call_expr) else {
+        return compile_error_expr("builtin call without builtin identifier");
     };
+    let name = kind.name();
 
     let has_variadic_spread = call_expr.ellipsis.is_some();
     let raw_args: Vec<ast::Expr> = call_expr.args.unwrap_or_default().into_iter().collect();
 
-    match name.as_str() {
-        "make" => {
+    match kind {
+        ir::BuiltinCallKind::Make => {
             let mut it = raw_args.into_iter();
             let Some(type_arg) = it.next() else {
                 return compile_error_expr("make requires a type argument");
@@ -8395,16 +8395,16 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
             }
         }
-        "new" => {
+        ir::BuiltinCallKind::New => {
             let Some(type_arg) = raw_args.into_iter().next() else {
                 return compile_error_expr("new requires a type argument");
             };
             let type_arg: syn::Type = type_arg.into();
             syn::parse_quote! { Box::new(<#type_arg>::default()) }
         }
-        "append" => compile_append_builtin(raw_args, has_variadic_spread),
-        "panic" => compile_panic_builtin(raw_args),
-        "copy" if raw_args.len() == 2 => {
+        ir::BuiltinCallKind::Append => compile_append_builtin(raw_args, has_variadic_spread),
+        ir::BuiltinCallKind::Panic => compile_panic_builtin(raw_args),
+        ir::BuiltinCallKind::Copy if raw_args.len() == 2 => {
             let mut raw_args = raw_args.into_iter();
             let Some(dst_raw) = raw_args.next() else {
                 return compile_error_expr("copy requires a destination argument");
@@ -8423,60 +8423,61 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             }
         }
         _ => {
-            let ordered_expected_type = if matches!(name.as_str(), "max" | "min") {
-                ordered_builtin_arg_expected_type(&raw_args)
-            } else {
-                None
-            };
+            let ordered_expected_type =
+                if matches!(kind, ir::BuiltinCallKind::Max | ir::BuiltinCallKind::Min) {
+                    ordered_builtin_arg_expected_type(&raw_args)
+                } else {
+                    None
+                };
             let args: Vec<syn::Expr> = raw_args
                 .into_iter()
                 .map(|arg| compile_expr_with_expected(arg, ordered_expected_type.as_ref()))
                 .collect();
-            match name.as_str() {
-                "len" if let [x] = args.as_slice() => {
+            match kind {
+                ir::BuiltinCallKind::Len if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::len(&#x) }
                 }
-                "cap" if let [x] = args.as_slice() => {
+                ir::BuiltinCallKind::Cap if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::cap(&#x) }
                 }
-                "delete" if let [map, key] = args.as_slice() => {
+                ir::BuiltinCallKind::Delete if let [map, key] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::delete(&mut #map, &#key) }
                 }
-                "clear" if let [x] = args.as_slice() => {
+                ir::BuiltinCallKind::Clear if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::clear(&mut #x) }
                 }
-                "close" if let [ch] = args.as_slice() => {
+                ir::BuiltinCallKind::Close if let [ch] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::close(&#ch) }
                 }
-                "max" if let [a, b] = args.as_slice() => {
+                ir::BuiltinCallKind::Max if let [a, b] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::max(#a, #b) }
                 }
-                "max" if let [a, b, c] = args.as_slice() => {
+                ir::BuiltinCallKind::Max if let [a, b, c] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::max3(#a, #b, #c) }
                 }
-                "min" if let [a, b] = args.as_slice() => {
+                ir::BuiltinCallKind::Min if let [a, b] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::min(#a, #b) }
                 }
-                "min" if let [a, b, c] = args.as_slice() => {
+                ir::BuiltinCallKind::Min if let [a, b, c] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::min3(#a, #b, #c) }
                 }
-                "complex" if let [re, im] = args.as_slice() => {
+                ir::BuiltinCallKind::Complex if let [re, im] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::complex128(#re, #im) }
                 }
-                "real" if let [c] = args.as_slice() => {
+                ir::BuiltinCallKind::Real if let [c] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::real128(#c) }
                 }
-                "imag" if let [c] = args.as_slice() => {
+                ir::BuiltinCallKind::Imag if let [c] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::imag128(#c) }
                 }
-                "recover" => {
+                ir::BuiltinCallKind::Recover => {
                     syn::parse_quote! { String::new() }
                 }
-                "println" => match args.first() {
+                ir::BuiltinCallKind::Println => match args.first() {
                     Some(first) => syn::parse_quote! { crate::builtin::println_value(#first) },
                     None => syn::parse_quote! { crate::builtin::println_empty() },
                 },
-                "print" => match args.first() {
+                ir::BuiltinCallKind::Print => match args.first() {
                     Some(first) => syn::parse_quote! { crate::builtin::print_value(#first) },
                     None => syn::parse_quote! { crate::builtin::print_empty() },
                 },

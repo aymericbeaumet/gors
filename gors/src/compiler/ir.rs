@@ -298,6 +298,53 @@ pub struct Call {
     pub spread: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinCallKind {
+    Append,
+    Cap,
+    Clear,
+    Close,
+    Complex,
+    Copy,
+    Delete,
+    Imag,
+    Len,
+    Make,
+    Max,
+    Min,
+    New,
+    Panic,
+    Print,
+    Println,
+    Real,
+    Recover,
+}
+
+impl BuiltinCallKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Cap => "cap",
+            Self::Clear => "clear",
+            Self::Close => "close",
+            Self::Complex => "complex",
+            Self::Copy => "copy",
+            Self::Delete => "delete",
+            Self::Imag => "imag",
+            Self::Len => "len",
+            Self::Make => "make",
+            Self::Max => "max",
+            Self::Min => "min",
+            Self::New => "new",
+            Self::Panic => "panic",
+            Self::Print => "print",
+            Self::Println => "println",
+            Self::Real => "real",
+            Self::Recover => "recover",
+        }
+    }
+}
+
 pub fn lower_file(file: &ast::File<'_>, env: &TypeEnv) -> File {
     File {
         package: file.name.name.to_string(),
@@ -306,6 +353,33 @@ pub fn lower_file(file: &ast::File<'_>, env: &TypeEnv) -> File {
             .iter()
             .filter_map(|decl| lower_decl(decl, env))
             .collect(),
+    }
+}
+
+pub fn builtin_call_kind(call_expr: &ast::CallExpr<'_>) -> Option<BuiltinCallKind> {
+    let ast::Expr::Ident(ident) = call_expr.fun.as_ref() else {
+        return None;
+    };
+    match ident.name {
+        "append" => Some(BuiltinCallKind::Append),
+        "cap" => Some(BuiltinCallKind::Cap),
+        "clear" => Some(BuiltinCallKind::Clear),
+        "close" => Some(BuiltinCallKind::Close),
+        "complex" => Some(BuiltinCallKind::Complex),
+        "copy" => Some(BuiltinCallKind::Copy),
+        "delete" => Some(BuiltinCallKind::Delete),
+        "imag" => Some(BuiltinCallKind::Imag),
+        "len" => Some(BuiltinCallKind::Len),
+        "make" => Some(BuiltinCallKind::Make),
+        "max" => Some(BuiltinCallKind::Max),
+        "min" => Some(BuiltinCallKind::Min),
+        "new" => Some(BuiltinCallKind::New),
+        "panic" => Some(BuiltinCallKind::Panic),
+        "print" => Some(BuiltinCallKind::Print),
+        "println" => Some(BuiltinCallKind::Println),
+        "real" => Some(BuiltinCallKind::Real),
+        "recover" => Some(BuiltinCallKind::Recover),
+        _ => None,
     }
 }
 
@@ -1265,6 +1339,52 @@ mod tests {
             panic!("expected numeric binary expression");
         };
         assert!(!super::is_string_concat_binary_expr(numeric_binary, &env));
+    }
+
+    #[test]
+    fn classifies_predeclared_builtin_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func helper() int { return 1 }
+
+                func main() {
+                    _ = len([]int{1})
+                    _ = helper()
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        let Some(crate::ast::Stmt::AssignStmt(builtin_assign)) =
+            func.body.as_ref().and_then(|body| body.list.first())
+        else {
+            panic!("expected builtin assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(builtin_call)) = builtin_assign.rhs.first() else {
+            panic!("expected builtin call");
+        };
+        assert_eq!(
+            super::builtin_call_kind(builtin_call),
+            Some(super::BuiltinCallKind::Len)
+        );
+
+        let Some(crate::ast::Stmt::AssignStmt(user_assign)) =
+            func.body.as_ref().and_then(|body| body.list.get(1))
+        else {
+            panic!("expected user assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(user_call)) = user_assign.rhs.first() else {
+            panic!("expected user call");
+        };
+        assert_eq!(super::builtin_call_kind(user_call), None);
     }
 
     #[test]
