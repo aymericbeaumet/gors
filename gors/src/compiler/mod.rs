@@ -12705,6 +12705,9 @@ fn invalid_branch_error(invalid: ir::InvalidBranch) -> CompilerError {
 
 fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
     let message = match invalid {
+        ir::InvalidStatement::Assignment { reason } => {
+            format!("invalid assignment: {}", invalid_assignment_reason(reason))
+        }
         ir::InvalidStatement::Defer { reason } => {
             format!(
                 "invalid defer statement: {}",
@@ -12744,6 +12747,23 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         }
     };
     CompilerError::UnsupportedConstruct(message)
+}
+
+fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
+    match reason {
+        ir::InvalidAssignmentReason::CompoundBlankIdentifier => {
+            "compound assignment left side must not be blank identifier".to_string()
+        }
+        ir::InvalidAssignmentReason::CompoundOperandCount { lhs, rhs } => format!(
+            "compound assignment requires exactly one left and right operand, got {lhs} left and {rhs} right"
+        ),
+        ir::InvalidAssignmentReason::CountMismatch { lhs, values } => {
+            format!("assignment count mismatch: {lhs} left operand(s), {values} value(s)")
+        }
+        ir::InvalidAssignmentReason::MultiValueInSingleValueContext => {
+            "multi-valued expression in single-value assignment context".to_string()
+        }
+    }
 }
 
 fn default_clause_kind_name(kind: ir::DefaultClauseKind) -> &'static str {
@@ -17701,6 +17721,33 @@ mod tests {
                 }
             "#,
             "invalid for statement: post statement cannot be a short variable declaration",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func pair() (int, int) {
+                    return 1, 2
+                }
+
+                func main() {
+                    x := pair()
+                    _ = x
+                }
+            "#,
+            "invalid assignment: assignment count mismatch: 1 left operand(s), 2 value(s)",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    x, ok := xs[0]
+                    _, _ = x, ok
+                }
+            "#,
+            "invalid assignment: assignment count mismatch: 2 left operand(s), 1 value(s)",
         );
         assert_unsupported_construct(
             r#"

@@ -979,6 +979,7 @@ pub enum InvalidBranch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatement {
+    Assignment { reason: InvalidAssignmentReason },
     Defer { reason: InvalidStatementReason },
     DuplicateDefault { kind: DefaultClauseKind },
     Expr { reason: InvalidStatementReason },
@@ -986,6 +987,14 @@ pub enum InvalidStatement {
     Go { reason: InvalidStatementReason },
     Range { reason: InvalidRangeReason },
     ShortVarDecl { reason: InvalidShortVarDeclReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidAssignmentReason {
+    CompoundBlankIdentifier,
+    CompoundOperandCount { lhs: usize, rhs: usize },
+    CountMismatch { lhs: usize, values: usize },
+    MultiValueInSingleValueContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3133,6 +3142,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(InvalidStatement::ShortVarDecl { reason });
             }
+            if let Some(reason) = invalid_assignment(assign, env) {
+                return Some(InvalidStatement::Assignment { reason });
+            }
             record_define_bindings(assign, env);
             None
         }
@@ -3280,6 +3292,181 @@ fn has_duplicate_select_default(block: &ast::BlockStmt<'_>) -> bool {
         .filter(|stmt| matches!(stmt, ast::Stmt::CommClause(comm) if comm.comm.is_none()))
         .nth(1)
         .is_some()
+}
+
+fn invalid_assignment(
+    assign: &ast::AssignStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidAssignmentReason> {
+    if assign.tok.is_assign_op() {
+        if assign.lhs.len() != 1 || assign.rhs.len() != 1 {
+            return Some(InvalidAssignmentReason::CompoundOperandCount {
+                lhs: assign.lhs.len(),
+                rhs: assign.rhs.len(),
+            });
+        }
+        if assign.lhs.first().is_some_and(is_blank_ident) {
+            return Some(InvalidAssignmentReason::CompoundBlankIdentifier);
+        }
+        if let Some(values) = expression_value_count(
+            assign.rhs.first()?,
+            env,
+            TupleAssignmentMode::SingleValueContext,
+        )
+        .filter(|values| *values != 1)
+        {
+            return Some(InvalidAssignmentReason::CountMismatch { lhs: 1, values });
+        }
+        return None;
+    }
+
+    if assign.rhs.len() == 1 {
+        let mode = if assign.lhs.len() == 1 {
+            TupleAssignmentMode::SingleValueContext
+        } else {
+            TupleAssignmentMode::AllowTupleOperations
+        };
+        if let Some(values) = expression_value_count(assign.rhs.first()?, env, mode)
+            && values != assign.lhs.len()
+        {
+            return Some(InvalidAssignmentReason::CountMismatch {
+                lhs: assign.lhs.len(),
+                values,
+            });
+        }
+        return None;
+    }
+
+    for expr in &assign.rhs {
+        if let Some(values) =
+            expression_value_count(expr, env, TupleAssignmentMode::SingleValueContext)
+            && values != 1
+        {
+            return Some(InvalidAssignmentReason::MultiValueInSingleValueContext);
+        }
+    }
+
+    if assign.lhs.len() != assign.rhs.len() {
+        return Some(InvalidAssignmentReason::CountMismatch {
+            lhs: assign.lhs.len(),
+            values: assign.rhs.len(),
+        });
+    }
+
+    None
+}
+
+#[derive(Clone, Copy)]
+enum TupleAssignmentMode {
+    AllowTupleOperations,
+    SingleValueContext,
+}
+
+fn expression_value_count(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    mode: TupleAssignmentMode,
+) -> Option<usize> {
+    match expr {
+        ast::Expr::CallExpr(call) => call_result_count(call, env),
+        ast::Expr::IndexExpr(index) => {
+            match env.resolve_alias(&GoType::infer_expr(&index.x, env)) {
+                GoType::Map(_, _) if matches!(mode, TupleAssignmentMode::AllowTupleOperations) => {
+                    Some(2)
+                }
+                GoType::Unknown if matches!(mode, TupleAssignmentMode::AllowTupleOperations) => {
+                    None
+                }
+                _ => Some(1),
+            }
+        }
+        ast::Expr::ParenExpr(paren) => expression_value_count(&paren.x, env, mode),
+        ast::Expr::TypeAssertExpr(type_assert) => {
+            if type_assert.type_.is_some()
+                && matches!(mode, TupleAssignmentMode::AllowTupleOperations)
+            {
+                Some(2)
+            } else {
+                Some(1)
+            }
+        }
+        ast::Expr::UnaryExpr(unary)
+            if unary.op == token::Token::ARROW
+                && matches!(mode, TupleAssignmentMode::AllowTupleOperations) =>
+        {
+            Some(2)
+        }
+        _ => Some(1),
+    }
+}
+
+fn call_result_count(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<usize> {
+    if call_is_type_conversion(call, env) {
+        return Some(1);
+    }
+    call_result_count_for_fun(&call.fun, env)
+}
+
+fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize> {
+    match fun {
+        ast::Expr::Ident(id) => {
+            if env.has_func(id.name) {
+                return Some(env.get_func_returns(id.name).len());
+            }
+            match env.get_var(id.name) {
+                Some(GoType::Func { results, .. }) => Some(results.len()),
+                Some(_) => None,
+                None => builtin_result_count(id.name),
+            }
+        }
+        ast::Expr::SelectorExpr(sel) => {
+            if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
+                if env.has_func(&package_key) {
+                    return Some(env.get_func_returns(&package_key).len());
+                }
+
+                if let Some(GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
+                    let method_key = format!("{}.{}", name, sel.sel.name);
+                    if env.has_func(&method_key) {
+                        return Some(env.get_func_returns(&method_key).len());
+                    }
+                }
+            }
+
+            match GoType::infer_expr(fun, env) {
+                GoType::Func { results, .. } => Some(results.len()),
+                _ => None,
+            }
+        }
+        ast::Expr::FuncLit(func_lit) => {
+            Some(field_list_binding_count(func_lit.type_.results.as_ref()))
+        }
+        ast::Expr::ParenExpr(paren) => call_result_count_for_fun(&paren.x, env),
+        other => match GoType::infer_expr(other, env) {
+            GoType::Func { results, .. } => Some(results.len()),
+            _ => None,
+        },
+    }
+}
+
+fn builtin_result_count(name: &str) -> Option<usize> {
+    match name {
+        "append" | "cap" | "complex" | "copy" | "imag" | "len" | "make" | "max" | "min" | "new"
+        | "real" | "recover" => Some(1),
+        "clear" | "close" | "delete" | "panic" | "print" | "println" => Some(0),
+        _ => None,
+    }
+}
+
+fn field_list_binding_count(fields: Option<&ast::FieldList<'_>>) -> usize {
+    fields.map_or(0, |fields| {
+        fields
+            .list
+            .iter()
+            .map(|field| field.names.as_ref().map_or(1, Vec::len))
+            .sum()
+    })
 }
 
 fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
@@ -7817,6 +8004,153 @@ mod tests {
                     clear([]int{1})
                     local := func() {}
                     local()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_assignment_value_counts() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func main() {
+                        x := pair()
+                        _ = x
+                    }
+                "#,
+                super::InvalidAssignmentReason::CountMismatch { lhs: 1, values: 2 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func one() int { return 1 }
+
+                    func main() {
+                        x, y := one()
+                        _, _ = x, y
+                    }
+                "#,
+                super::InvalidAssignmentReason::CountMismatch { lhs: 2, values: 1 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func main() {
+                        x, y, z := pair()
+                        _, _, _ = x, y, z
+                    }
+                "#,
+                super::InvalidAssignmentReason::CountMismatch { lhs: 3, values: 2 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (int, int) { return 1, 2 }
+
+                    func main() {
+                        x, y, z := pair(), 3
+                        _, _, _ = x, y, z
+                    }
+                "#,
+                super::InvalidAssignmentReason::MultiValueInSingleValueContext,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        x, ok := xs[0]
+                        _, _ = x, ok
+                    }
+                "#,
+                super::InvalidAssignmentReason::CountMismatch { lhs: 2, values: 1 },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ += 1
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundBlankIdentifier,
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Assignment { reason })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_assignment_value_counts() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func pair() (int, int) { return 1, 2 }
+                func len() (int, int) { return 3, 4 }
+
+                func main() {
+                    x, y := pair()
+                    _ = x
+                    _ = y
+
+                    lx, ly := len()
+                    _ = lx
+                    _ = ly
+
+                    m := map[string]int{"go": 1}
+                    v, ok := m["go"]
+                    _ = v
+                    _ = ok
+
+                    ch := make(chan int, 1)
+                    r, open := <-ch
+                    _ = r
+                    _ = open
+
+                    var anyv any = 1
+                    asserted, matches := anyv.(int)
+                    _ = asserted
+                    _ = matches
                 }
             "#,
         )

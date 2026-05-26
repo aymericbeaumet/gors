@@ -528,6 +528,11 @@ Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than
 `TypeEnv`-based so nested short declarations can still shadow outer bindings.
+Assignment arity is validated in the same IR statement pass before backend
+lowering. It distinguishes single-valued expressions from real multi-valued
+function calls, map indexes, channel receives, and type assertions so invalid
+forms such as `x := pair()` or `x, ok := slice[0]` do not reach Rust codegen as
+tuple destructuring or comma-ok lowering.
 The same statement validation rejects short variable declarations in a `for`
 post statement; Go only permits them in init/simple statement positions.
 Switch, type-switch, and select statements reject multiple `default` clauses in
