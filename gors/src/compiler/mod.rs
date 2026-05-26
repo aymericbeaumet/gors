@@ -1999,15 +1999,7 @@ fn rewrite_bare_returns(block: &mut syn::Block, named_return_idents: &[syn::Iden
 fn rewrite_bare_returns_in_expr(expr: &mut syn::Expr, named_return_idents: &[syn::Ident]) {
     match expr {
         syn::Expr::Return(ret) if ret.expr.is_none() => {
-            if let Some(ident) = (named_return_idents.len() == 1)
-                .then(|| named_return_idents.first())
-                .flatten()
-            {
-                ret.expr = Some(Box::new(syn::parse_quote! { #ident }));
-            } else {
-                let idents = named_return_idents;
-                ret.expr = Some(Box::new(syn::parse_quote! { (#(#idents),*) }));
-            }
+            ret.expr = Some(Box::new(named_return_expr(named_return_idents, false)));
         }
         syn::Expr::Block(block) => {
             rewrite_bare_returns(&mut block.block, named_return_idents);
@@ -2029,6 +2021,58 @@ fn rewrite_bare_returns_in_expr(expr: &mut syn::Expr, named_return_idents: &[syn
         }
         _ => {}
     }
+}
+
+fn named_return_expr(idents: &[syn::Ident], clone_unshared: bool) -> syn::Expr {
+    match idents {
+        [] => syn::parse_quote! { () },
+        [ident] => named_return_ident_expr(ident, clone_unshared),
+        idents => {
+            let elems = idents
+                .iter()
+                .map(|ident| named_return_ident_expr(ident, clone_unshared));
+            syn::parse_quote! { (#(#elems),*) }
+        }
+    }
+}
+
+fn named_return_ident_expr(ident: &syn::Ident, clone_unshared: bool) -> syn::Expr {
+    let name = ident.to_string();
+    if let Some(expr) = shared_capture_read_expr(&name) {
+        return expr;
+    }
+    if clone_unshared {
+        syn::parse_quote! { (#ident).clone() }
+    } else {
+        syn::parse_quote! { #ident }
+    }
+}
+
+fn named_return_decl_stmt(
+    ident: &syn::Ident,
+    rust_type: &Option<syn::Type>,
+    zero: &syn::Expr,
+) -> syn::Stmt {
+    let name = ident.to_string();
+    let init = shared_capture_init_expr(&name, zero.clone());
+    if let Some(rust_type) = rust_type {
+        let rust_type = shared_capture_type(&name, rust_type.clone());
+        syn::parse_quote! { let mut #ident: #rust_type = #init; }
+    } else {
+        syn::parse_quote! { let mut #ident = #init; }
+    }
+}
+
+fn named_return_return_stmt(idents: &[syn::Ident]) -> syn::Stmt {
+    let expr = named_return_expr(idents, false);
+    syn::Stmt::Expr(
+        syn::Expr::Return(syn::ExprReturn {
+            attrs: vec![],
+            return_token: <Token![return]>::default(),
+            expr: Some(Box::new(expr)),
+        }),
+        None,
+    )
 }
 
 fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
@@ -7913,6 +7957,17 @@ fn compile_method(
         RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
     let previous_named_return_idents = NAMED_RETURN_IDENTS
         .with(|idents| std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone()));
+    let range_function_capture_names =
+        func_decl
+            .body
+            .as_ref()
+            .map_or_else(std::collections::BTreeSet::new, |body| {
+                TYPE_ENV.with(|env| {
+                    ir::mutable_range_function_capture_names_in_block(body, &env.borrow())
+                })
+            });
+    let _range_function_capture_names =
+        SharedCaptureNamesGuard::extend(range_function_capture_names);
     let block_result = if let Some(body) = func_decl.body {
         body.try_into()
     } else {
@@ -7938,11 +7993,7 @@ fn compile_method(
     if !named_return_info.is_empty() {
         let mut prepend: Vec<syn::Stmt> = vec![];
         for (ident, rust_type, zero) in &named_return_info {
-            if let Some(rust_type) = rust_type {
-                prepend.push(syn::parse_quote! { let mut #ident: #rust_type = #zero; });
-            } else {
-                prepend.push(syn::parse_quote! { let mut #ident = #zero; });
-            }
+            prepend.push(named_return_decl_stmt(ident, rust_type, zero));
         }
         let existing = std::mem::take(&mut block.stmts);
         block.stmts = prepend;
@@ -7953,29 +8004,9 @@ fn compile_method(
             .last()
             .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
         if needs_implicit_return {
-            if let Some(ident) = (named_return_idents.len() == 1)
-                .then(|| named_return_idents.first())
-                .flatten()
-            {
-                block.stmts.push(syn::Stmt::Expr(
-                    syn::Expr::Return(syn::ExprReturn {
-                        attrs: vec![],
-                        return_token: <Token![return]>::default(),
-                        expr: Some(Box::new(syn::parse_quote! { #ident })),
-                    }),
-                    None,
-                ));
-            } else {
-                let idents = &named_return_idents;
-                block.stmts.push(syn::Stmt::Expr(
-                    syn::Expr::Return(syn::ExprReturn {
-                        attrs: vec![],
-                        return_token: <Token![return]>::default(),
-                        expr: Some(Box::new(syn::parse_quote! { (#(#idents),*) })),
-                    }),
-                    None,
-                ));
-            }
+            block
+                .stmts
+                .push(named_return_return_stmt(&named_return_idents));
         }
     }
 
@@ -10441,6 +10472,11 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
     let is_string = matches!(range_kind, ir::RangeKind::String);
     let is_int = matches!(range_kind, ir::RangeKind::Integer);
     let range_function_yield_params = range_function_yield_params(&inferred_range_type);
+    let range_function_capture_names = if range_function_yield_params.is_some() {
+        TYPE_ENV.with(|env| ir::mutable_range_function_capture_names(&range_stmt, &env.borrow()))
+    } else {
+        std::collections::BTreeSet::new()
+    };
     let env_snapshot = TYPE_ENV.with(|env| env.borrow().clone());
     if let Some(yield_params) = &range_function_yield_params {
         set_range_function_bindings(
@@ -10475,6 +10511,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             range_stmt.value,
             range_tok,
             yield_params,
+            range_function_capture_names,
             body,
         );
     }
@@ -10675,6 +10712,19 @@ fn range_function_assignment_stmts(
         .collect()
 }
 
+fn range_function_shared_capture_clones(
+    names: &std::collections::BTreeSet<String>,
+) -> Vec<syn::Stmt> {
+    names
+        .iter()
+        .filter(|name| is_shared_capture_name(name))
+        .map(|name| {
+            let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+            syn::parse_quote! { let #ident = #ident.clone(); }
+        })
+        .collect()
+}
+
 fn compile_range_function_call_stmt(
     fun_expr: syn::Expr,
     is_function_item: bool,
@@ -10728,10 +10778,10 @@ fn current_return_ty() -> Option<syn::Type> {
 fn current_named_return_expr() -> Option<syn::Expr> {
     NAMED_RETURN_IDENTS.with(|idents| {
         let idents = idents.borrow();
-        match idents.as_slice() {
-            [] => None,
-            [ident] => Some(syn::parse_quote! { (#ident).clone() }),
-            idents => Some(syn::parse_quote! { (#((#idents).clone()),*) }),
+        if idents.is_empty() {
+            None
+        } else {
+            Some(named_return_expr(&idents, true))
         }
     })
 }
@@ -10951,6 +11001,7 @@ fn compile_range_function_stmt(
     value: Option<ast::Expr>,
     tok: Option<token::Token>,
     yield_params: Vec<typeinfer::GoType>,
+    shared_capture_names: std::collections::BTreeSet<String>,
     mut body: syn::Block,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
     if yield_params.len() > 2 {
@@ -10992,8 +11043,10 @@ fn compile_range_function_stmt(
     let return_clone_stmt = rewrite_result
         .has_outer_return
         .then(|| return_context.clone_stmt());
+    let shared_capture_clones = range_function_shared_capture_clones(&shared_capture_names);
     let yield_value: syn::Expr = syn::parse_quote! {{
         #return_clone_stmt
+        #(#shared_capture_clones)*
         let __gors_func: #yield_ty = std::sync::Arc::new(move |#(#typed_params),*| -> bool {
             #body
             true
@@ -12025,9 +12078,15 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
         let shared_capture_names = TYPE_ENV
             .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
+        let range_function_capture_names = TYPE_ENV.with(|env| {
+            ir::mutable_range_function_capture_names_in_block(&block_stmt, &env.borrow())
+        });
         let address_taken_names = ir::address_taken_names_in_block(&block_stmt);
         let _shared_capture_names = SharedCaptureNamesGuard::extend(
-            shared_capture_names.into_iter().chain(address_taken_names),
+            shared_capture_names
+                .into_iter()
+                .chain(range_function_capture_names)
+                .chain(address_taken_names),
         );
         if let Some(goto_plan) = ir::goto_state_plan_for_block(&block_stmt) {
             return Ok(Self {
@@ -13871,6 +13930,17 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let previous_named_return_idents = NAMED_RETURN_IDENTS.with(|idents| {
             std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone())
         });
+        let range_function_capture_names =
+            func_decl
+                .body
+                .as_ref()
+                .map_or_else(std::collections::BTreeSet::new, |body| {
+                    TYPE_ENV.with(|env| {
+                        ir::mutable_range_function_capture_names_in_block(body, &env.borrow())
+                    })
+                });
+        let _range_function_capture_names =
+            SharedCaptureNamesGuard::extend(range_function_capture_names);
         let body_completion = func_decl.body.as_ref().map(|body| {
             TYPE_ENV.with(|env| {
                 let env = env.borrow();
@@ -13898,15 +13968,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         if !named_return_info.is_empty() {
             let mut prepend: Vec<syn::Stmt> = vec![];
             for (ident, rust_type, zero) in &named_return_info {
-                if let Some(rust_type) = rust_type {
-                    prepend.push(syn::parse_quote! {
-                        let mut #ident: #rust_type = #zero;
-                    });
-                } else {
-                    prepend.push(syn::parse_quote! {
-                        let mut #ident = #zero;
-                    });
-                }
+                prepend.push(named_return_decl_stmt(ident, rust_type, zero));
             }
             let existing = std::mem::take(&mut block.stmts);
             block.stmts = prepend;
@@ -13921,29 +13983,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
 
             if needs_implicit_return {
-                if let Some(ident) = (named_return_idents.len() == 1)
-                    .then(|| named_return_idents.first())
-                    .flatten()
-                {
-                    block.stmts.push(syn::Stmt::Expr(
-                        syn::Expr::Return(syn::ExprReturn {
-                            attrs: vec![],
-                            return_token: <Token![return]>::default(),
-                            expr: Some(Box::new(syn::parse_quote! { #ident })),
-                        }),
-                        None,
-                    ));
-                } else {
-                    let idents = &named_return_idents;
-                    block.stmts.push(syn::Stmt::Expr(
-                        syn::Expr::Return(syn::ExprReturn {
-                            attrs: vec![],
-                            return_token: <Token![return]>::default(),
-                            expr: Some(Box::new(syn::parse_quote! { (#(#idents),*) })),
-                        }),
-                        None,
-                    ));
-                }
+                block
+                    .stmts
+                    .push(named_return_return_stmt(&named_return_idents));
             }
         } else {
             append_missing_return_panic(&mut block, &output, body_completion);

@@ -1942,6 +1942,29 @@ pub fn mutable_func_lit_capture_names_in_block(
     names
 }
 
+pub fn mutable_range_function_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_mutable_range_function_capture_names_in_block(block, env, &mut names);
+    names
+}
+
+pub fn mutable_range_function_capture_names(
+    range: &ast::RangeStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
+    if !matches!(range_kind(&range.x, env), RangeKind::Function) {
+        return BTreeSet::new();
+    }
+    range_function_body_free_name_uses(range)
+        .mutated
+        .into_iter()
+        .filter(|name| !is_predeclared_name(name))
+        .collect()
+}
+
 pub fn address_taken_names_in_block(block: &ast::BlockStmt<'_>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_address_taken_names_in_block(block, &mut names);
@@ -2417,6 +2440,267 @@ fn collect_mutable_func_lit_capture_names_in_expr(
         | ast::Expr::InterfaceType(_)
         | ast::Expr::StructType(_) => {}
     }
+}
+
+fn collect_mutable_range_function_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    for stmt in &block.list {
+        collect_mutable_range_function_capture_names_in_stmt(stmt, env, names);
+    }
+}
+
+fn collect_mutable_range_function_capture_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_mutable_range_function_capture_names_in_expr(expr, env, names);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => {
+            collect_mutable_range_function_capture_names_in_block(block, env, names);
+        }
+        ast::Stmt::CaseClause(case_clause) => {
+            if let Some(exprs) = &case_clause.list {
+                for expr in exprs {
+                    collect_mutable_range_function_capture_names_in_expr(expr, env, names);
+                }
+            }
+            for stmt in &case_clause.body {
+                collect_mutable_range_function_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = &comm_clause.comm {
+                collect_mutable_range_function_capture_names_in_stmt(comm, env, names);
+            }
+            for stmt in &comm_clause.body {
+                collect_mutable_range_function_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec
+                    && let Some(values) = &value.values
+                {
+                    for expr in values {
+                        collect_mutable_range_function_capture_names_in_expr(expr, env, names);
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer_stmt) => {
+            collect_mutable_range_function_capture_names_in_call(&defer_stmt.call, env, names);
+        }
+        ast::Stmt::ExprStmt(expr) => {
+            collect_mutable_range_function_capture_names_in_expr(&expr.x, env, names);
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_mutable_range_function_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_mutable_range_function_capture_names_in_expr(cond, env, names);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_mutable_range_function_capture_names_in_stmt(post, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_block(&for_stmt.body, env, names);
+        }
+        ast::Stmt::GoStmt(go_stmt) => {
+            collect_mutable_range_function_capture_names_in_call(&go_stmt.call, env, names);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_mutable_range_function_capture_names_in_stmt(init, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_expr(&if_stmt.cond, env, names);
+            collect_mutable_range_function_capture_names_in_block(&if_stmt.body, env, names);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_mutable_range_function_capture_names_in_stmt(else_branch, env, names);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_mutable_range_function_capture_names_in_expr(&inc_dec.x, env, names);
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_mutable_range_function_capture_names_in_stmt(&label.stmt, env, names);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                collect_mutable_range_function_capture_names_in_expr(key, env, names);
+            }
+            if let Some(value) = &range.value {
+                collect_mutable_range_function_capture_names_in_expr(value, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_expr(&range.x, env, names);
+            names.extend(mutable_range_function_capture_names(range, env));
+            collect_mutable_range_function_capture_names_in_block(&range.body, env, names);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_mutable_range_function_capture_names_in_expr(expr, env, names);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_mutable_range_function_capture_names_in_expr(&send.chan, env, names);
+            collect_mutable_range_function_capture_names_in_expr(&send.value, env, names);
+        }
+        ast::Stmt::SelectStmt(select_stmt) => {
+            collect_mutable_range_function_capture_names_in_block(&select_stmt.body, env, names);
+        }
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = &switch_stmt.init {
+                collect_mutable_range_function_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                collect_mutable_range_function_capture_names_in_expr(tag, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_block(&switch_stmt.body, env, names);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_mutable_range_function_capture_names_in_stmt(init, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_stmt(&type_switch.assign, env, names);
+            collect_mutable_range_function_capture_names_in_block(&type_switch.body, env, names);
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+    }
+}
+
+fn collect_mutable_range_function_capture_names_in_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    collect_mutable_range_function_capture_names_in_expr(&call.fun, env, names);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_mutable_range_function_capture_names_in_expr(arg, env, names);
+        }
+    }
+}
+
+fn collect_mutable_range_function_capture_names_in_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_mutable_range_function_capture_names_in_expr(len, env, names);
+            }
+            collect_mutable_range_function_capture_names_in_expr(&array.elt, env, names);
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            collect_mutable_range_function_capture_names_in_expr(&binary.x, env, names);
+            collect_mutable_range_function_capture_names_in_expr(&binary.y, env, names);
+        }
+        ast::Expr::CallExpr(call) => {
+            collect_mutable_range_function_capture_names_in_call(call, env, names);
+        }
+        ast::Expr::ChanType(chan) => {
+            collect_mutable_range_function_capture_names_in_expr(&chan.value, env, names);
+        }
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(ty) = &comp.type_ {
+                collect_mutable_range_function_capture_names_in_expr(ty, env, names);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    collect_mutable_range_function_capture_names_in_expr(elt, env, names);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_mutable_range_function_capture_names_in_expr(elt, env, names);
+            }
+        }
+        ast::Expr::FuncLit(func_lit) => {
+            collect_mutable_range_function_capture_names_in_block(&func_lit.body, env, names);
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_mutable_range_function_capture_names_in_expr(&index.x, env, names);
+            collect_mutable_range_function_capture_names_in_expr(&index.index, env, names);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_mutable_range_function_capture_names_in_expr(&index.x, env, names);
+            for index in &index.indices {
+                collect_mutable_range_function_capture_names_in_expr(index, env, names);
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_mutable_range_function_capture_names_in_expr(&kv.key, env, names);
+            collect_mutable_range_function_capture_names_in_expr(&kv.value, env, names);
+        }
+        ast::Expr::MapType(map) => {
+            collect_mutable_range_function_capture_names_in_expr(&map.key, env, names);
+            collect_mutable_range_function_capture_names_in_expr(&map.value, env, names);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_mutable_range_function_capture_names_in_expr(&paren.x, env, names);
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            collect_mutable_range_function_capture_names_in_expr(&selector.x, env, names);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_mutable_range_function_capture_names_in_expr(&slice.x, env, names);
+            if let Some(low) = &slice.low {
+                collect_mutable_range_function_capture_names_in_expr(low, env, names);
+            }
+            if let Some(high) = &slice.high {
+                collect_mutable_range_function_capture_names_in_expr(high, env, names);
+            }
+            if let Some(max) = &slice.max {
+                collect_mutable_range_function_capture_names_in_expr(max, env, names);
+            }
+        }
+        ast::Expr::StarExpr(star) => {
+            collect_mutable_range_function_capture_names_in_expr(&star.x, env, names);
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_mutable_range_function_capture_names_in_expr(&assert.x, env, names);
+            if let Some(ty) = &assert.type_ {
+                collect_mutable_range_function_capture_names_in_expr(ty, env, names);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            collect_mutable_range_function_capture_names_in_expr(&unary.x, env, names);
+        }
+        ast::Expr::BasicLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::StructType(_) => {}
+    }
+}
+
+fn range_function_body_free_name_uses(range: &ast::RangeStmt<'_>) -> ScopedNameUses {
+    let mut scopes = vec![BTreeSet::new()];
+    if matches!(range.tok, Some(token::Token::DEFINE)) {
+        if let Some(key) = &range.key
+            && let Some(name) = ident_name(key)
+        {
+            scoped_declare_name(&mut scopes, name);
+        }
+        if let Some(value) = &range.value
+            && let Some(name) = ident_name(value)
+        {
+            scoped_declare_name(&mut scopes, name);
+        }
+    }
+    let mut uses = ScopedNameUses::default();
+    collect_free_name_uses_in_stmt_list(&range.body.list, &mut scopes, &mut uses);
+    uses
 }
 
 fn collect_signature_bindings(func_type: &ast::FuncType<'_>, names: &mut BTreeSet<String>) {
@@ -3320,6 +3604,78 @@ mod tests {
             &env,
         );
         assert!(names.contains("count"));
+    }
+
+    #[test]
+    fn records_mutable_range_function_captures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func ints(yield func(int) bool) {}
+
+                func main() {
+                    total := 0
+                    for v := range ints {
+                        total += v
+                        inner := 0
+                        inner++
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_range_function_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("total"));
+        assert!(!names.contains("v"));
+        assert!(!names.contains("inner"));
+    }
+
+    #[test]
+    fn records_named_return_range_function_captures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func ints(yield func(int) bool) {}
+
+                func first() (out int) {
+                    for v := range ints {
+                        out = v
+                        return
+                    }
+                    return
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "first" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_range_function_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("out"));
+        assert!(!names.contains("v"));
     }
 
     #[test]

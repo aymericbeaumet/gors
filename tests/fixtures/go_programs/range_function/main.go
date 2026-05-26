@@ -27,13 +27,21 @@ func firstEven() int {
 }
 
 func namedReturn() (out int) {
-	out = 10
 	for v := range ints {
 		if v == 1 {
+			out = 10
 			return
 		}
 	}
 	return -1
+}
+
+func sumRange() int {
+	total := 0
+	for v := range ints {
+		total += v
+	}
+	return total
 }
 
 func voidReturn() {
@@ -64,5 +72,6 @@ func main() {
 	}
 	fmt.Println("first even", firstEven())
 	fmt.Println("named return", namedReturn())
+	fmt.Println("sum", sumRange())
 	voidReturn()
 }
