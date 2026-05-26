@@ -659,6 +659,9 @@ than one parameter before backend lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,
 duplicate methods for a receiver base type, and method names that collide with
 fields on the same struct base type before Rust emission.
+Top-level declaration validation rejects duplicate package-block names across
+const, var, type, and function declarations while ignoring `_` and receiver
+methods.
 Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than

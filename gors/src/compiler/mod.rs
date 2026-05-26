@@ -13137,6 +13137,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
                 format!("duplicate field {field} in anonymous struct")
             }
         }
+        ir::InvalidDeclaration::DuplicateTopLevelName { name } => {
+            format!("duplicate top-level declaration {name}")
+        }
         ir::InvalidDeclaration::MethodFieldConflict { base, name } => {
             format!("method {name} conflicts with field on struct {base}")
         }

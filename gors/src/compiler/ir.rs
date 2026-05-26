@@ -1223,6 +1223,9 @@ pub enum InvalidDeclaration {
         type_name: Option<String>,
         field: String,
     },
+    DuplicateTopLevelName {
+        name: String,
+    },
     MethodFieldConflict {
         base: String,
         name: String,
@@ -1339,14 +1342,55 @@ pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignatur
 }
 
 pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
-    invalid_method_names_in_file(file).or_else(|| {
-        for decl in &file.decls {
-            if let Some(invalid) = invalid_declaration_in_decl(decl) {
-                return Some(invalid);
+    invalid_top_level_names_in_file(file).or_else(|| {
+        invalid_method_names_in_file(file).or_else(|| {
+            for decl in &file.decls {
+                if let Some(invalid) = invalid_declaration_in_decl(decl) {
+                    return Some(invalid);
+                }
+            }
+            None
+        })
+    })
+}
+
+fn invalid_top_level_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    let mut names = BTreeSet::new();
+    for decl in &file.decls {
+        for name in top_level_declared_names(decl) {
+            if name == "_" {
+                continue;
+            }
+            if !names.insert(name.clone()) {
+                return Some(InvalidDeclaration::DuplicateTopLevelName { name });
             }
         }
-        None
-    })
+    }
+    None
+}
+
+fn top_level_declared_names(decl: &ast::Decl<'_>) -> Vec<String> {
+    match decl {
+        ast::Decl::FuncDecl(func) if func.recv.is_none() => vec![func.name.name.to_string()],
+        ast::Decl::FuncDecl(_) => Vec::new(),
+        ast::Decl::GenDecl(gen_decl) => {
+            let mut names = Vec::new();
+            for spec in &gen_decl.specs {
+                match spec {
+                    ast::Spec::ImportSpec(_) => {}
+                    ast::Spec::TypeSpec(type_spec) => {
+                        if let Some(name) = &type_spec.name {
+                            names.push(name.name.to_string());
+                        }
+                    }
+                    ast::Spec::ValueSpec(value_spec) => {
+                        names.extend(value_spec.names.iter().map(|name| name.name.to_string()));
+                    }
+                }
+            }
+            names
+        }
+    }
 }
 
 pub fn invalid_value_declaration_in_file(
@@ -11305,6 +11349,66 @@ mod tests {
                 base: "S".to_string(),
                 name: "M".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_top_level_declarations() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    var X int
+                    const X = 1
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateTopLevelName {
+                name: "X".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type T int
+                    func T() {}
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateTopLevelName {
+                name: "T".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    var A, A int
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateTopLevelName {
+                name: "A".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_blank_and_method_names_in_top_level_declarations() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    var _ int
+                    const _ = 1
+                    type T int
+                    func (T) T() {}
+                    func (T) _() {}
+                "#,
+            ),
+            None
         );
     }
 
