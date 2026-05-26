@@ -16,6 +16,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const PROGRAM_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
+const DEFAULT_GO_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_GENERATED_RUN_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn program_name(dir: &Path) -> String {
     let programs_dir = fixtures_dir().join("go_programs");
@@ -76,6 +78,7 @@ impl RunMetrics {
 fn command_output_abortable(
     mut command: Command,
     abort: &AtomicBool,
+    timeout: Option<Duration>,
 ) -> Result<Option<Output>, String> {
     if abort.load(Ordering::SeqCst) {
         return Ok(None);
@@ -90,11 +93,19 @@ fn command_output_abortable(
             stderr_file.reopen().map_err(|e| e.to_string())?,
         ));
     let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let started = Instant::now();
     loop {
         if abort.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
             return Ok(None);
+        }
+        if let Some(timeout) = timeout
+            && started.elapsed() >= timeout
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("command timed out after {timeout:?}"));
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             return Ok(Some(Output {
@@ -228,7 +239,7 @@ fn run_go_program(
     let mut go_cmd = go_command();
     go_cmd.args(["run", "."]).current_dir(dir);
     let before = Instant::now();
-    let output = command_output_abortable(go_cmd, abort);
+    let output = command_output_abortable(go_cmd, abort, Some(go_run_timeout()));
     RunMetrics::add_duration(&metrics.go, before.elapsed());
     output
 }
@@ -261,7 +272,7 @@ fn compile_and_run_generated_rust(
         metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
         let before = Instant::now();
         let bin = Command::new(&bin_path);
-        let output = command_output_abortable(bin, abort);
+        let output = command_output_abortable(bin, abort, Some(generated_run_timeout()));
         RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
         return output;
     }
@@ -297,7 +308,7 @@ fn compile_and_run_generated_rust(
         .args(["-C", &incremental_arg]);
 
     let before = Instant::now();
-    let Some(rustc_out) = command_output_abortable(rustc, abort)? else {
+    let Some(rustc_out) = command_output_abortable(rustc, abort, None)? else {
         return Ok(None);
     };
     RunMetrics::add_duration(&metrics.rustc, before.elapsed());
@@ -311,9 +322,29 @@ fn compile_and_run_generated_rust(
 
     let before = Instant::now();
     let bin = Command::new(&bin_path);
-    let output = command_output_abortable(bin, abort);
+    let output = command_output_abortable(bin, abort, Some(generated_run_timeout()));
     RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
     output
+}
+
+fn go_run_timeout() -> Duration {
+    duration_from_env("GORS_TEST_GO_RUN_TIMEOUT_SECS", DEFAULT_GO_RUN_TIMEOUT)
+}
+
+fn generated_run_timeout() -> Duration {
+    duration_from_env(
+        "GORS_TEST_GENERATED_RUN_TIMEOUT_SECS",
+        DEFAULT_GENERATED_RUN_TIMEOUT,
+    )
+}
+
+fn duration_from_env(name: &str, default: Duration) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(default)
 }
 
 fn write_generated_output(

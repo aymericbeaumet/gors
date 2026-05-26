@@ -10,6 +10,8 @@
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
 //! - `GORS_TEST_FAIL_FAST`: Cancel queued/running tests after the first failure where supported
 //! - `GORS_TEST_THREADS`: Worker threads for integration tests (default: all available CPUs)
+//! - `GORS_TEST_GO_RUN_TIMEOUT_SECS`: Timeout for Go reference program runs (default: 30)
+//! - `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS`: Timeout for generated Rust program runs (default: 10)
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

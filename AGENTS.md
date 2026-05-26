@@ -77,14 +77,15 @@ gors-builtin/
   `main()` as startup locals.
 - Go function values stored in generated data structures and explicit local
   variables of `func(...)` type are reference-counted nil-capable cells:
-  `std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(...) -> ... + Send>>>>`.
-  Calls go through `crate::builtin::lock_func` and unwrap the option at the call
-  site. Do not reintroduce `Rc<RefCell<dyn FnMut>>`; keep the representation
+  `std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(...) -> ... + Send + Sync>>>>`.
+  Calls clone the inner `Arc` while holding `crate::builtin::lock_func`, then
+  release the mutex before invoking the function. This is required for recursive
+  function values. Do not reintroduce `Rc<RefCell<...>>`; keep the representation
   thread-safe so goroutine lowering can share the same value model.
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
-  behind generated function types should use `move`, because those are boxed
-  behind the shared `Arc<Mutex<Option<Box<dyn FnMut(...) -> ... + Send>>>>`
+  behind generated function types should use `move`, because those are stored
+  behind the shared `Arc<Mutex<Option<Arc<dyn Fn(...) -> ... + Send + Sync>>>>`
   representation.
 - Expected-type expression lowering owns Go function-value coercions. Function
   literals and named or selector function items passed to `func(...)`-typed
@@ -97,6 +98,9 @@ gors-builtin/
   literals, are promoted to `Arc<Mutex<T>>` in the enclosing block. Any `move`
   closure that captures those cells must clone the `Arc` before constructing the
   closure so later outer-scope reads still see the same storage.
+- Assignments and compound assignments to shared captures must evaluate the RHS
+  into a temporary before locking the LHS cell, so expressions like
+  `x = x + 1` and `x += x` do not try to acquire the same `Mutex` twice.
 - Addressable non-Copy binding initializers are cloned for `var` and `:=`
   declarations. This preserves Go value-copy semantics for struct/string/array
   bindings and avoids Rust moves such as `d := c` invalidating later uses of
@@ -308,6 +312,10 @@ thread stack while parsing and compiling real Go stdlib packages.
 - `GORS_TEST_THREADS=N` — override integration-test worker threads; by default
   generated-program and corpus integration tests size their Rayon pools to all
   CPUs reported by `std::thread::available_parallelism()`
+- `GORS_TEST_GO_RUN_TIMEOUT_SECS=N` — override the generated-program harness
+  timeout for Go reference runs (default: 30 seconds)
+- `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS=N` — override the generated-program
+  harness timeout for compiled Rust program runs (default: 10 seconds)
 
 ## Run patterns
 
@@ -481,6 +489,12 @@ imports, and root-specific resolved modules through shared `RwLock`/per-key
 initialization state so parallel integration tests can reuse stdlib work.
 Per-file stdlib parser/compiler skips are quiet by default; set
 `GORS_STDLIB_TRACE=1` to see resolver decisions and skipped files.
+Quiet stdlib panic capture must not wrap compilation in a global mutex; the
+resolver uses a process-wide hook with a thread-local suppression flag so
+Rayon workers can compile independent stdlib files concurrently.
+Root-specific resolved-module cache contention should fall back to uncached
+resolution on the waiting worker instead of blocking on the cache `RwLock`;
+the duplicate cold work keeps fixture-level integration parallelism saturated.
 
 Stdlib output is pruned at item level from roots such as `crate::fmt::Println`.
 Direct imports with no surviving references should be pruned rather than

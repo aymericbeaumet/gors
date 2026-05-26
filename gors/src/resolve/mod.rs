@@ -4,8 +4,9 @@
 //! build-time generated metadata from the embedded Go SDK.
 
 use quote::ToTokens;
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Clone, Copy)]
 struct EmbeddedGoFile {
@@ -42,7 +43,11 @@ static TYPE_ENVS: OnceLock<RwLock<TypeEnvCache>> = OnceLock::new();
 static TRANSITIVE_IMPORTS: OnceLock<RwLock<TransitiveImportsCache>> = OnceLock::new();
 static RESOLVED_MODULES: OnceLock<RwLock<ResolvedModuleCache>> = OnceLock::new();
 static RESOLVED_IMPORTS: OnceLock<RwLock<HashMap<String, Vec<String>>>> = OnceLock::new();
-static PANIC_HOOK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+
+thread_local! {
+    static SUPPRESS_RESOLVER_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
+}
 
 fn package_file_cache() -> &'static RwLock<PackageFilesCache> {
     PACKAGE_FILES.get_or_init(|| RwLock::new(HashMap::new()))
@@ -171,7 +176,9 @@ fn resolve_cached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<
         return resolve_uncached(import_path, roots);
     };
 
-    if let Ok(entry) = cell.read() {
+    // Cold stdlib roots are expensive enough that blocking every worker behind
+    // one cache initializer leaves the generated-program harness mostly idle.
+    if let Ok(entry) = cell.try_read() {
         match &*entry {
             ResolvedModuleEntry::Missing => return None,
             ResolvedModuleEntry::Source(source) => {
@@ -181,9 +188,11 @@ fn resolve_cached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<
             }
             ResolvedModuleEntry::Vacant | ResolvedModuleEntry::Uncacheable => {}
         }
+    } else {
+        return resolve_uncached(import_path, roots);
     }
 
-    let Ok(mut entry) = cell.write() else {
+    let Ok(mut entry) = cell.try_write() else {
         return resolve_uncached(import_path, roots);
     };
     match &*entry {
@@ -415,16 +424,25 @@ fn catch_unwind_quiet<F, R>(f: F) -> std::thread::Result<R>
 where
     F: FnOnce() -> R + std::panic::UnwindSafe,
 {
-    let hook_lock = PANIC_HOOK_LOCK.get_or_init(|| Mutex::new(()));
-    let Ok(_guard) = hook_lock.lock() else {
-        return std::panic::catch_unwind(f);
-    };
+    install_resolver_panic_hook();
+    SUPPRESS_RESOLVER_PANIC_HOOK.with(|suppress| {
+        let previous = suppress.replace(true);
+        let result = std::panic::catch_unwind(f);
+        suppress.set(previous);
+        result
+    })
+}
 
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(f);
-    std::panic::set_hook(previous_hook);
-    result
+fn install_resolver_panic_hook() {
+    PANIC_HOOK_INSTALLED.get_or_init(|| {
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if SUPPRESS_RESOLVER_PANIC_HOOK.with(Cell::get) {
+                return;
+            }
+            previous_hook(info);
+        }));
+    });
 }
 
 fn log_skip(args: std::fmt::Arguments<'_>) {

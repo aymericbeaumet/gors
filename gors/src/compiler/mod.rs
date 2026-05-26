@@ -6580,13 +6580,13 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
 fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut(#(#params),*) -> #result + Send>>>> }
+    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync>>>> }
 }
 
 fn shared_func_box_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     let params = func_param_types_from_ast(func_type);
     let result = func_result_type_from_ast(func_type);
-    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result + Send> }
+    syn::parse_quote! { std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync> }
 }
 
 fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
@@ -8328,7 +8328,7 @@ fn shared_func_box_type_from_go_parts(
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    syn::parse_quote! { Box<dyn FnMut(#(#params),*) -> #result + Send> }
+    syn::parse_quote! { std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync> }
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -8815,9 +8815,12 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
 }
 
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
-    let box_ty = shared_func_box_type_from_go_type(expected)?;
+    let func_ty = shared_func_box_type_from_go_type(expected)?;
     Some(syn::parse_quote! {
-        std::sync::Arc::new(std::sync::Mutex::new(Some(Box::new(#compiled) as #box_ty)))
+        {
+            let __gors_func: #func_ty = std::sync::Arc::new(#compiled);
+            std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
+        }
     })
 }
 
@@ -9489,6 +9492,19 @@ fn is_shared_capture_name(name: &str) -> bool {
     SHARED_CAPTURE_NAMES.with(|shared| shared.borrow().contains(name))
 }
 
+fn shared_capture_ident(expr: &ast::Expr) -> Option<syn::Ident> {
+    let ast::Expr::Ident(ident) = expr else {
+        return None;
+    };
+    if !is_shared_capture_name(ident.name) {
+        return None;
+    }
+    Some(syn::Ident::new(
+        &rust_safe_ident_name(ident.name),
+        Span::mixed_site(),
+    ))
+}
+
 fn is_goto_continue_label(name: &str) -> bool {
     GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
 }
@@ -9898,11 +9914,14 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
         }
     }
     Some(syn::parse_quote! {{
-        let mut __gors_func = crate::builtin::lock_func(&(#func));
-        match __gors_func.as_mut() {
-            Some(__gors_func) => (&mut **__gors_func)(#args),
-            None => panic!("nil function"),
-        }
+        let __gors_func = {
+            let __gors_func = crate::builtin::lock_func(&(#func));
+            match __gors_func.as_ref() {
+                Some(__gors_func) => __gors_func.clone(),
+                None => panic!("nil function"),
+            }
+        };
+        (&*__gors_func)(#args)
     }})
 }
 
@@ -14988,10 +15007,17 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                                 &rust_safe_ident_name(ident.name),
                                 Span::mixed_site(),
                             );
+                            let func_ty = shared_func_box_type_from_go_type(&lhs_func_ty)
+                                .ok_or_else(|| {
+                                    CompilerError::InvalidAssignment(
+                                        "invalid function assignment".to_string(),
+                                    )
+                                })?;
                             return Ok(vec![syn::parse_quote! {{
                                 let __gors_func_target = #ident.clone();
                                 let #ident = #ident.clone();
-                                *crate::builtin::lock_func(&__gors_func_target) = Some(Box::new(#closure));
+                                let __gors_func_value: #func_ty = std::sync::Arc::new(#closure);
+                                *crate::builtin::lock_func(&__gors_func_target) = Some(__gors_func_value);
                             }}]);
                         }
                         let right =
@@ -15010,6 +15036,12 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
+                }
+                if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
+                    return Ok(vec![syn::parse_quote! {{
+                        let __gors_shared_value = #right;
+                        *#shared_ident.lock().unwrap() = __gors_shared_value;
+                    }}]);
                 }
                 let left = compile_assignment_lhs(lhs_ast);
                 return Ok(vec![syn::parse_quote! { #left = #right; }]);
@@ -15086,6 +15118,12 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 && matches!(resolved_go_type(&lhs_ty), typeinfer::GoType::String)
             {
                 let right = compile_expr_with_expected(rhs_ast, Some(&typeinfer::GoType::String));
+                if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
+                    return Ok(vec![syn::parse_quote! {{
+                        let __gors_shared_value = #right;
+                        #shared_ident.lock().unwrap().push_str(&__gors_shared_value);
+                    }}]);
+                }
                 let left = compile_assignment_lhs(lhs_ast);
                 return Ok(vec![syn::parse_quote! { #left.push_str(&#right); }]);
             }
@@ -15097,6 +15135,13 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             } else {
                 compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
             };
+            if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
+                let op: syn::BinOp = assign_stmt.tok.into();
+                return Ok(vec![syn::parse_quote! {{
+                    let __gors_shared_value = #right;
+                    *#shared_ident.lock().unwrap() #op __gors_shared_value;
+                }}]);
+            }
             let left = compile_assignment_lhs(lhs_ast);
             let op: syn::BinOp = assign_stmt.tok.into();
             return Ok(vec![syn::parse_quote! { #left #op #right; }]);
@@ -15444,10 +15489,10 @@ func main() {
         let compiled = compile(parsed).unwrap();
         let output = printer::generate(compiled).unwrap();
 
-        assert!(output.contains("Some(Box::new(inc) as Box<dyn FnMut(isize) -> isize + Send>)"));
-        assert!(output.contains("Box::new(move |mut x: isize| -> isize"));
-        assert!(output.contains("as Box<dyn FnMut(isize) -> isize + Send>"));
-        assert!(!output.contains(") as std::sync::Arc<std::sync::Mutex<Option<Box<dyn FnMut"));
+        assert!(output.contains("std::sync::Arc::new(\n                    inc"));
+        assert!(output.contains("std::sync::Arc::new(move |"));
+        assert!(output.contains("dyn Fn(isize) -> isize + Send + Sync"));
+        assert!(!output.contains("FnMut"));
     }
 
     #[test]
