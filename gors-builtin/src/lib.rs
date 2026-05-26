@@ -718,17 +718,17 @@ impl_complex_ops!(Complex64);
 impl_complex_ops!(Complex128);
 
 #[inline]
-pub fn complex64(re: f32, im: f32) -> Complex64 {
+pub const fn complex64(re: f32, im: f32) -> Complex64 {
     Complex64 { re, im }
 }
 
 #[inline]
-pub fn complex128(re: f64, im: f64) -> Complex128 {
+pub const fn complex128(re: f64, im: f64) -> Complex128 {
     Complex128 { re, im }
 }
 
 #[inline]
-pub fn complex(re: f64, im: f64) -> Complex128 {
+pub const fn complex(re: f64, im: f64) -> Complex128 {
     complex128(re, im)
 }
 

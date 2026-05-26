@@ -202,6 +202,7 @@ impl GoType {
             ast::Expr::BasicLit(lit) => match lit.kind {
                 token::Token::INT => GoType::Int,
                 token::Token::FLOAT => GoType::Float64,
+                token::Token::IMAG => GoType::Complex128,
                 token::Token::STRING => GoType::String,
                 token::Token::CHAR => GoType::Int32,
                 _ => GoType::Unknown,
@@ -279,7 +280,20 @@ impl GoType {
                             "string" => GoType::String,
                             "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
                             | "uint16" | "uint32" | "uint64" | "uintptr" | "float32"
-                            | "float64" | "byte" | "rune" | "bool" => GoType::from_name(id.name),
+                            | "float64" | "complex64" | "complex128" | "byte" | "rune" | "bool" => {
+                                GoType::from_name(id.name)
+                            }
+                            "complex" => GoType::Complex128,
+                            "real" | "imag" => call
+                                .args
+                                .as_ref()
+                                .and_then(|a| a.first())
+                                .map(|expr| match GoType::infer_expr(expr, env) {
+                                    GoType::Complex64 => GoType::Float32,
+                                    GoType::Complex128 => GoType::Float64,
+                                    _ => GoType::Float64,
+                                })
+                                .unwrap_or(GoType::Float64),
                             _ => match env.get_var(id.name) {
                                 Some(GoType::Func { results, .. }) => {
                                     results.first().cloned().unwrap_or(GoType::Unknown)

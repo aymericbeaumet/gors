@@ -505,6 +505,10 @@ Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
 
+Imaginary literals are treated as untyped complex constants in the Go front end
+and lower through `crate::builtin::complex128`; expected `complex64` constant
+contexts use the builtin `complex64` constructor instead of a Rust cast.
+
 Go slice parameters map to `Vec<T>` values unless the compiled body mutates the
 slice's backing storage. The post-compile multi-module pass rewrites parameters
 written through by index, or passed to another mutable slice parameter, to

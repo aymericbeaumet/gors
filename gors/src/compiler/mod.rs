@@ -1397,6 +1397,37 @@ fn parse_go_float_literal(lit: &str) -> Option<f64> {
     Some(value * 16f64.powi(-fractional_digits) * 2f64.powi(exponent))
 }
 
+fn parse_go_imaginary_literal(lit: &str) -> Option<f64> {
+    let body = lit.strip_suffix('i')?;
+    let decimal_digits_only = body.chars().all(|ch| ch == '_' || ch.is_ascii_digit());
+    if decimal_digits_only {
+        return body.replace('_', "").parse::<f64>().ok();
+    }
+    if body.contains(['.', 'e', 'E', 'p', 'P']) {
+        parse_go_float_literal(body)
+    } else {
+        parse_go_int_literal(body)?.as_f64()
+    }
+}
+
+fn imaginary_literal_expr_with_expected(
+    lit: &ast::BasicLit,
+    expected: Option<&typeinfer::GoType>,
+) -> Option<syn::Expr> {
+    let imag = parse_go_imaginary_literal(lit.value)?;
+    let imag = ConstValue::Float(imag).to_expr();
+    match expected.map(resolved_go_type) {
+        Some(typeinfer::GoType::Complex64) => {
+            Some(syn::parse_quote! { crate::builtin::complex64(0.0, (#imag as f32)) })
+        }
+        _ => Some(syn::parse_quote! { crate::builtin::complex128(0.0, #imag) }),
+    }
+}
+
+fn imaginary_literal_expr(lit: &ast::BasicLit) -> Option<syn::Expr> {
+    imaginary_literal_expr_with_expected(lit, None)
+}
+
 fn mask_for_bits(bits: u32) -> u128 {
     if bits >= 128 {
         u128::MAX
@@ -1688,6 +1719,7 @@ fn const_basic_lit_expr(lit: &ast::BasicLit, target: Option<&syn::Type>) -> Opti
             let lit = syn::LitFloat::new(&value, Span::mixed_site());
             Some(syn::parse_quote! { #lit })
         }
+        token::Token::IMAG => imaginary_literal_expr(lit),
         token::Token::STRING => {
             let raw = lit.value;
             let inner = &raw[1..raw.len() - 1];
@@ -1910,6 +1942,11 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                             );
                             let f = syn::LitFloat::new(&value, Span::mixed_site());
                             syn::parse_quote! { #f }
+                        }
+                        token::Token::IMAG => {
+                            let expected = type_name_str.map(typeinfer::GoType::from_name);
+                            imaginary_literal_expr_with_expected(lit, expected.as_ref())
+                                .unwrap_or_else(|| syn::parse_quote! { Default::default() })
                         }
                         _ => syn::parse_quote! { 0 },
                     }
@@ -9929,6 +9966,49 @@ fn coerce_numeric_expr(
     syn::parse_quote! { (#expr as #target_ty) }
 }
 
+fn is_complex_go_type(ty: &typeinfer::GoType) -> bool {
+    matches!(
+        resolved_go_type(ty),
+        typeinfer::GoType::Complex64 | typeinfer::GoType::Complex128
+    )
+}
+
+fn is_complex_const_conversion_source(ty: &typeinfer::GoType) -> bool {
+    let resolved = resolved_go_type(ty);
+    resolved.is_numeric()
+        || matches!(
+            resolved,
+            typeinfer::GoType::Uintptr
+                | typeinfer::GoType::Complex64
+                | typeinfer::GoType::Complex128
+                | typeinfer::GoType::Unknown
+        )
+}
+
+fn coerce_complex_const_expr(
+    expected: &typeinfer::GoType,
+    actual: &typeinfer::GoType,
+    expr: syn::Expr,
+) -> Option<syn::Expr> {
+    let expected_resolved = resolved_go_type(expected);
+    let actual_resolved = resolved_go_type(actual);
+    if expected_resolved == actual_resolved {
+        return Some(expr);
+    }
+    if !is_complex_const_conversion_source(actual) {
+        return None;
+    }
+    match expected_resolved {
+        typeinfer::GoType::Complex64 => Some(syn::parse_quote! {
+            crate::builtin::to_complex64(#expr)
+        }),
+        typeinfer::GoType::Complex128 => Some(syn::parse_quote! {
+            crate::builtin::to_complex128(#expr)
+        }),
+        _ => None,
+    }
+}
+
 fn expr_should_clone_for_value_param(
     expr: &ast::Expr,
     expected: &typeinfer::GoType,
@@ -10174,6 +10254,16 @@ fn compile_expr_with_expected(
         if expr_should_clone_for_value_param(&expr, expected, &actual) {
             let compiled: syn::Expr = expr.into();
             return syn::parse_quote! { (#compiled).clone() };
+        }
+        if is_complex_go_type(expected)
+            && is_const_like_expr(&expr)
+            && is_complex_const_conversion_source(&actual)
+        {
+            let compiled: syn::Expr = expr.into();
+            if let Some(coerced) = coerce_complex_const_expr(expected, &actual, compiled) {
+                return coerced;
+            }
+            return compile_error_expr("unsupported complex constant conversion");
         }
         let numeric_const_like = numeric_cast_type(expected).is_some() && is_const_like_expr(&expr);
         let compiled = if numeric_const_like {
@@ -11426,6 +11516,19 @@ impl From<ast::BasicLit<'_>> for syn::ExprLit {
             lit: basic_lit.into(),
         }
     }
+}
+
+fn compile_basic_lit_expr(basic_lit: ast::BasicLit) -> syn::Expr {
+    if basic_lit.kind == token::Token::IMAG {
+        record_mapping(&basic_lit.value_pos, Some(basic_lit.value));
+        return imaginary_literal_expr(&basic_lit).unwrap_or_else(|| {
+            compile_error_expr(format!(
+                "unsupported imaginary literal: {}",
+                basic_lit.value
+            ))
+        });
+    }
+    syn::Expr::Lit(basic_lit.into())
 }
 
 impl From<ast::BasicLit<'_>> for syn::Lit {
@@ -12762,7 +12865,7 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
 impl From<ast::Expr<'_>> for syn::Expr {
     fn from(expr: ast::Expr) -> Self {
         match expr {
-            ast::Expr::BasicLit(basic_lit) => Self::Lit(basic_lit.into()),
+            ast::Expr::BasicLit(basic_lit) => compile_basic_lit_expr(basic_lit),
             ast::Expr::BinaryExpr(binary_expr) => compile_binary_expr(binary_expr),
             ast::Expr::CallExpr(call_expr) => {
                 if matches!(
@@ -17252,6 +17355,30 @@ func main() {
         let output = printer::generate(compiled).unwrap();
 
         assert!(output.contains("crate::builtin::complex128((1 as f64), (2 as f64))"));
+    }
+
+    #[test]
+    fn it_should_lower_imaginary_literals() {
+        let go_source = r#"
+package main
+
+const wide = 0123i
+const small complex64 = 2.5i
+
+func main() {
+	z := 0x1p-2i
+	var narrowed complex64 = 3i
+	_, _, _, _ = wide, small, z, narrowed
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("crate::builtin::complex128(0.0"));
+        assert!(output.contains("crate::builtin::complex64(0.0"));
+        assert!(output.contains("crate::builtin::to_complex64"));
+        assert!(!output.contains("unsupported literal"));
     }
 
     #[test]
