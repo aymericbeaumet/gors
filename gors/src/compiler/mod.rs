@@ -38,6 +38,7 @@ thread_local! {
     static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -52,6 +53,7 @@ thread_local! {
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
@@ -82,6 +84,15 @@ struct SharedCaptureNamesGuard {
 struct GotoContinueLabelsGuard {
     previous: std::collections::HashSet<String>,
 }
+
+#[derive(Clone)]
+struct GotoStateContext {
+    state_ident: syn::Ident,
+    loop_label: syn::Lifetime,
+    labels: BTreeMap<String, usize>,
+}
+
+struct GotoStateContextGuard;
 
 struct BorrowedPointerParamNamesGuard {
     previous: std::collections::HashSet<String>,
@@ -140,6 +151,23 @@ impl Drop for GotoContinueLabelsGuard {
     fn drop(&mut self) {
         GOTO_CONTINUE_LABELS.with(|labels| {
             *labels.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl GotoStateContextGuard {
+    fn push(context: GotoStateContext) -> Self {
+        GOTO_STATE_CONTEXTS.with(|contexts| {
+            contexts.borrow_mut().push(context);
+        });
+        Self
+    }
+}
+
+impl Drop for GotoStateContextGuard {
+    fn drop(&mut self) {
+        GOTO_STATE_CONTEXTS.with(|contexts| {
+            contexts.borrow_mut().pop();
         });
     }
 }
@@ -2494,6 +2522,8 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
@@ -2522,6 +2552,8 @@ pub fn compile_with_type_env_and_import_renames(
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -2662,6 +2694,8 @@ fn compile_program_impl(
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
     collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
@@ -9565,6 +9599,28 @@ fn is_goto_continue_label(name: &str) -> bool {
     GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
 }
 
+fn compile_goto_state_jump(name: &str) -> Option<Vec<syn::Stmt>> {
+    let target = rust_safe_ident_name(name);
+    GOTO_STATE_CONTEXTS.with(|contexts| {
+        contexts.borrow().iter().rev().find_map(|context| {
+            context.labels.get(&target).map(|target_index| {
+                let state_ident = &context.state_ident;
+                let loop_label = &context.loop_label;
+                let target_lit =
+                    syn::LitInt::new(&format!("{target_index}usize"), Span::mixed_site());
+                vec![
+                    syn::parse_quote! {
+                        #state_ident = #target_lit;
+                    },
+                    syn::parse_quote! {
+                        continue #loop_label;
+                    },
+                ]
+            })
+        })
+    })
+}
+
 fn is_borrowed_pointer_param_name(name: &str) -> bool {
     BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
 }
@@ -11501,6 +11557,12 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
         let _shared_capture_names = SharedCaptureNamesGuard::extend(
             shared_capture_names.into_iter().chain(address_taken_names),
         );
+        if ir::goto_state_plan_for_block(&block_stmt).is_some() {
+            return Ok(Self {
+                brace_token: syn::token::Brace::default(),
+                stmts: vec![compile_goto_state_stmt(block_stmt)?],
+            });
+        }
         let mut stmts = vec![];
         for stmt in block_stmt.list {
             stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
@@ -11510,6 +11572,131 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
             stmts,
         })
     }
+}
+
+struct GotoStateSegment<'a> {
+    labels: Vec<String>,
+    stmts: Vec<ast::Stmt<'a>>,
+}
+
+fn split_goto_state_segments(list: Vec<ast::Stmt<'_>>) -> Vec<GotoStateSegment<'_>> {
+    let mut segments = vec![GotoStateSegment {
+        labels: Vec::new(),
+        stmts: Vec::new(),
+    }];
+
+    for stmt in list {
+        let labels = ir::direct_label_names_in_stmt(&stmt)
+            .into_iter()
+            .map(|label| rust_safe_ident_name(&label))
+            .collect::<Vec<_>>();
+        if labels.is_empty() {
+            if let Some(segment) = segments.last_mut() {
+                segment.stmts.push(stmt);
+            }
+        } else {
+            segments.push(GotoStateSegment {
+                labels,
+                stmts: vec![stmt],
+            });
+        }
+    }
+
+    segments
+}
+
+fn goto_state_label_map(segments: &[GotoStateSegment<'_>]) -> BTreeMap<String, usize> {
+    let mut labels = BTreeMap::new();
+    for (idx, segment) in segments.iter().enumerate() {
+        for label in &segment.labels {
+            labels.entry(label.clone()).or_insert(idx);
+        }
+    }
+    labels
+}
+
+fn goto_state_tail(
+    idx: usize,
+    len: usize,
+    state_ident: &syn::Ident,
+    loop_label: &syn::Lifetime,
+) -> Vec<syn::Stmt> {
+    if idx + 1 < len {
+        let next_lit = syn::LitInt::new(&format!("{}usize", idx + 1), Span::mixed_site());
+        vec![
+            syn::parse_quote! {
+                #state_ident = #next_lit;
+            },
+            syn::parse_quote! {
+                continue #loop_label;
+            },
+        ]
+    } else {
+        vec![syn::parse_quote! {
+            break #loop_label;
+        }]
+    }
+}
+
+fn terminate_goto_state_segment_stmts(stmts: &mut [syn::Stmt]) {
+    for stmt in stmts {
+        if let syn::Stmt::Expr(_, semi @ None) = stmt {
+            *semi = Some(<Token![;]>::default());
+        }
+    }
+}
+
+fn compile_goto_state_stmt(block_stmt: ast::BlockStmt<'_>) -> Result<syn::Stmt, CompilerError> {
+    let segments = split_goto_state_segments(block_stmt.list);
+    let labels = goto_state_label_map(&segments);
+    let (state_ident, loop_label) = next_goto_state_names();
+    let context = GotoStateContext {
+        state_ident: state_ident.clone(),
+        loop_label: loop_label.clone(),
+        labels,
+    };
+    let _goto_state = GotoStateContextGuard::push(context);
+    let segment_count = segments.len();
+    let mut arms: Vec<syn::Arm> = Vec::new();
+
+    for (idx, segment) in segments.into_iter().enumerate() {
+        let mut stmts = Vec::new();
+        for stmt in segment.stmts {
+            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+        }
+        terminate_goto_state_segment_stmts(&mut stmts);
+        stmts.extend(goto_state_tail(
+            idx,
+            segment_count,
+            &state_ident,
+            &loop_label,
+        ));
+        let idx_lit = syn::LitInt::new(&format!("{idx}usize"), Span::mixed_site());
+        arms.push(syn::parse_quote! {
+            #idx_lit => {
+                #(#stmts)*
+            }
+        });
+    }
+
+    arms.push(syn::parse_quote! {
+        _ => {
+            break #loop_label;
+        }
+    });
+
+    let expr: syn::Expr = syn::parse_quote! {
+        {
+            let mut #state_ident: usize = 0usize;
+            #loop_label: loop {
+                match #state_ident {
+                    #(#arms),*
+                }
+            }
+        }
+    };
+
+    Ok(syn::Stmt::Expr(expr, Some(<Token![;]>::default())))
 }
 
 impl TryFrom<ast::BlockStmt<'_>> for syn::ExprBlock {
@@ -13549,6 +13736,9 @@ impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
             }
             GOTO => {
                 if let Some(label) = branch_stmt.label {
+                    if let Some(stmts) = compile_goto_state_jump(label.name) {
+                        return stmts;
+                    }
                     if is_goto_continue_label(label.name) {
                         let label_ident: syn::Ident = label.into();
                         let lifetime = syn::Lifetime {
@@ -14121,6 +14311,19 @@ fn next_loop_body_label() -> syn::Lifetime {
         n
     });
     syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
+}
+
+fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
+    let n = GOTO_STATE_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    (
+        syn::Ident::new(&format!("__gors_goto_state_{n}"), Span::mixed_site()),
+        syn::Lifetime::new(&format!("'__gors_goto_{n}"), Span::mixed_site()),
+    )
 }
 
 fn build_case_condition(
