@@ -17,6 +17,35 @@ func pairs(yield func(string, int) bool) {
 	yield("b", 2)
 }
 
+func firstEven() int {
+	for v := range ints {
+		if v == 2 {
+			return v
+		}
+	}
+	return -1
+}
+
+func namedReturn() (out int) {
+	out = 10
+	for v := range ints {
+		if v == 1 {
+			return
+		}
+	}
+	return -1
+}
+
+func voidReturn() {
+	for v := range ints {
+		if v == 1 {
+			fmt.Println("void return", v)
+			return
+		}
+	}
+	fmt.Println("void after")
+}
+
 func main() {
 	for v := range ints {
 		fmt.Println("int", v)
@@ -33,4 +62,7 @@ func main() {
 		}
 		fmt.Println("control", v)
 	}
+	fmt.Println("first even", firstEven())
+	fmt.Println("named return", namedReturn())
+	voidReturn()
 }

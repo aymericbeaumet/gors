@@ -49,12 +49,14 @@ thread_local! {
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
+    static NAMED_RETURN_IDENTS: RefCell<Vec<syn::Ident>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
 #[derive(Clone)]
@@ -7882,23 +7884,7 @@ fn compile_method(
 
     let vis: syn::Visibility = (&func_decl.name).into();
     let attrs = comment_group_to_attrs(&func_decl.doc);
-
-    let block_result = if let Some(body) = func_decl.body {
-        body.try_into()
-    } else {
-        Ok(syn::Block {
-            brace_token: syn::token::Brace::default(),
-            stmts: vec![],
-        })
-    };
-    let mut block = block_result?;
-    drop(borrowed_pointer_param_names);
-
-    if !recv_name.is_empty() {
-        rewrite_receiver(&mut block, &recv_name);
-    }
-
-    // Handle named return values for methods (same logic as top-level functions)
+    let mut named_return_info: Vec<(syn::Ident, Option<syn::Type>, syn::Expr)> = vec![];
     let mut named_return_idents: Vec<syn::Ident> = vec![];
     if let Some(ref results) = func_decl.type_.results {
         let has_named_returns = results
@@ -7906,7 +7892,6 @@ fn compile_method(
             .iter()
             .any(|f| f.names.as_ref().is_some_and(|names| !names.is_empty()));
         if has_named_returns {
-            let mut named_return_info: Vec<(syn::Ident, Option<syn::Type>, syn::Expr)> = vec![];
             for field in &results.list {
                 if let Some(ref names) = field.names {
                     for name in names {
@@ -7920,46 +7905,76 @@ fn compile_method(
                     }
                 }
             }
-            let mut prepend: Vec<syn::Stmt> = vec![];
-            for (ident, rust_type, zero) in &named_return_info {
-                if let Some(rust_type) = rust_type {
-                    prepend.push(syn::parse_quote! { let mut #ident: #rust_type = #zero; });
-                } else {
-                    prepend.push(syn::parse_quote! { let mut #ident = #zero; });
-                }
+        }
+    }
+
+    let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
+    let previous_return_types =
+        RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let previous_named_return_idents = NAMED_RETURN_IDENTS
+        .with(|idents| std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone()));
+    let block_result = if let Some(body) = func_decl.body {
+        body.try_into()
+    } else {
+        Ok(syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: vec![],
+        })
+    };
+    RETURN_TYPES.with(|types| {
+        *types.borrow_mut() = previous_return_types;
+    });
+    NAMED_RETURN_IDENTS.with(|idents| {
+        *idents.borrow_mut() = previous_named_return_idents;
+    });
+    let mut block = block_result?;
+    drop(borrowed_pointer_param_names);
+
+    if !recv_name.is_empty() {
+        rewrite_receiver(&mut block, &recv_name);
+    }
+
+    // Handle named return values for methods (same logic as top-level functions)
+    if !named_return_info.is_empty() {
+        let mut prepend: Vec<syn::Stmt> = vec![];
+        for (ident, rust_type, zero) in &named_return_info {
+            if let Some(rust_type) = rust_type {
+                prepend.push(syn::parse_quote! { let mut #ident: #rust_type = #zero; });
+            } else {
+                prepend.push(syn::parse_quote! { let mut #ident = #zero; });
             }
-            let existing = std::mem::take(&mut block.stmts);
-            block.stmts = prepend;
-            block.stmts.extend(existing);
-            rewrite_bare_returns(&mut block, &named_return_idents);
-            let needs_implicit_return = !block
-                .stmts
-                .last()
-                .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
-            if needs_implicit_return {
-                if let Some(ident) = (named_return_idents.len() == 1)
-                    .then(|| named_return_idents.first())
-                    .flatten()
-                {
-                    block.stmts.push(syn::Stmt::Expr(
-                        syn::Expr::Return(syn::ExprReturn {
-                            attrs: vec![],
-                            return_token: <Token![return]>::default(),
-                            expr: Some(Box::new(syn::parse_quote! { #ident })),
-                        }),
-                        None,
-                    ));
-                } else {
-                    let idents = &named_return_idents;
-                    block.stmts.push(syn::Stmt::Expr(
-                        syn::Expr::Return(syn::ExprReturn {
-                            attrs: vec![],
-                            return_token: <Token![return]>::default(),
-                            expr: Some(Box::new(syn::parse_quote! { (#(#idents),*) })),
-                        }),
-                        None,
-                    ));
-                }
+        }
+        let existing = std::mem::take(&mut block.stmts);
+        block.stmts = prepend;
+        block.stmts.extend(existing);
+        rewrite_bare_returns(&mut block, &named_return_idents);
+        let needs_implicit_return = !block
+            .stmts
+            .last()
+            .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
+        if needs_implicit_return {
+            if let Some(ident) = (named_return_idents.len() == 1)
+                .then(|| named_return_idents.first())
+                .flatten()
+            {
+                block.stmts.push(syn::Stmt::Expr(
+                    syn::Expr::Return(syn::ExprReturn {
+                        attrs: vec![],
+                        return_token: <Token![return]>::default(),
+                        expr: Some(Box::new(syn::parse_quote! { #ident })),
+                    }),
+                    None,
+                ));
+            } else {
+                let idents = &named_return_idents;
+                block.stmts.push(syn::Stmt::Expr(
+                    syn::Expr::Return(syn::ExprReturn {
+                        attrs: vec![],
+                        return_token: <Token![return]>::default(),
+                        expr: Some(Box::new(syn::parse_quote! { (#(#idents),*) })),
+                    }),
+                    None,
+                ));
             }
         }
     }
@@ -9223,6 +9238,8 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
 
     let previous_return_types =
         RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let previous_named_return_idents =
+        NAMED_RETURN_IDENTS.with(|idents| std::mem::take(&mut *idents.borrow_mut()));
     let completion = TYPE_ENV.with(|env| {
         let env = env.borrow();
         Some(ir::ast_block_completion(&func_lit.body, &env))
@@ -9230,6 +9247,9 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     let block_result = func_lit.body.try_into();
     RETURN_TYPES.with(|types| {
         *types.borrow_mut() = previous_return_types;
+    });
+    NAMED_RETURN_IDENTS.with(|idents| {
+        *idents.borrow_mut() = previous_named_return_idents;
     });
     let mut block: syn::Block = block_result.unwrap_or(syn::Block {
         brace_token: syn::token::Brace::default(),
@@ -10678,49 +10698,249 @@ fn compile_range_function_call_stmt(
     }
 }
 
-fn rewrite_range_function_control_flow(block: &mut syn::Block) {
-    for stmt in &mut block.stmts {
-        rewrite_range_function_control_flow_stmt(stmt);
+#[derive(Clone)]
+struct RangeFunctionReturnContext {
+    slot_ident: syn::Ident,
+    slot_for_yield_ident: syn::Ident,
+    return_ty: Option<syn::Type>,
+}
+
+fn next_range_function_id() -> usize {
+    RANGE_FUNCTION_COUNTER.with(|counter| {
+        let mut counter = counter.borrow_mut();
+        let id = *counter;
+        *counter += 1;
+        id
+    })
+}
+
+fn current_return_ty() -> Option<syn::Type> {
+    RETURN_TYPES.with(|types| match types.borrow().as_slice() {
+        [] => None,
+        [ty] => Some(rust_type_from_inferred_go_type(ty)),
+        tys => {
+            let elems = tys.iter().map(rust_type_from_inferred_go_type);
+            Some(syn::parse_quote! { (#(#elems),*) })
+        }
+    })
+}
+
+fn current_named_return_expr() -> Option<syn::Expr> {
+    NAMED_RETURN_IDENTS.with(|idents| {
+        let idents = idents.borrow();
+        match idents.as_slice() {
+            [] => None,
+            [ident] => Some(syn::parse_quote! { (#ident).clone() }),
+            idents => Some(syn::parse_quote! { (#((#idents).clone()),*) }),
+        }
+    })
+}
+
+fn range_function_return_context() -> RangeFunctionReturnContext {
+    let id = next_range_function_id();
+    RangeFunctionReturnContext {
+        slot_ident: quote::format_ident!("__gors_range_return_{id}"),
+        slot_for_yield_ident: quote::format_ident!("__gors_range_return_for_yield_{id}"),
+        return_ty: current_return_ty(),
     }
 }
 
-fn rewrite_range_function_control_flow_stmt(stmt: &mut syn::Stmt) {
+impl RangeFunctionReturnContext {
+    fn slot_ty(&self) -> syn::Type {
+        self.return_ty
+            .clone()
+            .unwrap_or_else(|| syn::parse_quote! { () })
+    }
+
+    fn slot_stmt(&self) -> syn::Stmt {
+        let slot_ident = &self.slot_ident;
+        let slot_ty = self.slot_ty();
+        syn::parse_quote! {
+            let #slot_ident: std::sync::Arc<std::sync::Mutex<Option<#slot_ty>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
+        }
+    }
+
+    fn clone_stmt(&self) -> syn::Stmt {
+        let slot_ident = &self.slot_ident;
+        let slot_for_yield_ident = &self.slot_for_yield_ident;
+        syn::parse_quote! {
+            let #slot_for_yield_ident = #slot_ident.clone();
+        }
+    }
+
+    fn return_value_expr(&self, ret: &syn::ExprReturn) -> syn::Expr {
+        if let Some(expr) = &ret.expr {
+            return (**expr).clone();
+        }
+        if self.return_ty.is_some() {
+            return current_named_return_expr()
+                .unwrap_or_else(|| syn::parse_quote! { Default::default() });
+        }
+        syn::parse_quote! { () }
+    }
+
+    fn signal_return_expr(&self, ret: &syn::ExprReturn) -> syn::Expr {
+        let slot_for_yield_ident = &self.slot_for_yield_ident;
+        let value = self.return_value_expr(ret);
+        syn::parse_quote! {{
+            *#slot_for_yield_ident.lock().unwrap() = Some(#value);
+            return false;
+        }}
+    }
+
+    fn after_call_stmt(&self) -> syn::Stmt {
+        let slot_ident = &self.slot_ident;
+        if self.return_ty.is_some() {
+            syn::parse_quote! {
+                if let Some(__gors_range_return_value) = #slot_ident.lock().unwrap().take() {
+                    return __gors_range_return_value;
+                }
+            }
+        } else {
+            syn::parse_quote! {
+                if #slot_ident.lock().unwrap().take().is_some() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct RangeFunctionRewriteResult {
+    has_outer_return: bool,
+}
+
+impl RangeFunctionRewriteResult {
+    fn merge(&mut self, other: Self) {
+        self.has_outer_return |= other.has_outer_return;
+    }
+}
+
+fn rewrite_range_function_control_flow(
+    block: &mut syn::Block,
+    return_context: &RangeFunctionReturnContext,
+) -> RangeFunctionRewriteResult {
+    rewrite_range_function_control_flow_block(block, return_context, true)
+}
+
+fn rewrite_range_function_control_flow_block(
+    block: &mut syn::Block,
+    return_context: &RangeFunctionReturnContext,
+    rewrite_loop_control: bool,
+) -> RangeFunctionRewriteResult {
+    let mut result = RangeFunctionRewriteResult::default();
+    for stmt in &mut block.stmts {
+        result.merge(rewrite_range_function_control_flow_stmt(
+            stmt,
+            return_context,
+            rewrite_loop_control,
+        ));
+    }
+    result
+}
+
+fn rewrite_range_function_control_flow_stmt(
+    stmt: &mut syn::Stmt,
+    return_context: &RangeFunctionReturnContext,
+    rewrite_loop_control: bool,
+) -> RangeFunctionRewriteResult {
     match stmt {
-        syn::Stmt::Expr(syn::Expr::Break(expr), _) if expr.label.is_none() => {
+        syn::Stmt::Expr(syn::Expr::Break(expr), _)
+            if rewrite_loop_control && expr.label.is_none() =>
+        {
             *stmt = syn::parse_quote! { return false; };
+            RangeFunctionRewriteResult::default()
         }
-        syn::Stmt::Expr(syn::Expr::Continue(expr), _) if expr.label.is_none() => {
+        syn::Stmt::Expr(syn::Expr::Continue(expr), _)
+            if rewrite_loop_control && expr.label.is_none() =>
+        {
             *stmt = syn::parse_quote! { return true; };
+            RangeFunctionRewriteResult::default()
         }
-        syn::Stmt::Expr(expr, _) => rewrite_range_function_control_flow_expr(expr),
+        syn::Stmt::Expr(expr, _) => {
+            rewrite_range_function_control_flow_expr(expr, return_context, rewrite_loop_control)
+        }
         syn::Stmt::Local(local) => {
             if let Some(init) = &mut local.init {
-                rewrite_range_function_control_flow_expr(&mut init.expr);
+                rewrite_range_function_control_flow_expr(
+                    &mut init.expr,
+                    return_context,
+                    rewrite_loop_control,
+                )
+            } else {
+                RangeFunctionRewriteResult::default()
             }
         }
-        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => RangeFunctionRewriteResult::default(),
     }
 }
 
-fn rewrite_range_function_control_flow_expr(expr: &mut syn::Expr) {
+fn rewrite_range_function_control_flow_expr(
+    expr: &mut syn::Expr,
+    return_context: &RangeFunctionReturnContext,
+    rewrite_loop_control: bool,
+) -> RangeFunctionRewriteResult {
     match expr {
+        syn::Expr::Return(ret) => {
+            *expr = return_context.signal_return_expr(ret);
+            RangeFunctionRewriteResult {
+                has_outer_return: true,
+            }
+        }
+        syn::Expr::Break(break_expr) if rewrite_loop_control && break_expr.label.is_none() => {
+            *expr = syn::parse_quote! { return false };
+            RangeFunctionRewriteResult::default()
+        }
+        syn::Expr::Continue(continue_expr)
+            if rewrite_loop_control && continue_expr.label.is_none() =>
+        {
+            *expr = syn::parse_quote! { return true };
+            RangeFunctionRewriteResult::default()
+        }
         syn::Expr::If(if_expr) => {
-            rewrite_range_function_control_flow(&mut if_expr.then_branch);
+            let mut result = rewrite_range_function_control_flow_block(
+                &mut if_expr.then_branch,
+                return_context,
+                rewrite_loop_control,
+            );
             if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                rewrite_range_function_control_flow_expr(else_expr);
+                result.merge(rewrite_range_function_control_flow_expr(
+                    else_expr,
+                    return_context,
+                    rewrite_loop_control,
+                ));
             }
+            result
         }
-        syn::Expr::Block(block) => rewrite_range_function_control_flow(&mut block.block),
+        syn::Expr::Block(block) => rewrite_range_function_control_flow_block(
+            &mut block.block,
+            return_context,
+            rewrite_loop_control,
+        ),
         syn::Expr::Match(match_expr) => {
+            let mut result = RangeFunctionRewriteResult::default();
             for arm in &mut match_expr.arms {
-                rewrite_range_function_control_flow_expr(&mut arm.body);
+                result.merge(rewrite_range_function_control_flow_expr(
+                    &mut arm.body,
+                    return_context,
+                    rewrite_loop_control,
+                ));
             }
+            result
         }
-        syn::Expr::Loop(_)
-        | syn::Expr::While(_)
-        | syn::Expr::ForLoop(_)
-        | syn::Expr::Closure(_) => {}
-        _ => {}
+        syn::Expr::Loop(loop_expr) => {
+            rewrite_range_function_control_flow_block(&mut loop_expr.body, return_context, false)
+        }
+        syn::Expr::While(while_expr) => {
+            rewrite_range_function_control_flow_block(&mut while_expr.body, return_context, false)
+        }
+        syn::Expr::ForLoop(for_expr) => {
+            rewrite_range_function_control_flow_block(&mut for_expr.body, return_context, false)
+        }
+        syn::Expr::Closure(_) => RangeFunctionRewriteResult::default(),
+        _ => RangeFunctionRewriteResult::default(),
     }
 }
 
@@ -10751,7 +10971,8 @@ fn compile_range_function_stmt(
         stmts.extend(body.stmts);
         body.stmts = stmts;
     }
-    rewrite_range_function_control_flow(&mut body);
+    let return_context = range_function_return_context();
+    let rewrite_result = rewrite_range_function_control_flow(&mut body, &return_context);
     let param_types: Vec<syn::Type> = yield_params
         .iter()
         .map(rust_type_from_inferred_go_type)
@@ -10768,7 +10989,11 @@ fn compile_range_function_stmt(
     let yield_ty = shared_func_box_type_from_go_type(&yield_go_type).ok_or_else(|| {
         CompilerError::InvalidFunctionSignature("invalid range function yield type".to_string())
     })?;
+    let return_clone_stmt = rewrite_result
+        .has_outer_return
+        .then(|| return_context.clone_stmt());
     let yield_value: syn::Expr = syn::parse_quote! {{
+        #return_clone_stmt
         let __gors_func: #yield_ty = std::sync::Arc::new(move |#(#typed_params),*| -> bool {
             #body
             true
@@ -10776,7 +11001,15 @@ fn compile_range_function_stmt(
         std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
     }};
     let call_stmt = compile_range_function_call_stmt(fun, is_function_item, yield_value);
-    Ok(vec![call_stmt])
+    if rewrite_result.has_outer_return {
+        Ok(vec![
+            return_context.slot_stmt(),
+            call_stmt,
+            return_context.after_call_stmt(),
+        ])
+    } else {
+        Ok(vec![call_stmt])
+    }
 }
 
 fn is_indexed_range_type(ty: &typeinfer::GoType) -> bool {
@@ -13635,6 +13868,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
         let previous_return_types =
             RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+        let previous_named_return_idents = NAMED_RETURN_IDENTS.with(|idents| {
+            std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone())
+        });
         let body_completion = func_decl.body.as_ref().map(|body| {
             TYPE_ENV.with(|env| {
                 let env = env.borrow();
@@ -13652,6 +13888,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         });
         RETURN_TYPES.with(|types| {
             *types.borrow_mut() = previous_return_types;
+        });
+        NAMED_RETURN_IDENTS.with(|idents| {
+            *idents.borrow_mut() = previous_named_return_idents;
         });
         let mut block = Box::new(block_result?);
 
