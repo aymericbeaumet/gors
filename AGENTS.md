@@ -157,6 +157,10 @@ gors-builtin/
   the named results after RAII defer guards have been dropped. This preserves
   Go's ordering where deferred calls can mutate named results before the caller
   sees them.
+- Deferred calls are pushed onto a function-scoped LIFO stack after evaluating
+  the function value/receiver arguments that the current lowering can save.
+  Dropping that stack at function exit preserves Go's nested-block defer timing
+  and keeps named-result mutation before the final Rust return.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
@@ -565,9 +569,6 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
-- `defer` guards are still emitted at the Rust lexical scope where the `defer`
-  statement appears, so `defer` inside an inner Go block can run before function
-  exit until the compiler grows a function-scoped defer stack.
 
 ## Conventions
 

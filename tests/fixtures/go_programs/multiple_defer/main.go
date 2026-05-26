@@ -20,6 +20,14 @@ func deferNamedReturn() (out int) {
 	return
 }
 
+func nestedDefer() {
+	fmt.Println("nested start")
+	if true {
+		defer fmt.Println("nested defer")
+	}
+	fmt.Println("nested end")
+}
+
 func main() {
 	fmt.Println("start")
 	msg := "initial"
@@ -34,5 +42,6 @@ func main() {
 	defer fmt.Println("second")
 	defer fmt.Println("third")
 	fmt.Println("named", deferNamedReturn())
+	nestedDefer()
 	fmt.Println("end")
 }

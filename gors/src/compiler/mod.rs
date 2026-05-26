@@ -8100,6 +8100,7 @@ fn compile_method(
                 })
             });
     let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
+    let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
     let block_result = if let Some(body) = func_decl.body {
         body.try_into()
     } else {
@@ -8119,6 +8120,9 @@ fn compile_method(
 
     if !recv_name.is_empty() {
         rewrite_receiver(&mut block, &recv_name);
+    }
+    if body_has_defer {
+        prepend_defer_stack(&mut block);
     }
 
     // Handle named return values for methods (same logic as top-level functions)
@@ -9391,6 +9395,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         let env = env.borrow();
         Some(ir::ast_block_completion(&func_lit.body, &env))
     });
+    let body_has_defer = block_has_defer(&func_lit.body);
     let block_result = func_lit.body.try_into();
     RETURN_TYPES.with(|types| {
         *types.borrow_mut() = previous_return_types;
@@ -9402,6 +9407,9 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         brace_token: syn::token::Brace::default(),
         stmts: vec![],
     });
+    if body_has_defer {
+        prepend_defer_stack(&mut block);
+    }
     append_missing_return_panic(&mut block, &ret, completion);
 
     let closure: syn::Expr = if param_types.is_empty() && matches!(ret, syn::ReturnType::Default) {
@@ -12262,24 +12270,69 @@ fn compile_defer_saved_args<'a>(
     (prelude, Some(saved_args), saved_arg_idents)
 }
 
-fn compile_defer_guard_stmt(defer_ident: &syn::Ident, call: syn::Expr) -> syn::Stmt {
-    compile_defer_guard_stmt_with_setup(defer_ident, Vec::new(), call)
+fn defer_stack_decl_stmt() -> syn::Stmt {
+    syn::parse_quote! {
+        let mut __gors_defer_stack = {
+            struct __GorsDeferStack(Vec<Box<dyn FnOnce()>>);
+            impl Drop for __GorsDeferStack {
+                fn drop(&mut self) {
+                    while let Some(__gors_defer) = self.0.pop() {
+                        __gors_defer();
+                    }
+                }
+            }
+            __GorsDeferStack(Vec::new())
+        };
+    }
 }
 
-fn compile_defer_guard_stmt_with_setup(
-    defer_ident: &syn::Ident,
-    setup: Vec<syn::Stmt>,
-    call: syn::Expr,
-) -> syn::Stmt {
-    syn::parse_quote! {
-        let #defer_ident = {
-            #(#setup)*
-            struct __Defer<F: FnOnce()>(Option<F>);
-            impl<F: FnOnce()> Drop for __Defer<F> {
-                fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
-            }
-            __Defer(Some(move || { #call; }))
-        };
+fn push_defer_stack_stmt(setup: Vec<syn::Stmt>, call: syn::Expr) -> syn::Stmt {
+    syn::parse_quote! {{
+        #(#setup)*
+        __gors_defer_stack.0.push(Box::new(move || { #call; }));
+    }}
+}
+
+fn block_has_defer(block: &ast::BlockStmt) -> bool {
+    block.list.iter().any(stmt_has_defer)
+}
+
+fn stmt_list_has_defer(stmts: &[ast::Stmt]) -> bool {
+    stmts.iter().any(stmt_has_defer)
+}
+
+fn stmt_has_defer(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::DeferStmt(_) => true,
+        ast::Stmt::BlockStmt(block) => block_has_defer(block),
+        ast::Stmt::CaseClause(case_clause) => stmt_list_has_defer(&case_clause.body),
+        ast::Stmt::CommClause(comm_clause) => {
+            comm_clause.comm.as_deref().is_some_and(stmt_has_defer)
+                || stmt_list_has_defer(&comm_clause.body)
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt.init.as_deref().is_some_and(stmt_has_defer)
+                || for_stmt.post.as_deref().is_some_and(stmt_has_defer)
+                || block_has_defer(&for_stmt.body)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt.init.as_ref().as_ref().is_some_and(stmt_has_defer)
+                || block_has_defer(&if_stmt.body)
+                || if_stmt.else_.as_ref().as_ref().is_some_and(stmt_has_defer)
+        }
+        ast::Stmt::LabeledStmt(labeled) => stmt_has_defer(&labeled.stmt),
+        ast::Stmt::RangeStmt(range_stmt) => block_has_defer(&range_stmt.body),
+        ast::Stmt::SelectStmt(select_stmt) => block_has_defer(&select_stmt.body),
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            switch_stmt.init.as_deref().is_some_and(stmt_has_defer)
+                || block_has_defer(&switch_stmt.body)
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch.init.as_deref().is_some_and(stmt_has_defer)
+                || stmt_has_defer(&type_switch.assign)
+                || block_has_defer(&type_switch.body)
+        }
+        _ => false,
     }
 }
 
@@ -12290,7 +12343,6 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         *val += 1;
         n
     });
-    let defer_ident = quote::format_ident!("_defer_{}", n);
     let fun_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&call.fun, &env.borrow()));
     let param_types = call_param_types(&call.fun);
     let variadic_start = is_variadic_call(&call);
@@ -12319,7 +12371,7 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         let call: syn::Expr = syn::parse_quote! {
             (&*#fun_temp_ident)(#(#arg_idents),*)
         };
-        prelude.push(compile_defer_guard_stmt(&defer_ident, call));
+        prelude.push(push_defer_stack_stmt(Vec::new(), call));
         return prelude;
     }
 
@@ -12330,12 +12382,12 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         call.args = Some(saved_args);
     }
     let call: syn::Expr = ast::Expr::CallExpr(call).into();
-    prelude.push(compile_defer_guard_stmt_with_setup(
-        &defer_ident,
-        function_literal_capture_clones,
-        call,
-    ));
+    prelude.push(push_defer_stack_stmt(function_literal_capture_clones, call));
     prelude
+}
+
+fn prepend_defer_stack(block: &mut syn::Block) {
+    block.stmts.splice(0..0, [defer_stack_decl_stmt()]);
 }
 
 impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
@@ -14217,6 +14269,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 ir::ast_block_completion(body, &env)
             })
         });
+        let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
         } else {
@@ -14233,6 +14286,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             *idents.borrow_mut() = previous_named_return_idents;
         });
         let mut block = Box::new(block_result?);
+        if body_has_defer {
+            prepend_defer_stack(&mut block);
+        }
 
         // For named returns: prepend variable declarations and rewrite bare returns
         if !named_return_info.is_empty() {
@@ -18341,17 +18397,20 @@ func main() {
             rust! {
                 fn cleanup() {}
                 pub fn main() {
-                    let _defer_0 = {
-                        struct __Defer<F: FnOnce()>(Option<F>);
-                        impl<F: FnOnce()> Drop for __Defer<F> {
+                    let mut __gors_defer_stack = {
+                        struct __GorsDeferStack(Vec<Box<dyn FnOnce()>>);
+                        impl Drop for __GorsDeferStack {
                             fn drop(&mut self) {
-                                if let Some(f) = self.0.take() {
-                                    f();
+                                while let Some(__gors_defer) = self.0.pop() {
+                                    __gors_defer();
                                 }
                             }
                         }
-                        __Defer(Some(move || { cleanup(); }))
+                        __GorsDeferStack(Vec::new())
                     };
+                    {
+                        __gors_defer_stack.0.push(Box::new(move || { cleanup(); }));
+                    }
                 }
             },
         );
