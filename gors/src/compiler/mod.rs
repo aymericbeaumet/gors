@@ -12780,6 +12780,9 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
                 invalid_return_reason(reason)
             )
         }
+        ir::InvalidStatement::Send { reason } => {
+            format!("invalid send statement: {}", invalid_send_reason(reason))
+        }
         ir::InvalidStatement::ShortVarDecl { reason } => {
             format!(
                 "invalid short variable declaration: {}",
@@ -12867,6 +12870,14 @@ fn invalid_return_reason(reason: ir::InvalidReturnReason) -> String {
         }
         ir::InvalidReturnReason::MultiValueInSingleValueContext => {
             "multi-valued expression in explicit return list".to_string()
+        }
+    }
+}
+
+fn invalid_send_reason(reason: ir::InvalidSendReason) -> String {
+    match reason {
+        ir::InvalidSendReason::NonChannel { type_name } => {
+            format!("channel operand must have channel type, got {type_name}")
         }
     }
 }
@@ -17830,6 +17841,17 @@ mod tests {
                 }
             "#,
             "invalid if condition: condition must be boolean, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x <- 2
+                }
+            "#,
+            "invalid send statement: channel operand must have channel type, got int",
         );
         assert_unsupported_construct(
             r#"

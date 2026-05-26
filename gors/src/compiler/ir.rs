@@ -1011,6 +1011,9 @@ pub enum InvalidStatement {
     Return {
         reason: InvalidReturnReason,
     },
+    Send {
+        reason: InvalidSendReason,
+    },
     ShortVarDecl {
         reason: InvalidShortVarDeclReason,
     },
@@ -1048,6 +1051,11 @@ pub enum InvalidIncDecReason {
 pub enum InvalidReturnReason {
     CountMismatch { expected: usize, values: usize },
     MultiValueInSingleValueContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidSendReason {
+    NonChannel { type_name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3363,7 +3371,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             }
             None
         }
-        ast::Stmt::SendStmt(_) => None,
+        ast::Stmt::SendStmt(send) => {
+            invalid_send(send, env).map(|reason| InvalidStatement::Send { reason })
+        }
         ast::Stmt::SwitchStmt(switch) => {
             if has_duplicate_case_default(&switch.body) {
                 return Some(InvalidStatement::DuplicateDefault {
@@ -3493,6 +3503,16 @@ fn invalid_condition(
     }
     Some(InvalidConditionReason {
         kind,
+        type_name: go_type_display_name(&ty),
+    })
+}
+
+fn invalid_send(send: &ast::SendStmt<'_>, env: &TypeEnv) -> Option<InvalidSendReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(&send.chan, env));
+    if matches!(ty, GoType::Chan(_) | GoType::Unknown | GoType::Named(_)) {
+        return None;
+    }
+    Some(InvalidSendReason::NonChannel {
         type_name: go_type_display_name(&ty),
     })
 }
@@ -8778,6 +8798,82 @@ mod tests {
                     }
                     for false {
                     }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_send_statements_with_non_channel_operands() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x <- 2
+                    }
+                "#,
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        s := "go"
+                        s <- "rs"
+                    }
+                "#,
+                "string",
+            ),
+        ];
+
+        for (source, type_name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Send {
+                    reason: super::InvalidSendReason::NonChannel {
+                        type_name: type_name.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_send_statements_with_channel_operands() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int, 1)
+                    ch <- 1
                 }
             "#,
         )
