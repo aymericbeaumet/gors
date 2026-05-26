@@ -991,6 +991,12 @@ pub enum InvalidStatementReason {
     TypeConversion,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidLabel {
+    Duplicate { label: String },
+    Unused { label: String },
+}
+
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
     let mut label_positions = BTreeMap::new();
     for (idx, stmt) in block.list.iter().enumerate() {
@@ -1038,6 +1044,26 @@ pub fn invalid_statement_in_func(
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
     invalid_statement_in_block(block, &mut env)
+}
+
+pub fn invalid_label_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidLabel> {
+    let mut labels = Vec::new();
+    collect_labels_in_block(block, &mut labels);
+    let mut seen = BTreeSet::new();
+    for label in &labels {
+        if !seen.insert(label.clone()) {
+            return Some(InvalidLabel::Duplicate {
+                label: label.clone(),
+            });
+        }
+    }
+
+    let mut uses = BTreeSet::new();
+    collect_label_uses_in_block(block, &mut uses);
+    labels
+        .into_iter()
+        .find(|label| !uses.contains(label))
+        .map(|label| InvalidLabel::Unused { label })
 }
 
 pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
@@ -1866,6 +1892,155 @@ fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
     match expr {
         ast::Expr::ParenExpr(paren) => unparen_expr(&paren.x),
         _ => expr,
+    }
+}
+
+fn collect_labels_in_block(block: &ast::BlockStmt<'_>, labels: &mut Vec<String>) {
+    for stmt in &block.list {
+        collect_labels_in_stmt(stmt, labels);
+    }
+}
+
+fn collect_labels_in_stmt(stmt: &ast::Stmt<'_>, labels: &mut Vec<String>) {
+    match stmt {
+        ast::Stmt::BlockStmt(block) => collect_labels_in_block(block, labels),
+        ast::Stmt::CaseClause(case) => {
+            for stmt in &case.body {
+                collect_labels_in_stmt(stmt, labels);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm {
+                collect_labels_in_stmt(comm, labels);
+            }
+            for stmt in &comm.body {
+                collect_labels_in_stmt(stmt, labels);
+            }
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_labels_in_stmt(init, labels);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_labels_in_stmt(post, labels);
+            }
+            collect_labels_in_block(&for_stmt.body, labels);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_labels_in_stmt(init, labels);
+            }
+            collect_labels_in_block(&if_stmt.body, labels);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_labels_in_stmt(else_branch, labels);
+            }
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            labels.push(labeled.label.name.to_string());
+            collect_labels_in_stmt(&labeled.stmt, labels);
+        }
+        ast::Stmt::RangeStmt(range) => collect_labels_in_block(&range.body, labels),
+        ast::Stmt::SelectStmt(select) => collect_labels_in_block(&select.body, labels),
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_labels_in_stmt(init, labels);
+            }
+            collect_labels_in_block(&switch.body, labels);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_labels_in_stmt(init, labels);
+            }
+            collect_labels_in_block(&type_switch.body, labels);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
+    }
+}
+
+fn collect_label_uses_in_block(block: &ast::BlockStmt<'_>, labels: &mut BTreeSet<String>) {
+    for stmt in &block.list {
+        collect_label_uses_in_stmt(stmt, labels);
+    }
+}
+
+fn collect_label_uses_in_stmt(stmt: &ast::Stmt<'_>, labels: &mut BTreeSet<String>) {
+    match stmt {
+        ast::Stmt::BranchStmt(branch)
+            if matches!(
+                branch.tok,
+                token::Token::BREAK | token::Token::CONTINUE | token::Token::GOTO
+            ) =>
+        {
+            if let Some(label) = &branch.label {
+                labels.insert(label.name.to_string());
+            }
+        }
+        ast::Stmt::BlockStmt(block) => collect_label_uses_in_block(block, labels),
+        ast::Stmt::CaseClause(case) => {
+            for stmt in &case.body {
+                collect_label_uses_in_stmt(stmt, labels);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm {
+                collect_label_uses_in_stmt(comm, labels);
+            }
+            for stmt in &comm.body {
+                collect_label_uses_in_stmt(stmt, labels);
+            }
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_label_uses_in_stmt(init, labels);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_label_uses_in_stmt(post, labels);
+            }
+            collect_label_uses_in_block(&for_stmt.body, labels);
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_label_uses_in_stmt(init, labels);
+            }
+            collect_label_uses_in_block(&if_stmt.body, labels);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_label_uses_in_stmt(else_branch, labels);
+            }
+        }
+        ast::Stmt::LabeledStmt(labeled) => collect_label_uses_in_stmt(&labeled.stmt, labels),
+        ast::Stmt::RangeStmt(range) => collect_label_uses_in_block(&range.body, labels),
+        ast::Stmt::SelectStmt(select) => collect_label_uses_in_block(&select.body, labels),
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_label_uses_in_stmt(init, labels);
+            }
+            collect_label_uses_in_block(&switch.body, labels);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_label_uses_in_stmt(init, labels);
+            }
+            collect_label_uses_in_block(&type_switch.body, labels);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
     }
 }
 
@@ -5555,6 +5730,89 @@ mod tests {
         };
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_unused_and_duplicate_labels() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                    Done:
+                        println("done")
+                    }
+                "#,
+                super::InvalidLabel::Unused {
+                    label: "Done".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                    Done:
+                        goto Done
+                    Done:
+                        println("done")
+                    }
+                "#,
+                super::InvalidLabel::Duplicate {
+                    label: "Done".to_string(),
+                },
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_label_in_func(func.body.as_ref().expect("body")),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_labels_used_by_break_continue_and_goto() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                Loop:
+                    for {
+                        continue Loop
+                    }
+                Break:
+                    for {
+                        break Break
+                    }
+                    goto Done
+                Done:
+                    println("done")
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_label_in_func(func.body.as_ref().expect("body")),
             None
         );
     }

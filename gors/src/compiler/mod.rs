@@ -12720,6 +12720,14 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
     }
 }
 
+fn invalid_label_error(invalid: ir::InvalidLabel) -> CompilerError {
+    let message = match invalid {
+        ir::InvalidLabel::Duplicate { label } => format!("invalid duplicate label {}", label),
+        ir::InvalidLabel::Unused { label } => format!("invalid unused label {}", label),
+    };
+    CompilerError::UnsupportedConstruct(message)
+}
+
 fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
@@ -12729,6 +12737,9 @@ fn validate_function_gotos(body: &ast::BlockStmt) -> Result<(), CompilerError> {
     }
     if let Some(invalid) = TYPE_ENV.with(|env| ir::invalid_statement_in_func(body, &env.borrow())) {
         return Err(invalid_statement_error(invalid));
+    }
+    if let Some(invalid) = ir::invalid_label_in_func(body) {
+        return Err(invalid_label_error(invalid));
     }
     Ok(())
 }
@@ -17472,6 +17483,34 @@ mod tests {
                 }
             "#,
             "invalid defer statement: type conversions are not permitted in statement context",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_labels() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                Done:
+                    println("done")
+                }
+            "#,
+            "invalid unused label Done",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                Done:
+                    goto Done
+                Done:
+                    println("done")
+                }
+            "#,
+            "invalid duplicate label Done",
         );
     }
 

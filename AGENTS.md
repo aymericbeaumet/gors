@@ -459,6 +459,10 @@ statements, type conversions used as statements, and builtins that the Go spec
 forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,
 `new`, `real`, and the corresponding `unsafe` builtins). Keep it type-env aware
 so shadowed predeclared names are not treated as builtins.
+IR label validation rejects duplicate labels and labels that are never targeted
+by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
+function body; do not count labels or label uses inside nested function
+literals.
 IR addressability follows the Go spec rule rather than treating every selector
 or index expression as assignable: constants and unshadowed predeclared
 identifiers are not addressable, map/string indexes are not addressable, array
