@@ -12908,6 +12908,9 @@ fn invalid_send_reason(reason: ir::InvalidSendReason) -> String {
         ir::InvalidSendReason::ReceiveOnlyChannel => {
             "cannot send to receive-only channel".to_string()
         }
+        ir::InvalidSendReason::ValueTypeMismatch { expected, actual } => {
+            format!("cannot send {actual} to channel of {expected}")
+        }
     }
 }
 
@@ -17914,6 +17917,17 @@ mod tests {
                 }
             "#,
             "invalid send statement: cannot send to receive-only channel",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int, 1)
+                    ch <- "go"
+                }
+            "#,
+            "invalid send statement: cannot send string to channel of int",
         );
         assert_unsupported_construct(
             r#"

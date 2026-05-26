@@ -482,7 +482,10 @@ unresolved named conditions stay permissive until type inference can prove them
 invalid.
 IR send-statement validation rejects known non-channel channel operands before
 backend lowering and rejects sends to known receive-only channels; send-value
-assignability remains future type-system work.
+assignability rejects simple known mismatches such as sending `string` to
+`chan int`, but stays permissive for unknown/named/interface/nil-like values and
+numeric constants because the current type environment does not preserve full Go
+assignability or untyped-constant information.
 IR receive validation rejects known non-channel receive operands in statement,
 assignment, and value-declaration contexts. Receive expression type inference
 returns the channel element type for known channel operands so boolean channel

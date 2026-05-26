@@ -1070,6 +1070,7 @@ pub enum InvalidReturnReason {
 pub enum InvalidSendReason {
     NonChannel { type_name: String },
     ReceiveOnlyChannel,
+    ValueTypeMismatch { expected: String, actual: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3592,13 +3593,45 @@ fn invalid_condition(
 fn invalid_send(send: &ast::SendStmt<'_>, env: &TypeEnv) -> Option<InvalidSendReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(&send.chan, env));
     match ty {
-        GoType::Chan { direction, .. } if direction.can_send() => None,
+        GoType::Chan { elem, direction } if direction.can_send() => {
+            invalid_send_value_type(&elem, &send.value, env)
+        }
         GoType::Chan { .. } => Some(InvalidSendReason::ReceiveOnlyChannel),
         GoType::Unknown | GoType::Named(_) => None,
         other => Some(InvalidSendReason::NonChannel {
             type_name: go_type_display_name(&other),
         }),
     }
+}
+
+fn invalid_send_value_type(
+    expected: &GoType,
+    value: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidSendReason> {
+    let expected = env.resolve_alias(expected);
+    let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+    if types_are_assignable_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(InvalidSendReason::ValueTypeMismatch {
+        expected: go_type_display_name(&expected),
+        actual: go_type_display_name(&actual),
+    })
+}
+
+fn types_are_assignable_for_validation(expected: &GoType, actual: &GoType) -> bool {
+    match (expected, actual) {
+        (GoType::Unknown | GoType::Named(_), _) | (_, GoType::Unknown | GoType::Named(_)) => true,
+        (_, GoType::Any) => true,
+        (GoType::Any | GoType::Interface(_) | GoType::Error, _) => true,
+        (expected, actual) if go_type_is_numeric(expected) && go_type_is_numeric(actual) => true,
+        _ => expected == actual,
+    }
+}
+
+fn go_type_is_numeric(ty: &GoType) -> bool {
+    ty.is_numeric() || matches!(ty, GoType::Complex64 | GoType::Complex128)
 }
 
 fn invalid_select_comm_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidSelectCommReason> {
@@ -9220,6 +9253,96 @@ mod tests {
             Some(super::InvalidStatement::Send {
                 reason: super::InvalidSendReason::ReceiveOnlyChannel,
             })
+        );
+    }
+
+    #[test]
+    fn rejects_send_values_with_incompatible_known_types() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int, 1)
+                        ch <- "go"
+                    }
+                "#,
+                "int",
+                "string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan bool, 1)
+                        ch <- 1
+                    }
+                "#,
+                "bool",
+                "int",
+            ),
+        ];
+
+        for (source, expected, actual) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Send {
+                    reason: super::InvalidSendReason::ValueTypeMismatch {
+                        expected: expected.to_string(),
+                        actual: actual.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_send_values_with_compatible_known_types() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+
+                func main() {
+                    ints := make(chan int, 1)
+                    ints <- 1
+                    floats := make(chan float64, 1)
+                    floats <- 1
+                    strings := make(chan string, 1)
+                    strings <- "go"
+                    counts := make(chan Count, 1)
+                    var count Count
+                    counts <- count
+                    slices := make(chan []int, 1)
+                    slices <- nil
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
         );
     }
 
