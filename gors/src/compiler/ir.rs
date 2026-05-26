@@ -747,6 +747,7 @@ fn stmt_completion_with_label(stmt: &Stmt, label: Option<&str>) -> Completion {
             };
             stmt_completion(else_branch)
         }
+        Stmt::Expr(expr) if expr_is_builtin_panic_call(expr) => Completion::Terminates,
         Stmt::Label { name, stmt } => stmt_completion_with_label(stmt, Some(name)),
         Stmt::Select { cases } => select_completion(cases, label),
         Stmt::Switch { cases, .. } | Stmt::TypeSwitch { cases, .. } => {
@@ -754,6 +755,13 @@ fn stmt_completion_with_label(stmt: &Stmt, label: Option<&str>) -> Completion {
         }
         _ => Completion::MayComplete,
     }
+}
+
+fn expr_is_builtin_panic_call(expr: &Expr) -> bool {
+    let ExprKind::Call(call) = &expr.kind else {
+        return false;
+    };
+    matches!(&call.fun.kind, ExprKind::Ident(name) if name == "panic")
 }
 
 fn for_completion(cond: Option<&Expr>, body: &Block, label: Option<&str>) -> Completion {
@@ -2301,6 +2309,59 @@ mod tests {
             super::stmt_completion(&body.stmts[0]),
             Completion::Terminates
         );
+    }
+
+    #[test]
+    fn classifies_builtin_panic_as_terminating() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(x bool) {
+                    panic("stop")
+                }
+
+                func g() {
+                    panic("stop")
+                    _ = 1
+                }
+
+                func h(x bool) {
+                    if x {
+                        panic("left")
+                    } else {
+                        panic("right")
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(f)) = ir.items.first() else {
+            panic!("expected first function");
+        };
+        let Some(f_body) = &f.body else {
+            panic!("expected first function body");
+        };
+        assert_eq!(super::block_completion(f_body), Completion::Terminates);
+
+        let Some(Item::Func(g)) = ir.items.get(1) else {
+            panic!("expected second function");
+        };
+        let Some(g_body) = &g.body else {
+            panic!("expected second function body");
+        };
+        assert_eq!(super::block_completion(g_body), Completion::MayComplete);
+        assert_eq!(
+            super::stmt_completion(&g_body.stmts[0]),
+            Completion::Terminates
+        );
+
+        let Some(Item::Func(h)) = ir.items.get(2) else {
+            panic!("expected third function");
+        };
+        let Some(h_body) = &h.body else {
+            panic!("expected third function body");
+        };
+        assert_eq!(super::block_completion(h_body), Completion::Terminates);
     }
 
     #[test]
