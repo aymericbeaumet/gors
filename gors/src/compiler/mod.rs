@@ -9809,13 +9809,12 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
     });
     let body: syn::Block = body?;
     let x: syn::Expr = range_stmt.x.into();
+    let range_tok = range_stmt.tok;
 
     match (range_stmt.key, range_stmt.value) {
         // for i, v := range x
         (Some(key_expr), Some(val_expr)) => {
-            let key_pat = expr_to_pat(&key_expr);
-            let val_pat = expr_to_pat(&val_expr);
-            let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
+            let (pat, body) = range_pat_and_body(vec![key_expr, val_expr], range_tok, body);
             if is_string {
                 // range over string: iterate (byte_index, rune)
                 Ok(make_for_loop(
@@ -9851,7 +9850,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         }
         // for i := range x  OR  for v := range ch
         (Some(key_expr), None) => {
-            let key_pat = expr_to_pat(&key_expr);
+            let (key_pat, body) = range_pat_and_body(vec![key_expr], range_tok, body);
             if is_int {
                 Ok(make_for_loop(
                     key_pat,
@@ -9910,6 +9909,44 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             "range with value but no key".to_string(),
         )),
     }
+}
+
+fn range_pat_and_body(
+    targets: Vec<ast::Expr>,
+    tok: Option<token::Token>,
+    mut body: syn::Block,
+) -> (syn::Pat, syn::Block) {
+    if tok != Some(token::Token::ASSIGN) {
+        let pats: Vec<syn::Pat> = targets.iter().map(expr_to_pat).collect();
+        return match pats.as_slice() {
+            [pat] => (pat.clone(), body),
+            [key_pat, val_pat] => {
+                let pat: syn::Pat = syn::parse_quote! { (#key_pat, #val_pat) };
+                (pat, body)
+            }
+            _ => (syn::parse_quote! { _ }, body),
+        };
+    }
+
+    let temps: Vec<syn::Ident> = (0..targets.len())
+        .map(|idx| syn::Ident::new(&format!("__gors_range_{idx}"), Span::mixed_site()))
+        .collect();
+    let pat: syn::Pat = match temps.as_slice() {
+        [tmp] => syn::parse_quote! { #tmp },
+        [key_tmp, val_tmp] => syn::parse_quote! { (#key_tmp, #val_tmp) },
+        _ => syn::parse_quote! { _ },
+    };
+
+    let assignments = targets.into_iter().zip(temps).filter_map(|(target, tmp)| {
+        if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
+            None
+        } else {
+            let lhs = compile_assignment_lhs(target);
+            Some(syn::parse_quote! { #lhs = #tmp; })
+        }
+    });
+    body.stmts.splice(0..0, assignments);
+    (pat, body)
 }
 
 fn is_indexed_range_type(ty: &typeinfer::GoType) -> bool {

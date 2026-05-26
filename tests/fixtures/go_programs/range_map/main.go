@@ -18,4 +18,11 @@ func main() {
 		keys += len(key)
 	}
 	fmt.Println(keys)
+
+	lastKey := ""
+	lastValue := 0
+	for lastKey, lastValue = range values {
+	}
+	fmt.Println(len(lastKey))
+	fmt.Println(lastValue > 0)
 }
