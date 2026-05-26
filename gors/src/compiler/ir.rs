@@ -998,6 +998,7 @@ pub enum InvalidStatement {
     Go {
         reason: InvalidStatementReason,
     },
+    MissingReturn,
     Range {
         reason: InvalidRangeReason,
     },
@@ -1165,6 +1166,16 @@ pub fn invalid_return_in_func(
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
     invalid_return_in_block(body, &return_signature(func_type), env)
+}
+
+pub fn invalid_body_completion_in_func(
+    func_type: &ast::FuncType<'_>,
+    body: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    (field_list_binding_count(func_type.results.as_ref()) > 0
+        && ast_block_completion(body, env) != Completion::Terminates)
+        .then_some(InvalidStatement::MissingReturn)
 }
 
 pub fn invalid_label_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidLabel> {
@@ -3862,6 +3873,7 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             .and_then(|expr| invalid_return_in_expr(expr, env)),
         ast::Expr::FuncLit(func_lit) => {
             invalid_return_in_func(&func_lit.type_, &func_lit.body, env)
+                .or_else(|| invalid_body_completion_in_func(&func_lit.type_, &func_lit.body, env))
         }
         ast::Expr::FuncType(_) => None,
         ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
@@ -9132,6 +9144,105 @@ mod tests {
                 super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn rejects_result_functions_that_can_complete_normally() {
+        let cases = vec![
+            r#"
+                package main
+
+                func f() int {
+                }
+            "#,
+            r#"
+                package main
+
+                func f() int {
+                    if true {
+                        return 1
+                    }
+                }
+            "#,
+            r#"
+                package main
+
+                func f() int {
+                    _ = func() int {
+                    }
+                    return 1
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "f" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            let invalid =
+                super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env)
+                    .or_else(|| {
+                        super::invalid_body_completion_in_func(
+                            &func.type_,
+                            func.body.as_ref().expect("body"),
+                            &env,
+                        )
+                    });
+            assert_eq!(invalid, Some(super::InvalidStatement::MissingReturn));
+        }
+    }
+
+    #[test]
+    fn accepts_result_functions_with_terminating_bodies() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func returned() int {
+                    return 1
+                }
+
+                func panics() int {
+                    panic("stop")
+                }
+
+                func loops() int {
+                    for {
+                    }
+                }
+
+                func noResult() {
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        for name in ["returned", "panics", "loops", "noResult"] {
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            let invalid =
+                super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env)
+                    .or_else(|| {
+                        super::invalid_body_completion_in_func(
+                            &func.type_,
+                            func.body.as_ref().expect("body"),
+                            &env,
+                        )
+                    });
+            assert_eq!(invalid, None, "{name}");
         }
     }
 

@@ -433,6 +433,9 @@ IR control-flow completion (`ast_block_completion`, `block_completion`,
 `stmt_completion`) classifies whether lowered blocks can complete normally.
 Use it for backend decisions that need Go reachability or return-shape
 semantics instead of duplicating statement-shape checks in codegen.
+Functions with result parameters are validated against that completion analysis
+before lowering; do not restore backend-only missing-return panic insertion as
+the sole enforcement mechanism.
 It follows Go's terminating-statement rules rather than generic Rust
 reachability: statement lists are classified by their final non-empty statement,
 labeled statements inherit the labeled statement's completion, built-in `panic`

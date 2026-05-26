@@ -12747,6 +12747,9 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
         ir::InvalidStatement::Go { reason } => {
             format!("invalid go statement: {}", invalid_statement_reason(reason))
         }
+        ir::InvalidStatement::MissingReturn => {
+            "invalid function body: missing terminating statement".to_string()
+        }
         ir::InvalidStatement::Range { reason } => format!(
             "invalid range clause: {} range permits at most {} iteration variable(s), got {}",
             range_kind_name(reason.kind),
@@ -12953,6 +12956,11 @@ fn validate_function_semantics(
     }
     if let Some(invalid) =
         TYPE_ENV.with(|env| ir::invalid_return_in_func(func_type, body, &env.borrow()))
+    {
+        return Err(invalid_statement_error(invalid));
+    }
+    if let Some(invalid) =
+        TYPE_ENV.with(|env| ir::invalid_body_completion_in_func(func_type, body, &env.borrow()))
     {
         return Err(invalid_statement_error(invalid));
     }
@@ -17906,6 +17914,18 @@ mod tests {
                 }
             "#,
             "invalid declaration: multi-valued expression in explicit var initializer list",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() int {
+                    if true {
+                        return 1
+                    }
+                }
+            "#,
+            "invalid function body: missing terminating statement",
         );
         assert_unsupported_construct(
             r#"
