@@ -1148,6 +1148,10 @@ pub enum SignatureList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidDeclaration {
+    ConstTypeMismatch {
+        expected: String,
+        actual: String,
+    },
     ConstValueCount {
         names: usize,
         values: usize,
@@ -4631,7 +4635,7 @@ fn invalid_value_declaration_in_gen_decl(
     env: &TypeEnv,
 ) -> Option<InvalidDeclaration> {
     match gen_decl.tok {
-        token::Token::CONST => invalid_const_declaration(gen_decl),
+        token::Token::CONST => invalid_const_declaration(gen_decl, env),
         token::Token::VAR => {
             for spec in &gen_decl.specs {
                 let ast::Spec::ValueSpec(value_spec) = spec else {
@@ -4647,7 +4651,10 @@ fn invalid_value_declaration_in_gen_decl(
     }
 }
 
-fn invalid_const_declaration(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDeclaration> {
+fn invalid_const_declaration(
+    gen_decl: &ast::GenDecl<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
     let mut previous_values = None;
     let mut saw_value_spec = false;
     for spec in &gen_decl.specs {
@@ -4660,6 +4667,9 @@ fn invalid_const_declaration(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDecla
             let values = values.len();
             if names != values {
                 return Some(InvalidDeclaration::ConstValueCount { names, values });
+            }
+            if let Some(invalid) = invalid_const_type_mismatch(value_spec, env) {
+                return Some(invalid);
             }
             previous_values = Some(values);
         } else {
@@ -4676,6 +4686,24 @@ fn invalid_const_declaration(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDecla
     } else {
         None
     }
+}
+
+fn invalid_const_type_mismatch(
+    value_spec: &ast::ValueSpec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    let expected = value_spec.type_.as_ref().map(GoType::from_expr)?;
+    let values = value_spec.values.as_ref()?;
+    values.iter().find_map(|value| {
+        let expected = env.resolve_alias(&expected);
+        let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+        (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+            InvalidDeclaration::ConstTypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: go_type_display_name(&actual),
+            }
+        })
+    })
 }
 
 fn invalid_var_value_spec(
@@ -7909,6 +7937,32 @@ mod tests {
                 actual: "string".to_string(),
             })
         );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const X int = "go"
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstTypeMismatch {
+                expected: "int".to_string(),
+                actual: "string".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const X bool = 1
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstTypeMismatch {
+                expected: "bool".to_string(),
+                actual: "int".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -7924,6 +7978,7 @@ mod tests {
                         A, B = 1, 2
                         C, D
                     )
+                    const U, V float32 = 0, 3
 
                     var X, Y = pair()
                     var Z int

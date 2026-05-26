@@ -13010,6 +13010,9 @@ fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
 
 fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
     match invalid {
+        ir::InvalidDeclaration::ConstTypeMismatch { expected, actual } => {
+            format!("cannot initialize {expected} constant with {actual}")
+        }
         ir::InvalidDeclaration::ConstValueCount { names, values } => {
             format!("const declaration has {names} name(s) but {values} value(s)")
         }
@@ -18176,6 +18179,17 @@ mod tests {
                 }
             "#,
             "invalid declaration: multi-valued expression in explicit var initializer list",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                const X int = "go"
+
+                func main() {
+                }
+            "#,
+            "cannot initialize int constant with string",
         );
         assert_unsupported_construct(
             r#"

@@ -520,6 +520,9 @@ channel sends and returns.
 IR value-declaration validation rejects simple known scalar mismatches for
 explicitly typed `var` initializers, including values forwarded from a single
 multi-result function call, using that same conservative assignability helper.
+IR const-declaration validation uses the same conservative helper for explicitly
+typed const initializers, so known scalar mismatches such as assigning a string
+constant to an `int` const are rejected before backend lowering.
 IR return validation rejects simple known scalar mismatches for explicit result
 expressions and single multi-result function calls, using the same conservative
 assignability helper as channel send validation. It remains permissive for
