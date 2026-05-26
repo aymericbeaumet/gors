@@ -227,6 +227,8 @@ impl GoType {
             }
             ast::Expr::UnaryExpr(u) => GoType::infer_expr(&u.x, env),
             ast::Expr::BinaryExpr(bin) => {
+                let left = GoType::infer_expr(&bin.x, env);
+                let right = GoType::infer_expr(&bin.y, env);
                 match bin.op {
                     // Comparison operators produce bool
                     token::Token::EQL
@@ -237,8 +239,26 @@ impl GoType {
                     | token::Token::GEQ
                     | token::Token::LAND
                     | token::Token::LOR => GoType::Bool,
+                    token::Token::ADD
+                    | token::Token::SUB
+                    | token::Token::MUL
+                    | token::Token::QUO
+                        if matches!(left, GoType::Complex128)
+                            || matches!(right, GoType::Complex128) =>
+                    {
+                        GoType::Complex128
+                    }
+                    token::Token::ADD
+                    | token::Token::SUB
+                    | token::Token::MUL
+                    | token::Token::QUO
+                        if matches!(left, GoType::Complex64)
+                            || matches!(right, GoType::Complex64) =>
+                    {
+                        GoType::Complex64
+                    }
                     // Arithmetic preserves the type of the left operand
-                    _ => GoType::infer_expr(&bin.x, env),
+                    _ => left,
                 }
             }
             ast::Expr::CallExpr(call) => {

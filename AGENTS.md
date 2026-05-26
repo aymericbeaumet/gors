@@ -516,6 +516,10 @@ path from crashing inside Syn's type parser.
 Imaginary literals are treated as untyped complex constants in the Go front end
 and lower through `crate::builtin::complex128`; expected `complex64` constant
 contexts use the builtin `complex64` constructor instead of a Rust cast.
+Complex arithmetic with constant real operands must coerce those operands
+through expected-type lowering to the complex side's type so expressions such as
+`1 + 2i` and `z + 3` generate `Complex*` operations rather than Rust numeric
+casts.
 
 Go slice parameters map to `Vec<T>` values unless the compiled body mutates the
 slice's backing storage. The post-compile multi-module pass rewrites parameters

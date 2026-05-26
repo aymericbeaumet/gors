@@ -11799,6 +11799,14 @@ fn compile_binary_side(
     expr_ty: &typeinfer::GoType,
     other_ty: &typeinfer::GoType,
 ) -> syn::Expr {
+    if is_complex_go_type(other_ty)
+        && is_const_like_expr(&expr)
+        && is_complex_const_conversion_source(expr_ty)
+    {
+        let compiled: syn::Expr = expr.into();
+        return coerce_complex_const_expr(other_ty, expr_ty, compiled)
+            .unwrap_or_else(|| compile_error_expr("unsupported complex binary operand"));
+    }
     if should_coerce_numeric_binary_side(&expr, expr_ty, other_ty) {
         compile_expr_with_expected(expr, Some(other_ty))
     } else {
@@ -12040,14 +12048,18 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         return compile_string_concat_binary_expr(binary_expr);
     }
 
-    let binary_expr = match flatten_same_binary_operands(binary_expr) {
-        Ok((op, operands)) => return compile_flat_binary_operands(op, operands, None),
-        Err(binary_expr) => binary_expr,
-    };
-
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
     let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
+    let has_complex_side = is_complex_go_type(&left_ty) || is_complex_go_type(&right_ty);
+    let binary_expr = if has_complex_side {
+        binary_expr
+    } else {
+        match flatten_same_binary_operands(binary_expr) {
+            Ok((op, operands)) => return compile_flat_binary_operands(op, operands, None),
+            Err(binary_expr) => binary_expr,
+        }
+    };
     let original_op = binary_expr.op;
     let op: syn::BinOp = original_op.into();
     let is_shift = matches!(original_op, token::Token::SHL | token::Token::SHR);
@@ -17472,8 +17484,9 @@ const small complex64 = 2.5i
 
 func main() {
 	z := 0x1p-2i
-	var narrowed complex64 = 3i
-	_, _, _, _ = wide, small, z, narrowed
+	sum := 1 + 2i
+	var narrowed complex64 = 3 + 4i
+	_, _, _, _, _ = wide, small, z, sum, narrowed
 }
 "#;
         let parsed = parse_file("test.go", go_source).unwrap();
