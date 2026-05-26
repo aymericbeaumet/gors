@@ -1146,6 +1146,7 @@ pub enum DefaultClauseKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatementReason {
+    InvalidArrayType { reason: String },
     InvalidBinary { op: String, reason: String },
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
@@ -5349,6 +5350,98 @@ fn invalid_expression_switch_case(
     })
 }
 
+fn invalid_array_type(array: &ast::ArrayType<'_>) -> Option<InvalidStatementReason> {
+    let len = array.len.as_ref()?;
+    invalid_array_length(len).map(|reason| InvalidStatementReason::InvalidArrayType { reason })
+}
+
+fn invalid_array_length(expr: &ast::Expr<'_>) -> Option<String> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => invalid_array_length_lit(lit),
+        ast::Expr::Ident(ident) if ident.name == "nil" => {
+            Some("length must be a numeric constant".to_string())
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            invalid_array_length(&unary.x)
+        }
+        ast::Expr::UnaryExpr(unary)
+            if unary.op == token::Token::SUB && array_length_constant_is_numeric(&unary.x) =>
+        {
+            (!array_length_constant_is_zero(&unary.x))
+                .then(|| "length must be non-negative".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn invalid_array_length_lit(lit: &ast::BasicLit<'_>) -> Option<String> {
+    match lit.kind {
+        token::Token::INT => None,
+        token::Token::FLOAT if basic_lit_float_is_int_representable(lit) => None,
+        token::Token::FLOAT => Some("length must be representable by int".to_string()),
+        token::Token::CHAR | token::Token::IMAG | token::Token::STRING => {
+            Some("length must be a numeric constant".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn basic_lit_float_is_int_representable(lit: &ast::BasicLit<'_>) -> bool {
+    decimal_float_literal_is_integer(lit.value)
+}
+
+fn array_length_constant_is_numeric(expr: &ast::Expr<'_>) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => matches!(
+            lit.kind,
+            token::Token::INT | token::Token::FLOAT | token::Token::IMAG
+        ),
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            array_length_constant_is_numeric(&unary.x)
+        }
+        _ => false,
+    }
+}
+
+fn array_length_constant_is_zero(expr: &ast::Expr<'_>) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if matches!(lit.kind, token::Token::INT) => {
+            integer_literal_is_zero(lit.value)
+        }
+        ast::Expr::BasicLit(lit) if matches!(lit.kind, token::Token::FLOAT) => {
+            decimal_float_literal_is_zero(lit.value)
+        }
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            array_length_constant_is_zero(&unary.x)
+        }
+        _ => false,
+    }
+}
+
+fn integer_literal_is_zero(value: &str) -> bool {
+    value.chars().filter(|ch| *ch != '_').all(|ch| {
+        ch == '0' || ch == 'x' || ch == 'X' || ch == 'o' || ch == 'O' || ch == 'b' || ch == 'B'
+    })
+}
+
+fn decimal_float_literal_is_zero(value: &str) -> bool {
+    let value = value.replace('_', "").to_ascii_lowercase();
+    if value.starts_with("0x") || value.contains('p') {
+        return false;
+    }
+    let mantissa = value
+        .split_once('e')
+        .map_or(value.as_str(), |(mantissa, _)| mantissa);
+    mantissa
+        .chars()
+        .filter(|ch| *ch != '.' && *ch != '+' && *ch != '-')
+        .all(|ch| ch == '0')
+}
+
 fn invalid_map_type(map: &ast::MapType<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     if type_expr_is_comparable_for_validation(&map.key, env) {
         return None;
@@ -5669,7 +5762,8 @@ fn invalid_expression_in_expr(
             .len
             .as_ref()
             .and_then(|len| invalid_expression_in_expr(len, env))
-            .or_else(|| invalid_expression_in_expr(&array.elt, env)),
+            .or_else(|| invalid_expression_in_expr(&array.elt, env))
+            .or_else(|| invalid_array_type(array)),
         ast::Expr::BinaryExpr(binary) => invalid_expression_in_expr(&binary.x, env)
             .or_else(|| invalid_expression_in_expr(&binary.y, env))
             .or_else(|| invalid_binary_expr(binary, env)),
@@ -13504,6 +13598,80 @@ mod tests {
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
         );
+    }
+
+    #[test]
+    fn rejects_invalid_array_lengths() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    var _ [-1]int
+                "#,
+                "length must be non-negative",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ [1.5]int
+                "#,
+                "length must be representable by int",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ ["go"]int
+                "#,
+                "length must be a numeric constant",
+            ),
+            (
+                r#"
+                    package main
+
+                    var _ [nil]int
+                "#,
+                "length must be a numeric constant",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            assert_eq!(
+                super::invalid_expression_in_file(&file, &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidArrayType {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_array_lengths() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const n = 2
+
+                var _ [0]int
+                var _ [-0]int
+                var _ [1.0]int
+                var _ [n]int
+                var _ [2*n]int
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        assert_eq!(super::invalid_expression_in_file(&file, &env), None);
     }
 
     #[test]

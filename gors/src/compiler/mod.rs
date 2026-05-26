@@ -12907,6 +12907,9 @@ fn range_kind_name(kind: ir::RangeKind) -> &'static str {
 
 fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
     match reason {
+        ir::InvalidStatementReason::InvalidArrayType { reason } => {
+            format!("invalid array type: {reason}")
+        }
         ir::InvalidStatementReason::InvalidBinary { op, reason } => {
             format!("invalid binary expression {op}: {reason}")
         }

@@ -738,6 +738,10 @@ Map type validation rejects non-comparable key types, including slice, map, and
 function keys as well as arrays or structs that recursively contain
 non-comparable fields. Reuse the same comparability helper for equality and
 expression-switch validation so the semantic rule stays consistent.
+Array type validation rejects obvious invalid lengths such as negative numeric
+literals, non-representable numeric literals, strings, and `nil`. It stays
+conservative for identifiers and compound constant expressions until constant
+evaluation is represented explicitly in IR.
 Expression-switch validation checks the switch tag and case expressions before
 case-body compilation: nil tags are rejected, tags and cases must be comparable,
 case expressions must be single-valued, and each case must be comparable to the
