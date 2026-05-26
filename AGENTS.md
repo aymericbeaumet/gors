@@ -271,6 +271,10 @@ The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
 compiler-sensitive inputs in that key if the harness starts skipping more work.
+`rust-test-integration-run` executes generated-program fixtures in a Rayon pool
+with 16 MiB worker stacks, matching the lexer/parser integration stack budget.
+Large stdlib fixtures such as `gostdlib_net_http` can overflow the default test
+thread stack while parsing and compiling real Go stdlib packages.
 
 ### Environment variables for test tuning
 

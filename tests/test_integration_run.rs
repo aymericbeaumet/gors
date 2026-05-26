@@ -15,6 +15,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+const PROGRAM_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 fn program_name(dir: &Path) -> String {
     let programs_dir = fixtures_dir().join("go_programs");
     dir.strip_prefix(&programs_dir)
@@ -397,10 +399,15 @@ fn run_programs_generated_rust() {
 
     let abort = Arc::new(AtomicBool::new(false));
     let metrics = Arc::new(RunMetrics::default());
-    let results: Vec<_> = dirs
-        .par_iter()
-        .map(|dir| run_generated_rust_program(dir, &config, &abort, &metrics))
-        .collect();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .stack_size(PROGRAM_TEST_STACK_SIZE)
+        .build()
+        .expect("failed to build program test thread pool");
+    let results: Vec<_> = pool.install(|| {
+        dirs.par_iter()
+            .map(|dir| run_generated_rust_program(dir, &config, &abort, &metrics))
+            .collect()
+    });
 
     let passed = results.iter().filter(|result| result.passed).count();
     let skipped = results.iter().filter(|result| result.skipped).count();
