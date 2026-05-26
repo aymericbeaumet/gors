@@ -99,6 +99,8 @@ pub enum Stmt {
         kind: BranchKind,
         label: Option<String>,
     },
+    Case(Case),
+    Comm(CommCase),
     Decl(GenDecl),
     Defer(Call),
     Empty,
@@ -136,9 +138,17 @@ pub enum Stmt {
         chan: Expr,
         value: Expr,
     },
+    Select {
+        cases: Vec<CommCase>,
+    },
     Switch {
         init: Option<Box<Stmt>>,
         tag: Option<Expr>,
+        cases: Vec<Case>,
+    },
+    TypeSwitch {
+        init: Option<Box<Stmt>>,
+        assign: Box<Stmt>,
         cases: Vec<Case>,
     },
     Opaque(String),
@@ -185,6 +195,13 @@ pub enum IncDecOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Case {
     pub exprs: Vec<Expr>,
+    pub body: Vec<Stmt>,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommCase {
+    pub comm: Option<Box<Stmt>>,
     pub body: Vec<Stmt>,
     pub is_default: bool,
 }
@@ -454,14 +471,8 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
             kind: lower_branch_kind(branch.tok),
             label: branch.label.as_ref().map(|label| label.name.to_string()),
         }),
-        ast::Stmt::CaseClause(case) => Some(Stmt::Opaque(format!(
-            "case:{}",
-            case.list.as_ref().map_or(0usize, Vec::len)
-        ))),
-        ast::Stmt::CommClause(comm) => Some(Stmt::Opaque(format!(
-            "comm:{}",
-            comm.comm.as_ref().map_or("default", |_| "case")
-        ))),
+        ast::Stmt::CaseClause(case) => Some(Stmt::Case(lower_case(case, env))),
+        ast::Stmt::CommClause(comm) => Some(Stmt::Comm(lower_comm_case(comm, env))),
         ast::Stmt::DeclStmt(decl) => Some(Stmt::Decl(lower_gen_decl(&decl.decl, env))),
         ast::Stmt::DeferStmt(defer) => Some(Stmt::Defer(lower_call(&defer.call, env))),
         ast::Stmt::EmptyStmt(_) => Some(Stmt::Empty),
@@ -514,9 +525,17 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
                 .map(|expr| lower_expr(expr, env))
                 .collect(),
         )),
-        ast::Stmt::SelectStmt(select) => {
-            Some(Stmt::Opaque(format!("select:{}", select.body.list.len())))
-        }
+        ast::Stmt::SelectStmt(select) => Some(Stmt::Select {
+            cases: select
+                .body
+                .list
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    ast::Stmt::CommClause(comm) => Some(lower_comm_case(comm, env)),
+                    _ => None,
+                })
+                .collect(),
+        }),
         ast::Stmt::SendStmt(send) => Some(Stmt::Send {
             chan: lower_expr(&send.chan, env),
             value: lower_expr(&send.value, env),
@@ -537,10 +556,22 @@ fn lower_stmt(stmt: &ast::Stmt<'_>, env: &TypeEnv) -> Option<Stmt> {
                 })
                 .collect(),
         }),
-        ast::Stmt::TypeSwitchStmt(type_switch) => Some(Stmt::Opaque(format!(
-            "type_switch:{}",
-            type_switch.body.list.len()
-        ))),
+        ast::Stmt::TypeSwitchStmt(type_switch) => Some(Stmt::TypeSwitch {
+            init: type_switch
+                .init
+                .as_ref()
+                .and_then(|init| lower_stmt(init, env).map(Box::new)),
+            assign: Box::new(lower_stmt(&type_switch.assign, env).unwrap_or(Stmt::Empty)),
+            cases: type_switch
+                .body
+                .list
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    ast::Stmt::CaseClause(case) => Some(lower_case(case, env)),
+                    _ => None,
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -555,6 +586,21 @@ fn lower_case(case: &ast::CaseClause<'_>, env: &TypeEnv) -> Case {
             .filter_map(|stmt| lower_stmt(stmt, env))
             .collect(),
         is_default: case.list.is_none(),
+    }
+}
+
+fn lower_comm_case(comm: &ast::CommClause<'_>, env: &TypeEnv) -> CommCase {
+    CommCase {
+        comm: comm
+            .comm
+            .as_ref()
+            .and_then(|stmt| lower_stmt(stmt, env).map(Box::new)),
+        body: comm
+            .body
+            .iter()
+            .filter_map(|stmt| lower_stmt(stmt, env))
+            .collect(),
+        is_default: comm.comm.is_none(),
     }
 }
 
@@ -1231,5 +1277,66 @@ mod tests {
         };
         assert_eq!(capture.name, "base");
         assert_eq!(capture.mode, CaptureMode::Borrow);
+    }
+
+    #[test]
+    fn lower_select_records_comm_cases() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    ch := make(chan int, 1)
+                    select {
+                    case ch <- 1:
+                    case v := <-ch:
+                        _ = v
+                    default:
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Select { cases }) = body.stmts.get(1) else {
+            panic!("expected select statement");
+        };
+        assert_eq!(cases.len(), 3);
+        assert!(!cases.first().is_some_and(|case| case.is_default));
+        assert!(cases.get(2).is_some_and(|case| case.is_default));
+    }
+
+    #[test]
+    fn lower_type_switch_records_cases() {
+        let ir = lower(
+            r#"
+                package main
+
+                func f(x any) {
+                    switch v := x.(type) {
+                    case int:
+                        _ = v
+                    default:
+                    }
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.first() else {
+            panic!("expected function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::TypeSwitch { assign, cases, .. }) = body.stmts.first() else {
+            panic!("expected type switch");
+        };
+        assert!(matches!(assign.as_ref(), Stmt::Assign(_)));
+        assert_eq!(cases.len(), 2);
+        assert!(!cases.first().is_some_and(|case| case.is_default));
+        assert!(cases.get(1).is_some_and(|case| case.is_default));
     }
 }
