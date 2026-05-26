@@ -11557,10 +11557,10 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
         let _shared_capture_names = SharedCaptureNamesGuard::extend(
             shared_capture_names.into_iter().chain(address_taken_names),
         );
-        if ir::goto_state_plan_for_block(&block_stmt).is_some() {
+        if let Some(goto_plan) = ir::goto_state_plan_for_block(&block_stmt) {
             return Ok(Self {
                 brace_token: syn::token::Brace::default(),
-                stmts: vec![compile_goto_state_stmt(block_stmt)?],
+                stmts: vec![compile_goto_state_stmt(block_stmt, &goto_plan)?],
             });
         }
         let mut stmts = vec![];
@@ -11646,9 +11646,107 @@ fn terminate_goto_state_segment_stmts(stmts: &mut [syn::Stmt]) {
     }
 }
 
-fn compile_goto_state_stmt(block_stmt: ast::BlockStmt<'_>) -> Result<syn::Stmt, CompilerError> {
+struct GotoStateHoistBinding {
+    name: String,
+    ty: Option<syn::Type>,
+}
+
+fn goto_state_hoisted_bindings(plan: &ir::GotoStatePlan) -> Vec<GotoStateHoistBinding> {
+    plan.hoisted_names
+        .iter()
+        .map(|name| {
+            let ty = TYPE_ENV.with(|env| {
+                env.borrow()
+                    .get_var(name)
+                    .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+                    .map(|ty| rust_type_from_inferred_go_type(&ty))
+            });
+            GotoStateHoistBinding {
+                name: rust_safe_ident_name(name),
+                ty,
+            }
+        })
+        .collect()
+}
+
+fn goto_state_hoisted_plan_name_set(
+    plan: &ir::GotoStatePlan,
+) -> std::collections::BTreeSet<String> {
+    plan.hoisted_names
+        .iter()
+        .map(|name| rust_safe_ident_name(name))
+        .collect()
+}
+
+fn goto_state_hoist_stmts(bindings: &[GotoStateHoistBinding]) -> Vec<syn::Stmt> {
+    bindings
+        .iter()
+        .map(|binding| {
+            let ident = syn::Ident::new(&binding.name, Span::mixed_site());
+            if let Some(ty) = &binding.ty {
+                let init = go_zero_value_from_type(Some(ty));
+                syn::parse_quote! {
+                    let mut #ident: #ty = #init;
+                }
+            } else {
+                syn::parse_quote! {
+                    let mut #ident = Default::default();
+                }
+            }
+        })
+        .collect()
+}
+
+fn local_pat_ident(pat: &syn::Pat) -> Option<syn::Ident> {
+    match pat {
+        syn::Pat::Ident(ident) => Some(ident.ident.clone()),
+        syn::Pat::Type(pat_type) => local_pat_ident(&pat_type.pat),
+        _ => None,
+    }
+}
+
+fn rewrite_goto_state_hoisted_locals(
+    stmts: &mut Vec<syn::Stmt>,
+    hoisted_names: &std::collections::BTreeSet<String>,
+) {
+    let mut rewritten = Vec::with_capacity(stmts.len());
+    for stmt in std::mem::take(stmts) {
+        let syn::Stmt::Local(local) = stmt else {
+            rewritten.push(stmt);
+            continue;
+        };
+        let Some(ident) = local_pat_ident(&local.pat) else {
+            rewritten.push(syn::Stmt::Local(local));
+            continue;
+        };
+        if !hoisted_names.contains(&ident.to_string()) {
+            rewritten.push(syn::Stmt::Local(local));
+            continue;
+        }
+        let mut local = local;
+        let Some(init) = local.init.take() else {
+            continue;
+        };
+        if init.diverge.is_some() {
+            local.init = Some(init);
+            rewritten.push(syn::Stmt::Local(local));
+            continue;
+        }
+        let expr = init.expr;
+        rewritten.push(syn::parse_quote! {
+            #ident = #expr;
+        });
+    }
+    *stmts = rewritten;
+}
+
+fn compile_goto_state_stmt(
+    block_stmt: ast::BlockStmt<'_>,
+    plan: &ir::GotoStatePlan,
+) -> Result<syn::Stmt, CompilerError> {
     let segments = split_goto_state_segments(block_stmt.list);
     let labels = goto_state_label_map(&segments);
+    let hoisted_names = goto_state_hoisted_plan_name_set(plan);
     let (state_ident, loop_label) = next_goto_state_names();
     let context = GotoStateContext {
         state_ident: state_ident.clone(),
@@ -11664,6 +11762,7 @@ fn compile_goto_state_stmt(block_stmt: ast::BlockStmt<'_>) -> Result<syn::Stmt, 
         for stmt in segment.stmts {
             stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
         }
+        rewrite_goto_state_hoisted_locals(&mut stmts, &hoisted_names);
         terminate_goto_state_segment_stmts(&mut stmts);
         stmts.extend(goto_state_tail(
             idx,
@@ -11679,6 +11778,9 @@ fn compile_goto_state_stmt(block_stmt: ast::BlockStmt<'_>) -> Result<syn::Stmt, 
         });
     }
 
+    let hoist_bindings = goto_state_hoisted_bindings(plan);
+    let hoist_stmts = goto_state_hoist_stmts(&hoist_bindings);
+
     arms.push(syn::parse_quote! {
         _ => {
             break #loop_label;
@@ -11687,6 +11789,7 @@ fn compile_goto_state_stmt(block_stmt: ast::BlockStmt<'_>) -> Result<syn::Stmt, 
 
     let expr: syn::Expr = syn::parse_quote! {
         {
+            #(#hoist_stmts)*
             let mut #state_ident: usize = 0usize;
             #loop_label: loop {
                 match #state_ident {

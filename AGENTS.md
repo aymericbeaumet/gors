@@ -126,9 +126,10 @@ gors-builtin/
   lowered by wrapping that statement in a generated Rust labeled `loop` and
   translating the `goto` to `continue 'Label`. Scope-safe forward gotos whose
   target is a direct label in the same block lower through an IR-planned
-  generated state loop; IR rejects this plan when splitting label segments would
-  hide locals from later segments. Broader forward gotos still require CFG-local
-  hoisting in the IR before backend lowering.
+  generated state loop; IR identifies direct-block locals that cross state
+  segments, and the backend hoists typed zero-value bindings before rewriting the
+  original declarations to segment-local assignments. Broader forward gotos still
+  require full CFG restructuring in the IR before backend lowering.
 - Go expression switches without `fallthrough` lower to an exclusive Rust
   `if`/`else` chain inside a generated label so Rust can see moved case values
   are branch-local. Switches containing `fallthrough` still lower through an
@@ -522,7 +523,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 ## Known limitations
 
 - Closure support is partial; capture analysis is not yet scope-precise for all shadowing patterns, and closure/function-value aliasing still uses generated shared cells rather than a full Go environment object.
-- Arbitrary forward `goto` is not fully supported; scope-safe direct-label block gotos lower through an IR-planned state loop, while gotos that require local hoisting or broader CFG restructuring remain unsupported.
+- Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
 

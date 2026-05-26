@@ -807,6 +807,7 @@ pub fn ast_stmt_has_goto_to_label(stmt: &ast::Stmt<'_>, label: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GotoStatePlan {
     pub labels: Vec<String>,
+    pub hoisted_names: Vec<String>,
 }
 
 pub fn goto_state_plan_for_block(block: &ast::BlockStmt<'_>) -> Option<GotoStatePlan> {
@@ -822,7 +823,11 @@ pub fn goto_state_plan_for_block(block: &ast::BlockStmt<'_>) -> Option<GotoState
         return None;
     }
 
-    goto_state_segments_are_scope_safe(block).then_some(GotoStatePlan { labels })
+    let hoisted_names = goto_state_hoisted_names(block);
+    Some(GotoStatePlan {
+        labels,
+        hoisted_names,
+    })
 }
 
 pub fn direct_label_names_in_stmt(stmt: &ast::Stmt<'_>) -> Vec<String> {
@@ -917,7 +922,7 @@ fn collect_goto_targets_in_stmt(stmt: &ast::Stmt<'_>, targets: &mut BTreeSet<Str
     }
 }
 
-fn goto_state_segments_are_scope_safe(block: &ast::BlockStmt<'_>) -> bool {
+fn goto_state_hoisted_names(block: &ast::BlockStmt<'_>) -> Vec<String> {
     let mut declared_by_segment = vec![BTreeSet::new()];
     let mut referenced_by_segment = vec![BTreeSet::new()];
     for stmt in &block.list {
@@ -926,13 +931,14 @@ fn goto_state_segments_are_scope_safe(block: &ast::BlockStmt<'_>) -> bool {
             referenced_by_segment.push(BTreeSet::new());
         }
         if let Some(declared) = declared_by_segment.last_mut() {
-            collect_declared_names_in_stmt(stmt, declared);
+            collect_direct_declared_names_in_stmt(stmt, declared);
         }
         if let Some(referenced) = referenced_by_segment.last_mut() {
             collect_referenced_names_in_stmt(stmt, referenced);
         }
     }
 
+    let mut hoisted_names = BTreeSet::new();
     for idx in 0..declared_by_segment.len() {
         let Some(declared) = declared_by_segment.get(idx) else {
             continue;
@@ -945,10 +951,27 @@ fn goto_state_segments_are_scope_safe(block: &ast::BlockStmt<'_>) -> bool {
             later_references.extend(referenced.iter().cloned());
         }
         if !declared.is_disjoint(&later_references) {
-            return false;
+            hoisted_names.extend(declared.intersection(&later_references).cloned());
         }
     }
-    true
+    hoisted_names.into_iter().collect()
+}
+
+fn collect_direct_declared_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<String>) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) if assign.tok == token::Token::DEFINE => {
+            names.extend(assign.lhs.iter().filter_map(ident_name));
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec {
+                    names.extend(value.names.iter().map(|name| name.name.to_string()));
+                }
+            }
+        }
+        ast::Stmt::LabeledStmt(label) => collect_direct_declared_names_in_stmt(&label.stmt, names),
+        _ => {}
+    }
 }
 
 fn ast_block_has_goto_to_label(block: &ast::BlockStmt<'_>, label: &str) -> bool {
@@ -2918,10 +2941,11 @@ mod tests {
             panic!("expected forward goto plan");
         };
         assert_eq!(plan.labels, vec!["Done"]);
+        assert!(plan.hoisted_names.is_empty());
     }
 
     #[test]
-    fn rejects_forward_goto_state_blocks_that_split_local_scope() {
+    fn plans_forward_goto_state_local_hoists() {
         let file = parse_file(
             "test.go",
             r#"
@@ -2942,10 +2966,49 @@ mod tests {
         }) else {
             panic!("expected function");
         };
-        assert_eq!(
-            super::goto_state_plan_for_block(func.body.as_ref().expect("body")),
-            None
-        );
+        let Some(plan) = super::goto_state_plan_for_block(func.body.as_ref().expect("body")) else {
+            panic!("expected forward goto plan");
+        };
+        assert_eq!(plan.labels, vec!["Done"]);
+        assert_eq!(plan.hoisted_names, vec!["x"]);
+    }
+
+    #[test]
+    fn ignores_nested_locals_when_planning_forward_goto_hoists() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    i := 0
+                    for i < 10 {
+                        sr := i
+                        if sr > 0 {
+                            goto Done
+                        }
+                        i++
+                    }
+                Done:
+                    println(i)
+                    for _, sr := range []int{1} {
+                        println(sr)
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(plan) = super::goto_state_plan_for_block(func.body.as_ref().expect("body")) else {
+            panic!("expected forward goto plan");
+        };
+        assert_eq!(plan.labels, vec!["Done"]);
+        assert_eq!(plan.hoisted_names, vec!["i"]);
     }
 
     #[test]
