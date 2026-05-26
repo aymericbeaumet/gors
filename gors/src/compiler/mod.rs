@@ -14666,6 +14666,14 @@ fn continue_targets_current_loop(
     loop_label.is_some_and(|label| cont.label.as_ref().is_some_and(|cont| cont.ident == label))
 }
 
+fn inferred_function_type_for_name(name: &str) -> Option<typeinfer::GoType> {
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .get_var(name)
+            .filter(|ty| matches!(resolved_go_type(ty), typeinfer::GoType::Func { .. }))
+    })
+}
+
 impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     fn from(decl_stmt: ast::DeclStmt) -> Self {
         let gen_decl = decl_stmt.decl;
@@ -14684,22 +14692,32 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                     for name in names {
                         let ident: syn::Ident = name.into();
                         let init_ast = values_iter.next();
-                        if let Some(ref go_type) = go_type {
+                        let binding_go_type = if let Some(ref go_type) = go_type {
                             TYPE_ENV.with(|env| {
                                 env.borrow_mut()
                                     .set_var(&ident.to_string(), go_type.clone());
                             });
+                            Some(go_type.clone())
                         } else if let Some(ref init_ast) = init_ast {
                             let inferred = TYPE_ENV
                                 .with(|env| typeinfer::GoType::infer_expr(init_ast, &env.borrow()));
                             TYPE_ENV.with(|env| {
-                                env.borrow_mut().set_var(&ident.to_string(), inferred);
+                                env.borrow_mut()
+                                    .set_var(&ident.to_string(), inferred.clone());
                             });
-                        }
+                            Some(inferred)
+                        } else {
+                            None
+                        };
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
                             let should_clone = binding_init_should_clone(&expr);
-                            if let Some(ref go_type) = go_type {
-                                let init = compile_expr_with_expected(expr, Some(go_type));
+                            let expected = go_type.as_ref().or_else(|| {
+                                binding_go_type.as_ref().filter(|ty| {
+                                    matches!(resolved_go_type(ty), typeinfer::GoType::Func { .. })
+                                })
+                            });
+                            if let Some(expected) = expected {
+                                let init = compile_expr_with_expected(expr, Some(expected));
                                 maybe_clone_binding_init(should_clone, init)
                             } else {
                                 let init = expr.into();
@@ -15451,6 +15469,17 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
         // a := 1
         // b, c := 2, 3
         if assign_stmt.tok == token::Token::DEFINE {
+            let define_expected_types: Vec<Option<typeinfer::GoType>> = assign_stmt
+                .lhs
+                .iter()
+                .map(|expr| match expr {
+                    ast::Expr::Ident(ident) if ident.name != "_" => {
+                        inferred_function_type_for_name(ident.name)
+                    }
+                    _ => None,
+                })
+                .collect();
+
             if assign_stmt
                 .lhs
                 .iter()
@@ -15464,7 +15493,12 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         ));
                     };
                     let should_clone = binding_init_should_clone(&rhs);
-                    let init: syn::Expr = rhs.into();
+                    let expected = inferred_function_type_for_name(ident.name);
+                    let init = if let Some(expected) = expected.as_ref() {
+                        compile_expr_with_expected(rhs, Some(expected))
+                    } else {
+                        rhs.into()
+                    };
                     let init = maybe_clone_binding_init(should_clone, init);
                     if ident.name == "_" {
                         out.push(syn::parse_quote! { let _ = #init; });
@@ -15546,14 +15580,26 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             CompilerError::InvalidAssignment("empty rhs".to_string())
                         })?;
                     let should_clone = binding_init_should_clone(&first_rhs);
-                    let init: syn::Expr = first_rhs.into();
+                    let init = if let Some(expected) =
+                        define_expected_types.first().and_then(|ty| ty.as_ref())
+                    {
+                        compile_expr_with_expected(first_rhs, Some(expected))
+                    } else {
+                        first_rhs.into()
+                    };
                     maybe_clone_binding_init(should_clone, init)
                 }
                 _ => {
                     let mut elems = syn::punctuated::Punctuated::new();
-                    for expr in assign_stmt.rhs {
+                    for (idx, expr) in assign_stmt.rhs.into_iter().enumerate() {
                         let should_clone = binding_init_should_clone(&expr);
-                        let init: syn::Expr = expr.into();
+                        let init = if let Some(expected) =
+                            define_expected_types.get(idx).and_then(|ty| ty.as_ref())
+                        {
+                            compile_expr_with_expected(expr, Some(expected))
+                        } else {
+                            expr.into()
+                        };
                         elems.push(maybe_clone_binding_init(should_clone, init))
                     }
                     syn::Expr::Tuple(syn::ExprTuple {
@@ -17125,7 +17171,11 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    let mut f = || { let mut x = 1; };
+                    let mut f = {
+                        let __gors_func: std::sync::Arc<dyn Fn() -> () + Send + Sync> =
+                            std::sync::Arc::new(move || { let mut x = 1; });
+                        std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
+                    };
                 }
             },
         );

@@ -445,6 +445,12 @@ Keep nested shadowing cases there: a name declared in an inner block must not
 mask a later reference to an outer captured name, and nested function literals
 must propagate their free-variable uses to the enclosing literal.
 
+Go function-typed values use the shared function-value representation
+`Arc<Mutex<Option<Arc<dyn Fn...>>>>` consistently. If type inference learns that
+a short declaration or `var` initializer is a `func` value, compile the
+initializer with that expected Go type so calls use the same `lock_func` lowering
+as named function-typed variables and returned function values.
+
 Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
 path from crashing inside Syn's type parser.
@@ -528,7 +534,7 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 
 ## Known limitations
 
-- Closure support is partial; function-value aliasing still uses generated shared cells rather than a full Go environment object.
+- Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)

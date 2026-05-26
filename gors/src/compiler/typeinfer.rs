@@ -129,10 +129,31 @@ impl GoType {
                     GoType::Unknown
                 }
             }
-            ast::Expr::FuncType(ft) => {
-                let params: Vec<GoType> = ft
-                    .params
-                    .list
+            ast::Expr::FuncType(ft) => GoType::from_func_type(ft),
+            _ => GoType::Unknown,
+        }
+    }
+
+    fn from_func_type(ft: &ast::FuncType) -> GoType {
+        let params: Vec<GoType> = ft
+            .params
+            .list
+            .iter()
+            .flat_map(|f| {
+                let ty = f
+                    .type_
+                    .as_ref()
+                    .map(GoType::from_expr)
+                    .unwrap_or(GoType::Unknown);
+                let count = f.names.as_ref().map_or(1, |n| n.len());
+                std::iter::repeat_n(ty, count)
+            })
+            .collect();
+        let results: Vec<GoType> = ft
+            .results
+            .as_ref()
+            .map(|r| {
+                r.list
                     .iter()
                     .flat_map(|f| {
                         let ty = f
@@ -143,29 +164,10 @@ impl GoType {
                         let count = f.names.as_ref().map_or(1, |n| n.len());
                         std::iter::repeat_n(ty, count)
                     })
-                    .collect();
-                let results: Vec<GoType> = ft
-                    .results
-                    .as_ref()
-                    .map(|r| {
-                        r.list
-                            .iter()
-                            .flat_map(|f| {
-                                let ty = f
-                                    .type_
-                                    .as_ref()
-                                    .map(GoType::from_expr)
-                                    .unwrap_or(GoType::Unknown);
-                                let count = f.names.as_ref().map_or(1, |n| n.len());
-                                std::iter::repeat_n(ty, count)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                GoType::Func { params, results }
-            }
-            _ => GoType::Unknown,
-        }
+                    .collect()
+            })
+            .unwrap_or_default();
+        GoType::Func { params, results }
     }
 
     pub fn from_name(name: &str) -> GoType {
@@ -209,6 +211,7 @@ impl GoType {
                 "nil" => GoType::Any,
                 name => env.get_var(name).unwrap_or(GoType::Unknown),
             },
+            ast::Expr::FuncLit(func_lit) => GoType::from_func_type(&func_lit.type_),
             ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {
                 GoType::Pointer(Box::new(GoType::infer_expr(&u.x, env)))
             }

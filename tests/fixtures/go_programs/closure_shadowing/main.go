@@ -14,13 +14,13 @@ func main() {
 	fmt.Println("outer", readOuter())
 
 	count := 0
-	runNext := func() {
-		next := func() int {
+	makeNext := func() func() int {
+		return func() int {
 			count++
 			return count
 		}
-		fmt.Println("next", next())
 	}
-	runNext()
-	runNext()
+	next := makeNext()
+	fmt.Println("next", next())
+	fmt.Println("next", next())
 }
