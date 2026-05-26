@@ -39,6 +39,7 @@ thread_local! {
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -1987,40 +1988,146 @@ fn go_type_name_from_expr<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
     }
 }
 
-/// Rewrite bare return statements in a block to return a tuple of the named variables.
-fn rewrite_bare_returns(block: &mut syn::Block, named_return_idents: &[syn::Ident]) {
+fn wrap_named_return_block(
+    block: &mut syn::Block,
+    named_return_info: &[(syn::Ident, Option<syn::Type>, syn::Expr)],
+    named_return_idents: &[syn::Ident],
+) {
+    let label = next_named_return_label();
+    let mut declarations: Vec<syn::Stmt> = named_return_info
+        .iter()
+        .map(|(ident, rust_type, zero)| named_return_decl_stmt(ident, rust_type, zero))
+        .collect();
+    let body_stmts = std::mem::take(&mut block.stmts);
+    let mut body = syn::Block {
+        brace_token: syn::token::Brace::default(),
+        stmts: body_stmts,
+    };
+    rewrite_named_returns_to_break(&mut body, named_return_idents, &label);
+    let body_stmts = body.stmts;
+    let labeled_body: syn::Stmt = syn::parse_quote! { #label: { #(#body_stmts)* }; };
+    declarations.push(labeled_body);
+    declarations.push(named_return_return_stmt(named_return_idents));
+    block.stmts = declarations;
+}
+
+fn rewrite_named_returns_to_break(
+    block: &mut syn::Block,
+    named_return_idents: &[syn::Ident],
+    label: &syn::Lifetime,
+) {
     for stmt in &mut block.stmts {
-        if let syn::Stmt::Expr(expr, _semi) = stmt {
-            rewrite_bare_returns_in_expr(expr, named_return_idents);
-        }
+        rewrite_named_returns_in_stmt(stmt, named_return_idents, label);
     }
 }
 
-fn rewrite_bare_returns_in_expr(expr: &mut syn::Expr, named_return_idents: &[syn::Ident]) {
+fn rewrite_named_returns_in_stmt(
+    stmt: &mut syn::Stmt,
+    named_return_idents: &[syn::Ident],
+    label: &syn::Lifetime,
+) {
+    if let syn::Stmt::Expr(expr, _semi) = stmt {
+        rewrite_named_returns_in_expr(expr, named_return_idents, label);
+    }
+}
+
+fn rewrite_named_returns_in_expr(
+    expr: &mut syn::Expr,
+    named_return_idents: &[syn::Ident],
+    label: &syn::Lifetime,
+) {
     match expr {
-        syn::Expr::Return(ret) if ret.expr.is_none() => {
-            ret.expr = Some(Box::new(named_return_expr(named_return_idents, false)));
+        syn::Expr::Return(ret) => {
+            *expr = named_return_break_expr(ret.expr.take(), named_return_idents, label);
         }
         syn::Expr::Block(block) => {
-            rewrite_bare_returns(&mut block.block, named_return_idents);
+            rewrite_named_returns_to_break(&mut block.block, named_return_idents, label);
+        }
+        syn::Expr::Closure(_) => {}
+        syn::Expr::ForLoop(for_expr) => {
+            rewrite_named_returns_to_break(&mut for_expr.body, named_return_idents, label);
         }
         syn::Expr::If(if_expr) => {
-            rewrite_bare_returns(&mut if_expr.then_branch, named_return_idents);
+            rewrite_named_returns_to_break(&mut if_expr.then_branch, named_return_idents, label);
             if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                rewrite_bare_returns_in_expr(else_expr, named_return_idents);
+                rewrite_named_returns_in_expr(else_expr, named_return_idents, label);
             }
         }
         syn::Expr::Loop(loop_expr) => {
-            rewrite_bare_returns(&mut loop_expr.body, named_return_idents);
+            rewrite_named_returns_to_break(&mut loop_expr.body, named_return_idents, label);
+        }
+        syn::Expr::Match(match_expr) => {
+            for arm in &mut match_expr.arms {
+                rewrite_named_returns_in_expr(&mut arm.body, named_return_idents, label);
+            }
+        }
+        syn::Expr::TryBlock(try_block) => {
+            rewrite_named_returns_to_break(&mut try_block.block, named_return_idents, label);
         }
         syn::Expr::While(while_expr) => {
-            rewrite_bare_returns(&mut while_expr.body, named_return_idents);
-        }
-        syn::Expr::ForLoop(for_expr) => {
-            rewrite_bare_returns(&mut for_expr.body, named_return_idents);
+            rewrite_named_returns_to_break(&mut while_expr.body, named_return_idents, label);
         }
         _ => {}
     }
+}
+
+fn named_return_break_expr(
+    return_expr: Option<Box<syn::Expr>>,
+    named_return_idents: &[syn::Ident],
+    label: &syn::Lifetime,
+) -> syn::Expr {
+    let mut stmts = Vec::new();
+    if let Some(return_expr) = return_expr {
+        let return_expr = *return_expr;
+        match named_return_idents {
+            [] => {}
+            [ident] => {
+                if let Some(stmt) = named_return_assignment_stmt(ident, return_expr) {
+                    stmts.push(stmt);
+                }
+            }
+            idents => {
+                let temps = next_named_return_temp_idents(idents.len());
+                let temp_pats = temps.iter();
+                stmts.push(syn::parse_quote! { let (#(#temp_pats),*) = #return_expr; });
+                for (ident, temp) in idents.iter().zip(temps) {
+                    let value: syn::Expr = syn::parse_quote! { #temp };
+                    if let Some(stmt) = named_return_assignment_stmt(ident, value) {
+                        stmts.push(stmt);
+                    }
+                }
+            }
+        }
+    }
+    let break_stmt: syn::Stmt = syn::parse_quote! { break #label; };
+    stmts.push(break_stmt);
+    syn::parse_quote! {{ #(#stmts)* }}
+}
+
+fn named_return_assignment_stmt(ident: &syn::Ident, value: syn::Expr) -> Option<syn::Stmt> {
+    if expr_is_ident(&value, ident) {
+        return None;
+    }
+    let name = ident.to_string();
+    Some(if is_shared_capture_name(&name) {
+        syn::parse_quote! { *#ident.lock().unwrap() = #value; }
+    } else {
+        syn::parse_quote! { #ident = #value; }
+    })
+}
+
+fn expr_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
+    let syn::Expr::Path(path) = expr else {
+        return false;
+    };
+    path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == 1
+        && path
+            .path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == *ident)
 }
 
 fn named_return_expr(idents: &[syn::Ident], clone_unshared: bool) -> syn::Expr {
@@ -2046,6 +2153,16 @@ fn named_return_ident_expr(ident: &syn::Ident, clone_unshared: bool) -> syn::Exp
     } else {
         syn::parse_quote! { #ident }
     }
+}
+
+fn is_named_return_name(name: &str) -> bool {
+    let rust_name = rust_safe_ident_name(name);
+    NAMED_RETURN_IDENTS.with(|idents| {
+        idents
+            .borrow()
+            .iter()
+            .any(|ident| ident.to_string() == rust_name)
+    })
 }
 
 fn named_return_decl_stmt(
@@ -2108,6 +2225,14 @@ fn move_closure_shared_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt>
             })
             .collect()
     })
+}
+
+fn function_literal_shared_capture_clones(expr: &ast::Expr) -> Vec<syn::Stmt> {
+    match expr {
+        ast::Expr::FuncLit(func_lit) => move_closure_shared_capture_clones(func_lit),
+        ast::Expr::ParenExpr(paren) => function_literal_shared_capture_clones(&paren.x),
+        _ => Vec::new(),
+    }
 }
 
 /// Compile a Go select statement into Rust.
@@ -2569,6 +2694,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
     // Pre-scan the AST to build a type environment
@@ -2599,6 +2725,7 @@ pub fn compile_with_type_env_and_import_renames(
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
     let _ir = ir::lower_file(&file, &type_env);
@@ -2741,6 +2868,7 @@ fn compile_program_impl(
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
@@ -7957,17 +8085,21 @@ fn compile_method(
         RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
     let previous_named_return_idents = NAMED_RETURN_IDENTS
         .with(|idents| std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone()));
-    let range_function_capture_names =
+    let body_shared_capture_names =
         func_decl
             .body
             .as_ref()
             .map_or_else(std::collections::BTreeSet::new, |body| {
                 TYPE_ENV.with(|env| {
-                    ir::mutable_range_function_capture_names_in_block(body, &env.borrow())
+                    let env = env.borrow();
+                    let mut names = ir::mutable_func_lit_capture_names_in_block(body, &env);
+                    names.extend(ir::mutable_range_function_capture_names_in_block(
+                        body, &env,
+                    ));
+                    names
                 })
             });
-    let _range_function_capture_names =
-        SharedCaptureNamesGuard::extend(range_function_capture_names);
+    let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
     let block_result = if let Some(body) = func_decl.body {
         body.try_into()
     } else {
@@ -7991,23 +8123,7 @@ fn compile_method(
 
     // Handle named return values for methods (same logic as top-level functions)
     if !named_return_info.is_empty() {
-        let mut prepend: Vec<syn::Stmt> = vec![];
-        for (ident, rust_type, zero) in &named_return_info {
-            prepend.push(named_return_decl_stmt(ident, rust_type, zero));
-        }
-        let existing = std::mem::take(&mut block.stmts);
-        block.stmts = prepend;
-        block.stmts.extend(existing);
-        rewrite_bare_returns(&mut block, &named_return_idents);
-        let needs_implicit_return = !block
-            .stmts
-            .last()
-            .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
-        if needs_implicit_return {
-            block
-                .stmts
-                .push(named_return_return_stmt(&named_return_idents));
-        }
+        wrap_named_return_block(&mut block, &named_return_info, &named_return_idents);
     }
 
     let mut output = compile_return_type(func_decl.type_.results)?;
@@ -10079,6 +10195,14 @@ fn is_function_item_expr(expr: &ast::Expr) -> bool {
     })
 }
 
+fn is_function_literal_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::FuncLit(_) => true,
+        ast::Expr::ParenExpr(paren) => is_function_literal_expr(&paren.x),
+        _ => false,
+    }
+}
+
 fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -10107,7 +10231,7 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
 }
 
 fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
-    if is_function_item_expr(fun) {
+    if is_function_item_expr(fun) || is_function_literal_expr(fun) {
         return None;
     }
     let ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(fun, &env.borrow()));
@@ -12139,8 +12263,17 @@ fn compile_defer_saved_args<'a>(
 }
 
 fn compile_defer_guard_stmt(defer_ident: &syn::Ident, call: syn::Expr) -> syn::Stmt {
+    compile_defer_guard_stmt_with_setup(defer_ident, Vec::new(), call)
+}
+
+fn compile_defer_guard_stmt_with_setup(
+    defer_ident: &syn::Ident,
+    setup: Vec<syn::Stmt>,
+    call: syn::Expr,
+) -> syn::Stmt {
     syn::parse_quote! {
         let #defer_ident = {
+            #(#setup)*
             struct __Defer<F: FnOnce()>(Option<F>);
             impl<F: FnOnce()> Drop for __Defer<F> {
                 fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
@@ -12163,6 +12296,7 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
     let variadic_start = is_variadic_call(&call);
 
     if !is_function_item_expr(&call.fun)
+        && !is_function_literal_expr(&call.fun)
         && let typeinfer::GoType::Func { params, .. } = resolved_go_type(&fun_ty)
         && let Some(fun_ty) = shared_func_box_type_from_go_type(&fun_ty)
     {
@@ -12189,13 +12323,18 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         return prelude;
     }
 
+    let function_literal_capture_clones = function_literal_shared_capture_clones(&call.fun);
     let (mut prelude, saved_args, _) =
         compile_defer_saved_args(call.args.take(), n, &param_types, variadic_start);
     if let Some(saved_args) = saved_args {
         call.args = Some(saved_args);
     }
     let call: syn::Expr = ast::Expr::CallExpr(call).into();
-    prelude.push(compile_defer_guard_stmt(&defer_ident, call));
+    prelude.push(compile_defer_guard_stmt_with_setup(
+        &defer_ident,
+        function_literal_capture_clones,
+        call,
+    ));
     prelude
 }
 
@@ -14057,17 +14196,21 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let previous_named_return_idents = NAMED_RETURN_IDENTS.with(|idents| {
             std::mem::replace(&mut *idents.borrow_mut(), named_return_idents.clone())
         });
-        let range_function_capture_names =
+        let body_shared_capture_names =
             func_decl
                 .body
                 .as_ref()
                 .map_or_else(std::collections::BTreeSet::new, |body| {
                     TYPE_ENV.with(|env| {
-                        ir::mutable_range_function_capture_names_in_block(body, &env.borrow())
+                        let env = env.borrow();
+                        let mut names = ir::mutable_func_lit_capture_names_in_block(body, &env);
+                        names.extend(ir::mutable_range_function_capture_names_in_block(
+                            body, &env,
+                        ));
+                        names
                     })
                 });
-        let _range_function_capture_names =
-            SharedCaptureNamesGuard::extend(range_function_capture_names);
+        let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
         let body_completion = func_decl.body.as_ref().map(|body| {
             TYPE_ENV.with(|env| {
                 let env = env.borrow();
@@ -14093,27 +14236,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         // For named returns: prepend variable declarations and rewrite bare returns
         if !named_return_info.is_empty() {
-            let mut prepend: Vec<syn::Stmt> = vec![];
-            for (ident, rust_type, zero) in &named_return_info {
-                prepend.push(named_return_decl_stmt(ident, rust_type, zero));
-            }
-            let existing = std::mem::take(&mut block.stmts);
-            block.stmts = prepend;
-            block.stmts.extend(existing);
-
-            rewrite_bare_returns(&mut block, &named_return_idents);
-
-            // If the last statement is NOT a return, add an implicit return
-            let needs_implicit_return = !block
-                .stmts
-                .last()
-                .is_some_and(|last| matches!(last, syn::Stmt::Expr(syn::Expr::Return(_), _)));
-
-            if needs_implicit_return {
-                block
-                    .stmts
-                    .push(named_return_return_stmt(&named_return_idents));
-            }
+            wrap_named_return_block(&mut block, &named_return_info, &named_return_idents);
         } else {
             append_missing_return_panic(&mut block, &output, body_completion);
         }
@@ -15045,6 +15168,32 @@ fn next_loop_body_label() -> syn::Lifetime {
         n
     });
     syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
+}
+
+fn next_named_return_label() -> syn::Lifetime {
+    let n = next_named_return_index();
+    syn::Lifetime::new(&format!("'__gors_named_return_{n}"), Span::mixed_site())
+}
+
+fn next_named_return_temp_idents(count: usize) -> Vec<syn::Ident> {
+    let n = next_named_return_index();
+    (0..count)
+        .map(|idx| {
+            syn::Ident::new(
+                &format!("__gors_named_return_{n}_{idx}"),
+                Span::mixed_site(),
+            )
+        })
+        .collect()
+}
+
+fn next_named_return_index() -> usize {
+    NAMED_RETURN_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    })
 }
 
 fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
@@ -16017,6 +16166,40 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 .into();
 
             if assign_stmt.tok == token::Token::DEFINE {
+                if assign_stmt.lhs.iter().any(
+                    |expr| {
+                        matches!(expr, ast::Expr::Ident(ident) if is_named_return_name(ident.name))
+                    },
+                ) {
+                    let temps = next_named_return_temp_idents(assign_stmt.lhs.len());
+                    let temp_pats = temps.iter();
+                    let mut out: Vec<syn::Stmt> = vec![syn::parse_quote! {
+                        let (#(#temp_pats),*) = #rhs_expr;
+                    }];
+                    for (lhs, temp) in assign_stmt.lhs.into_iter().zip(temps) {
+                        let ast::Expr::Ident(ident) = lhs else {
+                            return Err(CompilerError::InvalidAssignment(
+                                "expected identifier on lhs of :=".to_string(),
+                            ));
+                        };
+                        if ident.name == "_" {
+                            continue;
+                        }
+                        let name = ident.name;
+                        let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                        let value: syn::Expr = syn::parse_quote! { #temp };
+                        if is_named_return_name(name) {
+                            if let Some(stmt) = named_return_assignment_stmt(&ident, value) {
+                                out.push(stmt);
+                            }
+                        } else {
+                            let init = shared_capture_init_expr(name, value);
+                            out.push(syn::parse_quote! { let mut #ident = #init; });
+                        }
+                    }
+                    return Ok(out);
+                }
+
                 let mut elems = syn::punctuated::Punctuated::new();
                 for expr in assign_stmt.lhs {
                     if let ast::Expr::Ident(ident) = expr {
@@ -16110,6 +16293,51 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     _ => None,
                 })
                 .collect();
+
+            if assign_stmt.lhs.iter().any(
+                |expr| matches!(expr, ast::Expr::Ident(ident) if is_named_return_name(ident.name)),
+            ) {
+                let temps = next_named_return_temp_idents(assign_stmt.lhs.len());
+                let mut out = vec![];
+                for (idx, ((lhs, rhs), temp)) in assign_stmt
+                    .lhs
+                    .into_iter()
+                    .zip(assign_stmt.rhs)
+                    .zip(temps)
+                    .enumerate()
+                {
+                    let ast::Expr::Ident(ident) = lhs else {
+                        return Err(CompilerError::InvalidAssignment(
+                            "expected identifier on lhs of :=".to_string(),
+                        ));
+                    };
+                    let should_clone = binding_init_should_clone(&rhs);
+                    let init = if let Some(expected) =
+                        define_expected_types.get(idx).and_then(|ty| ty.as_ref())
+                    {
+                        compile_expr_with_expected(rhs, Some(expected))
+                    } else {
+                        rhs.into()
+                    };
+                    let init = maybe_clone_binding_init(should_clone, init);
+                    out.push(syn::parse_quote! { let #temp = #init; });
+                    if ident.name == "_" {
+                        continue;
+                    }
+                    let name = ident.name;
+                    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                    let value: syn::Expr = syn::parse_quote! { #temp };
+                    if is_named_return_name(name) {
+                        if let Some(stmt) = named_return_assignment_stmt(&ident, value) {
+                            out.push(stmt);
+                        }
+                    } else {
+                        let init = shared_capture_init_expr(name, value);
+                        out.push(syn::parse_quote! { let mut #ident = #init; });
+                    }
+                }
+                return Ok(out);
+            }
 
             if assign_stmt
                 .lhs
@@ -18449,8 +18677,13 @@ func main() {
                 fn swap(mut a: isize, mut b: isize) -> (isize, isize) {
                     let mut x: isize = 0;
                     let mut y: isize = 0;
-                    x = b;
-                    y = a;
+                    '__gors_named_return_0: {
+                        x = b;
+                        y = a;
+                        {
+                            break '__gors_named_return_0;
+                        }
+                    };
                     (x, y)
                 }
             },

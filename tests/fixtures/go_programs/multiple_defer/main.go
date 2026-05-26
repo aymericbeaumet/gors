@@ -12,6 +12,14 @@ func printer(prefix string) func(string) {
 	}
 }
 
+func deferNamedReturn() (out int) {
+	defer func() {
+		out = 7
+	}()
+	out = 3
+	return
+}
+
 func main() {
 	fmt.Println("start")
 	msg := "initial"
@@ -25,5 +33,6 @@ func main() {
 	defer fmt.Println("first")
 	defer fmt.Println("second")
 	defer fmt.Println("third")
+	fmt.Println("named", deferNamedReturn())
 	fmt.Println("end")
 }

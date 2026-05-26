@@ -151,6 +151,12 @@ gors-builtin/
   ended the block with a Rust tail value expression. Go rejects reachable
   missing-return paths, but valid Go control-flow constructs and bodyless stdlib
   fallbacks can still need a Rust tail expression after lowering.
+- Named result parameters are declared before a synthetic labeled function-exit
+  block. Explicit and bare `return` statements inside that block assign the
+  named results and break to the exit label, then the final Rust return reads
+  the named results after RAII defer guards have been dropped. This preserves
+  Go's ordering where deferred calls can mutate named results before the caller
+  sees them.
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
@@ -559,6 +565,9 @@ expressions need parentheses whenever Rust would otherwise regroup them.
 - Arbitrary forward `goto` is not fully supported; direct-label block gotos lower through an IR-planned state loop with direct-local hoisting, while gotos that require broader CFG restructuring remain unsupported.
 - `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
 - Source maps are single-file only (not yet supported for multi-file output)
+- `defer` guards are still emitted at the Rust lexical scope where the `defer`
+  statement appears, so `defer` inside an inner Go block can run before function
+  exit until the compiler grows a function-scoped defer stack.
 
 ## Conventions
 
