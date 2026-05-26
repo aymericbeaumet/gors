@@ -318,9 +318,13 @@ thread stack while parsing and compiling real Go stdlib packages.
 - `GORS_TEST_FILTER=substring` — only test matching files
 - `GORS_TEST_VERBOSE=1` — show progress
 - `GORS_TEST_FAIL_FAST=1` — cancel queued/running integration work after the first failure where supported
-- `GORS_TEST_THREADS=N` — override integration-test worker threads; by default
-  generated-program and corpus integration tests size their Rayon pools to all
-  CPUs reported by `std::thread::available_parallelism()`
+- `GORS_TEST_THREADS=N` — worker threads for lexer/parser integration tests
+  and an explicit generated-program run-test fallback
+- `GORS_TEST_RUN_THREADS=N` — worker threads for generated-program run tests;
+  defaults to `GORS_TEST_THREADS` when set, otherwise all available CPUs. Use
+  this run-specific override for CPU-saturation experiments; higher values can
+  increase reported CPU use while slowing the suite through allocation and cache
+  contention.
 - `GORS_TEST_GO_RUN_TIMEOUT_SECS=N` — override the generated-program harness
   timeout for Go reference runs (default: 30 seconds)
 - `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS=N` — override the generated-program

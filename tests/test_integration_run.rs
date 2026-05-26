@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{TestConfig, discover_program_dirs, fixtures_dir, go_command, test_thread_count};
+use common::{TestConfig, discover_program_dirs, fixtures_dir, go_command};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -27,6 +27,25 @@ fn program_name(dir: &Path) -> String {
         .or_else(|| dir.file_name().and_then(|name| name.to_str()))
         .unwrap_or("<unknown>")
         .to_string()
+}
+
+fn run_test_thread_count() -> usize {
+    configured_thread_count("GORS_TEST_RUN_THREADS")
+        .or_else(|| configured_thread_count("GORS_TEST_THREADS"))
+        .unwrap_or_else(default_run_test_thread_count)
+}
+
+fn configured_thread_count(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+}
+
+fn default_run_test_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(1)
 }
 
 struct ProgramRunResult {
@@ -430,7 +449,7 @@ fn run_programs_generated_rust() {
 
     let abort = Arc::new(AtomicBool::new(false));
     let metrics = Arc::new(RunMetrics::default());
-    let worker_count = test_thread_count();
+    let worker_count = run_test_thread_count();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(worker_count)
         .stack_size(PROGRAM_TEST_STACK_SIZE)
