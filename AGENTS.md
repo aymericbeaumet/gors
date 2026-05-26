@@ -729,6 +729,11 @@ in another ad hoc slice codegen special case.
 Pointer dereference lvalues (`*p = x`, `(*p)++`) lower through the IR
 addressability path to shared-cell assignments for owning pointers and direct
 `&mut T` dereferences for borrowed pointer parameters.
+IR expression validation checks composite literals before code generation for
+map key/value assignability, required map keys, array/slice index keys, struct
+field names, duplicate simple constant keys, and struct field value
+assignability. Keep these checks conservative when the type environment cannot
+prove the literal's underlying type.
 
 ## Compiler passes (in order)
 

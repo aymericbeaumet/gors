@@ -12907,6 +12907,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::InvalidCall { target, reason } => {
             format!("invalid call to {target}: {reason}")
         }
+        ir::InvalidStatementReason::InvalidCompositeLiteral { reason } => {
+            format!("invalid composite literal: {reason}")
+        }
         ir::InvalidStatementReason::InvalidIndex { reason } => {
             format!("invalid index expression: {reason}")
         }

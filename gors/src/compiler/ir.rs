@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ast, token};
 
-use super::typeinfer::{GoChannelDirection, GoType, TypeEnv};
+use super::typeinfer::{GoChannelDirection, GoType, TypeEnv, TypeKind};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
@@ -1120,6 +1120,7 @@ pub enum InvalidStatementReason {
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
     InvalidCall { target: String, reason: String },
+    InvalidCompositeLiteral { reason: String },
     InvalidIndex { reason: String },
     InvalidSlice { reason: String },
     InvalidTypeConversion { target: String, reason: String },
@@ -4695,7 +4696,7 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
                     }
                 }
             }
-            None
+            invalid_composite_lit(comp, env).map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Expr::Ellipsis(ellipsis) => ellipsis
             .elt
@@ -5401,7 +5402,8 @@ fn invalid_expression_in_expr(
                     elts.iter()
                         .find_map(|elt| invalid_expression_in_expr(elt, env))
                 })
-            }),
+            })
+            .or_else(|| invalid_composite_lit(comp, env)),
         ast::Expr::Ellipsis(ellipsis) => ellipsis
             .elt
             .as_ref()
@@ -6242,6 +6244,465 @@ fn invalid_integer_bound(bound: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
 
 fn invalid_slice_reason(reason: impl Into<String>) -> InvalidStatementReason {
     InvalidStatementReason::InvalidSlice {
+        reason: reason.into(),
+    }
+}
+
+enum CompositeLiteralKind {
+    Struct {
+        fields: Vec<(String, GoType)>,
+        known: bool,
+    },
+    Array {
+        elem: GoType,
+        len: Option<usize>,
+    },
+    Slice {
+        elem: GoType,
+    },
+    Map {
+        key: GoType,
+        value: GoType,
+    },
+    Unknown,
+}
+
+fn invalid_composite_lit(
+    comp: &ast::CompositeLit<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let type_expr = comp.type_.as_deref()?;
+    let elems = comp.elts.as_deref().unwrap_or(&[]);
+    match composite_literal_kind(type_expr, env) {
+        CompositeLiteralKind::Struct { fields, known } => {
+            invalid_struct_composite_lit(&fields, known, elems, env)
+        }
+        CompositeLiteralKind::Array { elem, len } => {
+            invalid_array_composite_lit(&elem, len, elems, env)
+        }
+        CompositeLiteralKind::Slice { elem } => invalid_slice_composite_lit(&elem, elems, env),
+        CompositeLiteralKind::Map { key, value } => {
+            invalid_map_composite_lit(&key, &value, elems, env)
+        }
+        CompositeLiteralKind::Unknown => None,
+    }
+}
+
+fn composite_literal_kind(type_expr: &ast::Expr<'_>, env: &TypeEnv) -> CompositeLiteralKind {
+    match unparen_expr(type_expr) {
+        ast::Expr::ArrayType(array) => {
+            let elem = GoType::from_expr(&array.elt);
+            if array.len.is_some() {
+                CompositeLiteralKind::Array {
+                    elem,
+                    len: array_literal_len(array.len.as_deref()),
+                }
+            } else {
+                CompositeLiteralKind::Slice { elem }
+            }
+        }
+        ast::Expr::MapType(map) => CompositeLiteralKind::Map {
+            key: GoType::from_expr(&map.key),
+            value: GoType::from_expr(&map.value),
+        },
+        ast::Expr::StructType(struct_type) => CompositeLiteralKind::Struct {
+            fields: struct_literal_fields(struct_type),
+            known: true,
+        },
+        _ => composite_literal_kind_from_type(type_expr, env),
+    }
+}
+
+fn composite_literal_kind_from_type(
+    type_expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> CompositeLiteralKind {
+    match env.resolve_alias(&GoType::from_expr(type_expr)) {
+        GoType::Array(elem) => CompositeLiteralKind::Array {
+            elem: *elem,
+            len: None,
+        },
+        GoType::Slice(elem) => CompositeLiteralKind::Slice { elem: *elem },
+        GoType::Map(key, value) => CompositeLiteralKind::Map {
+            key: *key,
+            value: *value,
+        },
+        GoType::Named(name) => named_struct_composite_kind(&name, env),
+        _ => composite_type_name(type_expr)
+            .map(|name| named_struct_composite_kind(&name, env))
+            .unwrap_or(CompositeLiteralKind::Unknown),
+    }
+}
+
+fn named_struct_composite_kind(name: &str, env: &TypeEnv) -> CompositeLiteralKind {
+    let fields = env.get_struct_fields(name);
+    if matches!(env.get_type_kind(name), Some(TypeKind::Struct)) || !fields.is_empty() {
+        CompositeLiteralKind::Struct {
+            fields,
+            known: true,
+        }
+    } else {
+        CompositeLiteralKind::Unknown
+    }
+}
+
+fn composite_type_name(type_expr: &ast::Expr<'_>) -> Option<String> {
+    match unparen_expr(type_expr) {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(package) = selector.x.as_ref() {
+                Some(format!("{}.{}", package.name, selector.sel.name))
+            } else {
+                Some(selector.sel.name.to_string())
+            }
+        }
+        ast::Expr::IndexExpr(index) => composite_type_name(&index.x),
+        ast::Expr::IndexListExpr(index) => composite_type_name(&index.x),
+        _ => None,
+    }
+}
+
+fn struct_literal_fields(struct_type: &ast::StructType<'_>) -> Vec<(String, GoType)> {
+    let Some(fields) = &struct_type.fields else {
+        return Vec::new();
+    };
+    fields
+        .list
+        .iter()
+        .flat_map(|field| {
+            let ty = field
+                .type_
+                .as_ref()
+                .map(GoType::from_expr)
+                .unwrap_or(GoType::Unknown);
+            struct_field_names(field)
+                .into_iter()
+                .map(move |name| (name, ty.clone()))
+        })
+        .collect()
+}
+
+fn invalid_struct_composite_lit(
+    fields: &[(String, GoType)],
+    known: bool,
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if !known {
+        return None;
+    }
+    let keyed = elems.iter().any(elt_key_value);
+    if keyed {
+        return invalid_keyed_struct_composite_lit(fields, elems, env);
+    }
+    invalid_unkeyed_struct_composite_lit(fields, elems, env)
+}
+
+fn invalid_keyed_struct_composite_lit(
+    fields: &[(String, GoType)],
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let field_types: BTreeMap<_, _> = fields
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty))
+        .collect();
+    let mut seen = BTreeSet::new();
+    for elem in elems {
+        let Some((key, value)) = elt_key_value_exprs(elem) else {
+            return Some(invalid_composite_literal_reason(
+                "all struct literal elements must be keyed when any element is keyed",
+            ));
+        };
+        let Some(field) = struct_literal_key_name(key) else {
+            return Some(invalid_composite_literal_reason(
+                "struct literal key must be a field name",
+            ));
+        };
+        let Some(expected) = field_types.get(field).copied() else {
+            return Some(invalid_composite_literal_reason(format!(
+                "unknown field {field}"
+            )));
+        };
+        if !seen.insert(field.to_string()) {
+            return Some(invalid_composite_literal_reason(format!(
+                "duplicate field {field}"
+            )));
+        }
+        if let Some(reason) = invalid_composite_element_type("field", expected, value, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_unkeyed_struct_composite_lit(
+    fields: &[(String, GoType)],
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if elems.is_empty() {
+        return None;
+    }
+    if elems.len() != fields.len() {
+        return Some(invalid_composite_literal_reason(format!(
+            "struct literal expects {} field value(s), got {}",
+            fields.len(),
+            elems.len()
+        )));
+    }
+    fields
+        .iter()
+        .zip(elems.iter())
+        .find_map(|((_, expected), elem)| {
+            invalid_composite_element_type("field", expected, elem, env)
+        })
+}
+
+fn invalid_array_composite_lit(
+    elem: &GoType,
+    len: Option<usize>,
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    invalid_indexed_composite_lit(elem, len, elems, env)
+}
+
+fn invalid_slice_composite_lit(
+    elem: &GoType,
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    invalid_indexed_composite_lit(elem, None, elems, env)
+}
+
+fn invalid_indexed_composite_lit(
+    elem: &GoType,
+    len: Option<usize>,
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let mut seen_keys = BTreeSet::new();
+    let mut next_index = 0usize;
+    for elem_expr in elems {
+        let value = match elt_key_value_exprs(elem_expr) {
+            Some((key, value)) => {
+                if let Some(reason) = invalid_array_slice_literal_key(key, len, env) {
+                    return Some(reason);
+                }
+                if let Some(index) = integer_constant_index_value(key) {
+                    next_index = index.saturating_add(1);
+                } else {
+                    next_index = next_index.saturating_add(1);
+                }
+                if let Some(fingerprint) = indexed_literal_key_fingerprint(key, env)
+                    && !seen_keys.insert(fingerprint)
+                {
+                    return Some(invalid_composite_literal_reason("duplicate index key"));
+                }
+                value
+            }
+            None => {
+                let index = next_index;
+                next_index = next_index.saturating_add(1);
+                if let Some(array_len) = len
+                    && index >= array_len
+                {
+                    return Some(invalid_composite_literal_reason(format!(
+                        "array literal index {index} out of bounds for length {array_len}"
+                    )));
+                }
+                if !seen_keys.insert(format!("index:{index}")) {
+                    return Some(invalid_composite_literal_reason("duplicate index key"));
+                }
+                elem_expr
+            }
+        };
+        if let Some(reason) = invalid_composite_element_type("element", elem, value, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_array_slice_literal_key(
+    key: &ast::Expr<'_>,
+    len: Option<usize>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let ty = env.resolve_alias(&GoType::infer_expr(key, env));
+    if !(matches!(ty, GoType::Unknown | GoType::Named(_))
+        || ty.is_integer()
+        || (ty.is_float() && expr_is_integer_constant(key)))
+    {
+        return Some(invalid_composite_literal_reason(format!(
+            "index key must be an integer constant, got {}",
+            go_type_display_name(&ty)
+        )));
+    }
+    if expr_is_known_non_constant(key, env) {
+        return Some(invalid_composite_literal_reason(
+            "index key must be a constant",
+        ));
+    }
+    if expr_is_negative_integer_constant(key) {
+        return Some(invalid_composite_literal_reason(
+            "index key must be non-negative",
+        ));
+    }
+    if let (Some(array_len), Some(index)) = (len, integer_constant_index_value(key))
+        && index >= array_len
+    {
+        return Some(invalid_composite_literal_reason(format!(
+            "array literal index {index} out of bounds for length {array_len}"
+        )));
+    }
+    None
+}
+
+fn invalid_map_composite_lit(
+    key: &GoType,
+    value: &GoType,
+    elems: &[ast::Expr<'_>],
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let mut seen_keys = BTreeSet::new();
+    for elem in elems {
+        let Some((key_expr, value_expr)) = elt_key_value_exprs(elem) else {
+            return Some(invalid_composite_literal_reason(
+                "map literal elements must be keyed",
+            ));
+        };
+        if let Some(reason) = invalid_composite_element_type("key", key, key_expr, env) {
+            return Some(reason);
+        }
+        if let Some(fingerprint) = literal_constant_key_fingerprint(key_expr, env)
+            && !seen_keys.insert(fingerprint)
+        {
+            return Some(invalid_composite_literal_reason("duplicate map key"));
+        }
+        if let Some(reason) = invalid_composite_element_type("value", value, value_expr, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_composite_element_type(
+    role: &str,
+    expected: &GoType,
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let expected = env.resolve_alias(expected);
+    let actual = env.resolve_alias(&GoType::infer_expr(expr, env));
+    if types_are_assignable_for_validation(&expected, &actual) {
+        return None;
+    }
+    Some(invalid_composite_literal_reason(format!(
+        "{role} must be assignable to {}, got {}",
+        go_type_display_name(&expected),
+        go_type_display_name(&actual)
+    )))
+}
+
+fn elt_key_value(elem: &ast::Expr<'_>) -> bool {
+    matches!(unparen_expr(elem), ast::Expr::KeyValueExpr(_))
+}
+
+fn elt_key_value_exprs<'a>(
+    elem: &'a ast::Expr<'a>,
+) -> Option<(&'a ast::Expr<'a>, &'a ast::Expr<'a>)> {
+    match unparen_expr(elem) {
+        ast::Expr::KeyValueExpr(kv) => Some((&kv.key, &kv.value)),
+        _ => None,
+    }
+}
+
+fn struct_literal_key_name<'a>(key: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match unparen_expr(key) {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        _ => None,
+    }
+}
+
+fn array_literal_len(len: Option<&ast::Expr<'_>>) -> Option<usize> {
+    integer_constant_index_value(len?)
+}
+
+fn integer_constant_index_value(expr: &ast::Expr<'_>) -> Option<usize> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
+            parse_integer_literal_usize(lit.value)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            integer_constant_index_value(&unary.x)
+        }
+        _ => None,
+    }
+}
+
+fn parse_integer_literal_usize(value: &str) -> Option<usize> {
+    let cleaned = value.replace('_', "");
+    let (radix, digits) = if let Some(rest) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
+        (8, cleaned.trim_start_matches('0'))
+    } else {
+        (10, cleaned.as_str())
+    };
+    usize::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+}
+
+fn expr_is_negative_integer_constant(expr: &ast::Expr<'_>) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
+            expr_is_integer_constant(&unary.x)
+        }
+        _ => false,
+    }
+}
+
+fn indexed_literal_key_fingerprint(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    integer_constant_index_value(expr)
+        .map(|index| format!("index:{index}"))
+        .or_else(|| literal_constant_key_fingerprint(expr, env))
+}
+
+fn literal_constant_key_fingerprint(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    if expr_is_known_non_constant(expr, env) {
+        return None;
+    }
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => Some(format!("{:?}:{}", lit.kind, lit.value)),
+        ast::Expr::Ident(ident) if env.is_const(ident.name) => {
+            Some(format!("const:{}", ident.name))
+        }
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            literal_constant_key_fingerprint(&unary.x, env)
+                .map(|inner| format!("{}{}", unary_op_name(unary.op), inner))
+        }
+        _ => None,
+    }
+}
+
+fn invalid_composite_literal_reason(reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidCompositeLiteral {
         reason: reason.into(),
     }
 }
@@ -13004,6 +13465,193 @@ mod tests {
                     _ = *p
                     ch := make(chan int, 1)
                     _ = <-ch
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_composite_literals() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = map[string]int{"go"}
+                    }
+                "#,
+                "map literal elements must be keyed",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = map[string]int{1: 2}
+                    }
+                "#,
+                "key must be assignable to string, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = map[string]int{"go": "rs"}
+                    }
+                "#,
+                "value must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = map[string]int{"go": 1, "go": 2}
+                    }
+                "#,
+                "duplicate map key",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = []int{"go"}
+                    }
+                "#,
+                "element must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = []int{"go": 1}
+                    }
+                "#,
+                "index key must be an integer constant, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = [1]int{1: 2}
+                    }
+                "#,
+                "array literal index 1 out of bounds for length 1",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { A int }
+
+                    func main() {
+                        _ = T{B: 1}
+                    }
+                "#,
+                "unknown field B",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { A int }
+
+                    func main() {
+                        _ = T{A: "go"}
+                    }
+                "#,
+                "field must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { A int }
+
+                    func main() {
+                        _ = T{A: 1, 2}
+                    }
+                "#,
+                "all struct literal elements must be keyed when any element is keyed",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { A int }
+
+                    func main() {
+                        _ = T{1, 2}
+                    }
+                "#,
+                "struct literal expects 1 field value(s), got 2",
+            ),
+        ];
+
+        for (source, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidCompositeLiteral {
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_composite_literals() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type T struct {
+                    A int
+                    B string
+                }
+                type Ints []int
+                type Dict map[string]int
+
+                func main() {
+                    _ = []int{1, 2}
+                    _ = Ints{0: 1, 2}
+                    _ = [3]int{0: 1, 2: 3}
+                    _ = map[string]int{"go": 1}
+                    _ = Dict{"go": 1}
+                    _ = T{}
+                    _ = T{A: 1}
+                    _ = T{1, "go"}
+                    _ = struct { A int }{A: 1}
+                    _ = []T{{A: 1}, {1, "go"}}
                 }
             "#,
         )
