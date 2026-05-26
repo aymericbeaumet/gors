@@ -600,6 +600,10 @@ value-count checks: the right operand must be assignable to the left type, `+=`
 allows numeric and string left operands, arithmetic compound ops require numeric
 left operands, bitwise/remainder ops require integer left operands, and shifts
 require integer left and right operands.
+Binary expression validation is conservative for unknown/named operands, but it
+checks known operands for logical bool operators, numeric/string `+`, numeric
+arithmetic, integer bitwise/remainder, integer shifts, comparable equality, and
+ordered numeric/string comparisons.
 IR statement validation rejects `++`/`--` operands with known non-numeric types
 before backend lowering; unresolved named/unknown operand types stay permissive
 until type inference can prove them invalid. Map-index `++`/`--` is valid per

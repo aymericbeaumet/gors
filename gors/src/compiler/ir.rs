@@ -1116,6 +1116,7 @@ pub enum DefaultClauseKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatementReason {
+    InvalidBinary { op: String, reason: String },
     DisallowedBuiltin(String),
     InvalidBuiltinCall { name: String, reason: String },
     InvalidCall { target: String, reason: String },
@@ -4673,7 +4674,11 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             invalid_return_in_expr(&array.elt, env)
         }
         ast::Expr::BinaryExpr(binary) => invalid_return_in_expr(&binary.x, env)
-            .or_else(|| invalid_return_in_expr(&binary.y, env)),
+            .or_else(|| invalid_return_in_expr(&binary.y, env))
+            .or_else(|| {
+                invalid_binary_expr(binary, env)
+                    .map(|reason| InvalidStatement::Expression { reason })
+            }),
         ast::Expr::CallExpr(call) => invalid_return_in_call(call, env),
         ast::Expr::ChanType(chan) => invalid_return_in_expr(&chan.value, env),
         ast::Expr::CompositeLit(comp) => {
@@ -5378,7 +5383,8 @@ fn invalid_expression_in_expr(
             .and_then(|len| invalid_expression_in_expr(len, env))
             .or_else(|| invalid_expression_in_expr(&array.elt, env)),
         ast::Expr::BinaryExpr(binary) => invalid_expression_in_expr(&binary.x, env)
-            .or_else(|| invalid_expression_in_expr(&binary.y, env)),
+            .or_else(|| invalid_expression_in_expr(&binary.y, env))
+            .or_else(|| invalid_binary_expr(binary, env)),
         ast::Expr::CallExpr(call) => invalid_expression_in_call(call, env),
         ast::Expr::ChanType(chan) => invalid_expression_in_expr(&chan.value, env),
         ast::Expr::CompositeLit(comp) => comp
@@ -5778,6 +5784,228 @@ fn invalid_map_index_key(
 fn invalid_index_reason(reason: impl Into<String>) -> InvalidStatementReason {
     InvalidStatementReason::InvalidIndex {
         reason: reason.into(),
+    }
+}
+
+fn invalid_binary_expr(
+    binary: &ast::BinaryExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let left = env.resolve_alias(&GoType::infer_expr(&binary.x, env));
+    let right = env.resolve_alias(&GoType::infer_expr(&binary.y, env));
+    if binary_type_is_unknown_or_named(&left) || binary_type_is_unknown_or_named(&right) {
+        return None;
+    }
+    match binary.op {
+        token::Token::LAND | token::Token::LOR => binary_bool_operands(binary.op, &left, &right),
+        token::Token::ADD => binary_add_operands(&left, &right),
+        token::Token::SUB | token::Token::MUL | token::Token::QUO => {
+            binary_numeric_operands(binary.op, &left, &right)
+        }
+        token::Token::REM
+        | token::Token::AND
+        | token::Token::OR
+        | token::Token::XOR
+        | token::Token::AND_NOT => binary_integer_operands(binary.op, &left, &right),
+        token::Token::SHL | token::Token::SHR => binary_shift_operands(binary.op, &left, &right),
+        token::Token::EQL | token::Token::NEQ => {
+            binary_equality_operands(binary, &left, &right, env)
+        }
+        token::Token::LSS | token::Token::LEQ | token::Token::GTR | token::Token::GEQ => {
+            binary_ordered_operands(binary.op, &left, &right)
+        }
+        _ => None,
+    }
+}
+
+fn binary_type_is_unknown_or_named(ty: &GoType) -> bool {
+    matches!(ty, GoType::Unknown | GoType::Named(_))
+}
+
+fn binary_bool_operands(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+) -> Option<InvalidStatementReason> {
+    if matches!((left, right), (GoType::Bool, GoType::Bool)) {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        op,
+        format!(
+            "operands must both be bool, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_add_operands(left: &GoType, right: &GoType) -> Option<InvalidStatementReason> {
+    if (go_type_is_numeric(left) && go_type_is_numeric(right))
+        || matches!((left, right), (GoType::String, GoType::String))
+    {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        token::Token::ADD,
+        format!(
+            "operands must both be numeric or both be string, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_numeric_operands(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+) -> Option<InvalidStatementReason> {
+    if go_type_is_numeric(left) && go_type_is_numeric(right) {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        op,
+        format!(
+            "operands must both be numeric, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_integer_operands(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+) -> Option<InvalidStatementReason> {
+    if left.is_integer() && right.is_integer() {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        op,
+        format!(
+            "operands must both be integer, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_shift_operands(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+) -> Option<InvalidStatementReason> {
+    if left.is_integer() && right.is_integer() {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        op,
+        format!(
+            "shift operands must be integer, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_equality_operands(
+    binary: &ast::BinaryExpr<'_>,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if binary_side_is_nil(&binary.x) || binary_side_is_nil(&binary.y) {
+        return None;
+    }
+    if !type_is_comparable_for_validation(left) || !type_is_comparable_for_validation(right) {
+        return Some(invalid_binary_reason(
+            binary.op,
+            format!(
+                "operands must be comparable, got {} and {}",
+                go_type_display_name(left),
+                go_type_display_name(right)
+            ),
+        ));
+    }
+    if types_are_assignable_for_validation(left, right)
+        || types_are_assignable_for_validation(right, left)
+    {
+        return None;
+    }
+    let left = env.resolve_alias(left);
+    let right = env.resolve_alias(right);
+    Some(invalid_binary_reason(
+        binary.op,
+        format!(
+            "operands have mismatched types {} and {}",
+            go_type_display_name(&left),
+            go_type_display_name(&right)
+        ),
+    ))
+}
+
+fn binary_ordered_operands(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+) -> Option<InvalidStatementReason> {
+    if (go_type_is_numeric(left) && go_type_is_numeric(right))
+        || matches!((left, right), (GoType::String, GoType::String))
+    {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        op,
+        format!(
+            "operands must both be ordered numeric values or strings, got {} and {}",
+            go_type_display_name(left),
+            go_type_display_name(right)
+        ),
+    ))
+}
+
+fn binary_side_is_nil(expr: &ast::Expr<'_>) -> bool {
+    matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
+}
+
+fn type_is_comparable_for_validation(ty: &GoType) -> bool {
+    !matches!(
+        ty,
+        GoType::Slice(_) | GoType::Map(_, _) | GoType::Func { .. }
+    )
+}
+
+fn invalid_binary_reason(op: token::Token, reason: impl Into<String>) -> InvalidStatementReason {
+    InvalidStatementReason::InvalidBinary {
+        op: binary_op_name(op).to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn binary_op_name(op: token::Token) -> &'static str {
+    match op {
+        token::Token::ADD => "+",
+        token::Token::SUB => "-",
+        token::Token::MUL => "*",
+        token::Token::QUO => "/",
+        token::Token::REM => "%",
+        token::Token::AND => "&",
+        token::Token::OR => "|",
+        token::Token::XOR => "^",
+        token::Token::SHL => "<<",
+        token::Token::SHR => ">>",
+        token::Token::AND_NOT => "&^",
+        token::Token::LAND => "&&",
+        token::Token::LOR => "||",
+        token::Token::EQL => "==",
+        token::Token::NEQ => "!=",
+        token::Token::LSS => "<",
+        token::Token::LEQ => "<=",
+        token::Token::GTR => ">",
+        token::Token::GEQ => ">=",
+        _ => "binary operator",
     }
 }
 
@@ -12287,6 +12515,164 @@ mod tests {
                     _ = a[0:1]
                     p := &a
                     _ = p[0:1:1]
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_binary_expressions() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = true + false
+                    }
+                "#,
+                "+",
+                "operands must both be numeric or both be string, got bool and bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = "go" - "g"
+                    }
+                "#,
+                "-",
+                "operands must both be numeric, got string and string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 && 2
+                    }
+                "#,
+                "&&",
+                "operands must both be bool, got int and int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1.5 % 1.0
+                    }
+                "#,
+                "%",
+                "operands must both be integer, got float64 and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 << 1.5
+                    }
+                "#,
+                "<<",
+                "shift operands must be integer, got int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{}
+                        _ = xs == xs
+                    }
+                "#,
+                "==",
+                "operands must be comparable, got slice(int) and slice(int)",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = true < false
+                    }
+                "#,
+                "<",
+                "operands must both be ordered numeric values or strings, got bool and bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 == "1"
+                    }
+                "#,
+                "==",
+                "operands have mismatched types int and string",
+            ),
+        ];
+
+        for (source, op, reason) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::InvalidBinary {
+                        op: op.to_string(),
+                        reason: reason.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_binary_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = 1 + 2
+                    _ = "go" + "rs"
+                    _ = 1.5 / 2
+                    _ = 3 % 2
+                    _ = 1 << 2
+                    _ = true && false
+                    _ = "go" < "rs"
+                    _ = 1 == 2
+                    xs := []int{}
+                    _ = xs == nil
+                    m := map[string]int{}
+                    _ = m != nil
+                    var f func()
+                    _ = f == nil
+                    ch := make(chan int)
+                    _ = ch == ch
                 }
             "#,
         )
