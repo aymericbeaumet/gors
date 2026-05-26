@@ -535,10 +535,11 @@ expressions and single multi-result function calls, using the same conservative
 assignability helper as channel send validation. It remains permissive for
 aggregate, pointer, unknown, named, interface, nil-like values, and numeric
 constants until the type environment preserves full assignability details.
-IR statement validation checks unshadowed builtin `close` calls in expression,
-`go`, and `defer` statement contexts: the call must have exactly one
-send-capable channel argument. Keep other builtin argument validation
-conservative until the IR has complete local type flow.
+IR statement validation checks unshadowed builtin `clear`, `close`, and `delete`
+calls in expression, `go`, and `defer` statement contexts: `clear` requires one
+map or slice argument, `close` requires one send-capable channel argument, and
+`delete` requires a map plus an assignable key. Keep other builtin argument
+validation conservative until the IR has complete local type flow.
 Backend assignment lowering must use the checked assignment-lhs path, including
 `++`/`--` and `for ... = range` targets, so known non-addressable operands fail
 as compiler errors instead of falling back to arbitrary expression codegen.

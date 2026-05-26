@@ -17897,6 +17897,26 @@ mod tests {
                 package main
 
                 func main() {
+                    delete(1, 2)
+                }
+            "#,
+            "invalid expression statement: invalid delete call: first argument must have map type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    clear(1)
+                }
+            "#,
+            "invalid expression statement: invalid clear call: argument must have map or slice type, got int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
                     close(1)
                 }
             "#,

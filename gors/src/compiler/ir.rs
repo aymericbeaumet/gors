@@ -5152,8 +5152,35 @@ fn invalid_builtin_call_statement(
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
         BuiltinCallKind::Close => invalid_builtin_close_call(call, env),
+        BuiltinCallKind::Delete => invalid_builtin_delete_call(call, env),
         _ => None,
+    }
+}
+
+fn invalid_builtin_clear_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 1 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Clear,
+            "expects exactly one argument",
+        ));
+    }
+    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    match ty {
+        GoType::Map(_, _) | GoType::Slice(_) => None,
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Clear,
+            format!(
+                "argument must have map or slice type, got {}",
+                go_type_display_name(&other)
+            ),
+        )),
     }
 }
 
@@ -5180,6 +5207,45 @@ fn invalid_builtin_close_call(
             BuiltinCallKind::Close,
             format!(
                 "argument must have channel type, got {}",
+                go_type_display_name(&other)
+            ),
+        )),
+    }
+}
+
+fn invalid_builtin_delete_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    if args.len() != 2 {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Delete,
+            "expects exactly two arguments",
+        ));
+    }
+    let ty = env.resolve_alias(&GoType::infer_expr(&args[0], env));
+    match ty {
+        GoType::Map(key, _) => {
+            let actual = env.resolve_alias(&GoType::infer_expr(&args[1], env));
+            let expected = env.resolve_alias(&key);
+            if types_are_assignable_for_validation(&expected, &actual) {
+                return None;
+            }
+            Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Delete,
+                format!(
+                    "key must be assignable to {}, got {}",
+                    go_type_display_name(&expected),
+                    go_type_display_name(&actual)
+                ),
+            ))
+        }
+        GoType::Unknown | GoType::Named(_) => None,
+        other => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Delete,
+            format!(
+                "first argument must have map type, got {}",
                 go_type_display_name(&other)
             ),
         )),
@@ -9539,8 +9605,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_close_builtin_calls() {
+    fn rejects_invalid_statement_builtin_calls() {
         let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        clear(1)
+                    }
+                "#,
+                "clear",
+                "argument must have map or slice type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        clear(xs, xs)
+                    }
+                "#,
+                "clear",
+                "expects exactly one argument",
+            ),
             (
                 r#"
                     package main
@@ -9549,6 +9638,7 @@ mod tests {
                         close(1)
                     }
                 "#,
+                "close",
                 "argument must have channel type, got int",
             ),
             (
@@ -9560,6 +9650,7 @@ mod tests {
                         close(ch)
                     }
                 "#,
+                "close",
                 "cannot close receive-only channel",
             ),
             (
@@ -9571,11 +9662,47 @@ mod tests {
                         close(ch, ch)
                     }
                 "#,
+                "close",
                 "expects exactly one argument",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        delete(1, 2)
+                    }
+                "#,
+                "delete",
+                "first argument must have map type, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        m := map[string]int{"x": 1}
+                        delete(m, 1)
+                    }
+                "#,
+                "delete",
+                "key must be assignable to string, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        m := map[string]int{"x": 1}
+                        delete(m)
+                    }
+                "#,
+                "delete",
+                "expects exactly two arguments",
             ),
         ];
 
-        for (source, reason) in cases {
+        for (source, name, reason) in cases {
             let file = parse_file("test.go", source).unwrap();
             let mut env = TypeEnv::new();
             env.scan_file(&file);
@@ -9589,7 +9716,7 @@ mod tests {
                 super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
                 Some(super::InvalidStatement::Expr {
                     reason: super::InvalidStatementReason::InvalidBuiltinCall {
-                        name: "close".to_string(),
+                        name: name.to_string(),
                         reason: reason.to_string(),
                     },
                 })
