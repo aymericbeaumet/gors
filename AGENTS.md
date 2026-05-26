@@ -91,7 +91,8 @@ gors-builtin/
 - Go expression switches lower through an explicit selected-case slot plus a
   fallthrough flag. This preserves source-order case expression evaluation,
   lets `default` appear anywhere while still running only when no case matches,
-  and executes only explicit `fallthrough` chains.
+  executes only explicit `fallthrough` chains, and maps unlabeled case-level
+  `break` to the generated Rust switch block label.
 - Non-void functions and function literals with no explicit final Rust `return`
   get a tail `panic!("gors: missing return")` fallback. Go rejects reachable
   missing-return paths, but valid Go control-flow constructs such as exhaustive

@@ -11,7 +11,6 @@
 //! Not all Go constructs can be directly translated to Rust. Currently
 //! unsupported features include:
 //!
-//! - Defer statements
 //! - Goto statements
 //! - Some complex type expressions
 
@@ -36,6 +35,7 @@ use syn::Token;
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -2255,6 +2255,7 @@ fn compile_error_expr(message: impl AsRef<str>) -> syn::Expr {
 /// ```
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     set_import_renames(BTreeMap::new());
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
@@ -2280,6 +2281,7 @@ pub fn compile_with_type_env_and_import_renames(
     import_renames: BTreeMap<String, String>,
 ) -> Result<syn::File, CompilerError> {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     set_import_renames(import_renames);
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -2416,6 +2418,8 @@ fn compile_program_impl(
     program: crate::parser::ParsedProgram,
     source_map_config: Option<(&str, &str)>,
 ) -> Result<CompiledProgram, CompilerError> {
+    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
     collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
@@ -12851,7 +12855,23 @@ impl TryFrom<ast::LabeledStmt<'_>> for Vec<syn::Stmt> {
 
         let inner_stmts: Vec<syn::Stmt> = stmt.try_into()?;
 
-        Ok(inner_stmts)
+        Ok(vec![syn::Stmt::Expr(
+            syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: Some(syn::Label {
+                    name: syn::Lifetime {
+                        apostrophe: Span::call_site(),
+                        ident: label_ident,
+                    },
+                    colon_token: <Token![:]>::default(),
+                }),
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: inner_stmts,
+                },
+            }),
+            Some(<Token![;]>::default()),
+        )])
     }
 }
 
@@ -12994,6 +13014,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             ));
         }
 
+        let switch_label = next_switch_label();
         let fallthrough_ident = syn::Ident::new("__gors_switch_fallthrough", Span::mixed_site());
         let selected_ident = syn::Ident::new("__gors_switch_selected", Span::mixed_site());
         let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
@@ -13041,16 +13062,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
 
         for (index, _cond, body) in lowered_cases {
             let case_index = syn::LitInt::new(&index.to_string(), Span::mixed_site());
-            let mut body_stmts: Vec<syn::Stmt> =
-                vec![syn::parse_quote! { #fallthrough_ident = false; }];
-            for stmt in body {
-                if matches!(&stmt, ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::FALLTHROUGH)
-                {
-                    body_stmts.push(syn::parse_quote! { #fallthrough_ident = true; });
-                } else {
-                    body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-                }
-            }
+            let body_stmts = compile_switch_case_body(body, &switch_label, &fallthrough_ident)?;
             stmts.push(syn::parse_quote! {
                 if #selected_ident == #case_index || #fallthrough_ident {
                     #(#body_stmts)*
@@ -13060,13 +13072,189 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
 
         Ok(syn::Expr::Block(syn::ExprBlock {
             attrs: vec![],
-            label: None,
+            label: Some(syn::Label {
+                name: switch_label,
+                colon_token: <Token![:]>::default(),
+            }),
             block: syn::Block {
                 brace_token: syn::token::Brace::default(),
                 stmts,
             },
         }))
     }
+}
+
+fn compile_switch_case_body(
+    body: Vec<ast::Stmt>,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let mut stmts = vec![syn::parse_quote! { #fallthrough_ident = false; }];
+    stmts.extend(compile_switch_case_stmt_list(
+        body,
+        switch_label,
+        fallthrough_ident,
+    )?);
+    Ok(stmts)
+}
+
+fn compile_switch_case_stmt_list(
+    body: Vec<ast::Stmt>,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let mut stmts = vec![];
+    for stmt in body {
+        let (compiled, stop) = compile_switch_case_stmt(stmt, switch_label, fallthrough_ident)?;
+        stmts.extend(compiled);
+        if stop {
+            break;
+        }
+    }
+    Ok(stmts)
+}
+
+fn compile_switch_case_stmt(
+    stmt: ast::Stmt,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+) -> Result<(Vec<syn::Stmt>, bool), CompilerError> {
+    match stmt {
+        ast::Stmt::BranchStmt(branch)
+            if branch.tok == token::Token::BREAK && branch.label.is_none() =>
+        {
+            Ok((
+                vec![syn::Stmt::Expr(
+                    syn::Expr::Break(syn::ExprBreak {
+                        attrs: vec![],
+                        break_token: <Token![break]>::default(),
+                        label: Some(switch_label.clone()),
+                        expr: None,
+                    }),
+                    Some(<Token![;]>::default()),
+                )],
+                true,
+            ))
+        }
+        ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::FALLTHROUGH => {
+            Ok((vec![syn::parse_quote! { #fallthrough_ident = true; }], true))
+        }
+        ast::Stmt::BlockStmt(block) => {
+            let stmts = compile_switch_case_stmt_list(block.list, switch_label, fallthrough_ident)?;
+            Ok((
+                vec![syn::Stmt::Expr(
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts,
+                        },
+                    }),
+                    None,
+                )],
+                false,
+            ))
+        }
+        ast::Stmt::IfStmt(if_stmt) => Ok((
+            compile_switch_case_if_stmt(if_stmt, switch_label, fallthrough_ident)?,
+            false,
+        )),
+        other => Ok((Vec::<syn::Stmt>::try_from(other)?, false)),
+    }
+}
+
+fn compile_switch_case_if_stmt(
+    if_stmt: ast::IfStmt,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let has_init = if_stmt.init.is_some();
+    let init_stmts: Vec<syn::Stmt> = if let Some(init) = *if_stmt.init {
+        Vec::<syn::Stmt>::try_from(init)?
+    } else {
+        vec![]
+    };
+
+    let then_stmts =
+        compile_switch_case_stmt_list(if_stmt.body.list, switch_label, fallthrough_ident)?;
+    let else_branch = if let Some(else_) = *if_stmt.else_ {
+        Some((
+            <Token![else]>::default(),
+            Box::new(match else_ {
+                ast::Stmt::IfStmt(nested) => {
+                    let nested_stmts =
+                        compile_switch_case_if_stmt(nested, switch_label, fallthrough_ident)?;
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts: nested_stmts,
+                        },
+                    })
+                }
+                ast::Stmt::BlockStmt(block) => {
+                    let stmts =
+                        compile_switch_case_stmt_list(block.list, switch_label, fallthrough_ident)?;
+                    syn::Expr::Block(syn::ExprBlock {
+                        attrs: vec![],
+                        label: None,
+                        block: syn::Block {
+                            brace_token: syn::token::Brace::default(),
+                            stmts,
+                        },
+                    })
+                }
+                _ => {
+                    return Err(CompilerError::UnsupportedConstruct(
+                        "unsupported else branch type".to_string(),
+                    ));
+                }
+            }),
+        ))
+    } else {
+        None
+    };
+
+    let if_expr = syn::Expr::If(syn::ExprIf {
+        attrs: vec![],
+        if_token: <Token![if]>::default(),
+        cond: Box::new(if_stmt.cond.into()),
+        then_branch: syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: then_stmts,
+        },
+        else_branch,
+    });
+
+    if has_init {
+        let mut block_stmts = init_stmts;
+        block_stmts.push(syn::Stmt::Expr(if_expr, None));
+        Ok(vec![syn::Stmt::Expr(
+            syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: None,
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: block_stmts,
+                },
+            }),
+            None,
+        )])
+    } else {
+        Ok(vec![syn::Stmt::Expr(if_expr, None)])
+    }
+}
+
+fn next_switch_label() -> syn::Lifetime {
+    let n = SWITCH_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
 }
 
 fn build_case_condition(
