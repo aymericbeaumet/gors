@@ -6650,7 +6650,7 @@ fn is_runtime_interface_hook(name: &str) -> bool {
 /// ```
 /// use gors::{parser, compiler};
 ///
-/// let go_source = "package main\n\nfunc main() { x := 42 }";
+/// let go_source = "package main\n\nfunc main() { x := 42; _ = x }";
 /// let go_ast = parser::parse_file("example.go", go_source).unwrap();
 /// let rust_ast = compiler::compile_with_source_map(go_ast, "example.go", go_source).unwrap();
 /// ```
@@ -6664,6 +6664,23 @@ pub fn compile_with_source_map(
         t.borrow_mut().start(go_file, "output.rs", Some(go_source));
     });
 
+    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
+    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
+    LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
+    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
+    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    set_import_renames(BTreeMap::new());
+    set_import_package_names(BTreeMap::new());
+    let mut type_env = typeinfer::TypeEnv::new();
+    type_env.scan_file(&file);
+    let import_package_names = file_import_package_names(&file);
+    validate_file_with_type_env_and_import_package_names(&file, &type_env, &import_package_names)?;
+    validate_unused_imports(&file, &import_package_names)?;
+    let _ir = ir::lower_file(&file, &type_env);
+    set_import_package_names(import_package_names);
+    set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
@@ -18994,6 +19011,25 @@ func main() {
             names.contains(&"main"),
             "Expected 'main' in source map names"
         );
+    }
+
+    #[test]
+    fn compile_with_source_map_applies_single_file_validation() {
+        clear_source_map_tracker();
+        let go_source = r#"package main
+
+import "fmt"
+
+func main() {
+}"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        match compile_with_source_map(parsed, "test.go", go_source) {
+            Err(super::CompilerError::UnsupportedConstruct(err)) => {
+                assert!(err.contains("fmt imported and not used"), "{err:?}");
+            }
+            Err(err) => panic!("expected validation rejection, got {err:?}"),
+            Ok(_) => panic!("expected validation rejection"),
+        }
     }
 
     #[test]

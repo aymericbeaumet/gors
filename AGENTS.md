@@ -502,6 +502,9 @@ receivers, named results, package-level variables, blank bindings, and local
 const/type declarations. A plain assignment to a bare identifier does not count
 as use; reads, compound assignments, increments/decrements, and uses from nested
 function literals do.
+`compile_with_source_map()` must use the same single-file validation and import
+package-name resolution as `compile()` before lowering; source-map generation
+must not bypass Go spec checks.
 IR label validation rejects duplicate labels and labels that are never targeted
 by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
 function body; do not count labels or label uses inside nested function
