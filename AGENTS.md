@@ -437,6 +437,9 @@ small local interface for the wasm-bindgen surface when lint needs those types.
 The webpack dev server must accept both `127.0.0.1` and `localhost` hosts,
 because Playwright uses the former while local browser testing commonly uses the
 latter.
+Monaco must stay restricted to the playground languages (`go` and `rust`) in
+webpack. Re-enabling the default language set ships large unused workers such as
+TypeScript and can put Chrome under unnecessary `Map`/source-index pressure.
 Webpack source maps are disabled by default, including during `npm run dev`, to
 avoid browser DevTools exhausting source-map `Map` state on the large generated
 bundle. Set `GORS_WEB_SOURCE_MAPS=1` only when intentionally debugging webpack

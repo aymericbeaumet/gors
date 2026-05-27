@@ -133,7 +133,9 @@ module.exports = () => {
 				filename: "conformance/index.html",
 			}),
 			new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
-			new MonacoWebpackPlugin(),
+			new MonacoWebpackPlugin({
+				languages: ["go", "rust"],
+			}),
 		],
 		devServer: {
 			allowedHosts: ["127.0.0.1", "localhost"],
