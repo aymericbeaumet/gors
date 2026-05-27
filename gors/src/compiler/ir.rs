@@ -9891,7 +9891,7 @@ fn invalid_slice_bounds(
 
 fn invalid_integer_bound(bound: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(bound, env));
-    if matches!(ty, GoType::Unknown | GoType::Named(_)) || ty.is_integer() {
+    if matches!(ty, GoType::Unknown | GoType::Named(_)) || binary_operand_is_integer(&ty, bound) {
         return None;
     }
     Some(invalid_slice_reason(format!(
@@ -18818,6 +18818,17 @@ mod tests {
                     package main
 
                     func main() {
+                        xs := []int{1}
+                        _ = xs[:1.5]
+                    }
+                "#,
+                "bound must have integer type, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         s := "go"
                         _ = s[0:1:1]
                     }
@@ -18858,7 +18869,9 @@ mod tests {
                     xs := []int{1, 2}
                     _ = xs[0:]
                     _ = xs[:1]
+                    _ = xs[:1.0]
                     _ = xs[0:1:1]
+                    _ = xs[0:1.0:1.0]
                     s := "go"
                     _ = s[0:1]
                     a := [2]int{1, 2}
