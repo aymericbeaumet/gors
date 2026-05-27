@@ -9070,7 +9070,7 @@ fn invalid_binary_expr(
         | token::Token::XOR
         | token::Token::AND_NOT => binary_integer_operands(&left, &right, binary, env),
         token::Token::SHL | token::Token::SHR => {
-            binary_shift_operands(binary.op, &left, &right, binary)
+            binary_shift_operands(binary.op, &left, &right, binary, env)
         }
         token::Token::EQL | token::Token::NEQ => {
             binary_equality_operands(binary, &left, &right, env)
@@ -9216,8 +9216,11 @@ fn binary_shift_operands(
     left: &GoType,
     right: &GoType,
     binary: &ast::BinaryExpr<'_>,
+    env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    if binary_operand_is_integer(left, &binary.x) && binary_operand_is_integer(right, &binary.y) {
+    if binary_shift_left_operand_is_integer(left, &binary.x, &binary.y, env)
+        && binary_operand_is_integer(right, &binary.y)
+    {
         return None;
     }
     Some(invalid_binary_reason(
@@ -9228,6 +9231,18 @@ fn binary_shift_operands(
             go_type_display_name(right)
         ),
     ))
+}
+
+fn binary_shift_left_operand_is_integer(
+    ty: &GoType,
+    left_expr: &ast::Expr<'_>,
+    right_expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    ty.is_integer()
+        || (ty.is_float()
+            && expr_is_integer_constant(left_expr)
+            && expr_is_untyped_constant_for_comparison(right_expr, env))
 }
 
 fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
@@ -18754,6 +18769,18 @@ mod tests {
                     package main
 
                     func main() {
+                        s := uint(1)
+                        _ = 1.0 << s
+                    }
+                "#,
+                "<<",
+                "shift operands must be integer, got float64 and uint",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         xs := []int{}
                         _ = xs == xs
                     }
@@ -18972,6 +18999,7 @@ mod tests {
                     _ = n64 & 3
                     _ = n64 != 2*n64
                     binBits := uint(i+1) * 8
+                    _ = 1.0 << 2
                     _ = n64 >= -1<<binBits
                     _ = n64 < 1<<binBits
                     var c128 complex128
