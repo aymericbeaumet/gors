@@ -8701,6 +8701,12 @@ fn is_general_type_conversion_fun(fun: &ast::Expr) -> bool {
     TYPE_ENV.with(|env| ir::is_general_type_conversion_fun(fun, &env.borrow()))
 }
 
+fn special_type_conversion_kind(
+    call_expr: &ast::CallExpr,
+) -> Option<ir::SpecialTypeConversionKind> {
+    TYPE_ENV.with(|env| ir::special_type_conversion(call_expr, &env.borrow()))
+}
+
 fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::CallExpr(call) => {
@@ -14128,7 +14134,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 ) {
                     return compile_unsafe_intrinsic_call(call_expr);
                 }
-                if let Some(kind) = ir::special_type_conversion(&call_expr) {
+                if let Some(kind) = special_type_conversion_kind(&call_expr) {
                     return compile_type_conversion(call_expr, kind.name());
                 }
                 if call_expr.args.as_ref().is_some_and(|args| args.len() == 1)
@@ -18693,6 +18699,58 @@ var X int
         super::set_type_env(super::typeinfer::TypeEnv::new());
 
         assert_eq!(builtin_kind, Some(super::ir::BuiltinCallKind::Print));
+        assert_eq!(shadowed_kind, None);
+    }
+
+    #[test]
+    fn it_should_not_treat_shadowed_predeclared_type_call_as_conversion() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = string("x")
+                }
+            "#,
+        )
+        .unwrap();
+        let crate::ast::Decl::FuncDecl(func) = parsed.decls.first().expect("expected function")
+        else {
+            panic!("expected function declaration");
+        };
+        let crate::ast::Stmt::AssignStmt(assign) = func
+            .body
+            .as_ref()
+            .and_then(|body| body.list.first())
+            .expect("expected assignment")
+        else {
+            panic!("expected assignment");
+        };
+        let crate::ast::Expr::CallExpr(call) = assign.rhs.first().expect("expected rhs call")
+        else {
+            panic!("expected call expression");
+        };
+
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+        let conversion_kind = super::special_type_conversion_kind(call);
+
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_var(
+            "string",
+            super::typeinfer::GoType::Func {
+                params: vec![super::typeinfer::GoType::String],
+                results: vec![super::typeinfer::GoType::String],
+            },
+        );
+        super::set_type_env(env);
+        let shadowed_kind = super::special_type_conversion_kind(call);
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(
+            conversion_kind,
+            Some(super::ir::SpecialTypeConversionKind::String)
+        );
         assert_eq!(shadowed_kind, None);
     }
 

@@ -304,6 +304,21 @@ impl GoType {
                 // For function calls, return the first result type
                 match &*call.fun {
                     ast::Expr::Ident(id) => {
+                        if let Some(var_ty) = env.get_var(id.name) {
+                            return match var_ty {
+                                GoType::Func { results, .. } => {
+                                    results.first().cloned().unwrap_or(GoType::Unknown)
+                                }
+                                _ => GoType::Unknown,
+                            };
+                        }
+                        if env.has_func(id.name) {
+                            return env.get_func_return(id.name);
+                        }
+                        if env.get_type_kind(id.name).is_some() {
+                            return GoType::from_name(id.name);
+                        }
+
                         // Builtin functions
                         match id.name {
                             "len" | "cap" => GoType::Int,
@@ -359,12 +374,7 @@ impl GoType {
                                     _ => GoType::Float64,
                                 })
                                 .unwrap_or(GoType::Float64),
-                            _ => match env.get_var(id.name) {
-                                Some(GoType::Func { results, .. }) => {
-                                    results.first().cloned().unwrap_or(GoType::Unknown)
-                                }
-                                _ => env.get_func_return(id.name),
-                            },
+                            _ => GoType::Unknown,
                         }
                     }
                     ast::Expr::SelectorExpr(sel) => {

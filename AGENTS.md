@@ -521,6 +521,11 @@ Backend builtin-call lowering must use the same type-env-aware unshadowed check
 as IR validation. A local, package-level, or range binding named `print`,
 `println`, `len`, or any other predeclared builtin is an ordinary Go identifier,
 not a builtin lowering trigger.
+Backend special type-conversion lowering follows the same shadowing rule for
+predeclared type names. Calls such as `string(x)`, `any(x)`, or `[]byte(x)` are
+special conversions only when their predeclared type identifiers are unshadowed;
+otherwise they must continue through ordinary function-call or declared-type
+conversion lowering.
 IR assignment validation applies type checks to ordinary assignments and to
 redeclarations within `:=`: existing non-blank names on the left side of a short
 variable declaration must receive values assignable to their original type.

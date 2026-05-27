@@ -479,25 +479,46 @@ pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
     }
 }
 
-pub fn special_type_conversion(call_expr: &ast::CallExpr<'_>) -> Option<SpecialTypeConversionKind> {
+pub fn special_type_conversion(
+    call_expr: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<SpecialTypeConversionKind> {
     let args = call_expr.args.as_ref()?;
     if args.len() != 1 {
         return None;
     }
     match &*call_expr.fun {
-        ast::Expr::Ident(id) if id.name == "string" => Some(SpecialTypeConversionKind::String),
-        ast::Expr::Ident(id) if id.name == "any" => Some(SpecialTypeConversionKind::Any),
-        ast::Expr::Ident(id) if id.name == "complex64" => {
+        ast::Expr::Ident(id)
+            if unshadowed_predeclared_type_name(id.name, env) && id.name == "string" =>
+        {
+            Some(SpecialTypeConversionKind::String)
+        }
+        ast::Expr::Ident(id)
+            if unshadowed_predeclared_type_name(id.name, env) && id.name == "any" =>
+        {
+            Some(SpecialTypeConversionKind::Any)
+        }
+        ast::Expr::Ident(id)
+            if unshadowed_predeclared_type_name(id.name, env) && id.name == "complex64" =>
+        {
             Some(SpecialTypeConversionKind::Complex64)
         }
-        ast::Expr::Ident(id) if id.name == "complex128" => {
+        ast::Expr::Ident(id)
+            if unshadowed_predeclared_type_name(id.name, env) && id.name == "complex128" =>
+        {
             Some(SpecialTypeConversionKind::Complex128)
         }
         ast::Expr::ArrayType(arr) if arr.len.is_none() => match &*arr.elt {
-            ast::Expr::Ident(elt_id) if matches!(elt_id.name, "byte" | "uint8") => {
+            ast::Expr::Ident(elt_id)
+                if unshadowed_predeclared_type_name(elt_id.name, env)
+                    && matches!(elt_id.name, "byte" | "uint8") =>
+            {
                 Some(SpecialTypeConversionKind::ByteSlice)
             }
-            ast::Expr::Ident(elt_id) if matches!(elt_id.name, "rune" | "int32") => {
+            ast::Expr::Ident(elt_id)
+                if unshadowed_predeclared_type_name(elt_id.name, env)
+                    && matches!(elt_id.name, "rune" | "int32") =>
+            {
                 Some(SpecialTypeConversionKind::RuneSlice)
             }
             _ => None,
@@ -515,27 +536,47 @@ pub fn is_general_type_conversion_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> boo
         | ast::Expr::InterfaceType(_)
         | ast::Expr::StructType(_) => true,
         ast::Expr::ArrayType(arr) => arr.len.is_some(),
-        ast::Expr::IndexExpr(index) => type_name(&index.x)
-            .and_then(|name| env.get_type_kind(&name).cloned())
-            .is_some(),
-        ast::Expr::IndexListExpr(index) => type_name(&index.x)
-            .and_then(|name| env.get_type_kind(&name).cloned())
-            .is_some(),
+        ast::Expr::IndexExpr(index) => {
+            type_name(&index.x).is_some_and(|name| declared_type_name_is_unshadowed(&name, env))
+        }
+        ast::Expr::IndexListExpr(index) => {
+            type_name(&index.x).is_some_and(|name| declared_type_name_is_unshadowed(&name, env))
+        }
         ast::Expr::SelectorExpr(sel) => {
             if let ast::Expr::Ident(pkg) = &*sel.x {
                 if pkg.name == "unsafe" && sel.sel.name == "Pointer" {
                     return true;
                 }
                 let key = format!("{}.{}", pkg.name, sel.sel.name);
-                return env.get_type_kind(&key).is_some();
+                return declared_type_name_is_unshadowed(&key, env);
             }
             false
         }
-        ast::Expr::Ident(id) => {
-            is_predeclared_type_name(id.name) || env.get_type_kind(id.name).is_some()
-        }
+        ast::Expr::Ident(id) => ident_denotes_conversion_type(id.name, env),
         _ => false,
     }
+}
+
+fn unshadowed_predeclared_type_name(name: &str, env: &TypeEnv) -> bool {
+    is_predeclared_type_name(name)
+        && env.get_var(name).is_none()
+        && !env.has_func(name)
+        && !env.is_const(name)
+        && env.get_type_kind(name).is_none()
+}
+
+fn ident_denotes_conversion_type(name: &str, env: &TypeEnv) -> bool {
+    env.get_var(name).is_none()
+        && !env.has_func(name)
+        && !env.is_const(name)
+        && (is_predeclared_type_name(name) || env.get_type_kind(name).is_some())
+}
+
+fn declared_type_name_is_unshadowed(name: &str, env: &TypeEnv) -> bool {
+    env.get_var(name).is_none()
+        && !env.has_func(name)
+        && !env.is_const(name)
+        && env.get_type_kind(name).is_some()
 }
 
 fn type_name(expr: &ast::Expr<'_>) -> Option<String> {
@@ -559,6 +600,8 @@ fn is_predeclared_type_name(name: &str) -> bool {
             | "string"
             | "float32"
             | "float64"
+            | "complex64"
+            | "complex128"
             | "int"
             | "int8"
             | "int16"
@@ -13023,15 +13066,11 @@ fn unsafe_disallowed_builtin_statement_name(call: &ast::CallExpr<'_>) -> Option<
 fn call_is_type_conversion(call: &ast::CallExpr<'_>, env: &TypeEnv) -> bool {
     let fun = unparen_expr(&call.fun);
     match fun {
-        ast::Expr::Ident(ident) => {
-            env.get_var(ident.name).is_none()
-                && !env.has_func(ident.name)
-                && (is_predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some())
-        }
+        ast::Expr::Ident(ident) => ident_denotes_conversion_type(ident.name, env),
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
                 let name = format!("{}.{}", pkg.name, selector.sel.name);
-                return env.get_type_kind(&name).is_some() && !env.has_func(&name);
+                return declared_type_name_is_unshadowed(&name, env);
             }
             false
         }
@@ -13042,12 +13081,12 @@ fn call_is_type_conversion(call: &ast::CallExpr<'_>, env: &TypeEnv) -> bool {
         | ast::Expr::MapType(_)
         | ast::Expr::StarExpr(_)
         | ast::Expr::StructType(_) => true,
-        ast::Expr::IndexExpr(index) => type_name(&index.x)
-            .and_then(|name| env.get_type_kind(&name).cloned())
-            .is_some(),
-        ast::Expr::IndexListExpr(index) => type_name(&index.x)
-            .and_then(|name| env.get_type_kind(&name).cloned())
-            .is_some(),
+        ast::Expr::IndexExpr(index) => {
+            type_name(&index.x).is_some_and(|name| declared_type_name_is_unshadowed(&name, env))
+        }
+        ast::Expr::IndexListExpr(index) => {
+            type_name(&index.x).is_some_and(|name| declared_type_name_is_unshadowed(&name, env))
+        }
         _ => false,
     }
 }
@@ -18454,14 +18493,14 @@ mod tests {
             panic!("expected string call");
         };
         assert_eq!(
-            super::special_type_conversion(string_call),
+            super::special_type_conversion(string_call, &env),
             Some(super::SpecialTypeConversionKind::String)
         );
         let Some(byte_slice_call) = calls.get(1) else {
             panic!("expected byte slice call");
         };
         assert_eq!(
-            super::special_type_conversion(byte_slice_call),
+            super::special_type_conversion(byte_slice_call, &env),
             Some(super::SpecialTypeConversionKind::ByteSlice)
         );
         let Some(named_call) = calls.get(2) else {
@@ -18474,6 +18513,25 @@ mod tests {
         assert!(!super::is_general_type_conversion_fun(
             &helper_call.fun,
             &env
+        ));
+
+        let mut shadowed = env.clone();
+        shadowed.set_var(
+            "string",
+            GoType::Func {
+                params: vec![GoType::String],
+                results: vec![GoType::String],
+            },
+        );
+        shadowed.set_var("byte", GoType::Int);
+        assert_eq!(super::special_type_conversion(string_call, &shadowed), None);
+        assert_eq!(
+            super::special_type_conversion(byte_slice_call, &shadowed),
+            None
+        );
+        assert!(!super::is_general_type_conversion_fun(
+            &string_call.fun,
+            &shadowed
         ));
     }
 
