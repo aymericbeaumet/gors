@@ -85,6 +85,10 @@ gors-builtin/
   release the mutex before invoking the function. This is required for recursive
   function values. Do not reintroduce `Rc<RefCell<...>>`; keep the representation
   thread-safe so goroutine lowering can share the same value model.
+- Function item values can come from local identifiers or imported package
+  selectors. Keep selector type inference returning `GoType::Func` for package
+  functions so `f := pkg.Func; f(args...)` lowers through the shared
+  function-value path.
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are stored
