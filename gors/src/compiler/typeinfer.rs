@@ -1323,6 +1323,8 @@ fn extract_type_name<'a>(expr: &'a ast::Expr<'a>) -> &'a str {
     match expr {
         ast::Expr::Ident(id) => id.name,
         ast::Expr::StarExpr(star) => extract_type_name(&star.x),
+        ast::Expr::IndexExpr(index) => extract_type_name(&index.x),
+        ast::Expr::IndexListExpr(index) => extract_type_name(&index.x),
         _ => "",
     }
 }

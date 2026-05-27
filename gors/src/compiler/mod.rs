@@ -1246,11 +1246,13 @@ fn generics_for_idents(idents: &[syn::Ident]) -> syn::Generics {
     }
     let mut params = syn::punctuated::Punctuated::new();
     for ident in idents {
+        let mut bounds = syn::punctuated::Punctuated::new();
+        bounds.push(syn::parse_quote! { Clone });
         params.push(syn::GenericParam::Type(syn::TypeParam {
             attrs: vec![],
             ident: ident.clone(),
-            colon_token: None,
-            bounds: syn::punctuated::Punctuated::new(),
+            colon_token: Some(<Token![:]>::default()),
+            bounds,
             eq_token: None,
             default: None,
         }));
@@ -9875,6 +9877,49 @@ fn has_unnamed_field_values(field_values: &[syn::FieldValue]) -> bool {
         .any(|fv| matches!(fv.member, syn::Member::Unnamed(_)))
 }
 
+fn struct_literal_path_from_type_expr(type_expr: &ast::Expr) -> Option<(syn::Path, String)> {
+    let type_name = extract_type_name(type_expr)?;
+    let syn::Type::Path(type_path) = type_from_expr_ref(type_expr) else {
+        return None;
+    };
+    Some((type_path.path, type_name))
+}
+
+fn compile_struct_composite_lit(
+    path: syn::Path,
+    type_name: Option<&str>,
+    raw_elts: Vec<ast::Expr>,
+) -> syn::Expr {
+    let field_values = raw_elts_to_field_values(type_name, raw_elts);
+    if field_values.is_empty() || has_unnamed_field_values(&field_values) {
+        syn::parse_quote! { #path::default() }
+    } else {
+        let all_struct_fields_set = type_name.is_some_and(|type_name| {
+            TYPE_ENV.with(|env| {
+                let count = env.borrow().get_struct_fields(type_name).len();
+                count > 0 && field_values.len() == count
+            })
+        });
+        let mut fields = syn::punctuated::Punctuated::new();
+        for fv in field_values {
+            fields.push(fv);
+        }
+        if !fields.trailing_punct() {
+            fields.push_punct(<syn::Token![,]>::default());
+        }
+        syn::Expr::Struct(syn::ExprStruct {
+            attrs: vec![],
+            qself: None,
+            path,
+            brace_token: syn::token::Brace::default(),
+            fields,
+            dot2_token: (!all_struct_fields_set).then(<syn::Token![..]>::default),
+            rest: (!all_struct_fields_set)
+                .then(|| Box::new(syn::parse_quote! { Default::default() })),
+        })
+    }
+}
+
 fn compile_array_literal_element(
     elt: ast::Expr,
     elem_type_expr: &ast::Expr,
@@ -10047,6 +10092,32 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                         rest: (!all_struct_fields_set)
                             .then(|| Box::new(syn::parse_quote! { Default::default() })),
                     })
+                }
+            }
+            ast::Expr::IndexExpr(index) => {
+                let type_expr = ast::Expr::IndexExpr(index);
+                if let Some((path, type_name)) = struct_literal_path_from_type_expr(&type_expr) {
+                    compile_struct_composite_lit(path, Some(&type_name), raw_elts)
+                } else {
+                    let elts = compile_raw_elts(raw_elts);
+                    if elts.is_empty() {
+                        syn::parse_quote! { Vec::new() }
+                    } else {
+                        syn::parse_quote! { Vec::from([#(#elts),*]) }
+                    }
+                }
+            }
+            ast::Expr::IndexListExpr(index_list) => {
+                let type_expr = ast::Expr::IndexListExpr(index_list);
+                if let Some((path, type_name)) = struct_literal_path_from_type_expr(&type_expr) {
+                    compile_struct_composite_lit(path, Some(&type_name), raw_elts)
+                } else {
+                    let elts = compile_raw_elts(raw_elts);
+                    if elts.is_empty() {
+                        syn::parse_quote! { Vec::new() }
+                    } else {
+                        syn::parse_quote! { Vec::from([#(#elts),*]) }
+                    }
                 }
             }
             ast::Expr::ArrayType(array_type) => {
@@ -10961,7 +11032,9 @@ fn compile_expr_with_expected(
             let compiled: syn::Expr = expr.into();
             return syn::parse_quote! { (#compiled).to_vec() };
         }
-        if expr_should_clone_for_value_param(&expr, expected, &actual) {
+        if !matches!(expr, ast::Expr::SelectorExpr(_))
+            && expr_should_clone_for_value_param(&expr, expected, &actual)
+        {
             let compiled: syn::Expr = expr.into();
             return syn::parse_quote! { (#compiled).clone() };
         }
@@ -23016,5 +23089,61 @@ func main() {
                 pub fn main() {}
             },
         );
+    }
+
+    #[test]
+    fn it_should_compile_generic_receiver_methods() {
+        let go_input = r#"
+package main
+
+type Holder[T any] struct {
+	value T
+}
+
+func (h Holder[T]) Get() T {
+	return h.value
+}
+
+func (h *Holder[T]) Set(value T) {
+	h.value = value
+}
+
+func main() {}
+"#;
+        let parsed_for_method = parse_file("test.go", go_input).unwrap();
+        let mut type_env = super::typeinfer::TypeEnv::new();
+        type_env.scan_file(&parsed_for_method);
+        super::set_type_env(type_env);
+        let get_method = parsed_for_method
+            .decls
+            .into_iter()
+            .find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func_decl) if func_decl.name.name == "Get" => {
+                    Some(func_decl)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let (_, _, lowered_get) = super::compile_method(get_method).unwrap();
+        let lowered_get_output = quote! { #lowered_get }.to_string();
+        assert!(
+            lowered_get_output.contains("self . value"),
+            "{lowered_get_output}"
+        );
+
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("pub struct Holder<T>"), "{output}");
+        assert!(output.contains("value: T"), "{output}");
+        assert!(output.contains("impl<T: Clone> Holder<T>"), "{output}");
+        assert!(output.contains("pub fn Get(&self) -> T"), "{output}");
+        assert!(output.contains("(self.value).clone()"), "{output}");
+        assert!(
+            output.contains("pub fn Set(&mut self, mut value: T)"),
+            "{output}"
+        );
+        assert!(output.contains("self.value = (value).clone();"), "{output}");
     }
 }

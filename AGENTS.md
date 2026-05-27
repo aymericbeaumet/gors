@@ -980,6 +980,12 @@ written through by index, or passed to another mutable slice parameter, to
 `&mut Vec<T>` and rewrites call sites to borrow the caller's buffer. Do not apply
 that rewrite to functions returning a slice; those need Go's returned slice
 value semantics.
+
+Generic receiver methods keep the receiver generic parameters on the generated
+Rust `impl` and currently add `Clone` bounds for those parameters. The method
+lowering borrows receivers and clones non-copy field/parameter values to model
+Go value semantics; do not remove those bounds without replacing the clone-based
+value lowering with an ownership model that still compiles generic methods.
 Slice expressions currently materialize owned `Vec` copies. Full slice
 expressions (`a[low:high:max]`) preserve observable `len`/`cap` by reserving
 capacity for `max-low`, but they still do not share the original Go backing
@@ -1033,6 +1039,10 @@ Main package (`pass()`):
 11. `index_cast` — array/slice index expressions cast to usize
 12. `interface_param` — (placeholder) interface type parameter handling
 13. `coerce_types` — len()/cap() → isize cast, float-to-int typed locals
+
+`coerce_types` also prunes unsupported reflection fallback branches from the
+generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
+ordinary user fields named `value` must remain usable as `self.value`.
 
 Imported packages (`pass_for_imported_package()`): only map_type, type_conversion,
 simplify_return, flatten_block.
