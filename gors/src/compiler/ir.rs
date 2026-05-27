@@ -1208,6 +1208,7 @@ pub enum InvalidStatementReason {
     InvalidTypeConversion { target: String, reason: String },
     InvalidUnary { op: String, reason: String },
     NonCallOrReceive,
+    TypeNameValue(String),
     TypeConversion,
 }
 
@@ -7055,15 +7056,17 @@ fn invalid_return_in_stmt(
         ast::Stmt::IncDecStmt(inc_dec) => invalid_return_in_expr(&inc_dec.x, env),
         ast::Stmt::LabeledStmt(labeled) => invalid_return_in_stmt(&labeled.stmt, signature, env),
         ast::Stmt::RangeStmt(range) => {
-            if let Some(key) = &range.key
-                && let Some(invalid) = invalid_return_in_expr(key, env)
-            {
-                return Some(invalid);
-            }
-            if let Some(value) = &range.value
-                && let Some(invalid) = invalid_return_in_expr(value, env)
-            {
-                return Some(invalid);
+            if matches!(range.tok, Some(token::Token::ASSIGN)) {
+                if let Some(key) = &range.key
+                    && let Some(invalid) = invalid_return_in_assignment_lhs(key, env)
+                {
+                    return Some(invalid);
+                }
+                if let Some(value) = &range.value
+                    && let Some(invalid) = invalid_return_in_assignment_lhs(value, env)
+                {
+                    return Some(invalid);
+                }
             }
             if let Some(invalid) = invalid_return_in_expr(&range.x, env) {
                 return Some(invalid);
@@ -7113,9 +7116,41 @@ fn invalid_return_in_stmt(
             {
                 return Some(invalid);
             }
-            invalid_return_in_block(&type_switch.body, signature, &mut switch_env)
+            invalid_return_in_type_switch_block(&type_switch.body, signature, &mut switch_env)
         }
     }
+}
+
+fn invalid_return_in_type_switch_block(
+    block: &ast::BlockStmt<'_>,
+    signature: &ReturnSignature,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatement> {
+    for stmt in &block.list {
+        if let Some(invalid) = invalid_return_in_type_switch_stmt(stmt, signature, env) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_return_in_type_switch_stmt(
+    stmt: &ast::Stmt<'_>,
+    signature: &ReturnSignature,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatement> {
+    let ast::Stmt::CaseClause(case) = stmt else {
+        return invalid_return_in_stmt(stmt, signature, env);
+    };
+    let mut case_env = env.clone();
+    if let Some(list) = &case.list {
+        for expr in list {
+            if let Some(invalid) = invalid_return_in_type_expr(expr, &case_env) {
+                return Some(invalid);
+            }
+        }
+    }
+    invalid_return_in_stmt_list(&case.body, signature, &mut case_env)
 }
 
 fn invalid_return_in_stmt_list(
@@ -7301,10 +7336,10 @@ fn invalid_return_in_gen_decl(
 fn invalid_return_in_spec(spec: &ast::Spec<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
     match spec {
         ast::Spec::ImportSpec(_) => None,
-        ast::Spec::TypeSpec(type_spec) => invalid_return_in_expr(&type_spec.type_, env),
+        ast::Spec::TypeSpec(type_spec) => invalid_return_in_type_expr(&type_spec.type_, env),
         ast::Spec::ValueSpec(value_spec) => {
             if let Some(type_) = &value_spec.type_
-                && let Some(invalid) = invalid_return_in_expr(type_, env)
+                && let Some(invalid) = invalid_return_in_type_expr(type_, env)
             {
                 return Some(invalid);
             }
@@ -7324,17 +7359,8 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
     if let Some(reason) = invalid_builtin_call_expression(call, env) {
         return Some(InvalidStatement::Expression { reason });
     }
-    if unshadowed_builtin_call_kind(call, env).is_none()
-        && let Some(invalid) = invalid_return_in_expr(&call.fun, env)
-    {
+    if let Some(invalid) = invalid_return_in_call_operands(call, env) {
         return Some(invalid);
-    }
-    if let Some(args) = &call.args {
-        for arg in args {
-            if let Some(invalid) = invalid_return_in_expr(arg, env) {
-                return Some(invalid);
-            }
-        }
     }
     if let Some(reason) = invalid_type_conversion_call(call, env) {
         return Some(InvalidStatement::Expression { reason });
@@ -7345,12 +7371,64 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
     None
 }
 
+fn invalid_return_in_call_operands(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env) {
+        return invalid_return_in_builtin_call_operands(kind, call, env);
+    }
+    let invalid_fun = if call_is_type_conversion(call, env) {
+        invalid_return_in_type_expr(&call.fun, env)
+    } else {
+        invalid_return_in_expr(&call.fun, env)
+    };
+    if invalid_fun.is_some() {
+        return invalid_fun;
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(invalid) = invalid_return_in_expr(arg, env) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_return_in_builtin_call_operands(
+    kind: BuiltinCallKind,
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    let type_arg_count = match kind {
+        BuiltinCallKind::Make | BuiltinCallKind::New => 1,
+        _ => 0,
+    };
+    for (index, arg) in args.iter().enumerate() {
+        let invalid = if index < type_arg_count {
+            invalid_return_in_type_expr(arg, env)
+        } else {
+            invalid_return_in_expr(arg, env)
+        };
+        if invalid.is_some() {
+            return invalid;
+        }
+    }
+    None
+}
+
 fn invalid_return_in_call_statement(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
     invalid_expression_in_call_statement(call, env)
         .map(|reason| InvalidStatement::Expression { reason })
+}
+
+fn invalid_return_in_type_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
+    invalid_expression_in_type_expr(expr, env).map(|reason| InvalidStatement::Expression { reason })
 }
 
 fn invalid_return_in_statement_expr(
@@ -7384,7 +7462,7 @@ fn invalid_return_in_assignment_lhs(
             assert
                 .type_
                 .as_ref()
-                .and_then(|type_| invalid_return_in_expr(type_, env))
+                .and_then(|type_| invalid_return_in_type_expr(type_, env))
         }),
         _ => invalid_return_in_expr(expr, env),
     }
@@ -7392,14 +7470,14 @@ fn invalid_return_in_assignment_lhs(
 
 fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
     match expr {
-        ast::Expr::ArrayType(array) => {
-            if let Some(len) = &array.len
-                && let Some(invalid) = invalid_return_in_expr(len, env)
-            {
-                return Some(invalid);
-            }
-            invalid_return_in_expr(&array.elt, env)
-        }
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => Some(InvalidStatement::Expression {
+            reason: InvalidStatementReason::TypeNameValue(type_value_name(expr, env)),
+        }),
         ast::Expr::BinaryExpr(binary) => invalid_return_in_expr(&binary.x, env)
             .or_else(|| invalid_return_in_expr(&binary.y, env))
             .or_else(|| {
@@ -7407,19 +7485,14 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
                     .map(|reason| InvalidStatement::Expression { reason })
             }),
         ast::Expr::CallExpr(call) => invalid_return_in_call(call, env),
-        ast::Expr::ChanType(chan) => invalid_return_in_expr(&chan.value, env),
         ast::Expr::CompositeLit(comp) => {
             if let Some(type_) = &comp.type_
-                && let Some(invalid) = invalid_return_in_expr(type_, env)
+                && let Some(invalid) = invalid_return_in_type_expr(type_, env)
             {
                 return Some(invalid);
             }
-            if let Some(elts) = &comp.elts {
-                for elt in elts {
-                    if let Some(invalid) = invalid_return_in_expr(elt, env) {
-                        return Some(invalid);
-                    }
-                }
+            if let Some(invalid) = invalid_return_in_composite_lit_elts(comp, env) {
+                return Some(invalid);
             }
             invalid_composite_lit(comp, env).map(|reason| InvalidStatement::Expression { reason })
         }
@@ -7431,7 +7504,6 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             invalid_return_in_func(&func_lit.type_, &func_lit.body, env)
                 .or_else(|| invalid_body_completion_in_func(&func_lit.type_, &func_lit.body, env))
         }
-        ast::Expr::FuncType(_) => None,
         ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
             .or_else(|| invalid_return_in_expr(&index.index, env))
             .or_else(|| {
@@ -7448,23 +7520,13 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             }
             None
         }
-        ast::Expr::InterfaceType(interface) => interface.methods.as_ref().and_then(|fields| {
-            for field in &fields.list {
-                if let Some(type_) = &field.type_
-                    && let Some(invalid) = invalid_return_in_expr(type_, env)
-                {
-                    return Some(invalid);
-                }
-            }
-            None
-        }),
         ast::Expr::KeyValueExpr(kv) => {
             invalid_return_in_expr(&kv.key, env).or_else(|| invalid_return_in_expr(&kv.value, env))
         }
-        ast::Expr::MapType(map) => invalid_return_in_expr(&map.key, env)
-            .or_else(|| invalid_return_in_expr(&map.value, env)),
         ast::Expr::ParenExpr(paren) => invalid_return_in_expr(&paren.x, env),
-        ast::Expr::SelectorExpr(selector) => invalid_return_in_expr(&selector.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_selector_type_value(selector, env)
+            .map(|reason| InvalidStatement::Expression { reason })
+            .or_else(|| invalid_return_in_selector_receiver(selector, env)),
         ast::Expr::SliceExpr(slice) => {
             if let Some(invalid) = invalid_return_in_expr(&slice.x, env) {
                 return Some(invalid);
@@ -7486,19 +7548,12 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             }
             invalid_slice_expr(slice, env).map(|reason| InvalidStatement::Expression { reason })
         }
-        ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env).or_else(|| {
-            invalid_star_expr(star, env).map(|reason| InvalidStatement::Expression { reason })
-        }),
-        ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().and_then(|fields| {
-            for field in &fields.list {
-                if let Some(type_) = &field.type_
-                    && let Some(invalid) = invalid_return_in_expr(type_, env)
-                {
-                    return Some(invalid);
-                }
-            }
-            None
-        }),
+        ast::Expr::StarExpr(star) => invalid_star_type_value(star, env)
+            .map(|reason| InvalidStatement::Expression { reason })
+            .or_else(|| invalid_return_in_expr(&star.x, env))
+            .or_else(|| {
+                invalid_star_expr(star, env).map(|reason| InvalidStatement::Expression { reason })
+            }),
         ast::Expr::TypeAssertExpr(assert) => {
             if let Some(invalid) = invalid_return_in_expr(&assert.x, env) {
                 return Some(invalid);
@@ -7506,12 +7561,13 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             assert
                 .type_
                 .as_ref()
-                .and_then(|ty| invalid_return_in_expr(ty, env))
+                .and_then(|ty| invalid_return_in_type_expr(ty, env))
         }
         ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env).or_else(|| {
             invalid_unary_expr(unary, env).map(|reason| InvalidStatement::Expression { reason })
         }),
         ast::Expr::Ident(ident) => invalid_builtin_function_value(ident, env)
+            .or_else(|| invalid_type_name_value(ident, env))
             .map(|reason| InvalidStatement::Expression { reason }),
         ast::Expr::BasicLit(_) => None,
     }
@@ -8745,10 +8801,10 @@ fn invalid_expression_in_spec(
 ) -> Option<InvalidStatementReason> {
     match spec {
         ast::Spec::ImportSpec(_) => None,
-        ast::Spec::TypeSpec(type_spec) => invalid_expression_in_expr(&type_spec.type_, env),
+        ast::Spec::TypeSpec(type_spec) => invalid_expression_in_type_expr(&type_spec.type_, env),
         ast::Spec::ValueSpec(value_spec) => {
             if let Some(type_) = &value_spec.type_
-                && let Some(reason) = invalid_expression_in_expr(type_, env)
+                && let Some(reason) = invalid_expression_in_type_expr(type_, env)
             {
                 return Some(reason);
             }
@@ -8801,18 +8857,46 @@ fn invalid_expression_in_call_operands(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    let invalid_fun = if unshadowed_builtin_call_kind(call, env).is_some() {
-        None
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env) {
+        return invalid_expression_in_builtin_call_operands(kind, call, env);
+    }
+    let invalid_fun = if call_is_type_conversion(call, env) {
+        invalid_expression_in_type_expr(&call.fun, env)
     } else {
         invalid_expression_in_expr(&call.fun, env)
     };
-    if let Some(reason) = invalid_fun.or_else(|| {
-        call.args.as_ref().and_then(|args| {
-            args.iter()
-                .find_map(|arg| invalid_expression_in_expr(arg, env))
-        })
-    }) {
+    if let Some(reason) = invalid_fun {
         return Some(reason);
+    }
+    if let Some(args) = &call.args {
+        for arg in args {
+            if let Some(reason) = invalid_expression_in_expr(arg, env) {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_expression_in_builtin_call_operands(
+    kind: BuiltinCallKind,
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let args = call.args.as_deref().unwrap_or(&[]);
+    let type_arg_count = match kind {
+        BuiltinCallKind::Make | BuiltinCallKind::New => 1,
+        _ => 0,
+    };
+    for (index, arg) in args.iter().enumerate() {
+        let invalid = if index < type_arg_count {
+            invalid_expression_in_type_expr(arg, env)
+        } else {
+            invalid_expression_in_expr(arg, env)
+        };
+        if invalid.is_some() {
+            return invalid;
+        }
     }
     None
 }
@@ -8851,11 +8935,131 @@ fn invalid_expression_in_assignment_lhs(
                 assert
                     .type_
                     .as_ref()
-                    .and_then(|type_| invalid_expression_in_expr(type_, env))
+                    .and_then(|type_| invalid_expression_in_type_expr(type_, env))
             })
         }
         _ => invalid_expression_in_expr(expr, env),
     }
+}
+
+fn invalid_expression_in_type_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match expr {
+        ast::Expr::Ident(ident) if ident.name == "_" => {
+            Some(InvalidStatementReason::BlankIdentifier)
+        }
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_expression_in_expr(len, env))
+            .or_else(|| invalid_expression_in_type_expr(&array.elt, env))
+            .or_else(|| invalid_array_type(array, env)),
+        ast::Expr::ChanType(chan) => invalid_expression_in_type_expr(&chan.value, env),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_expression_in_type_expr(elt, env)),
+        ast::Expr::FuncType(func_type) => invalid_expression_in_field_list(&func_type.params, env)
+            .or_else(|| {
+                func_type
+                    .results
+                    .as_ref()
+                    .and_then(|results| invalid_expression_in_field_list(results, env))
+            }),
+        ast::Expr::IndexExpr(index) => invalid_expression_in_type_expr(&index.x, env)
+            .or_else(|| invalid_expression_in_type_expr(&index.index, env)),
+        ast::Expr::IndexListExpr(index) => {
+            invalid_expression_in_type_expr(&index.x, env).or_else(|| {
+                index
+                    .indices
+                    .iter()
+                    .find_map(|index| invalid_expression_in_type_expr(index, env))
+            })
+        }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()
+            .and_then(|methods| invalid_expression_in_field_list(methods, env)),
+        ast::Expr::MapType(map) => invalid_expression_in_type_expr(&map.key, env)
+            .or_else(|| invalid_expression_in_type_expr(&map.value, env))
+            .or_else(|| invalid_map_type(map, env)),
+        ast::Expr::ParenExpr(paren) => invalid_expression_in_type_expr(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => {
+            if matches!(selector.x.as_ref(), ast::Expr::Ident(_)) {
+                None
+            } else {
+                invalid_expression_in_expr(&selector.x, env)
+            }
+        }
+        ast::Expr::StarExpr(star) => invalid_expression_in_type_expr(&star.x, env),
+        ast::Expr::StructType(struct_type) => struct_type
+            .fields
+            .as_ref()
+            .and_then(|fields| invalid_expression_in_field_list(fields, env)),
+        _ => None,
+    }
+}
+
+fn invalid_expression_in_composite_lit_elts(
+    comp: &ast::CompositeLit<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let struct_field_keys = comp.type_.as_ref().is_some_and(|type_| {
+        matches!(
+            composite_literal_kind(type_, env),
+            CompositeLiteralKind::Struct { .. }
+        )
+    });
+    comp.elts.as_ref().and_then(|elts| {
+        elts.iter()
+            .find_map(|elt| invalid_expression_in_composite_lit_elt(elt, struct_field_keys, env))
+    })
+}
+
+fn invalid_expression_in_composite_lit_elt(
+    elt: &ast::Expr<'_>,
+    struct_field_keys: bool,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if let ast::Expr::KeyValueExpr(kv) = elt
+        && struct_field_keys
+        && matches!(unparen_expr(&kv.key), ast::Expr::Ident(_))
+    {
+        return invalid_expression_in_expr(&kv.value, env);
+    }
+    invalid_expression_in_expr(elt, env)
+}
+
+fn invalid_return_in_composite_lit_elts(
+    comp: &ast::CompositeLit<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    let struct_field_keys = comp.type_.as_ref().is_some_and(|type_| {
+        matches!(
+            composite_literal_kind(type_, env),
+            CompositeLiteralKind::Struct { .. }
+        )
+    });
+    comp.elts.as_ref().and_then(|elts| {
+        elts.iter()
+            .find_map(|elt| invalid_return_in_composite_lit_elt(elt, struct_field_keys, env))
+    })
+}
+
+fn invalid_return_in_composite_lit_elt(
+    elt: &ast::Expr<'_>,
+    struct_field_keys: bool,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    if let ast::Expr::KeyValueExpr(kv) = elt
+        && struct_field_keys
+        && matches!(unparen_expr(&kv.key), ast::Expr::Ident(_))
+    {
+        return invalid_return_in_expr(&kv.value, env);
+    }
+    invalid_return_in_expr(elt, env)
 }
 
 fn invalid_expression_in_expr(
@@ -8866,41 +9070,31 @@ fn invalid_expression_in_expr(
         ast::Expr::Ident(ident) if ident.name == "_" => {
             Some(InvalidStatementReason::BlankIdentifier)
         }
-        ast::Expr::Ident(ident) => invalid_builtin_function_value(ident, env),
-        ast::Expr::ArrayType(array) => array
-            .len
-            .as_ref()
-            .and_then(|len| invalid_expression_in_expr(len, env))
-            .or_else(|| invalid_expression_in_expr(&array.elt, env))
-            .or_else(|| invalid_array_type(array, env)),
+        ast::Expr::Ident(ident) => invalid_builtin_function_value(ident, env)
+            .or_else(|| invalid_type_name_value(ident, env)),
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => Some(InvalidStatementReason::TypeNameValue(type_value_name(
+            expr, env,
+        ))),
         ast::Expr::BinaryExpr(binary) => invalid_expression_in_expr(&binary.x, env)
             .or_else(|| invalid_expression_in_expr(&binary.y, env))
             .or_else(|| invalid_binary_expr(binary, env)),
         ast::Expr::CallExpr(call) => invalid_expression_in_call(call, env),
-        ast::Expr::ChanType(chan) => invalid_expression_in_expr(&chan.value, env),
         ast::Expr::CompositeLit(comp) => comp
             .type_
             .as_ref()
-            .and_then(|type_| invalid_expression_in_expr(type_, env))
-            .or_else(|| {
-                comp.elts.as_ref().and_then(|elts| {
-                    elts.iter()
-                        .find_map(|elt| invalid_expression_in_expr(elt, env))
-                })
-            })
+            .and_then(|type_| invalid_expression_in_type_expr(type_, env))
+            .or_else(|| invalid_expression_in_composite_lit_elts(comp, env))
             .or_else(|| invalid_composite_lit(comp, env)),
         ast::Expr::Ellipsis(ellipsis) => ellipsis
             .elt
             .as_ref()
             .and_then(|elt| invalid_expression_in_expr(elt, env)),
         ast::Expr::FuncLit(func_lit) => invalid_expression_in_func_lit(func_lit, env),
-        ast::Expr::FuncType(func_type) => invalid_expression_in_field_list(&func_type.params, env)
-            .or_else(|| {
-                func_type
-                    .results
-                    .as_ref()
-                    .and_then(|results| invalid_expression_in_field_list(results, env))
-            }),
         ast::Expr::IndexExpr(index) => invalid_expression_in_expr(&index.x, env)
             .or_else(|| invalid_expression_in_expr(&index.index, env))
             .or_else(|| invalid_index_expr(index, env)),
@@ -8912,17 +9106,11 @@ fn invalid_expression_in_expr(
                     .find_map(|index| invalid_expression_in_expr(index, env))
             })
         }
-        ast::Expr::InterfaceType(interface) => interface
-            .methods
-            .as_ref()
-            .and_then(|methods| invalid_expression_in_field_list(methods, env)),
         ast::Expr::KeyValueExpr(kv) => invalid_expression_in_expr(&kv.key, env)
             .or_else(|| invalid_expression_in_expr(&kv.value, env)),
-        ast::Expr::MapType(map) => invalid_expression_in_expr(&map.key, env)
-            .or_else(|| invalid_expression_in_expr(&map.value, env))
-            .or_else(|| invalid_map_type(map, env)),
         ast::Expr::ParenExpr(paren) => invalid_expression_in_expr(&paren.x, env),
-        ast::Expr::SelectorExpr(selector) => invalid_expression_in_expr(&selector.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_selector_type_value(selector, env)
+            .or_else(|| invalid_expression_in_selector_receiver(selector, env)),
         ast::Expr::SliceExpr(slice) => invalid_expression_in_expr(&slice.x, env)
             .or_else(|| {
                 slice
@@ -8943,19 +9131,15 @@ fn invalid_expression_in_expr(
                     .and_then(|max| invalid_expression_in_expr(max, env))
             })
             .or_else(|| invalid_slice_expr(slice, env)),
-        ast::Expr::StarExpr(star) => {
-            invalid_expression_in_expr(&star.x, env).or_else(|| invalid_star_expr(star, env))
-        }
-        ast::Expr::StructType(struct_type) => struct_type
-            .fields
-            .as_ref()
-            .and_then(|fields| invalid_expression_in_field_list(fields, env)),
+        ast::Expr::StarExpr(star) => invalid_star_type_value(star, env)
+            .or_else(|| invalid_expression_in_expr(&star.x, env))
+            .or_else(|| invalid_star_expr(star, env)),
         ast::Expr::TypeAssertExpr(assert) => invalid_expression_in_expr(&assert.x, env)
             .or_else(|| {
                 assert
                     .type_
                     .as_ref()
-                    .and_then(|type_| invalid_expression_in_expr(type_, env))
+                    .and_then(|type_| invalid_expression_in_type_expr(type_, env))
             })
             .or_else(|| invalid_type_assert_expr(assert, env)),
         ast::Expr::UnaryExpr(unary) => {
@@ -8977,6 +9161,116 @@ fn invalid_builtin_function_value(
     }
     builtin_kind_by_name(ident.name)
         .map(|kind| InvalidStatementReason::BuiltinFunctionValue(kind.name().to_string()))
+}
+
+fn invalid_type_name_value(
+    ident: &ast::Ident<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    ident_denotes_type_value(ident.name, env)
+        .then(|| InvalidStatementReason::TypeNameValue(ident.name.to_string()))
+}
+
+fn ident_denotes_type_value(name: &str, env: &TypeEnv) -> bool {
+    !matches!(name, "_" | "nil" | "true" | "false")
+        && env.get_var(name).is_none()
+        && !env.has_func(name)
+        && !env.is_const(name)
+        && (is_predeclared_type_name(name) || env.get_type_kind(name).is_some())
+}
+
+fn invalid_selector_type_value(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    selector_type_value_name(selector, env).map(InvalidStatementReason::TypeNameValue)
+}
+
+fn selector_type_value_name(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<String> {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return None;
+    };
+    let name = format!("{}.{}", base.name, selector.sel.name);
+    (env.get_var(&name).is_none()
+        && !env.has_func(&name)
+        && !env.is_const(&name)
+        && env.get_type_kind(&name).is_some())
+    .then_some(name)
+}
+
+fn invalid_expression_in_selector_receiver(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if expr_denotes_type(&selector.x, env) {
+        return None;
+    }
+    invalid_expression_in_expr(&selector.x, env)
+}
+
+fn invalid_return_in_selector_receiver(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    if expr_denotes_type(&selector.x, env) {
+        return None;
+    }
+    invalid_return_in_expr(&selector.x, env)
+}
+
+fn invalid_star_type_value(
+    star: &ast::StarExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    expr_denotes_type(&star.x, env).then(|| {
+        InvalidStatementReason::TypeNameValue(format!("*{}", type_value_name(&star.x, env)))
+    })
+}
+
+fn expr_denotes_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => ident_denotes_type_value(ident.name, env),
+        ast::Expr::SelectorExpr(selector) => selector_type_value_name(selector, env).is_some(),
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => true,
+        ast::Expr::IndexExpr(index) => expr_denotes_type(&index.x, env),
+        ast::Expr::IndexListExpr(index) => expr_denotes_type(&index.x, env),
+        ast::Expr::StarExpr(star) => expr_denotes_type(&star.x, env),
+        _ => false,
+    }
+}
+
+fn type_value_name(expr: &ast::Expr<'_>, env: &TypeEnv) -> String {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => ident.name.to_string(),
+        ast::Expr::SelectorExpr(selector) => {
+            selector_type_value_name(selector, env).unwrap_or_else(|| selector.sel.name.to_string())
+        }
+        ast::Expr::ArrayType(array) => {
+            let elem = type_value_name(&array.elt, env);
+            if array.len.is_some() {
+                format!("[...]{elem}")
+            } else {
+                format!("[]{elem}")
+            }
+        }
+        ast::Expr::ChanType(chan) => format!("chan {}", type_value_name(&chan.value, env)),
+        ast::Expr::FuncType(_) => "func".to_string(),
+        ast::Expr::InterfaceType(_) => "interface".to_string(),
+        ast::Expr::MapType(map) => {
+            let key = type_value_name(&map.key, env);
+            let value = type_value_name(&map.value, env);
+            format!("map[{key}]{value}")
+        }
+        ast::Expr::ParenExpr(paren) => type_value_name(&paren.x, env),
+        ast::Expr::StarExpr(star) => format!("*{}", type_value_name(&star.x, env)),
+        ast::Expr::StructType(_) => "struct".to_string(),
+        _ => go_type_display_name(&env.resolve_alias(&GoType::from_expr(expr))),
+    }
 }
 
 fn invalid_expression_in_func_lit(
@@ -9146,9 +9440,39 @@ fn invalid_expression_in_stmt(
             if let Some(reason) = invalid_expression_in_stmt(&type_switch.assign, &mut switch_env) {
                 return Some(reason);
             }
-            invalid_expression_in_block(&type_switch.body, &mut switch_env)
+            invalid_expression_in_type_switch_block(&type_switch.body, &mut switch_env)
         }
     }
+}
+
+fn invalid_expression_in_type_switch_block(
+    block: &ast::BlockStmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatementReason> {
+    for stmt in &block.list {
+        if let Some(reason) = invalid_expression_in_type_switch_stmt(stmt, env) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn invalid_expression_in_type_switch_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &mut TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let ast::Stmt::CaseClause(case) = stmt else {
+        return invalid_expression_in_stmt(stmt, env);
+    };
+    let mut case_env = env.clone();
+    if let Some(list) = &case.list
+        && let Some(reason) = list
+            .iter()
+            .find_map(|expr| invalid_expression_in_type_expr(expr, &case_env))
+    {
+        return Some(reason);
+    }
+    invalid_expression_in_stmt_list(&case.body, &mut case_env)
 }
 
 fn invalid_expression_in_stmt_list(
@@ -9171,7 +9495,7 @@ fn invalid_expression_in_field_list(
         field
             .type_
             .as_ref()
-            .and_then(|type_| invalid_expression_in_expr(type_, env))
+            .and_then(|type_| invalid_expression_in_type_expr(type_, env))
     })
 }
 
@@ -19381,6 +19705,138 @@ mod tests {
     }
 
     #[test]
+    fn rejects_type_names_used_as_values() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = int
+                    }
+                "#,
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    type Count int
+
+                    func main() {
+                        _ = Count
+                    }
+                "#,
+                "Count",
+            ),
+            (
+                r#"
+                    package main
+
+                    type len int
+
+                    func main() {
+                        _ = len
+                    }
+                "#,
+                "len",
+            ),
+        ];
+
+        for (source, name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::TypeNameValue(name.to_string()),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_type_names_returned_as_values() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func f() any {
+                    return string
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::TypeNameValue("string".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_type_names_in_type_contexts() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+                type File struct {}
+                type Wrapper struct { File *File }
+
+                func main() {
+                    var _ int
+                    var _ Count
+                    var _ [len([3]int{})]Count
+                    _ = int(1)
+                    _ = Count(1)
+                    _ = new(Count)
+                    _ = make([]Count, 0)
+                    _ = []Count{}
+                    var f *File
+                    _ = Wrapper{File: f}
+                    for _, rune := range "go" {
+                        _ = rune
+                    }
+                    var int = 1
+                    _ = int
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_invalid_ordinary_function_calls() {
         let cases = vec![
             (
@@ -22597,7 +23053,7 @@ mod tests {
                 func main(x any, y I) {
                     switch x.(type) {
                     case nil:
-                    case int, string:
+                    case int, string, error:
                     case T:
                     }
                     switch y.(type) {

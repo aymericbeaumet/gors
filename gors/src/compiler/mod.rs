@@ -13278,6 +13278,9 @@ fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
         ir::InvalidStatementReason::NonCallOrReceive => {
             "expected a function call, method call, or receive operation".to_string()
         }
+        ir::InvalidStatementReason::TypeNameValue(name) => {
+            format!("cannot use type {name} as value")
+        }
         ir::InvalidStatementReason::TypeConversion => {
             "type conversions are not permitted in statement context".to_string()
         }

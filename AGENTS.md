@@ -623,6 +623,10 @@ including integer-valued floating constants produced by constant `real`, `imag`,
 `min`, and `max` calls, to convert to integer targets.
 IR array type validation rejects runtime values and non-numeric constants in
 length positions; constant builtin lengths such as `len([3]int{})` remain valid.
+IR expression validation distinguishes value and type contexts: bare type names
+used as values are rejected, while conversion targets, builtin `new`/`make` type
+arguments, declaration types, composite literal types, and type-switch cases stay
+in type context.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose
