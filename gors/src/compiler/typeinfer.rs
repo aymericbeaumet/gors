@@ -1056,14 +1056,73 @@ impl TypeEnv {
             .get(interface_name)
             .is_none_or(|methods| {
                 methods.iter().all(|method| {
-                    let method_key = format!("{type_name}.{method}");
-                    if include_pointer_receiver_methods {
-                        self.has_func(&method_key)
-                    } else {
-                        self.has_value_method(&method_key)
-                    }
+                    self.named_type_has_method(
+                        type_name,
+                        method,
+                        include_pointer_receiver_methods,
+                        &mut HashSet::new(),
+                    )
                 })
             })
+    }
+
+    fn named_type_has_method(
+        &self,
+        type_name: &str,
+        method: &str,
+        include_pointer_receiver_methods: bool,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> bool {
+        let method_key = format!("{type_name}.{method}");
+        if if include_pointer_receiver_methods {
+            self.has_func(&method_key)
+        } else {
+            self.has_value_method(&method_key)
+        } {
+            return true;
+        }
+        if !visiting.insert(type_name.to_string()) {
+            return false;
+        }
+        let promoted = self
+            .get_struct_fields(type_name)
+            .iter()
+            .any(|(_, field_ty)| {
+                self.embedded_type_has_method(
+                    field_ty,
+                    method,
+                    include_pointer_receiver_methods,
+                    visiting,
+                )
+            });
+        visiting.remove(type_name);
+        promoted
+    }
+
+    fn embedded_type_has_method(
+        &self,
+        field_ty: &GoType,
+        method: &str,
+        include_pointer_receiver_methods: bool,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> bool {
+        match self.resolve_alias(field_ty) {
+            GoType::Named(name) if self.is_interface(&name) => self
+                .interface_methods
+                .get(&name)
+                .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
+            GoType::Named(name) => self.named_type_has_method(
+                &name,
+                method,
+                include_pointer_receiver_methods,
+                visiting,
+            ),
+            GoType::Pointer(inner) => match *inner {
+                GoType::Named(name) => self.named_type_has_method(&name, method, true, visiting),
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     pub fn resolve_alias(&self, ty: &GoType) -> GoType {

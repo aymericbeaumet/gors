@@ -14,6 +14,8 @@ func main() {
 	case_path_ext()
 	fmt.Println("== path/is_abs ==")
 	case_path_is_abs()
+	fmt.Println("== path/join ==")
+	case_path_join()
 	fmt.Println("== path/split ==")
 	case_path_split()
 }
@@ -39,6 +41,11 @@ func case_path_ext() {
 func case_path_is_abs() {
 	fmt.Println(path.IsAbs("/alpha"))
 	fmt.Println(path.IsAbs("alpha/beta"))
+}
+
+func case_path_join() {
+	fmt.Println(path.Join("alpha", "beta", "file.txt"))
+	fmt.Println(path.Join("", "alpha", "..", "beta"))
 }
 
 func case_path_split() {

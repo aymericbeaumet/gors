@@ -6521,7 +6521,13 @@ fn expr_is_assignable_for_validation(
     env: &TypeEnv,
 ) -> bool {
     let expected = env.resolve_alias(expected);
-    let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+    let actual_inferred = GoType::infer_expr(value, env);
+    if let Some(assignable) =
+        named_interface_assignment_for_validation(&expected, &actual_inferred, env)
+    {
+        return assignable;
+    }
+    let actual = env.resolve_alias(&actual_inferred);
     if let Some(assignable) = named_interface_assignment_for_validation(&expected, &actual, env) {
         return assignable;
     }
@@ -12172,6 +12178,12 @@ fn type_param_constraint_allows_arg(
     env: &TypeEnv,
 ) -> bool {
     let constraint = env.resolve_alias(constraint);
+    if matches!(&constraint, GoType::Named(name) if name == "comparable") {
+        return type_is_comparable_for_validation(actual, env);
+    }
+    if matches!(actual, GoType::Named(name) if env.get_type_kind(name).is_none()) {
+        return true;
+    }
     actual == &constraint
         || (expr_is_untyped_constant_for_comparison(arg, env)
             && comparison_constant_is_assignable_to(arg, actual, &constraint, env))

@@ -29265,10 +29265,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "encoding/hex",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"encoding/hex"
+		],
 		"symbolCount": 15,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "AppendDecode",
@@ -29315,20 +29317,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Encode",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/hex"
+				]
 			},
 			{
 				"name": "EncodedLen",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/hex"
+				]
 			},
 			{
 				"name": "EncodeToString",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/hex"
+				]
 			},
 			{
 				"name": "ErrLength",
@@ -30839,6 +30847,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/sha512",
 			"debug/elf",
 			"encoding/ascii85",
+			"encoding/hex",
 			"encoding/xml",
 			"errors",
 			"fmt",
@@ -30852,6 +30861,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"io/fs",
 			"log",
 			"log/slog",
+			"math",
 			"math/big",
 			"math/bits",
 			"net",
@@ -31007,6 +31017,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"crypto/sha512",
 					"debug/elf",
 					"encoding/ascii85",
+					"encoding/hex",
 					"encoding/xml",
 					"errors",
 					"fmt",
@@ -31020,6 +31031,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"io/fs",
 					"log",
 					"log/slog",
+					"math",
 					"math/big",
 					"math/bits",
 					"net",
@@ -56255,16 +56267,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "math",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"math"
+		],
 		"symbolCount": 196,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 7,
 		"symbols": [
 			{
 				"name": "Abs",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "Acos",
@@ -56509,8 +56525,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Inf",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "InvLn2",
@@ -56521,14 +56539,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "IsInf",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "IsNaN",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "J0",
@@ -56743,8 +56765,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Max",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "MaxFloat32",
@@ -56833,8 +56857,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Min",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "MinInt",
@@ -56887,8 +56913,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NaN",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math"
+				]
 			},
 			{
 				"name": "NearZero",
@@ -67663,7 +67691,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"path"
 		],
 		"symbolCount": 9,
-		"testedSymbolCount": 5,
+		"testedSymbolCount": 6,
 		"symbols": [
 			{
 				"name": "Base",
@@ -67712,8 +67740,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Join",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"path"
+				]
 			},
 			{
 				"name": "Match",
@@ -79688,11 +79718,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 51,
+	"fixtureCount": 53,
 	"packageCount": 353,
-	"testedPackageCount": 51,
-	"untestedPackageCount": 302,
+	"testedPackageCount": 53,
+	"untestedPackageCount": 300,
 	"symbolCount": 12599,
-	"testedSymbolCount": 346,
-	"untestedSymbolCount": 12253
+	"testedSymbolCount": 357,
+	"untestedSymbolCount": 12242
 } as const;
