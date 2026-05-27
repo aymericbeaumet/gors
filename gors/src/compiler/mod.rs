@@ -13145,9 +13145,13 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
     };
     let method_ident: syn::Ident = selector.sel.into();
     let pointer_receiver = type_method_expression_receiver_is_pointer(&selector.x);
+    let method_key = format!("{receiver_name}.{}", method_ident);
     let param_types = TYPE_ENV.with(|env| {
-        env.borrow()
-            .get_func_params(&format!("{receiver_name}.{}", method_ident))
+        let env = env.borrow();
+        (
+            env.get_func_params(&method_key),
+            env.get_func_variadic_start(&method_key),
+        )
     });
     let mut raw_args = call_expr.args.unwrap_or_default().into_iter();
     let Some(receiver_arg) = raw_args.next() else {
@@ -13158,7 +13162,64 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
         receiver_arg,
         pointer_receiver,
     ));
-    for (idx, arg) in raw_args.enumerate() {
+    let (param_types, variadic_start) = param_types;
+    let raw_method_args: Vec<ast::Expr> = raw_args.collect();
+    if let Some(variadic_start) = variadic_start {
+        let variadic_elem = param_types.get(variadic_start).and_then(|ty| match ty {
+            typeinfer::GoType::Slice(inner) => Some((**inner).clone()),
+            _ => None,
+        });
+        let variadic_is_any = matches!(
+            variadic_elem.as_ref().map(resolved_go_type),
+            Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+        );
+        if call_expr.ellipsis.is_some() {
+            for (idx, arg) in raw_method_args.into_iter().enumerate() {
+                let should_clone =
+                    idx >= variadic_start && !variadic_is_any && is_ir_addressable_expr(&arg) && {
+                        let actual =
+                            TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                        !go_type_is_copy(&actual)
+                    };
+                let arg = compile_expr_with_expected(arg, param_types.get(idx));
+                if should_clone {
+                    args.push(syn::parse_quote! { (#arg).clone() });
+                } else {
+                    args.push(arg);
+                }
+            }
+            return syn::parse_quote! { #receiver_path::#method_ident(#args) };
+        }
+
+        let mut method_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+        for (idx, arg) in raw_method_args.into_iter().enumerate() {
+            if idx < variadic_start {
+                method_args.push(compile_expr_with_expected(arg, param_types.get(idx)));
+            } else if variadic_is_any {
+                let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
+                method_args
+                    .push(syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> });
+            } else {
+                method_args.push(compile_expr_with_expected(arg, variadic_elem.as_ref()));
+            }
+        }
+
+        let variadic_args: Vec<&syn::Expr> = method_args.iter().skip(variadic_start).collect();
+        let fixed_args: Vec<&syn::Expr> = method_args.iter().take(variadic_start).collect();
+        for arg in fixed_args {
+            args.push(arg.clone());
+        }
+        let vec_expr: syn::Expr = if variadic_args.is_empty() && variadic_is_any {
+            syn::parse_quote! { Vec::<Box<dyn std::any::Any>>::new() }
+        } else if variadic_args.is_empty() {
+            syn::parse_quote! { Vec::new() }
+        } else {
+            syn::parse_quote! { Vec::from([#(#variadic_args),*]) }
+        };
+        args.push(vec_expr);
+        return syn::parse_quote! { #receiver_path::#method_ident(#args) };
+    }
+    for (idx, arg) in raw_method_args.into_iter().enumerate() {
         args.push(compile_expr_with_expected(arg, param_types.get(idx)));
     }
     syn::parse_quote! { #receiver_path::#method_ident(#args) }

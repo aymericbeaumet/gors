@@ -176,10 +176,11 @@ gors-builtin/
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
 - Direct method-expression calls lower through the generated Rust inherent
-  method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`).
-  Treat stored method-expression function values as a separate function-value
-  lowering gap; do not rely on the selector-expression placeholder for that
-  spec surface.
+  method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`),
+  and variadic method-expression arguments use the same packed/spread lowering
+  as ordinary variadic calls. Treat stored method-expression function values as
+  a separate function-value lowering gap; do not rely on the selector-expression
+  placeholder for that spec surface.
 
 ### Incremental builds
 
