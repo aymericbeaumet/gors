@@ -30856,6 +30856,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"gostdlib_math_bits",
 			"gostdlib_net",
 			"gostdlib_net_http",
+			"gostdlib_os",
 			"gostdlib_path",
 			"gostdlib_regexp_syntax",
 			"gostdlib_runtime_metrics",
@@ -31023,6 +31024,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"gostdlib_math_bits",
 					"gostdlib_net",
 					"gostdlib_net_http",
+					"gostdlib_os",
 					"gostdlib_path",
 					"gostdlib_regexp_syntax",
 					"gostdlib_runtime_metrics",
@@ -66224,10 +66226,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"packagePath": "os",
 		"tested": true,
 		"fixtures": [
-			"gostdlib_fmt"
+			"gostdlib_fmt",
+			"gostdlib_os"
 		],
 		"symbolCount": 185,
-		"testedSymbolCount": 1,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Args",
@@ -66904,14 +66907,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "PathListSeparator",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_os"
+				]
 			},
 			{
 				"name": "PathSeparator",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"gostdlib_os"
+				]
 			},
 			{
 				"name": "Pipe",
@@ -79681,11 +79688,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 50,
+	"fixtureCount": 51,
 	"packageCount": 353,
 	"testedPackageCount": 51,
 	"untestedPackageCount": 302,
 	"symbolCount": 12599,
-	"testedSymbolCount": 344,
-	"untestedSymbolCount": 12255
+	"testedSymbolCount": 346,
+	"untestedSymbolCount": 12253
 } as const;

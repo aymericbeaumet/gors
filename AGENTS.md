@@ -62,7 +62,10 @@ gors-builtin/
   treat stdlib packages as ordinary Go code and fix the generic transpilation
   path when they fail. Runtime support is allowed only for language/runtime
   primitives or host resources, and must not encode the behavior of a stdlib
-  function or method.
+  function or method. Host-resource helpers that patch generated stdlib modules,
+  such as process stdout support, must replace only the targeted host items and
+  preserve the rest of the compiled Go stdlib module so unrelated reachable
+  constants, types, and functions remain generic compiler output.
 
 ### Cross-module references
 

@@ -3570,7 +3570,15 @@ fn inject_post_prune_stdlib_helpers(
                     .iter()
                     .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == "Stdout"))
                 => {
-                    module.file.items = vec![
+                    module.file.items.retain(|item| match item {
+                        syn::Item::Impl(item_impl) => {
+                            named_self_type(&item_impl.self_ty).as_deref() != Some("File")
+                        }
+                        _ => item_name(item)
+                            .as_deref()
+                            .is_none_or(|name| !matches!(name, "File" | "Stdout")),
+                    });
+                    module.file.items.extend([
                         syn::parse_quote! {
                             #[derive(Clone, Copy, Default)]
                             pub struct File;
@@ -3595,7 +3603,7 @@ fn inject_post_prune_stdlib_helpers(
                                 }
                             }
                         },
-                    ];
+                    ]);
                     module.content_hash = String::new();
                 }
             _ => {}
@@ -5234,10 +5242,11 @@ fn resolve_required_stdlib_modules(
 
         let mut loaded_any = false;
         for (module_name, import_path) in pending {
-            trace_stdlib_resolution(format_args!(
-                "[gors] resolve stdlib {import_path} as {module_name}"
-            ));
             let required_roots = required.get(&module_name).cloned().unwrap_or_default();
+            trace_stdlib_resolution(format_args!(
+                "[gors] resolve stdlib {import_path} as {module_name} with roots {}",
+                format_reachability_roots(required_roots.iter())
+            ));
             let items = if let Some(stdlib_mod) =
                 crate::resolve::resolve_with_roots(&import_path, &required_roots)
             {
@@ -5307,6 +5316,16 @@ fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
     }
 }
 
+fn format_reachability_roots<'a>(roots: impl IntoIterator<Item = &'a String>) -> String {
+    let mut roots: Vec<_> = roots.into_iter().map(String::as_str).collect();
+    roots.sort_unstable();
+    if roots.is_empty() {
+        "<empty>".to_string()
+    } else {
+        roots.join(",")
+    }
+}
+
 fn prune_dependency_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
     _roots: &[String],
@@ -5345,6 +5364,12 @@ fn prune_dependency_stdlib_modules(
             &mut required,
             collect_external_refs(&module.file.items, &stdlib_mod_names),
         );
+    }
+    for (module, roots) in &required {
+        trace_stdlib_resolution(format_args!(
+            "[gors] prune stdlib {module} with roots {}",
+            format_reachability_roots(roots.iter())
+        ));
     }
 
     loop {
@@ -20060,6 +20085,104 @@ func main() {
         assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod strconv"));
         assert!(!lib_rs.contains("pub mod errors"));
+    }
+
+    #[test]
+    fn compile_program_multi_retains_direct_stdlib_constants() {
+        let go_source = r#"package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	fmt.Println(os.PathSeparator)
+	fmt.Println(os.PathListSeparator)
+}
+"#;
+        let ast = crate::parser::parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec!["fmt".to_string(), "os".to_string()],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
+        let os_rs = output.files.get("os.rs").unwrap();
+        assert!(os_rs.contains("pub const PathSeparator"), "{os_rs}");
+        assert!(os_rs.contains("pub const PathListSeparator"), "{os_rs}");
+    }
+
+    #[test]
+    fn resolve_with_roots_retains_grouped_stdlib_constants() {
+        let roots = std::collections::HashSet::from([
+            "PathSeparator".to_string(),
+            "PathListSeparator".to_string(),
+            "Stdout".to_string(),
+            "clone".to_string(),
+        ]);
+        let module = crate::resolve::resolve_with_roots("os", &roots).unwrap();
+        let items = module.content.unwrap().1;
+        let source = prettyplease::unparse(&syn::File {
+            shebang: None,
+            attrs: vec![],
+            items,
+        });
+        assert!(source.contains("pub const PathSeparator"), "{source}");
+        assert!(source.contains("pub const PathListSeparator"), "{source}");
+    }
+
+    #[test]
+    fn collect_external_refs_follows_stdlib_const_paths() {
+        let file: syn::File = rust! {
+            pub fn main() {
+                fmt::Println(Vec::from([Box::new((os::PathSeparator).clone()) as Box<dyn std::any::Any>]));
+                fmt::Println(Vec::from([Box::new((os::PathListSeparator).clone()) as Box<dyn std::any::Any>]));
+            }
+        };
+        let module_names = std::collections::HashSet::from(["fmt".to_string(), "os".to_string()]);
+
+        let refs = super::collect_external_refs(&file.items, &module_names);
+
+        assert!(
+            refs.get("fmt")
+                .is_some_and(|roots| roots.contains("Println"))
+        );
+        assert!(
+            refs.get("os")
+                .is_some_and(|roots| roots.contains("PathSeparator"))
+        );
+        assert!(
+            refs.get("os")
+                .is_some_and(|roots| roots.contains("PathListSeparator"))
+        );
+    }
+
+    #[test]
+    fn prune_items_to_roots_retains_stdlib_constants() {
+        let roots = std::collections::HashSet::from([
+            "PathSeparator".to_string(),
+            "PathListSeparator".to_string(),
+        ]);
+        let module = crate::resolve::resolve_with_roots("os", &roots).unwrap();
+        let mut items = module.content.unwrap().1;
+        let module_names = std::collections::HashSet::from(["os".to_string()]);
+
+        super::prune_items_to_roots(&mut items, &roots, &module_names);
+
+        let source = prettyplease::unparse(&syn::File {
+            shebang: None,
+            attrs: vec![],
+            items,
+        });
+        assert!(source.contains("pub const PathSeparator"), "{source}");
+        assert!(source.contains("pub const PathListSeparator"), "{source}");
     }
 
     #[test]
