@@ -11,6 +11,10 @@ export interface StructuredSourceMap {
 	mappings: SourceMapping[];
 }
 
+// Bound client-side indexing so large generated programs cannot exhaust browser
+// Map/source-map memory while the Rust output itself remains usable.
+export const MAX_SOURCE_MAP_INDEX_MAPPINGS = 100_000;
+
 export function extractRustTokenAt(
 	lines: readonly string[],
 	line: number,
@@ -81,10 +85,14 @@ export class SourceMapIndex {
 		sourceMap: StructuredSourceMap | null | undefined,
 		rustCode: string,
 	) {
-		this.success = sourceMap?.success === true;
+		const mappings = sourceMap?.mappings || [];
+		this.success =
+			sourceMap?.success === true &&
+			mappings.length <= MAX_SOURCE_MAP_INDEX_MAPPINGS;
 		this.rustLines = rustCode.split("\n");
+		if (!this.success) return;
 
-		for (const mapping of sourceMap?.mappings || []) {
+		for (const mapping of mappings) {
 			const [outputLine, , goLine] = mapping;
 			if (!this.byGoLine.has(goLine)) this.byGoLine.set(goLine, []);
 			this.byGoLine.get(goLine)?.push(mapping);

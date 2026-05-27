@@ -26,6 +26,7 @@ const staticAssets = [
 const assetManifest = {};
 const copyPatterns = [];
 const devServerLiveReload = process.env.GORS_WEB_LIVE_RELOAD !== "0";
+const webpackSourceMaps = process.env.GORS_WEB_SOURCE_MAPS === "1";
 
 for (const { src, name, ext } of staticAssets) {
 	const hash = contentHash(src);
@@ -70,6 +71,7 @@ class AssetManifestPlugin {
 module.exports = () => {
 	return {
 		entry: "./src/main.ts",
+		devtool: webpackSourceMaps ? "source-map" : false,
 		output: {
 			filename: "bundle-[contenthash:16].js",
 			path: path.resolve(__dirname, "dist"),

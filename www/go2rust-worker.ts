@@ -1,5 +1,8 @@
+import {
+	MAX_SOURCE_MAP_INDEX_MAPPINGS,
+	type StructuredSourceMap,
+} from "./src/source-map-index";
 import { loadGorsWasm, type GorsBuildResult } from "./gors-wasm-loader";
-import type { StructuredSourceMap } from "./src/source-map-index";
 
 const MAX_CACHE_ENTRIES = 32;
 
@@ -54,12 +57,16 @@ function touchCache(key: string, value: WorkerCompileResult): void {
 function normalizeResult(result: GorsBuildResult): WorkerCompileResult {
 	try {
 		if (result.success) {
+			const mappingCount = result.mapping_count();
 			return {
 				success: true,
 				rustCode: result.output,
 				sourceMap: {
-					success: true,
-					mappings: JSON.parse(result.get_mappings_json()),
+					success: mappingCount <= MAX_SOURCE_MAP_INDEX_MAPPINGS,
+					mappings:
+						mappingCount <= MAX_SOURCE_MAP_INDEX_MAPPINGS
+							? JSON.parse(result.get_mappings_json())
+							: [],
 				},
 				error: null,
 			};

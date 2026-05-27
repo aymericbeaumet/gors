@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	MAX_SOURCE_MAP_INDEX_MAPPINGS,
 	SourceMapIndex,
 	extractRustTokenAt,
+	type SourceMapping,
 	type StructuredSourceMap,
 } from "../../src/source-map-index";
 
@@ -28,6 +30,21 @@ describe("SourceMapIndex", () => {
 		const index = new SourceMapIndex(sourceMap, rustCode);
 
 		expect(index.output_to_go(2, 8)).toEqual([6, 2, 6, 5]);
+	});
+
+	it("skips oversized source maps", () => {
+		const sourceMap: StructuredSourceMap = {
+			success: true,
+			mappings: Array.from(
+				{ length: MAX_SOURCE_MAP_INDEX_MAPPINGS + 1 },
+				(_, index): SourceMapping => [index, 0, index, 0, "x"],
+			),
+		};
+
+		const index = new SourceMapIndex(sourceMap, "x\n");
+
+		expect(index.success).toBe(false);
+		expect(index.go_to_output(1, 1)).toEqual([]);
 	});
 });
 

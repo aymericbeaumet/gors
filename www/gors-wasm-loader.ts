@@ -14,6 +14,7 @@ export interface GorsBuildResult {
 	readonly error_end_column: number;
 	readonly error_kind: string;
 	get_mappings_json(): string;
+	mapping_count(): number;
 	free(): void;
 }
 
