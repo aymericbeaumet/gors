@@ -1237,8 +1237,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Packages and program initialization",
 		"testCount": 6,
-		"passingTestCount": 4,
-		"unsupportedTestCount": 2,
+		"passingTestCount": 5,
+		"unsupportedTestCount": 1,
 		"tests": [
 			{
 				"id": "packages-single-main",
@@ -1284,9 +1284,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "packages-import-aliases",
 				"section": "Import declarations",
 				"title": "Import declarations support explicit package aliases, dot imports, and blank imports",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Alias, dot, and blank import semantics need dedicated parser/resolver acceptance fixtures."
+				"status": "passing",
+				"fixtures": [
+					"packages_import_aliases"
+				],
+				"reason": ""
 			},
 			{
 				"id": "packages-initialization-order",
@@ -1372,6 +1374,6 @@ export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 8,
 	"testCount": 124,
-	"passingTestCount": 119,
-	"unsupportedTestCount": 5
+	"passingTestCount": 120,
+	"unsupportedTestCount": 4
 } as const;

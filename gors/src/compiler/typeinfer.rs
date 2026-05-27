@@ -999,6 +999,29 @@ impl TypeEnv {
             .collect()
     }
 
+    pub fn exported_names(&self) -> Vec<std::string::String> {
+        let mut names: Vec<_> = self
+            .funcs
+            .keys()
+            .filter(|name| !name.contains('.') && go_name_is_exported(name))
+            .chain(
+                self.top_level_vars
+                    .iter()
+                    .filter(|name| go_name_is_exported(name)),
+            )
+            .chain(self.consts.iter().filter(|name| go_name_is_exported(name)))
+            .chain(
+                self.type_kinds
+                    .keys()
+                    .filter(|name| go_name_is_exported(name)),
+            )
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     pub fn interface_implementors(&self, name: &str) -> Vec<std::string::String> {
         let Some(required_methods) = self.interface_methods.get(name) else {
             return Vec::new();
@@ -1486,4 +1509,8 @@ fn receiver_type_has_pointer_indirection(expr: &ast::Expr<'_>) -> bool {
         ast::Expr::ParenExpr(paren) => receiver_type_has_pointer_indirection(&paren.x),
         _ => false,
     }
+}
+
+fn go_name_is_exported(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
 }

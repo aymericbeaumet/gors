@@ -1113,9 +1113,10 @@
           "id": "packages-import-aliases",
           "section": "Import declarations",
           "title": "Import declarations support explicit package aliases, dot imports, and blank imports",
-          "status": "unsupported",
-          "reason": "Alias, dot, and blank import semantics need dedicated parser/resolver acceptance fixtures.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "packages_import_aliases"
+          ]
         },
         {
           "id": "packages-initialization-order",

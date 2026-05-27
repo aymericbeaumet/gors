@@ -42,6 +42,7 @@ thread_local! {
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
+    static DOT_IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
@@ -686,6 +687,12 @@ fn set_import_renames(import_renames: BTreeMap<String, String>) {
     });
 }
 
+fn set_dot_import_renames(dot_import_renames: BTreeMap<String, String>) {
+    DOT_IMPORT_RENAMES.with(|renames| {
+        *renames.borrow_mut() = dot_import_renames;
+    });
+}
+
 fn set_import_package_names(import_package_names: BTreeMap<String, String>) {
     IMPORT_PACKAGE_NAMES.with(|names| {
         *names.borrow_mut() = import_package_names;
@@ -724,6 +731,16 @@ fn import_rust_name(name: &str) -> String {
             .unwrap_or_else(|| name.to_string())
     });
     rust_safe_ident_name(&renamed)
+}
+
+fn dot_import_path_expr(name: &str) -> Option<syn::Expr> {
+    DOT_IMPORT_RENAMES.with(|renames| {
+        renames.borrow().get(name).map(|module| {
+            let module = syn::Ident::new(&rust_safe_ident_name(module), Span::mixed_site());
+            let name = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+            syn::parse_quote! { #module::#name }
+        })
+    })
 }
 
 fn rust_safe_ident_name(name: &str) -> String {
@@ -3108,6 +3125,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
+    set_dot_import_renames(BTreeMap::new());
     set_import_package_names(BTreeMap::new());
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
@@ -3117,6 +3135,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     validate_unused_imports(&file, &import_package_names)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_import_package_names(import_package_names);
+    set_dot_import_renames(BTreeMap::new());
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -3144,6 +3163,7 @@ pub fn compile_with_type_env_and_import_renames(
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
+    set_dot_import_renames(BTreeMap::new());
     set_import_package_names(BTreeMap::new());
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
@@ -3473,6 +3493,13 @@ fn compile_program_impl(
         set_import_package_names(import_package_names.clone());
         set_type_env(type_env);
         set_import_renames(import_rewrites.clone());
+        set_dot_import_renames(dot_import_module_rewrites(
+            &pkg.ast,
+            &local_type_envs,
+            &local_module_names,
+            &stdlib_type_envs,
+            &stdlib_module_names,
+        ));
         let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
         rewrite_import_module_paths(&mut pkg_file, &import_rewrites);
         passes::pass_for_imported_package(&mut pkg_file);
@@ -3550,6 +3577,13 @@ fn compile_program_impl(
     set_import_package_names(import_package_names);
     set_type_env(main_type_env);
     set_import_renames(main_import_rewrites.clone());
+    set_dot_import_renames(dot_import_module_rewrites(
+        &program.main_package.ast,
+        &local_type_envs,
+        &local_module_names,
+        &stdlib_type_envs,
+        &stdlib_module_names,
+    ));
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
     rewrite_import_module_paths(&mut main_file, &main_import_rewrites);
     passes::pass(&mut main_file);
@@ -5164,6 +5198,37 @@ fn import_module_rewrites(
             .unwrap_or_else(|| package_name.clone());
         if local_name != *mod_name {
             rewrites.insert(local_name, mod_name.clone());
+        }
+    }
+    rewrites
+}
+
+fn dot_import_module_rewrites(
+    file: &ast::File,
+    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_module_names: &BTreeMap<String, String>,
+    stdlib_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    stdlib_module_names: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut rewrites = BTreeMap::new();
+    for import in file.imports() {
+        if !matches!(import.name.as_ref().map(|name| name.name), Some(".")) {
+            continue;
+        }
+        let import_path = import.path.value.trim_matches('"');
+        let Some((mod_name, (_, env))) = local_module_names
+            .get(import_path)
+            .zip(local_type_envs.get(import_path))
+            .or_else(|| {
+                stdlib_module_names
+                    .get(import_path)
+                    .zip(stdlib_type_envs.get(import_path))
+            })
+        else {
+            continue;
+        };
+        for name in env.exported_names() {
+            rewrites.insert(name, mod_name.clone());
         }
     }
     rewrites
@@ -7024,6 +7089,7 @@ pub fn compile_with_source_map(
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
+    set_dot_import_renames(BTreeMap::new());
     set_import_package_names(BTreeMap::new());
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
@@ -7032,6 +7098,7 @@ pub fn compile_with_source_map(
     validate_unused_imports(&file, &import_package_names)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_import_package_names(import_package_names);
+    set_dot_import_renames(BTreeMap::new());
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -14966,6 +15033,20 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     return compile_function_field_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid function field call"));
                 }
+                if let ast::Expr::Ident(ident) = call_expr.fun.as_ref()
+                    && let Some(func) = dot_import_path_expr(ident.name)
+                {
+                    let mut args = syn::punctuated::Punctuated::new();
+                    if let Some(call_args) = call_expr.args {
+                        args.extend(call_args.into_iter().map(syn::Expr::from));
+                    }
+                    return syn::Expr::Call(syn::ExprCall {
+                        attrs: vec![],
+                        func: Box::new(func),
+                        paren_token: syn::token::Paren::default(),
+                        args,
+                    });
+                }
                 let param_types = call_param_types(&call_expr.fun);
                 let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
                 // Detect method call vs package function call
@@ -15024,6 +15105,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::Ident(ident) => {
                 let ident_name = ident.name;
                 if let Some(expr) = shared_capture_read_expr(ident_name) {
+                    return expr;
+                }
+                if let Some(expr) = dot_import_path_expr(ident_name) {
                     return expr;
                 }
                 let is_top_level_var = TYPE_ENV.with(|env| {
