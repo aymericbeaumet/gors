@@ -16659,7 +16659,14 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 stmts.push(syn::Stmt::Expr(s.try_into()?, Some(<Token![;]>::default())));
                 Ok(stmts)
             }
-            ast::Stmt::TypeSwitchStmt(s) => compile_type_switch_stmt(s),
+            ast::Stmt::TypeSwitchStmt(mut s) => {
+                let mut stmts = vec![];
+                if let Some(init) = s.init.take() {
+                    stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
+                }
+                stmts.extend(compile_type_switch_stmt(s)?);
+                Ok(stmts)
+            }
             ast::Stmt::SendStmt(send_stmt) => {
                 // ch <- value  =>  ch.send(value);
                 let chan: syn::Expr = send_stmt.chan.into();
