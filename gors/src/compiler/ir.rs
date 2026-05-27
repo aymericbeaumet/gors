@@ -6828,6 +6828,9 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
             }
         }
         ast::Expr::SelectorExpr(sel) => {
+            if let Some(returns) = type_method_expression_result_types(sel, env) {
+                return Some(returns.len());
+            }
             if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
                 let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
@@ -6860,6 +6863,16 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
     }
 }
 
+fn type_method_expression_result_types(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<Vec<GoType>> {
+    let (receiver_name, _) = type_method_expression_receiver_type(&selector.x, env)?;
+    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+    env.has_func(&method_key)
+        .then(|| env.get_func_returns(&method_key))
+}
+
 fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
     match fun {
         ast::Expr::Ident(id) => {
@@ -6873,6 +6886,9 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
             }
         }
         ast::Expr::SelectorExpr(sel) => {
+            if let Some(returns) = type_method_expression_result_types(sel, env) {
+                return Some(returns);
+            }
             if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
                 let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
@@ -11696,6 +11712,9 @@ fn call_signature_for_selector(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
+    if let Some(signature) = call_signature_for_type_method_expression(selector, env) {
+        return Some(signature);
+    }
     let ast::Expr::Ident(base) = selector.x.as_ref() else {
         return None;
     };
@@ -11716,6 +11735,45 @@ fn call_signature_for_selector(
         params: env.get_func_params(&method_key),
         variadic_start: env.get_func_variadic_start(&method_key),
     })
+}
+
+fn call_signature_for_type_method_expression(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<CallSignature> {
+    let (receiver_name, receiver_type) = type_method_expression_receiver_type(&selector.x, env)?;
+    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+    if !env.has_func(&method_key) {
+        return None;
+    }
+    let mut params = vec![receiver_type];
+    params.extend(env.get_func_params(&method_key));
+    Some(CallSignature {
+        target: method_key.clone(),
+        params,
+        variadic_start: env
+            .get_func_variadic_start(&method_key)
+            .map(|start| start + 1),
+    })
+}
+
+fn type_method_expression_receiver_type(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<(String, GoType)> {
+    match unparen_expr(expr) {
+        ast::Expr::StarExpr(star) => {
+            let (name, _) = type_method_expression_receiver_type(&star.x, env)?;
+            Some((name.clone(), GoType::Pointer(Box::new(GoType::Named(name)))))
+        }
+        ast::Expr::Ident(ident) if env.get_type_kind(ident.name).is_some() => Some((
+            ident.name.to_string(),
+            GoType::Named(ident.name.to_string()),
+        )),
+        ast::Expr::IndexExpr(index) => type_method_expression_receiver_type(&index.x, env),
+        ast::Expr::IndexListExpr(index) => type_method_expression_receiver_type(&index.x, env),
+        _ => None,
+    }
 }
 
 fn method_receiver_type_name(ty: GoType, env: &TypeEnv) -> Option<String> {
@@ -20655,6 +20713,9 @@ mod tests {
                 func noArgs() {}
                 func len(a int) {}
                 func takesNilables(p *int, xs []int, m map[string]int, ch chan int, fn func(), v any) {}
+                type Counter struct { Count int }
+                func (c Counter) Get() int { return c.Count }
+                func (c *Counter) Bump(n int) {}
 
                 func main() {
                     takes(pair())
@@ -20673,6 +20734,10 @@ mod tests {
                     _ = func(a int) int { return a }(1)
                     _ = func(a any) any { return a }(nil)
                     _ = func(a any) any { return a }(-1e-1000)
+                    value := Counter{}
+                    _ = Counter.Get(value)
+                    ptr := &value
+                    (*Counter).Bump(ptr, 1)
                 }
             "#,
         )

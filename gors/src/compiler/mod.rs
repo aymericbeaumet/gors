@@ -6805,6 +6805,20 @@ fn collect_refs_from_item(
             }
             syn::visit_mut::visit_expr_method_call_mut(self, method);
         }
+
+        fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+            if let syn::Expr::Path(path) = &*call.func
+                && let Some(receiver_type) = receiver_type_from_associated_call_path(
+                    &path.path,
+                    self.module_names,
+                    self.item_names,
+                )
+                && let Some(method) = path.path.segments.last()
+            {
+                self.insert_receiver_method_ref(receiver_type, &method.ident.to_string());
+            }
+            syn::visit_mut::visit_expr_call_mut(self, call);
+        }
     }
 
     let mut bound_collector = BoundCollector {
@@ -13063,6 +13077,93 @@ fn is_type_method_expression_receiver(expr: &ast::Expr) -> bool {
     }
 }
 
+fn type_method_expression_receiver_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => type_method_expression_receiver_name(&paren.x),
+        ast::Expr::StarExpr(star) => type_method_expression_receiver_name(&star.x),
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector),
+        ast::Expr::IndexExpr(index) => type_method_expression_receiver_name(&index.x),
+        ast::Expr::IndexListExpr(index) => type_method_expression_receiver_name(&index.x),
+        _ => None,
+    }
+}
+
+fn type_method_expression_receiver_path(expr: &ast::Expr) -> Option<syn::Path> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => type_method_expression_receiver_path(&paren.x),
+        ast::Expr::StarExpr(star) => type_method_expression_receiver_path(&star.x),
+        ast::Expr::Ident(ident) => {
+            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            Some(syn::parse_quote! { #ident })
+        }
+        ast::Expr::SelectorExpr(selector) => Some(selector_path_from_ref(selector)),
+        ast::Expr::IndexExpr(index) => type_method_expression_receiver_path(&index.x),
+        ast::Expr::IndexListExpr(index) => type_method_expression_receiver_path(&index.x),
+        _ => None,
+    }
+}
+
+fn type_method_expression_receiver_is_pointer(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => type_method_expression_receiver_is_pointer(&paren.x),
+        ast::Expr::StarExpr(_) => true,
+        _ => false,
+    }
+}
+
+fn is_type_method_expression_call(call_expr: &ast::CallExpr) -> bool {
+    matches!(
+        call_expr.fun.as_ref(),
+        ast::Expr::SelectorExpr(selector)
+            if is_type_method_expression_receiver(&selector.x)
+    )
+}
+
+fn compile_type_method_expression_receiver_arg(
+    receiver: ast::Expr,
+    pointer_receiver: bool,
+) -> syn::Expr {
+    if pointer_receiver {
+        let receiver = method_receiver_expr_from_ref(receiver);
+        syn::parse_quote! { &mut *#receiver }
+    } else {
+        let receiver = method_receiver_expr_from_ref(receiver);
+        syn::parse_quote! { &#receiver }
+    }
+}
+
+fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return compile_error_expr("invalid method expression call");
+    };
+    let Some(receiver_name) = type_method_expression_receiver_name(&selector.x) else {
+        return compile_error_expr("invalid method expression receiver");
+    };
+    let Some(receiver_path) = type_method_expression_receiver_path(&selector.x) else {
+        return compile_error_expr("invalid method expression receiver");
+    };
+    let method_ident: syn::Ident = selector.sel.into();
+    let pointer_receiver = type_method_expression_receiver_is_pointer(&selector.x);
+    let param_types = TYPE_ENV.with(|env| {
+        env.borrow()
+            .get_func_params(&format!("{receiver_name}.{}", method_ident))
+    });
+    let mut raw_args = call_expr.args.unwrap_or_default().into_iter();
+    let Some(receiver_arg) = raw_args.next() else {
+        return compile_error_expr("method expression call requires receiver argument");
+    };
+    let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    args.push(compile_type_method_expression_receiver_arg(
+        receiver_arg,
+        pointer_receiver,
+    ));
+    for (idx, arg) in raw_args.enumerate() {
+        args.push(compile_expr_with_expected(arg, param_types.get(idx)));
+    }
+    syn::parse_quote! { #receiver_path::#method_ident(#args) }
+}
+
 fn compile_call_function_expr(fun: ast::Expr) -> syn::Expr {
     match fun {
         ast::Expr::Ident(ident) => {
@@ -14273,6 +14374,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_append_float_call(&call_expr) {
                     return compile_append_float_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call"));
+                }
+                if is_type_method_expression_call(&call_expr) {
+                    return compile_type_method_expression_call(call_expr);
                 }
                 if let Some(variadic_start) = is_variadic_call(&call_expr) {
                     return compile_variadic_call(call_expr, variadic_start);
