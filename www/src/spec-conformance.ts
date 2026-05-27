@@ -925,8 +925,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Statements",
 		"testCount": 19,
-		"passingTestCount": 18,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 19,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "stmt-empty-expression",
@@ -1112,17 +1112,19 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "stmt-arbitrary-forward-goto",
 				"section": "Goto statements",
 				"title": "Arbitrary forward goto lowers across complex statement graphs",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Current support is limited to direct statement-list state-loop lowering."
+				"status": "passing",
+				"fixtures": [
+					"statements_forward_goto"
+				],
+				"reason": ""
 			}
 		]
 	},
 	{
 		"name": "Built-in functions",
 		"testCount": 11,
-		"passingTestCount": 10,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 11,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "builtin-append-copy",
@@ -1198,9 +1200,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "builtin-panic-recover",
 				"section": "Handling panics",
 				"title": "panic and recover follow deferred recovery semantics",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Generated programs still model only panic output paths, not full recover semantics."
+				"status": "passing",
+				"fixtures": [
+					"built_in_panic_recover"
+				],
+				"reason": ""
 			},
 			{
 				"id": "builtin-print-println",
@@ -1374,8 +1378,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 10,
+	"passingCategoryCount": 12,
 	"testCount": 124,
-	"passingTestCount": 122,
-	"unsupportedTestCount": 2
+	"passingTestCount": 124,
+	"unsupportedTestCount": 0
 } as const;

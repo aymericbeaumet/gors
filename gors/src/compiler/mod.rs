@@ -61,6 +61,7 @@ thread_local! {
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
+    static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
 }
 
 #[derive(Clone)]
@@ -113,6 +114,10 @@ struct SliceAliasTarget {
 
 struct SliceAliasTargetsGuard {
     previous: BTreeMap<String, SliceAliasTarget>,
+}
+
+struct PanicReturnsThroughDeferGuard {
+    previous: bool,
 }
 
 impl MainPackageVarModeGuard {
@@ -220,6 +225,25 @@ impl Drop for SliceAliasTargetsGuard {
     fn drop(&mut self) {
         SLICE_ALIAS_TARGETS.with(|aliases| {
             *aliases.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl PanicReturnsThroughDeferGuard {
+    fn set(current: bool) -> Self {
+        let previous = PANIC_RETURNS_THROUGH_DEFER.with(|mode| {
+            let previous = *mode.borrow();
+            *mode.borrow_mut() = current;
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for PanicReturnsThroughDeferGuard {
+    fn drop(&mut self) {
+        PANIC_RETURNS_THROUGH_DEFER.with(|mode| {
+            *mode.borrow_mut() = self.previous;
         });
     }
 }
@@ -9721,7 +9745,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                     syn::parse_quote! { crate::builtin::imag(#c) }
                 }
                 ir::BuiltinCallKind::Recover => {
-                    syn::parse_quote! { String::new() }
+                    syn::parse_quote! { crate::builtin::recover() }
                 }
                 ir::BuiltinCallKind::Println => compile_builtin_println(args),
                 ir::BuiltinCallKind::Print => compile_builtin_print(args),
@@ -9932,6 +9956,12 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
         return syn::parse_quote! { crate::builtin::panic_value(()) };
     };
     let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
+    if PANIC_RETURNS_THROUGH_DEFER.with(|mode| *mode.borrow()) {
+        return syn::parse_quote! {{
+            crate::builtin::set_recover_payload(#arg);
+            return;
+        }};
+    }
     syn::parse_quote! { crate::builtin::panic_value(#arg) }
 }
 
@@ -10351,7 +10381,9 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         }
     }
 
+    let body_has_defer = block_has_defer(&func_lit.body);
     let return_go_types = collect_return_go_types(func_lit.type_.results.as_ref());
+    let panic_returns_through_defer = body_has_defer && return_go_types.is_empty();
     let ret = compile_return_type(func_lit.type_.results).unwrap_or(syn::ReturnType::Default);
 
     let previous_return_types =
@@ -10362,7 +10394,8 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         let env = env.borrow();
         Some(ir::ast_block_completion(&func_lit.body, &env))
     });
-    let body_has_defer = block_has_defer(&func_lit.body);
+    let _panic_returns_through_defer =
+        PanicReturnsThroughDeferGuard::set(panic_returns_through_defer);
     let block_result = func_lit.body.try_into();
     RETURN_TYPES.with(|types| {
         *types.borrow_mut() = previous_return_types;
@@ -13265,9 +13298,9 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::Expr::from(*binary_expr.x)
             };
             return if is_eq {
-                syn::parse_quote! { crate::builtin::interface_is_nil(&(#other_expr)) }
+                syn::parse_quote! { crate::builtin::interface_is_nil((#other_expr).as_ref()) }
             } else {
-                syn::parse_quote! { !crate::builtin::interface_is_nil(&(#other_expr)) }
+                syn::parse_quote! { !crate::builtin::interface_is_nil((#other_expr).as_ref()) }
             };
         }
 
@@ -13969,6 +14002,7 @@ fn defer_stack_decl_stmt() -> syn::Stmt {
                     while let Some(__gors_defer) = self.0.pop() {
                         __gors_defer();
                     }
+                    crate::builtin::resume_unrecovered_panic();
                 }
             }
             __GorsDeferStack(Vec::new())
@@ -16639,6 +16673,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
 
         let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
+        let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
+        let panic_returns_through_defer = body_has_defer && return_go_types.is_empty();
         let mut output = compile_return_type(func_decl.type_.results)?;
         add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
@@ -16677,7 +16713,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 ir::ast_block_completion(body, &env)
             })
         });
-        let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
+        let _panic_returns_through_defer =
+            PanicReturnsThroughDeferGuard::set(panic_returns_through_defer);
         let _slice_alias_targets = SliceAliasTargetsGuard::clear();
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
@@ -22954,6 +22991,7 @@ func main() {
                                 while let Some(__gors_defer) = self.0.pop() {
                                     __gors_defer();
                                 }
+                                crate::builtin::resume_unrecovered_panic();
                             }
                         }
                         __GorsDeferStack(Vec::new())

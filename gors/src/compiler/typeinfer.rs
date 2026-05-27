@@ -370,6 +370,7 @@ impl GoType {
                                 GoType::from_name(id.name)
                             }
                             "complex" => GoType::Complex128,
+                            "recover" => GoType::Any,
                             "real" | "imag" => call
                                 .args
                                 .as_ref()

@@ -1,6 +1,6 @@
 #![allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -35,6 +35,15 @@ pub const r#true: r#bool = true;
 pub const r#false: r#bool = false;
 pub const iota: int = 0;
 pub const nil: Option<()> = None;
+
+static RECOVER_PAYLOAD: Mutex<Option<Box<dyn Any + Send>>> = Mutex::new(None);
+
+fn recover_payload_lock() -> MutexGuard<'static, Option<Box<dyn Any + Send>>> {
+    match RECOVER_PAYLOAD.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum __GorsReflectKind {
@@ -1127,8 +1136,23 @@ pub fn panic_value<T: Any + Send + 'static>(value: T) -> ! {
 }
 
 #[inline]
-pub fn recover() -> Option<Box<dyn Any + Send>> {
-    None
+pub fn set_recover_payload<T: Any + Send + 'static>(value: T) {
+    *recover_payload_lock() = Some(Box::new(value));
+}
+
+#[inline]
+pub fn recover() -> Box<dyn Any + Send> {
+    recover_payload_lock()
+        .take()
+        .unwrap_or_else(|| Box::new(()))
+}
+
+#[inline]
+pub fn resume_unrecovered_panic() {
+    let payload = recover_payload_lock().take();
+    if let Some(payload) = payload {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 #[inline]
@@ -1148,8 +1172,8 @@ pub fn recover_func<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Option<std::s
 }
 
 #[inline]
-pub fn interface_is_nil(value: &Box<dyn Any>) -> bool {
-    value.is::<()>()
+pub fn interface_is_nil(value: &dyn Any) -> bool {
+    value.type_id() == TypeId::of::<()>()
 }
 
 #[inline]
@@ -1413,7 +1437,11 @@ mod tests {
 
     #[test]
     fn panic_and_recover_helpers_have_defined_behavior() {
-        assert!(recover().is_none());
+        assert!(interface_is_nil(recover().as_ref()));
+        set_recover_payload("boom".to_string());
+        let recovered = recover();
+        assert!(!interface_is_nil(recovered.as_ref()));
+        assert!(interface_is_nil(recover().as_ref()));
         assert_eq!(recover_func(|| {}).as_deref(), None);
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));

@@ -960,9 +960,10 @@
           "id": "stmt-arbitrary-forward-goto",
           "section": "Goto statements",
           "title": "Arbitrary forward goto lowers across complex statement graphs",
-          "status": "unsupported",
-          "reason": "Current support is limited to direct statement-list state-loop lowering.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "statements_forward_goto"
+          ]
         }
       ]
     },
@@ -1036,9 +1037,10 @@
           "id": "builtin-panic-recover",
           "section": "Handling panics",
           "title": "panic and recover follow deferred recovery semantics",
-          "status": "unsupported",
-          "reason": "Generated programs still model only panic output paths, not full recover semantics.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_recover"
+          ]
         },
         {
           "id": "builtin-print-println",
