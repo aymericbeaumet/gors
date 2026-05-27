@@ -789,8 +789,9 @@ conservative for identifiers and compound constant expressions until constant
 evaluation is represented explicitly in IR.
 Expression-switch validation checks the switch tag and case expressions before
 case-body compilation: nil tags are rejected, tags and cases must be comparable,
-case expressions must be single-valued, and each case must be comparable to the
-tag or to implicit `true` when the tag is omitted.
+case expressions must be single-valued, duplicate literal/predeclared/known-const
+case values are rejected, and each case must be comparable to the tag or to
+implicit `true` when the tag is omitted.
 Type-switch validation checks semantic constraints after the guard shape check:
 the guard operand must be an interface, `nil` and concrete case types must not
 be duplicated, and obvious concrete cases for named interfaces must implement

@@ -13001,6 +13001,9 @@ fn invalid_switch_reason(reason: ir::InvalidSwitchReason) -> String {
         ir::InvalidSwitchReason::CaseTypeMismatch { expected, actual } => {
             format!("case expression must be comparable to {expected}, got {actual}")
         }
+        ir::InvalidSwitchReason::DuplicateConstantCase { value } => {
+            format!("duplicate constant case {value}")
+        }
         ir::InvalidSwitchReason::NilTag => "switch expression cannot be nil".to_string(),
         ir::InvalidSwitchReason::NonComparableCase { type_name } => {
             format!("case expression type {type_name} is not comparable")

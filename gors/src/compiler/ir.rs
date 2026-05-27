@@ -1101,6 +1101,7 @@ pub enum InvalidSendReason {
 pub enum InvalidSwitchReason {
     CaseMultiValue { values: usize },
     CaseTypeMismatch { expected: String, actual: String },
+    DuplicateConstantCase { value: String },
     NilTag,
     NonComparableCase { type_name: String },
     NonComparableTag { type_name: String },
@@ -6694,6 +6695,7 @@ fn invalid_expression_switch(
             type_name: go_type_display_name(&tag_type),
         });
     }
+    let mut seen_constant_cases = BTreeSet::new();
     for stmt in &switch.body.list {
         let ast::Stmt::CaseClause(case) = stmt else {
             continue;
@@ -6711,9 +6713,33 @@ fn invalid_expression_switch(
             if let Some(reason) = invalid_expression_switch_case(&tag_type, expr, env) {
                 return Some(reason);
             }
+            if let Some(fingerprint) = literal_constant_key_fingerprint(expr, env)
+                && !seen_constant_cases.insert(fingerprint)
+            {
+                return Some(InvalidSwitchReason::DuplicateConstantCase {
+                    value: constant_case_display(expr),
+                });
+            }
         }
     }
     None
+}
+
+fn constant_case_display(expr: &ast::Expr<'_>) -> String {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => lit.value.to_string(),
+        ast::Expr::Ident(ident) => ident.name.to_string(),
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            format!(
+                "{}{}",
+                unary_op_name(unary.op),
+                constant_case_display(&unary.x)
+            )
+        }
+        _ => "constant".to_string(),
+    }
 }
 
 fn invalid_expression_switch_case(
@@ -8592,6 +8618,9 @@ fn literal_constant_key_fingerprint(expr: &ast::Expr<'_>, env: &TypeEnv) -> Opti
     }
     match unparen_expr(expr) {
         ast::Expr::BasicLit(lit) => Some(format!("{:?}:{}", lit.kind, lit.value)),
+        ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false") => {
+            Some(format!("bool:{}", ident.name))
+        }
         ast::Expr::Ident(ident) if env.is_const(ident.name) => {
             Some(format!("const:{}", ident.name))
         }
@@ -17654,6 +17683,36 @@ mod tests {
 
                     func main() {
                         switch 1 {
+                        case 1:
+                        case 1:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::DuplicateConstantCase {
+                    value: "1".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch {
+                        case true:
+                        case true:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::DuplicateConstantCase {
+                    value: "true".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
                         case []int{}:
                         }
                     }
@@ -17719,6 +17778,11 @@ mod tests {
                     var c Count
                     switch c {
                     case 1:
+                    }
+                    v := 1
+                    switch v {
+                    case v:
+                    case v:
                     }
                     var p *int
                     switch p {
