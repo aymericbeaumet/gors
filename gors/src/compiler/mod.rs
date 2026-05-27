@@ -18680,6 +18680,18 @@ var X int
             r#"
                 package main
 
+                func takes(a int) {}
+
+                func main() {
+                    takes(nil)
+                }
+            "#,
+            "invalid expression: invalid call to takes: argument 1 must be assignable to int, got nil",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
                 func pair() (int, int) {
                     return 1, 2
                 }

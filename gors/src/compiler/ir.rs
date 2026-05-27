@@ -10346,8 +10346,18 @@ fn invalid_call_arg_expr(
             format!("argument {position} must be single-valued, got {values} value(s)"),
         ));
     }
+    let expected = env.resolve_alias(expected);
+    if expr_is_nil(arg) && !type_can_compare_to_nil(&expected) {
+        return Some(invalid_call_reason(
+            target,
+            format!(
+                "argument {position} must be assignable to {}, got nil",
+                go_type_display_name(&expected)
+            ),
+        ));
+    }
     let actual = GoType::infer_expr(arg, env);
-    invalid_call_arg_type(target, position, expected, &actual, env)
+    invalid_call_arg_type(target, position, &expected, &actual, env)
 }
 
 fn invalid_call_arg_types<'a>(
@@ -10426,6 +10436,15 @@ fn invalid_builtin_append_call(
 
     let expected = env.resolve_alias(&dst_elem);
     for value in values {
+        if expr_is_nil(value) && !type_can_compare_to_nil(&expected) {
+            return Some(invalid_builtin_call_reason(
+                BuiltinCallKind::Append,
+                format!(
+                    "argument must be assignable to {}, got nil",
+                    go_type_display_name(&expected)
+                ),
+            ));
+        }
         let actual = env.resolve_alias(&GoType::infer_expr(value, env));
         if !types_are_assignable_for_validation(&expected, &actual) {
             return Some(invalid_builtin_call_reason(
@@ -11162,8 +11181,17 @@ fn invalid_builtin_delete_call(
     let ty = env.resolve_alias(&GoType::infer_expr(map_arg, env));
     match ty {
         GoType::Map(key, _) => {
-            let actual = env.resolve_alias(&GoType::infer_expr(key_arg, env));
             let expected = env.resolve_alias(&key);
+            if expr_is_nil(key_arg) && !type_can_compare_to_nil(&expected) {
+                return Some(invalid_builtin_call_reason(
+                    BuiltinCallKind::Delete,
+                    format!(
+                        "key must be assignable to {}, got nil",
+                        go_type_display_name(&expected)
+                    ),
+                ));
+            }
+            let actual = env.resolve_alias(&GoType::infer_expr(key_arg, env));
             if types_are_assignable_for_validation(&expected, &actual) {
                 return None;
             }
@@ -17216,6 +17244,17 @@ mod tests {
                     package main
 
                     func main() {
+                        delete(map[int]int{}, nil)
+                    }
+                "#,
+                "delete",
+                "key must be assignable to int, got nil",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         m := map[string]int{"x": 1}
                         delete(m)
                     }
@@ -17338,6 +17377,17 @@ mod tests {
                 "#,
                 "append",
                 "argument must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = append([]int{}, nil)
+                    }
+                "#,
+                "append",
+                "argument must be assignable to int, got nil",
             ),
             (
                 r#"
@@ -17551,6 +17601,19 @@ mod tests {
                 r#"
                     package main
 
+                    func takes(a int) {}
+
+                    func main() {
+                        takes(nil)
+                    }
+                "#,
+                "takes",
+                "argument 1 must be assignable to int, got nil",
+            ),
+            (
+                r#"
+                    package main
+
                     func pair() (int, string) { return 1, "go" }
                     func takesInts(a int, b int) {}
 
@@ -17591,6 +17654,19 @@ mod tests {
                 r#"
                     package main
 
+                    func sink(prefix string, values ...string) {}
+
+                    func main() {
+                        sink("go", nil)
+                    }
+                "#,
+                "sink",
+                "argument 2 must be assignable to string, got nil",
+            ),
+            (
+                r#"
+                    package main
+
                     func takes(a int, b string) {}
 
                     func main() {
@@ -17625,6 +17701,17 @@ mod tests {
                 "#,
                 "function literal",
                 "argument 1 must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = func(a int) int { return a }(nil)
+                    }
+                "#,
+                "function literal",
+                "argument 1 must be assignable to int, got nil",
             ),
         ];
 
@@ -17663,6 +17750,7 @@ mod tests {
                 func sink(prefix string, values ...string) {}
                 func noArgs() {}
                 func len(a int) {}
+                func takesNilables(p *int, xs []int, m map[string]int, ch chan int, fn func(), v any) {}
 
                 func main() {
                     takes(pair())
@@ -17673,9 +17761,13 @@ mod tests {
                     sink(source())
                     noArgs()
                     len(1)
+                    takesNilables(nil, nil, nil, nil, nil, nil)
                     f := func(a int) {}
                     f(1)
+                    g := func(a *int) {}
+                    g(nil)
                     _ = func(a int) int { return a }(1)
+                    _ = func(a any) any { return a }(nil)
                 }
             "#,
         )
@@ -18762,8 +18854,11 @@ mod tests {
                     _ = cap([]int{1})
                     _ = copy([]byte{}, "go")
                     _ = append([]int{}, 1, 2)
+                    _ = append([]*int{}, nil)
+                    _ = append([]any{}, nil)
                     _ = append([]int{}, []int{}...)
                     _ = append([]byte{}, "go"...)
+                    delete(map[*int]int{}, nil)
                     _ = make([]int, N)
                     _ = make([]int, 1, 2)
                     _ = make(map[string]int)
