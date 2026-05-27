@@ -10333,6 +10333,11 @@ fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
             parse_integer_literal_i128(lit.value)
         }
+        ast::Expr::BasicLit(lit)
+            if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
+        {
+            parse_decimal_float_integer_i128(lit.value)
+        }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
             integer_constant_value_i128(&unary.x)
         }
@@ -10366,6 +10371,46 @@ fn parse_integer_literal_i128(value: &str) -> Option<i128> {
         (10, cleaned.as_str())
     };
     i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+}
+
+fn parse_decimal_float_integer_i128(value: &str) -> Option<i128> {
+    let value = value.replace('_', "").to_ascii_lowercase();
+    if value.starts_with("0x") || value.contains('p') {
+        return None;
+    }
+    let (mantissa, exponent) = if let Some((mantissa, exponent)) = value.split_once('e') {
+        (mantissa, exponent.parse::<i32>().ok()?)
+    } else {
+        (value.as_str(), 0)
+    };
+    let (negative, mantissa) = match mantissa.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, mantissa.strip_prefix('+').unwrap_or(mantissa)),
+    };
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let mut digits = format!("{int_part}{frac_part}");
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let shift = exponent - frac_part.len() as i32;
+    if shift >= 0 {
+        digits.push_str(&"0".repeat(shift as usize));
+    } else {
+        let trim = (-shift) as usize;
+        if trim > digits.len() {
+            digits.clear();
+        } else {
+            digits.truncate(digits.len() - trim);
+        }
+    }
+    let magnitude = digits.trim_start_matches('0');
+    let magnitude = if magnitude.is_empty() { "0" } else { magnitude };
+    let value = magnitude.parse::<i128>().ok()?;
+    if negative {
+        value.checked_neg()
+    } else {
+        Some(value)
+    }
 }
 
 fn integer_constant_fits_type(value: i128, ty: &GoType) -> bool {
@@ -16280,6 +16325,19 @@ mod tests {
                 r#"
                     package main
 
+                    var B byte = 256.0
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "uint8".to_string(),
+                actual: "float64".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var U uint = -1
                 "#,
             ),
@@ -16327,6 +16385,8 @@ mod tests {
                     var F float64 = 1
                     var I int = 1.0
                     var B byte = 255
+                    var BFloat byte = 255.0
+                    var Thousand int = 1e3
                     var Small int8 = -128
                     var C complex128 = 1
                     var P *int = nil
@@ -18695,6 +18755,17 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = byte(256.0)
+                    }
+                "#,
+                "byte",
+                "cannot convert float64 to uint8",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = uint(-1)
                     }
                 "#,
@@ -18739,6 +18810,7 @@ mod tests {
                     _ = float64(i)
                     _ = int32(i)
                     _ = byte(255)
+                    _ = byte(255.0)
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")
