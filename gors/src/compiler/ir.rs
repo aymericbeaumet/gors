@@ -8984,7 +8984,7 @@ fn invalid_index_expr(index: &ast::IndexExpr<'_>, env: &TypeEnv) -> Option<Inval
 
 fn invalid_integer_index(index: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(index, env));
-    if matches!(ty, GoType::Unknown | GoType::Named(_)) || ty.is_integer() {
+    if matches!(ty, GoType::Unknown | GoType::Named(_)) || binary_operand_is_integer(&ty, index) {
         return None;
     }
     Some(invalid_index_reason(format!(
@@ -9000,7 +9000,7 @@ fn invalid_map_index_key(
 ) -> Option<InvalidStatementReason> {
     let expected = env.resolve_alias(expected);
     let actual = env.resolve_alias(&GoType::infer_expr(index, env));
-    if types_are_assignable_for_validation(&expected, &actual) {
+    if expr_is_assignable_for_validation(&expected, index, env) {
         return None;
     }
     Some(invalid_index_reason(format!(
@@ -18541,11 +18541,34 @@ mod tests {
                     package main
 
                     func main() {
+                        xs := []int{1}
+                        _ = xs[1.5]
+                    }
+                "#,
+                "index must have integer type, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         m := map[string]int{}
                         _ = m[1]
                     }
                 "#,
                 "key must be assignable to string, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        m := map[int]int{}
+                        var f float64
+                        _ = m[f]
+                    }
+                "#,
+                "key must be assignable to int, got float64",
             ),
         ];
 
@@ -18580,10 +18603,13 @@ mod tests {
                 func main() {
                     xs := []int{1}
                     _ = xs[0]
+                    _ = xs[1.0]
                     s := "go"
                     _ = s[1]
                     m := map[string]int{"go": 1}
                     _ = m["go"]
+                    ints := map[int]int{1: 1}
+                    _ = ints[1.0]
                     a := [1]int{1}
                     p := &a
                     _ = p[0]

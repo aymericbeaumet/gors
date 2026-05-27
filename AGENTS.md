@@ -809,9 +809,9 @@ and equality, but not ordered: `<`, `<=`, `>`, `>=`, `min`, and `max` must
 reject `complex64`/`complex128`.
 Initializer/return validation, equal-count assignment validation, sends, direct
 call arguments, `append`, `delete`, expression switch cases, range assignment
-targets, and composite literal element/key/value/field checks must be
-expression-aware: typed numeric values are not assignable across numeric types
-without an explicit conversion, while representable untyped
+targets, composite literal element/key/value/field checks, and map index keys
+must be expression-aware: typed numeric values are not assignable across numeric
+types without an explicit conversion, while representable untyped
 constants are allowed. Statement validation seeds its cloned `TypeEnv` with the
 current function signature before checking assignment semantics, because the
 compiler-wide pre-scan registers parameter/result names globally and stdlib
