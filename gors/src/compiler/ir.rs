@@ -1435,7 +1435,7 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
 
 fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
     let package_names = package_block_declared_names(file);
-    let mut names = BTreeSet::new();
+    let mut names_by_file: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
     for decl in &file.decls {
         let ast::Decl::GenDecl(gen_decl) = decl else {
             continue;
@@ -1453,12 +1453,18 @@ fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclarati
             if package_names.contains(&name) {
                 return Some(InvalidDeclaration::ImportPackageBlockConflict { name });
             }
+            let names = names_by_file.entry(import_file_key(import)).or_default();
             if !names.insert(name.clone()) {
                 return Some(InvalidDeclaration::DuplicateImportName { name });
             }
         }
     }
     None
+}
+
+fn import_file_key(import: &ast::ImportSpec<'_>) -> (String, String) {
+    let pos = import.path.value_pos;
+    (pos.directory.to_string(), pos.file.to_string())
 }
 
 fn package_block_declared_names(file: &ast::File<'_>) -> BTreeSet<String> {
@@ -13024,6 +13030,18 @@ mod tests {
         super::invalid_declaration_in_file(&file)
     }
 
+    fn invalid_declaration_in_merged_files(
+        first_path: &'static str,
+        first_source: &'static str,
+        second_path: &'static str,
+        second_source: &'static str,
+    ) -> Option<super::InvalidDeclaration> {
+        let mut first = parse_file(first_path, first_source).unwrap();
+        let second = parse_file(second_path, second_source).unwrap();
+        first.decls.extend(second.decls);
+        super::invalid_declaration_in_file(&first)
+    }
+
     fn invalid_value_declaration(source: &str) -> Option<super::InvalidDeclaration> {
         let file = parse_file("test.go", source).unwrap();
         let mut env = TypeEnv::new();
@@ -13414,6 +13432,27 @@ mod tests {
             Some(super::InvalidDeclaration::ImportPackageBlockConflict {
                 name: "f".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn accepts_same_explicit_import_alias_in_different_files() {
+        assert_eq!(
+            invalid_declaration_in_merged_files(
+                "a.go",
+                r#"
+                    package main
+
+                    import f "fmt"
+                "#,
+                "b.go",
+                r#"
+                    package main
+
+                    import f "math"
+                "#,
+            ),
+            None
         );
     }
 

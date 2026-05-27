@@ -691,7 +691,9 @@ declaration statements.
 Explicit import aliases are file-block bindings: IR rejects duplicate explicit
 aliases across all import declarations in the file and aliases that conflict
 with package block declarations. Blank and dot imports are ignored by this
-conservative alias check.
+conservative alias check. Because gors merges package ASTs before validation,
+the duplicate-alias check groups imports by their original source file
+positions rather than treating the merged AST as one file block.
 For package `main`, the same signature validation rejects `func main` when it
 declares type parameters, parameters, or results.
 Short variable declarations are also checked there for duplicate non-blank names
