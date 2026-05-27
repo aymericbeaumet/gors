@@ -3184,6 +3184,9 @@ fn compile_program_impl(
             .decls
             .iter()
             .any(|d| matches!(d, ast::Decl::FuncDecl(f) if f.name.name == "main"));
+    if let Some(invalid) = ir::invalid_main_package_in_file(&program.main_package.ast) {
+        return Err(invalid_signature_error(invalid));
+    }
 
     let main_hash = compute_content_hash(&program.main_package.files);
     let mut main_type_env = typeinfer::TypeEnv::new();
@@ -13108,6 +13111,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
             "main function must not declare type parameters, parameters, or results \
              (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
         ),
+        ir::InvalidSignature::MissingMainFunction => {
+            "function main is undeclared in the main package".to_string()
+        }
         ir::InvalidSignature::MethodTypeParams { count } => {
             format!("method declaration must not declare type parameters, got {count}")
         }
@@ -17910,6 +17916,31 @@ const X = 1
             }
             Err(err) => panic!("expected duplicate declaration rejection, got {err:?}"),
             Ok(_) => panic!("expected duplicate declaration rejection"),
+        }
+    }
+
+    #[test]
+    fn compile_program_multi_rejects_main_package_without_main_function() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+var X int
+"#,
+        );
+
+        let program = crate::parser::parse_program(tmp.path().to_str().unwrap()).unwrap();
+        match super::compile_program_multi(program) {
+            Err(super::CompilerError::InvalidFunctionSignature(err)) => {
+                assert!(
+                    err.contains("function main is undeclared in the main package"),
+                    "{err:?}"
+                );
+            }
+            Err(err) => panic!("expected missing main rejection, got {err:?}"),
+            Ok(_) => panic!("expected missing main rejection"),
         }
     }
 

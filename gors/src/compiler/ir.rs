@@ -1209,6 +1209,7 @@ pub enum InvalidSignature {
         params: usize,
         results: usize,
     },
+    MissingMainFunction,
     MethodTypeParams {
         count: usize,
     },
@@ -1406,6 +1407,19 @@ pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignatur
         }
     }
     invalid_main_signature_in_file(file)
+}
+
+pub fn invalid_main_package_in_file(file: &ast::File<'_>) -> Option<InvalidSignature> {
+    if file.name.name != "main" {
+        return None;
+    }
+    let has_main = file.decls.iter().any(|decl| {
+        matches!(
+            decl,
+            ast::Decl::FuncDecl(func) if func.recv.is_none() && func.name.name == "main"
+        )
+    });
+    (!has_main).then_some(InvalidSignature::MissingMainFunction)
 }
 
 pub fn invalid_receiver_type_in_file(

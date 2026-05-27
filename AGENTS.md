@@ -686,6 +686,9 @@ declarations are allowed and do not introduce a binding, but non-function
 top-level `init` declarations and `init` functions with type parameters,
 parameters, or results are rejected in IR. Package clause validation rejects
 the blank package name `_` before backend lowering.
+Executable multi-file/package compilation also rejects a `package main` program
+with no top-level `func main` before Rust generation, while the lower-level
+single-file compiler entrypoint remains permissive for partial snippet tests.
 IR declaration validation also rejects duplicate non-blank names within a
 single grouped or multi-name const, var, or type declaration, including local
 declaration statements.
