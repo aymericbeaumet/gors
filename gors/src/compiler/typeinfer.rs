@@ -683,6 +683,8 @@ pub struct TypeEnv {
     type_alias_targets: HashMap<std::string::String, std::string::String>,
     /// Interface name → required method names
     interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
+    /// Interface name → type-set terms used when the interface is a constraint.
+    interface_type_terms: HashMap<std::string::String, Vec<GoType>>,
     /// Struct name → field types
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
     /// Struct name → array field lengths
@@ -715,6 +717,25 @@ fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
                 .iter()
                 .filter_map(|field| field.names.as_ref())
                 .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn interface_constraint_terms(expr: &ast::Expr) -> Vec<GoType> {
+    let ast::Expr::InterfaceType(interface) = expr else {
+        return Vec::new();
+    };
+    interface
+        .methods
+        .as_ref()
+        .map(|methods| {
+            methods
+                .list
+                .iter()
+                .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+                .filter_map(|field| field.type_.as_ref())
+                .flat_map(constraint_type_terms)
                 .collect()
         })
         .unwrap_or_default()
@@ -828,6 +849,72 @@ fn alias_target_name(expr: &ast::Expr<'_>) -> Option<std::string::String> {
         ast::Expr::SelectorExpr(selector) => Some(selector.sel.name.to_string()),
         ast::Expr::StarExpr(star) => alias_target_name(&star.x),
         _ => None,
+    }
+}
+
+fn qualify_package_constraint_map(
+    package_name: &str,
+    constraints: &HashMap<std::string::String, Vec<GoType>>,
+    package_env: &TypeEnv,
+) -> HashMap<std::string::String, Vec<GoType>> {
+    constraints
+        .iter()
+        .map(|(name, terms)| {
+            (
+                name.clone(),
+                terms
+                    .iter()
+                    .map(|term| qualify_package_type(package_name, term, package_env))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn qualify_package_type(package_name: &str, ty: &GoType, package_env: &TypeEnv) -> GoType {
+    match ty {
+        GoType::Named(name) if !name.contains('.') && package_env.get_type_kind(name).is_some() => {
+            GoType::Named(format!("{package_name}.{name}"))
+        }
+        GoType::Pointer(inner) => GoType::Pointer(Box::new(qualify_package_type(
+            package_name,
+            inner,
+            package_env,
+        ))),
+        GoType::Slice(inner) => GoType::Slice(Box::new(qualify_package_type(
+            package_name,
+            inner,
+            package_env,
+        ))),
+        GoType::Array(inner) => GoType::Array(Box::new(qualify_package_type(
+            package_name,
+            inner,
+            package_env,
+        ))),
+        GoType::Map(key, value) => GoType::Map(
+            Box::new(qualify_package_type(package_name, key, package_env)),
+            Box::new(qualify_package_type(package_name, value, package_env)),
+        ),
+        GoType::Chan { elem, direction } => GoType::Chan {
+            elem: Box::new(qualify_package_type(package_name, elem, package_env)),
+            direction: *direction,
+        },
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        } => GoType::Func {
+            params: params
+                .iter()
+                .map(|param| qualify_package_type(package_name, param, package_env))
+                .collect(),
+            results: results
+                .iter()
+                .map(|result| qualify_package_type(package_name, result, package_env))
+                .collect(),
+            variadic_start: *variadic_start,
+        },
+        _ => ty.clone(),
     }
 }
 
@@ -991,6 +1078,19 @@ impl TypeEnv {
 
     pub fn get_interface_methods(&self, name: &str) -> Option<Vec<std::string::String>> {
         self.interface_methods.get(name).cloned()
+    }
+
+    pub fn set_interface_type_terms(&mut self, name: &str, terms: Vec<GoType>) {
+        if !terms.is_empty() {
+            self.interface_type_terms.insert(name.to_string(), terms);
+        }
+    }
+
+    pub fn get_interface_type_terms(&self, name: &str) -> Vec<GoType> {
+        self.interface_type_terms
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn interface_method_sets(&self) -> Vec<(std::string::String, Vec<std::string::String>)> {
@@ -1237,7 +1337,7 @@ impl TypeEnv {
         for (name, constraints) in &package_env.func_type_param_constraints {
             self.set_func_type_param_constraints(
                 &format!("{package_name}.{name}"),
-                constraints.clone(),
+                qualify_package_constraint_map(package_name, constraints, package_env),
             );
         }
         for (name, start) in &package_env.func_variadic_start {
@@ -1248,6 +1348,15 @@ impl TypeEnv {
         }
         for (name, methods) in &package_env.interface_methods {
             self.set_interface_methods(&format!("{package_name}.{name}"), methods.clone());
+        }
+        for (name, terms) in &package_env.interface_type_terms {
+            self.set_interface_type_terms(
+                &format!("{package_name}.{name}"),
+                terms
+                    .iter()
+                    .map(|term| qualify_package_type(package_name, term, package_env))
+                    .collect(),
+            );
         }
         for (name, fields) in &package_env.struct_fields {
             self.set_struct_fields(&format!("{package_name}.{name}"), fields.clone());
@@ -1351,6 +1460,7 @@ impl TypeEnv {
             ast::Expr::InterfaceType(_) => {
                 self.set_type_kind(name.name, TypeKind::Interface);
                 self.set_interface_methods(name.name, interface_method_names(&ts.type_));
+                self.set_interface_type_terms(name.name, interface_constraint_terms(&ts.type_));
             }
             other => {
                 let underlying = GoType::from_expr(other);

@@ -12181,6 +12181,14 @@ fn type_param_constraint_allows_arg(
     if matches!(&constraint, GoType::Named(name) if name == "comparable") {
         return type_is_comparable_for_validation(actual, env);
     }
+    if let GoType::Named(name) = &constraint {
+        let terms = env.get_interface_type_terms(name);
+        if !terms.is_empty() {
+            return terms
+                .iter()
+                .any(|term| type_param_constraint_allows_arg(term, actual, arg, env));
+        }
+    }
     if matches!(actual, GoType::Named(name) if env.get_type_kind(name).is_none()) {
         return true;
     }
