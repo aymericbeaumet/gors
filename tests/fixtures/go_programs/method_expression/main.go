@@ -51,13 +51,25 @@ func main() {
 		zero := len("")
 		_ = 1 / zero
 	}
+	get := value.Get
+	if get() != 7 {
+		zero := len("")
+		_ = 1 / zero
+	}
+	add := value.Add
+	if add(5).Count != 12 {
+		zero := len("")
+		_ = 1 / zero
+	}
 
 	target := Counter{Count: 7}
 	ptr := &target
 	(*Counter).Bump(ptr, 5)
+	bump := ptr.Bump
+	bump(5)
 	(*Counter).AddAll(ptr, 1, 2)
 	(*Counter).AddAll(ptr, values...)
-	if Counter.Get(target) != 20 {
+	if Counter.Get(target) != 25 {
 		zero := len("")
 		_ = 1 / zero
 	}

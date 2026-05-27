@@ -413,9 +413,20 @@ impl GoType {
                     if let Some(ty) = env.get_var(&package_key) {
                         return ty;
                     }
+                    if env.has_func(&package_key) {
+                        return GoType::Func {
+                            params: env.get_func_params(&package_key),
+                            results: env.get_func_returns(&package_key),
+                        };
+                    }
                 }
                 let base_type = GoType::infer_expr(&sel.x, env);
-                field_type_from_receiver_type(base_type, sel.sel.name, env)
+                let field_type =
+                    field_type_from_receiver_type(base_type.clone(), sel.sel.name, env);
+                if !matches!(field_type, GoType::Unknown) {
+                    return field_type;
+                }
+                method_func_from_receiver_type(base_type, sel.sel.name, env)
             }
             ast::Expr::TypeAssertExpr(ta) => {
                 if let Some(type_expr) = &ta.type_ {
@@ -553,6 +564,24 @@ fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &T
     match env.resolve_alias(&receiver_type) {
         GoType::Named(name) => env.get_func_return(&format!("{name}.{method}")),
         GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
+        _ => GoType::Unknown,
+    }
+}
+
+fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
+    match env.resolve_alias(&receiver_type) {
+        GoType::Named(name) => {
+            let key = format!("{name}.{method}");
+            if env.has_func(&key) {
+                GoType::Func {
+                    params: env.get_func_params(&key),
+                    results: env.get_func_returns(&key),
+                }
+            } else {
+                GoType::Unknown
+            }
+        }
+        GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
         _ => GoType::Unknown,
     }
 }

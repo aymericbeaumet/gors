@@ -181,6 +181,9 @@ gors-builtin/
   as ordinary variadic calls. Treat stored method-expression function values as
   a separate function-value lowering gap; do not rely on the selector-expression
   placeholder for that spec surface.
+- Method values (`v.M`) infer to generated function-value cells. The backend
+  lowers them as closures that bind the receiver once; pointer receiver values
+  capture the generated pointer cell and lock it per invocation.
 
 ### Incremental builds
 
