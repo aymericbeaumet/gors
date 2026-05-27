@@ -11202,7 +11202,7 @@ fn min_max_arg_kind(arg: &ast::Expr<'_>, ty: &GoType, env: &TypeEnv) -> MinMaxAr
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MakeTypeKind {
     Slice,
     Map,
@@ -11258,6 +11258,9 @@ fn invalid_builtin_make_call(
     if let Some(reason) = invalid_make_arg_count(kind, args.len()) {
         return Some(reason);
     }
+    if let Some(reason) = invalid_make_size_order(kind, size_args) {
+        return Some(reason);
+    }
     size_args
         .iter()
         .find_map(|arg| invalid_make_size_arg(arg, env))
@@ -11281,8 +11284,32 @@ fn invalid_make_arg_count(kind: MakeTypeKind, count: usize) -> Option<InvalidSta
     }
 }
 
+fn invalid_make_size_order(
+    kind: MakeTypeKind,
+    size_args: &[ast::Expr<'_>],
+) -> Option<InvalidStatementReason> {
+    if kind != MakeTypeKind::Slice || size_args.len() != 2 {
+        return None;
+    }
+    let len = integer_constant_index_value(size_args.first()?);
+    let cap = integer_constant_index_value(size_args.get(1)?);
+    match (len, cap) {
+        (Some(len), Some(cap)) if len > cap => Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "length must not exceed capacity",
+        )),
+        _ => None,
+    }
+}
+
 fn invalid_make_size_arg(arg: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
+    if expr_is_negative_integer_constant(arg) {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::Make,
+            "size argument must be non-negative",
+        ));
+    }
     if make_size_arg_is_valid(arg, &ty, env) {
         return None;
     }
@@ -11297,11 +11324,13 @@ fn invalid_make_size_arg(arg: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidSt
 
 fn make_size_arg_is_valid(arg: &ast::Expr<'_>, ty: &GoType, env: &TypeEnv) -> bool {
     match unparen_expr(arg) {
-        ast::Expr::BasicLit(lit) => {
-            matches!(
-                lit.kind,
-                token::Token::INT | token::Token::FLOAT | token::Token::CHAR
-            )
+        ast::Expr::BasicLit(lit) => match lit.kind {
+            token::Token::INT | token::Token::CHAR => true,
+            token::Token::FLOAT => expr_is_integer_constant(arg),
+            _ => false,
+        },
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            make_size_arg_is_valid(&unary.x, ty, env)
         }
         ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_numeric(ty) => true,
         _ => ty.is_integer() || matches!(ty, GoType::Unknown | GoType::Named(_)),
@@ -17963,6 +17992,39 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = make([]int, 1.5)
+                    }
+                "#,
+                "make",
+                "size argument must have integer type, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = make([]int, -1)
+                    }
+                "#,
+                "make",
+                "size argument must be non-negative",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = make([]int, 10, 0)
+                    }
+                "#,
+                "make",
+                "length must not exceed capacity",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = make(map[string]int, 1, 2)
                     }
                 "#,
@@ -19744,6 +19806,7 @@ mod tests {
                     delete(map[*int]int{}, nil)
                     delete(map[int]int{}, 1.0)
                     _ = make([]int, N)
+                    _ = make([]int, 1.0)
                     _ = make([]int, 1, 2)
                     _ = make(map[string]int)
                     _ = make(chan int, 1)

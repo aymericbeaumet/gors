@@ -821,6 +821,9 @@ conservative type-only fallback. Keep unresolved/named types conservative until
 imported named return types are package-qualified end-to-end; otherwise
 reachable stdlib methods such as `reflect.Value.Field` can appear as `Value` in
 importing packages.
+`make` size arguments follow the same constant rules as indices: literal
+constants must be non-negative integer constants, and two constant slice bounds
+must satisfy `len <= cap`; non-constant integer values remain runtime-checked.
 Shift validation uses separate left-operand and count rules. The right operand
 may be an integer-valued untyped constant such as `1.0`, but the left operand
 only accepts an integer-valued float constant when the shift count is also
