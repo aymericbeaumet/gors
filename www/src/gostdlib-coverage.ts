@@ -3845,16 +3845,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "crypto/hmac",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"crypto/hmac"
+		],
 		"symbolCount": 3,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Equal",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/hmac"
+				]
 			},
 			{
 				"name": "New",
@@ -30840,6 +30844,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"compress/zlib",
 			"crypto/aes",
 			"crypto/des",
+			"crypto/hmac",
 			"crypto/md5",
 			"crypto/rsa",
 			"crypto/sha1",
@@ -30857,6 +30862,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/printer",
 			"go/scanner",
 			"go/token",
+			"go/version",
 			"html/template",
 			"io",
 			"io/fs",
@@ -31011,6 +31017,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"compress/zlib",
 					"crypto/aes",
 					"crypto/des",
+					"crypto/hmac",
 					"crypto/md5",
 					"crypto/rsa",
 					"crypto/sha1",
@@ -31028,6 +31035,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/printer",
 					"go/scanner",
 					"go/token",
+					"go/version",
 					"html/template",
 					"io",
 					"io/fs",
@@ -36504,28 +36512,36 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "go/version",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"go/version"
+		],
 		"symbolCount": 3,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Compare",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/version"
+				]
 			},
 			{
 				"name": "IsValid",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/version"
+				]
 			},
 			{
 				"name": "Lang",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/version"
+				]
 			}
 		]
 	},
@@ -79728,11 +79744,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 54,
+	"fixtureCount": 56,
 	"packageCount": 353,
-	"testedPackageCount": 54,
-	"untestedPackageCount": 299,
+	"testedPackageCount": 56,
+	"untestedPackageCount": 297,
 	"symbolCount": 12599,
-	"testedSymbolCount": 360,
-	"untestedSymbolCount": 12239
+	"testedSymbolCount": 364,
+	"untestedSymbolCount": 12235
 } as const;

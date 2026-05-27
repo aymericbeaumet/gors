@@ -939,6 +939,14 @@ impl<T> Clone for Chan<T> {
     }
 }
 
+impl<T> PartialEq for Chan<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<T> Eq for Chan<T> {}
+
 impl<T> Default for Chan<T> {
     fn default() -> Self {
         Self::new(0)

@@ -7245,6 +7245,84 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
     }
 }
 
+fn go_type_supports_derived_partial_eq(
+    go_type: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+    visiting: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    let resolved = env.resolve_alias(go_type);
+    match &resolved {
+        typeinfer::GoType::Slice(_)
+        | typeinfer::GoType::Map(_, _)
+        | typeinfer::GoType::Pointer(_)
+        | typeinfer::GoType::Func { .. }
+        | typeinfer::GoType::Interface(_)
+        | typeinfer::GoType::Any => false,
+        typeinfer::GoType::Array(elem) => go_type_supports_derived_partial_eq(elem, env, visiting),
+        typeinfer::GoType::Named(name)
+            if matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Struct)) =>
+        {
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let comparable = env
+                .get_struct_fields(name)
+                .iter()
+                .all(|(_, field)| go_type_supports_derived_partial_eq(field, env, visiting));
+            visiting.remove(name);
+            comparable
+        }
+        typeinfer::GoType::Bool
+        | typeinfer::GoType::Int
+        | typeinfer::GoType::Int8
+        | typeinfer::GoType::Int16
+        | typeinfer::GoType::Int32
+        | typeinfer::GoType::Int64
+        | typeinfer::GoType::Uint
+        | typeinfer::GoType::Uint8
+        | typeinfer::GoType::Uint16
+        | typeinfer::GoType::Uint32
+        | typeinfer::GoType::Uint64
+        | typeinfer::GoType::Uintptr
+        | typeinfer::GoType::Float32
+        | typeinfer::GoType::Float64
+        | typeinfer::GoType::Complex64
+        | typeinfer::GoType::Complex128
+        | typeinfer::GoType::String
+        | typeinfer::GoType::Chan { .. }
+        | typeinfer::GoType::Error
+        | typeinfer::GoType::Unknown
+        | typeinfer::GoType::Named(_) => true,
+    }
+}
+
+fn expr_supports_derived_partial_eq(expr: &ast::Expr, self_ident: &syn::Ident) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => expr_supports_derived_partial_eq(&paren.x, self_ident),
+        ast::Expr::ArrayType(array) => {
+            array.len.is_some() && expr_supports_derived_partial_eq(&array.elt, self_ident)
+        }
+        ast::Expr::MapType(_) | ast::Expr::FuncType(_) | ast::Expr::InterfaceType(_) => false,
+        ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().is_none_or(|fields| {
+            fields.list.iter().all(|field| {
+                field.type_.as_ref().is_some_and(|field_type| {
+                    expr_supports_derived_partial_eq(field_type, self_ident)
+                })
+            })
+        }),
+        ast::Expr::StarExpr(_) => self_referential_pointer_type(expr, self_ident).is_some(),
+        ast::Expr::ChanType(_) => true,
+        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => TYPE_ENV.with(|env| {
+            go_type_supports_derived_partial_eq(
+                &typeinfer::GoType::from_expr(expr),
+                &env.borrow(),
+                &mut std::collections::BTreeSet::new(),
+            )
+        }),
+        _ => true,
+    }
+}
+
 fn array_len_expr(expr: &ast::Expr) -> syn::Expr {
     let values = BTreeMap::new();
     if let Some(value) =
@@ -7896,6 +7974,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
             let mut needs_manual_default = false;
             let mut cannot_derive_clone = false;
+            let mut cannot_derive_partial_eq = false;
             let mut cannot_default = false;
             let mut can_derive_copy = true;
             let mut blank_field_index = 0usize;
@@ -7911,6 +7990,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         contains_array_type(&field_type) || field_contains_func;
                     let field_cannot_derive_clone =
                         contains_any_type(&field_type) || interface_trait_path.is_some();
+                    let field_cannot_derive_partial_eq =
+                        !expr_supports_derived_partial_eq(&field_type, &ident);
                     let field_cannot_default = interface_trait_path.is_some();
                     let field_can_derive_copy = !field_contains_func
                         && interface_trait_path.is_none()
@@ -7939,6 +8020,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             needs_manual_default |= field_needs_manual_default;
                             cannot_derive_clone |= field_cannot_derive_clone;
+                            cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
                             cannot_default |= field_cannot_default;
                             fields.push(syn::Field {
                                 attrs: vec![],
@@ -7980,6 +8062,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             needs_manual_default |= field_needs_manual_default;
                             cannot_derive_clone |= field_cannot_derive_clone;
+                            cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
                             cannot_default |= field_cannot_default;
                             fields.push(syn::Field {
                                 attrs: vec![],
@@ -8021,13 +8104,17 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 } else if needs_manual_default {
                     if can_derive_copy {
                         vec![syn::parse_quote! { #[derive(Clone, Copy, PartialEq)] }]
-                    } else {
+                    } else if cannot_derive_partial_eq {
                         vec![syn::parse_quote! { #[derive(Clone)] }]
+                    } else {
+                        vec![syn::parse_quote! { #[derive(Clone, PartialEq)] }]
                     }
                 } else if can_derive_copy {
                     vec![syn::parse_quote! { #[derive(Clone, Copy, Default, PartialEq)] }]
-                } else {
+                } else if cannot_derive_partial_eq {
                     vec![syn::parse_quote! { #[derive(Clone, Default)] }]
+                } else {
+                    vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
                 },
                 vis,
                 struct_token: <Token![struct]>::default(),
@@ -16588,6 +16675,45 @@ fn append_missing_return_panic(
     block.stmts.push(syn::Stmt::Expr(panic_expr, None));
 }
 
+fn bool_to_uint8_intrinsic_param(func_decl: &ast::FuncDecl) -> Option<syn::Ident> {
+    if func_decl.name.name != "boolToUint8" {
+        return None;
+    }
+    if !func_decl.doc.as_ref().is_some_and(|doc| {
+        doc.list
+            .iter()
+            .any(|comment| comment.content().contains("compiler intrinsic"))
+    }) {
+        return None;
+    }
+    let [param] = func_decl.type_.params.list.as_slice() else {
+        return None;
+    };
+    if !matches!(param.type_.as_ref(), Some(ast::Expr::Ident(ident)) if ident.name == "bool") {
+        return None;
+    }
+    let param_name = param.names.as_ref()?.first()?;
+    let results = func_decl.type_.results.as_ref()?;
+    let [result] = results.list.as_slice() else {
+        return None;
+    };
+    if !matches!(result.type_.as_ref(), Some(ast::Expr::Ident(ident)) if ident.name == "uint8" || ident.name == "byte")
+    {
+        return None;
+    }
+    Some(syn::Ident::new(
+        &rust_safe_ident_name(param_name.name),
+        Span::mixed_site(),
+    ))
+}
+
+fn compiler_intrinsic_func_block(func_decl: &ast::FuncDecl) -> Option<syn::Block> {
+    let param = bool_to_uint8_intrinsic_param(func_decl)?;
+    Some(syn::parse_quote!({
+        if #param { 1u8 } else { 0u8 }
+    }))
+}
+
 impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
@@ -16601,6 +16727,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         // Convert doc comments to Rust doc attributes
         let attrs = comment_group_to_attrs(&func_decl.doc);
+        let intrinsic_block = compiler_intrinsic_func_block(&func_decl);
 
         let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
 
@@ -16716,7 +16843,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let _panic_returns_through_defer =
             PanicReturnsThroughDeferGuard::set(panic_returns_through_defer);
         let _slice_alias_targets = SliceAliasTargetsGuard::clear();
-        let block_result = if let Some(body) = func_decl.body {
+        let block_result = if let Some(block) = intrinsic_block {
+            Ok(block)
+        } else if let Some(body) = func_decl.body {
             body.try_into()
         } else {
             Ok(bodyless_function_block(&output, &inputs))
