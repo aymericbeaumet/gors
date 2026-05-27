@@ -6434,6 +6434,10 @@ fn go_type_is_numeric(ty: &GoType) -> bool {
     ty.is_numeric() || matches!(ty, GoType::Complex64 | GoType::Complex128)
 }
 
+fn go_type_is_ordered_numeric(ty: &GoType) -> bool {
+    ty.is_integer() || ty.is_float()
+}
+
 fn invalid_select_comm_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidSelectCommReason> {
     match stmt {
         ast::Stmt::SendStmt(_) => None,
@@ -9299,7 +9303,7 @@ fn binary_ordered_operands(
     left: &GoType,
     right: &GoType,
 ) -> Option<InvalidStatementReason> {
-    if (go_type_is_numeric(left) && go_type_is_numeric(right))
+    if (go_type_is_ordered_numeric(left) && go_type_is_ordered_numeric(right))
         || matches!((left, right), (GoType::String, GoType::String))
     {
         return None;
@@ -10776,7 +10780,7 @@ fn min_max_arg_kind(arg: &ast::Expr<'_>, ty: &GoType, env: &TypeEnv) -> MinMaxAr
             MinMaxArgKind::Numeric
         }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING => MinMaxArgKind::String,
-        ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_numeric(ty) => {
+        ast::Expr::Ident(ident) if env.is_const(ident.name) && go_type_is_ordered_numeric(ty) => {
             MinMaxArgKind::Numeric
         }
         _ if ty.is_numeric() => MinMaxArgKind::Numeric,
@@ -17581,6 +17585,31 @@ mod tests {
                     package main
 
                     func main() {
+                        var z complex128
+                        _ = min(z, z)
+                    }
+                "#,
+                "min",
+                "arguments must have ordered type, got complex128",
+            ),
+            (
+                r#"
+                    package main
+
+                    const z = 1i
+
+                    func main() {
+                        _ = max(z, z)
+                    }
+                "#,
+                "max",
+                "arguments must have ordered type, got complex128",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = max("x", 1)
                     }
                 "#,
@@ -18405,6 +18434,19 @@ mod tests {
                 "#,
                 "<",
                 "operands must both be ordered numeric values or strings, got bool and bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    var z complex128
+
+                    func main() {
+                        _ = z < z
+                    }
+                "#,
+                "<",
+                "operands must both be ordered numeric values or strings, got complex128 and complex128",
             ),
             (
                 r#"
