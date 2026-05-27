@@ -7848,7 +7848,7 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
                 let [arg] = args.as_slice() else {
                     return true;
                 };
-                expr_is_known_non_constant(arg, env)
+                !len_cap_call_is_compile_time_constant(kind, arg, env)
             }
             BuiltinCallKind::Max | BuiltinCallKind::Min => {
                 args.is_empty() || args.iter().any(|arg| expr_is_known_non_constant(arg, env))
@@ -7868,6 +7868,103 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
     }
 
     call_fun_is_known_runtime_value(&call.fun, env)
+}
+
+fn len_cap_call_is_compile_time_constant(
+    kind: BuiltinCallKind,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    if kind == BuiltinCallKind::Len
+        && expr_is_untyped_constant_for_comparison(arg, env)
+        && matches!(
+            env.resolve_alias(&GoType::infer_expr(arg, env)),
+            GoType::String
+        )
+    {
+        return true;
+    }
+
+    let arg_ty = env.resolve_alias(&GoType::infer_expr(arg, env));
+    type_is_array_or_pointer_to_array(&arg_ty, env)
+        && !expr_contains_channel_receive_or_non_constant_call(arg, env)
+}
+
+fn type_is_array_or_pointer_to_array(ty: &GoType, env: &TypeEnv) -> bool {
+    match env.resolve_alias(ty) {
+        GoType::Array(_) => true,
+        GoType::Pointer(inner) => {
+            matches!(env.resolve_alias(inner.as_ref()), GoType::Array(_))
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_channel_receive_or_non_constant_call(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ARROW => true,
+        ast::Expr::UnaryExpr(unary) => {
+            expr_contains_channel_receive_or_non_constant_call(&unary.x, env)
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            expr_contains_channel_receive_or_non_constant_call(&binary.x, env)
+                || expr_contains_channel_receive_or_non_constant_call(&binary.y, env)
+        }
+        ast::Expr::CallExpr(call) => const_call_is_known_non_constant(call, env),
+        ast::Expr::CompositeLit(lit) => lit.elts.as_ref().is_some_and(|elts| {
+            elts.iter()
+                .any(|elt| expr_contains_channel_receive_or_non_constant_call(elt, env))
+        }),
+        ast::Expr::IndexExpr(index) => {
+            expr_contains_channel_receive_or_non_constant_call(&index.x, env)
+                || expr_contains_channel_receive_or_non_constant_call(&index.index, env)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            expr_contains_channel_receive_or_non_constant_call(&index.x, env)
+                || index
+                    .indices
+                    .iter()
+                    .any(|index| expr_contains_channel_receive_or_non_constant_call(index, env))
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            expr_contains_channel_receive_or_non_constant_call(&kv.key, env)
+                || expr_contains_channel_receive_or_non_constant_call(&kv.value, env)
+        }
+        ast::Expr::ParenExpr(paren) => {
+            expr_contains_channel_receive_or_non_constant_call(&paren.x, env)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            expr_contains_channel_receive_or_non_constant_call(&selector.x, env)
+        }
+        ast::Expr::SliceExpr(slice) => {
+            expr_contains_channel_receive_or_non_constant_call(&slice.x, env)
+                || slice.low.as_ref().is_some_and(|expr| {
+                    expr_contains_channel_receive_or_non_constant_call(expr, env)
+                })
+                || slice.high.as_ref().is_some_and(|expr| {
+                    expr_contains_channel_receive_or_non_constant_call(expr, env)
+                })
+                || slice.max.as_ref().is_some_and(|expr| {
+                    expr_contains_channel_receive_or_non_constant_call(expr, env)
+                })
+        }
+        ast::Expr::StarExpr(star) => {
+            expr_contains_channel_receive_or_non_constant_call(&star.x, env)
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            expr_contains_channel_receive_or_non_constant_call(&assert.x, env)
+        }
+        ast::Expr::BasicLit(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::Ellipsis(_)
+        | ast::Expr::FuncLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => false,
+    }
 }
 
 fn type_conversion_result_can_be_constant(target: &GoType) -> bool {

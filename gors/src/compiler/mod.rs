@@ -1730,6 +1730,7 @@ fn const_eval_expr(
     expr: &ast::Expr,
     iota_value: i64,
     values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
 ) -> Option<ConstValue> {
     match expr {
         ast::Expr::BasicLit(lit) => match lit.kind {
@@ -1762,13 +1763,13 @@ fn const_eval_expr(
         ast::Expr::Ident(ident) if ident.name == "false" => Some(ConstValue::Bool(false)),
         ast::Expr::Ident(ident) => values.get(ident.name).cloned(),
         ast::Expr::BinaryExpr(bin) => {
-            let lhs = const_eval_expr(&bin.x, iota_value, values)?;
-            let rhs = const_eval_expr(&bin.y, iota_value, values)?;
+            let lhs = const_eval_expr(&bin.x, iota_value, values, env)?;
+            let rhs = const_eval_expr(&bin.y, iota_value, values, env)?;
             const_binary_expr(lhs, bin.op, rhs)
         }
-        ast::Expr::ParenExpr(paren) => const_eval_expr(&paren.x, iota_value, values),
+        ast::Expr::ParenExpr(paren) => const_eval_expr(&paren.x, iota_value, values, env),
         ast::Expr::UnaryExpr(unary) => {
-            let value = const_eval_expr(&unary.x, iota_value, values)?;
+            let value = const_eval_expr(&unary.x, iota_value, values, env)?;
             match unary.op {
                 token::Token::SUB => match value {
                     ConstValue::Complex(re, im) => Some(ConstValue::Complex(-re, -im)),
@@ -1792,15 +1793,209 @@ fn const_eval_expr(
             }
         }
         ast::Expr::CallExpr(call) => {
+            if const_eval_builtin_name(call, env).is_some() {
+                return const_eval_builtin_call(call, iota_value, values, env);
+            }
             let args = call.args.as_ref()?;
             if args.len() != 1 {
                 return None;
             }
-            let value = const_eval_expr(args.first()?, iota_value, values)?;
+            let value = const_eval_expr(args.first()?, iota_value, values, env)?;
             convert_const_value(value, &call.fun)
         }
         _ => None,
     }
+}
+
+fn const_eval_expr_in_active_env(
+    expr: &ast::Expr,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+) -> Option<ConstValue> {
+    TYPE_ENV.with(|env| const_eval_expr(expr, iota_value, values, &env.borrow()))
+}
+
+fn const_eval_builtin_name<'a>(
+    call: &'a ast::CallExpr<'a>,
+    env: &typeinfer::TypeEnv,
+) -> Option<&'a str> {
+    let ast::Expr::Ident(ident) = call.fun.as_ref() else {
+        return None;
+    };
+    if env.get_var(ident.name).is_some()
+        || env.has_func(ident.name)
+        || env.get_type_kind(ident.name).is_some()
+    {
+        return None;
+    }
+    matches!(
+        ident.name,
+        "cap" | "complex" | "imag" | "len" | "max" | "min" | "real"
+    )
+    .then_some(ident.name)
+}
+
+fn const_eval_builtin_call(
+    call: &ast::CallExpr,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<ConstValue> {
+    let name = const_eval_builtin_name(call, env)?;
+    let args = call.args.as_deref()?;
+    match name {
+        "len" => const_eval_len_cap(args, true, iota_value, values, env),
+        "cap" => const_eval_len_cap(args, false, iota_value, values, env),
+        "real" => {
+            let [arg] = args else {
+                return None;
+            };
+            let (real, _) = const_eval_expr(arg, iota_value, values, env)?.as_complex128()?;
+            Some(ConstValue::Float(real))
+        }
+        "imag" => {
+            let [arg] = args else {
+                return None;
+            };
+            let (_, imag) = const_eval_expr(arg, iota_value, values, env)?.as_complex128()?;
+            Some(ConstValue::Float(imag))
+        }
+        "complex" => {
+            let [real, imag] = args else {
+                return None;
+            };
+            Some(ConstValue::Complex(
+                const_eval_expr(real, iota_value, values, env)?.as_f64()?,
+                const_eval_expr(imag, iota_value, values, env)?.as_f64()?,
+            ))
+        }
+        "max" | "min" => const_eval_min_max(name == "max", args, iota_value, values, env),
+        _ => None,
+    }
+}
+
+fn const_eval_len_cap(
+    args: &[ast::Expr<'_>],
+    is_len: bool,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<ConstValue> {
+    let [arg] = args else {
+        return None;
+    };
+    if is_len && let Some(ConstValue::Str(value)) = const_eval_expr(arg, iota_value, values, env) {
+        return Some(ConstValue::Int(value.len() as i128));
+    }
+    const_eval_array_len(arg, iota_value, values, env).map(ConstValue::Int)
+}
+
+fn const_eval_array_len(
+    expr: &ast::Expr,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<i128> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => const_eval_array_len(&paren.x, iota_value, values, env),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
+            const_eval_array_len(&unary.x, iota_value, values, env)
+        }
+        ast::Expr::CompositeLit(lit) => {
+            let type_expr = lit.type_.as_ref()?;
+            const_eval_array_type_len(type_expr, lit.elts.as_deref(), iota_value, values, env)
+        }
+        _ => None,
+    }
+}
+
+fn const_eval_array_type_len(
+    type_expr: &ast::Expr,
+    elts: Option<&[ast::Expr<'_>]>,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<i128> {
+    match type_expr {
+        ast::Expr::ParenExpr(paren) => {
+            const_eval_array_type_len(&paren.x, elts, iota_value, values, env)
+        }
+        ast::Expr::ArrayType(array) => {
+            let len = array.len.as_ref()?;
+            if matches!(len.as_ref(), ast::Expr::Ellipsis(_)) {
+                return const_eval_ellipsis_array_len(elts, iota_value, values, env);
+            }
+            const_eval_expr(len, iota_value, values, env)?.as_i128()
+        }
+        ast::Expr::StarExpr(star) => {
+            const_eval_array_type_len(&star.x, elts, iota_value, values, env)
+        }
+        _ => None,
+    }
+}
+
+fn const_eval_ellipsis_array_len(
+    elts: Option<&[ast::Expr<'_>]>,
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<i128> {
+    let mut next_index = 0i128;
+    let mut max_index = None;
+    for elt in elts.unwrap_or_default() {
+        let index = if let ast::Expr::KeyValueExpr(kv) = elt {
+            const_eval_expr(&kv.key, iota_value, values, env)?.as_i128()?
+        } else {
+            next_index
+        };
+        max_index = Some(max_index.map_or(index, |max: i128| max.max(index)));
+        next_index = index.checked_add(1)?;
+    }
+    Some(max_index.map_or(0, |index| index + 1))
+}
+
+fn const_eval_min_max(
+    is_max: bool,
+    args: &[ast::Expr<'_>],
+    iota_value: i64,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<ConstValue> {
+    let mut evaluated = args
+        .iter()
+        .map(|arg| const_eval_expr(arg, iota_value, values, env));
+    let first = evaluated.next()??;
+    evaluated.try_fold(first, |best, value| {
+        let value = value?;
+        let use_value = match (&best, &value) {
+            (ConstValue::Str(best), ConstValue::Str(value)) => {
+                if is_max {
+                    value > best
+                } else {
+                    value < best
+                }
+            }
+            _ if matches!(&best, ConstValue::Float(_))
+                || matches!(&value, ConstValue::Float(_)) =>
+            {
+                let ordering = value.as_f64()?.partial_cmp(&best.as_f64()?)?;
+                if is_max {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                }
+            }
+            _ => {
+                let ordering = value.as_i128()?.cmp(&best.as_i128()?);
+                if is_max {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                }
+            }
+        };
+        Some(if use_value { value } else { best })
+    })
 }
 
 fn const_basic_lit_expr(lit: &ast::BasicLit, target: Option<&syn::Type>) -> Option<syn::Expr> {
@@ -1995,8 +2190,8 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             let ident = syn::Ident::new(&import_rust_name(name.name), Span::mixed_site());
 
             let value_expr = source_values.and_then(|vals| vals.get(name_idx));
-            let evaluated =
-                value_expr.and_then(|expr| const_eval_expr(expr, iota as i64, &const_values));
+            let evaluated = value_expr
+                .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
 
             let rust_type: syn::Type = if let Some(name) = type_name_str {
                 let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
@@ -6745,7 +6940,9 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
 
 fn array_len_expr(expr: &ast::Expr) -> syn::Expr {
     let values = BTreeMap::new();
-    if let Some(value) = const_eval_expr(expr, 0, &values).and_then(|value| value.as_u128()) {
+    if let Some(value) =
+        const_eval_expr_in_active_env(expr, 0, &values).and_then(|value| value.as_u128())
+    {
         let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
         return syn::parse_quote! { #lit };
     }
@@ -6762,7 +6959,7 @@ fn array_len_const_expr(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { #lit })
         }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::CHAR => {
-            let value = const_eval_expr(expr, 0, &BTreeMap::new())?.as_u128()?;
+            let value = const_eval_expr_in_active_env(expr, 0, &BTreeMap::new())?.as_u128()?;
             let lit = syn::LitInt::new(&value.to_string(), Span::mixed_site());
             Some(syn::parse_quote! { #lit })
         }
@@ -6817,7 +7014,7 @@ fn array_literal_len_expr(len: &ast::Expr, elts: &[ast::Expr]) -> syn::Expr {
     let mut max_len = 0usize;
     for elt in elts {
         let index = if let ast::Expr::KeyValueExpr(kv) = elt {
-            const_eval_expr(&kv.key, 0, &BTreeMap::new())
+            const_eval_expr_in_active_env(&kv.key, 0, &BTreeMap::new())
                 .and_then(|value| value.as_u128())
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(next_index)
@@ -10502,7 +10699,7 @@ fn compile_expr_with_expected(
         }
         let numeric_const_like = numeric_cast_type(expected).is_some() && is_const_like_expr(&expr);
         let compiled = if numeric_const_like {
-            const_eval_expr(&expr, 0, &BTreeMap::new())
+            const_eval_expr_in_active_env(&expr, 0, &BTreeMap::new())
                 .map_or_else(|| expr.into(), |value| value.to_expr())
         } else {
             expr.into()
@@ -11940,6 +12137,9 @@ fn is_const_like_expr(expr: &ast::Expr) -> bool {
         ast::Expr::UnaryExpr(unary) => is_const_like_expr(&unary.x),
         ast::Expr::BinaryExpr(binary) => {
             is_const_like_expr(&binary.x) && is_const_like_expr(&binary.y)
+        }
+        ast::Expr::CallExpr(_) => {
+            const_eval_expr_in_active_env(expr, 0, &BTreeMap::new()).is_some()
         }
         _ => false,
     }
@@ -18855,6 +19055,18 @@ var X int
             r#"
                 package main
 
+                var z complex128
+                const X = len([10]float64{imag(z)})
+
+                func main() {
+                }
+            "#,
+            "const initializer must be a constant expression",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
                 const X int = "go"
 
                 func main() {
@@ -20971,6 +21183,63 @@ func main() {
                 pub fn main() {}
             },
         )
+    }
+
+    #[test]
+    fn it_should_evaluate_constant_builtin_calls() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const (
+                    S = "gors"
+                    StringLen = len(S)
+                    ArrayLen = len([3]int{})
+                    ArrayCap = cap(&[4]string{})
+                    InferredLen = len([...]int{2: 1})
+                    ImagArrayLen = len([10]float64{imag(2i)})
+                    ImagPart = imag(2i)
+                    RealPart = real(complex(3, 4))
+                    MaxPart = max(1, 4, 2)
+                )
+
+                func main() {}
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("pub const StringLen: isize = 4;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const ArrayLen: isize = 3;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const ArrayCap: isize = 4;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const InferredLen: isize = 3;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const ImagArrayLen: isize = 10;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const ImagPart: f64 = 2e0;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const RealPart: f64 = 3e0;"),
+            "{output}"
+        );
+        assert!(output.contains("pub const MaxPart: isize = 4;"), "{output}");
     }
 
     #[test]

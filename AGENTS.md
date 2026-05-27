@@ -614,6 +614,10 @@ expressions and are rejected when used as function values.
 IR binary/compound shift validation rejects negative untyped constant shift
 counts; typed integer shift-count variables remain valid, including signed
 integer variables.
+Compile-time constant handling treats `len` of string constants and `len`/`cap`
+of array or pointer-to-array composite literals as constants when their operands
+contain no channel receive or non-constant call; constant `complex`, `real`,
+`imag`, `min`, and `max` builtin calls are evaluated during const emission.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose
