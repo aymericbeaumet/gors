@@ -824,6 +824,10 @@ returns from the enclosing function after the range-function call. Variables
 mutated by the synthesized callback are included in the block's shared-capture
 set before declarations are lowered, and the callback clones those shared cells
 before entering its `move` closure.
+Range over `*[N]T` is classified as an indexed range like `[N]T`/`[]T`, but
+backend lowering must lock the generated pointer cell and iterate a cloned
+snapshot for key/value loops. Key-only and blank range loops over pointer arrays
+should count `len(*p)` without indexing.
 
 Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
 rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile

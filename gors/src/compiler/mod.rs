@@ -11242,6 +11242,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
     let range_kind = TYPE_ENV.with(|env| ir::range_kind(&range_stmt.x, &env.borrow()));
     let is_string = matches!(range_kind, ir::RangeKind::String);
     let is_int = matches!(range_kind, ir::RangeKind::Integer);
+    let is_pointer_array = is_pointer_array_range_type(&inferred_range_type);
     let range_function_yield_params = range_function_yield_params(&inferred_range_type);
     let range_function_capture_names = if range_function_yield_params.is_some() {
         TYPE_ENV.with(|env| ir::mutable_range_function_capture_names(&range_stmt, &env.borrow()))
@@ -11298,6 +11299,15 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     syn::parse_quote! { (#x).char_indices().map(|(i, ch)| (i as isize, ch as i32)) },
                     body,
                 ))
+            } else if is_pointer_array {
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! {{
+                        let __gors_range_values = (#x).lock().unwrap().iter().cloned().collect::<Vec<_>>();
+                        __gors_range_values.into_iter().enumerate().map(|(i, v)| (i as isize, v))
+                    }},
+                    body,
+                ))
             } else if is_any_slice_range_type(&inferred_range_type) {
                 Ok(make_for_loop(
                     pat,
@@ -11343,6 +11353,17 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                         syn::parse_quote! { (#x).char_indices().map(|(i, _)| i as isize) },
                         body,
                     ))
+                } else if is_pointer_array {
+                    Ok(make_for_loop(
+                        key_pat,
+                        syn::parse_quote! {
+                            0..{
+                                let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
+                                __gors_range_len
+                            }
+                        },
+                        body,
+                    ))
                 } else if is_indexed_range_type(&inferred_range_type) {
                     Ok(make_for_loop(
                         key_pat,
@@ -11375,6 +11396,17 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                 ))
             } else if is_string {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
+            } else if is_pointer_array {
+                Ok(make_for_loop(
+                    pat,
+                    syn::parse_quote! {
+                        0..{
+                            let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
+                            __gors_range_len
+                        }
+                    },
+                    body,
+                ))
             } else if matches!(range_kind, ir::RangeKind::Map) {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter() }, body))
             } else {
@@ -11851,6 +11883,16 @@ fn is_indexed_range_type(ty: &typeinfer::GoType) -> bool {
         matches!(
             env.resolve_alias(ty),
             typeinfer::GoType::Slice(_) | typeinfer::GoType::Array(_)
+        )
+    })
+}
+
+fn is_pointer_array_range_type(ty: &typeinfer::GoType) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        matches!(
+            env.resolve_alias(ty),
+            typeinfer::GoType::Pointer(inner) if matches!(inner.as_ref(), typeinfer::GoType::Array(_))
         )
     })
 }
@@ -20838,6 +20880,43 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_range_over_pointer_to_array_without_holding_lock() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    values := [3]int{2, 4, 6}
+                    ptr := &values
+                    for i, v := range ptr {
+                        _ = i
+                        _ = v
+                    }
+                    for i := range ptr {
+                        _ = values[i]
+                    }
+                    for range ptr {
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("let __gors_range_values ="), "{output}");
+        assert!(
+            output.contains("__gors_range_values.into_iter().enumerate()"),
+            "{output}"
+        );
+        assert!(output.contains("let __gors_range_len ="), "{output}");
+        assert!(
+            !output.contains(".lock().unwrap().iter().cloned().collect::<Vec<_>>().into_iter()")
         );
     }
 

@@ -471,6 +471,7 @@ pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
         | GoType::Uint64
         | GoType::Uintptr => RangeKind::Integer,
         GoType::Slice(_) | GoType::Array(_) => RangeKind::Indexed,
+        GoType::Pointer(inner) if matches!(inner.as_ref(), GoType::Array(_)) => RangeKind::Indexed,
         GoType::Map(_, _) => RangeKind::Map,
         GoType::Chan { direction, .. } if direction.can_receive() => RangeKind::Channel,
         GoType::Func { .. } => RangeKind::Function,
@@ -17969,12 +17970,15 @@ mod tests {
                     ch := make(chan int)
                     iter := func(yield func(int) bool) {}
                     text := "go"
+                    values := [2]int{1, 2}
+                    ptr := &values
                     for range nums {}
                     for range dict {}
                     for range ch {}
                     for range iter {}
                     for range text {}
                     for range 3 {}
+                    for range ptr {}
                 }
             "#,
         )
@@ -17993,7 +17997,7 @@ mod tests {
             .expect("expected body")
             .list
             .iter()
-            .take(5)
+            .take_while(|stmt| !matches!(stmt, crate::ast::Stmt::RangeStmt(_)))
         {
             if let crate::ast::Stmt::AssignStmt(assign) = stmt
                 && let Some(crate::ast::Expr::Ident(ident)) = assign.lhs.first()
@@ -18022,6 +18026,7 @@ mod tests {
                 super::RangeKind::Function,
                 super::RangeKind::String,
                 super::RangeKind::Integer,
+                super::RangeKind::Indexed,
             ]
         );
     }
