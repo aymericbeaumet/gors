@@ -149,8 +149,11 @@ gors-builtin/
   generated state loop, including normal blocks and breakable switch/select case
   bodies. IR identifies direct-list locals that cross state segments, and the
   backend hoists typed zero-value bindings before rewriting the original
-  declarations to segment-local assignments. Broader forward gotos still require
-  full CFG restructuring in the IR before backend lowering.
+  declarations to segment-local assignments. In `fallthrough` switch cases, a
+  lowered fallthrough inside a goto-state case body must set the fallthrough flag
+  and break the generated goto loop before the switch case dispatcher continues.
+  Broader forward gotos still require full CFG restructuring in the IR before
+  backend lowering.
 - Go expression switches without `fallthrough` lower to an exclusive Rust
   `if`/`else` chain inside a generated label so Rust can see moved case values
   are branch-local. Switches containing `fallthrough` still lower through an

@@ -10534,6 +10534,15 @@ fn compile_goto_state_jump(name: &str) -> Option<Vec<syn::Stmt>> {
     })
 }
 
+fn current_goto_state_loop_label() -> Option<syn::Lifetime> {
+    GOTO_STATE_CONTEXTS.with(|contexts| {
+        contexts
+            .borrow()
+            .last()
+            .map(|context| context.loop_label.clone())
+    })
+}
+
 fn is_borrowed_pointer_param_name(name: &str) -> bool {
     BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
 }
@@ -17179,11 +17188,19 @@ fn compile_switch_case_body(
     fallthrough_ident: &syn::Ident,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
     let mut stmts = vec![syn::parse_quote! { #fallthrough_ident = false; }];
-    stmts.extend(compile_switch_case_stmt_list(
-        body,
-        switch_label,
-        fallthrough_ident,
-    )?);
+    if let Some(goto_plan) = ir::goto_state_plan_for_stmt_list(&body) {
+        stmts.push(compile_goto_state_stmt_list_with(
+            body,
+            &goto_plan,
+            |stmt| compile_switch_case_state_stmt(stmt, switch_label, fallthrough_ident),
+        )?);
+    } else {
+        stmts.extend(compile_switch_case_stmt_list(
+            body,
+            switch_label,
+            fallthrough_ident,
+        )?);
+    }
     Ok(stmts)
 }
 
@@ -17192,14 +17209,39 @@ fn compile_switch_case_stmt_list(
     switch_label: &syn::Lifetime,
     fallthrough_ident: &syn::Ident,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
+    compile_switch_case_stmt_list_with_goto_exit(body, switch_label, fallthrough_ident, None)
+}
+
+fn compile_switch_case_stmt_list_with_goto_exit(
+    body: Vec<ast::Stmt>,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+    goto_exit_label: Option<&syn::Lifetime>,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
     let mut stmts = vec![];
     for stmt in body {
-        let (compiled, stop) = compile_switch_case_stmt(stmt, switch_label, fallthrough_ident)?;
+        let (compiled, stop) =
+            compile_switch_case_stmt(stmt, switch_label, fallthrough_ident, goto_exit_label)?;
         stmts.extend(compiled);
-        if stop {
+        if stop && goto_exit_label.is_none() {
             break;
         }
     }
+    Ok(stmts)
+}
+
+fn compile_switch_case_state_stmt(
+    stmt: ast::Stmt,
+    switch_label: &syn::Lifetime,
+    fallthrough_ident: &syn::Ident,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let goto_exit_label = current_goto_state_loop_label();
+    let (stmts, _) = compile_switch_case_stmt(
+        stmt,
+        switch_label,
+        fallthrough_ident,
+        goto_exit_label.as_ref(),
+    )?;
     Ok(stmts)
 }
 
@@ -17207,6 +17249,7 @@ fn compile_switch_case_stmt(
     stmt: ast::Stmt,
     switch_label: &syn::Lifetime,
     fallthrough_ident: &syn::Ident,
+    goto_exit_label: Option<&syn::Lifetime>,
 ) -> Result<(Vec<syn::Stmt>, bool), CompilerError> {
     match stmt {
         ast::Stmt::BranchStmt(branch)
@@ -17226,10 +17269,21 @@ fn compile_switch_case_stmt(
             ))
         }
         ast::Stmt::BranchStmt(branch) if branch.tok == token::Token::FALLTHROUGH => {
-            Ok((vec![syn::parse_quote! { #fallthrough_ident = true; }], true))
+            let mut stmts = vec![syn::parse_quote! { #fallthrough_ident = true; }];
+            if let Some(goto_exit_label) = goto_exit_label {
+                stmts.push(syn::parse_quote! {
+                    break #goto_exit_label;
+                });
+            }
+            Ok((stmts, true))
         }
         ast::Stmt::BlockStmt(block) => {
-            let stmts = compile_switch_case_stmt_list(block.list, switch_label, fallthrough_ident)?;
+            let stmts = compile_switch_case_stmt_list_with_goto_exit(
+                block.list,
+                switch_label,
+                fallthrough_ident,
+                goto_exit_label,
+            )?;
             Ok((
                 vec![syn::Stmt::Expr(
                     syn::Expr::Block(syn::ExprBlock {
@@ -17246,7 +17300,7 @@ fn compile_switch_case_stmt(
             ))
         }
         ast::Stmt::IfStmt(if_stmt) => Ok((
-            compile_switch_case_if_stmt(if_stmt, switch_label, fallthrough_ident)?,
+            compile_switch_case_if_stmt(if_stmt, switch_label, fallthrough_ident, goto_exit_label)?,
             false,
         )),
         other => Ok((Vec::<syn::Stmt>::try_from(other)?, false)),
@@ -17257,6 +17311,7 @@ fn compile_switch_case_if_stmt(
     if_stmt: ast::IfStmt,
     switch_label: &syn::Lifetime,
     fallthrough_ident: &syn::Ident,
+    goto_exit_label: Option<&syn::Lifetime>,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
     let has_init = if_stmt.init.is_some();
     let init_stmts: Vec<syn::Stmt> = if let Some(init) = *if_stmt.init {
@@ -17265,15 +17320,23 @@ fn compile_switch_case_if_stmt(
         vec![]
     };
 
-    let then_stmts =
-        compile_switch_case_stmt_list(if_stmt.body.list, switch_label, fallthrough_ident)?;
+    let then_stmts = compile_switch_case_stmt_list_with_goto_exit(
+        if_stmt.body.list,
+        switch_label,
+        fallthrough_ident,
+        goto_exit_label,
+    )?;
     let else_branch = if let Some(else_) = *if_stmt.else_ {
         Some((
             <Token![else]>::default(),
             Box::new(match else_ {
                 ast::Stmt::IfStmt(nested) => {
-                    let nested_stmts =
-                        compile_switch_case_if_stmt(nested, switch_label, fallthrough_ident)?;
+                    let nested_stmts = compile_switch_case_if_stmt(
+                        nested,
+                        switch_label,
+                        fallthrough_ident,
+                        goto_exit_label,
+                    )?;
                     syn::Expr::Block(syn::ExprBlock {
                         attrs: vec![],
                         label: None,
@@ -17284,8 +17347,12 @@ fn compile_switch_case_if_stmt(
                     })
                 }
                 ast::Stmt::BlockStmt(block) => {
-                    let stmts =
-                        compile_switch_case_stmt_list(block.list, switch_label, fallthrough_ident)?;
+                    let stmts = compile_switch_case_stmt_list_with_goto_exit(
+                        block.list,
+                        switch_label,
+                        fallthrough_ident,
+                        goto_exit_label,
+                    )?;
                     syn::Expr::Block(syn::ExprBlock {
                         attrs: vec![],
                         label: None,
