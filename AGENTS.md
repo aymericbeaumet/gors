@@ -609,7 +609,8 @@ argument or a value expression as specified by Go 1.26;
 spread calls; zero-result builtins (`clear`, `close`, `delete`, `panic`,
 `print`, and `println`) are valid in statement contexts but invalid where a
 value is required; `recover`, `print`, and `println` enforce their fixed
-arity/spread rules.
+arity/spread rules. Unshadowed builtin function names are valid only as call
+expressions and are rejected when used as function values.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose

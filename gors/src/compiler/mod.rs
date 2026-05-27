@@ -13033,6 +13033,9 @@ fn range_kind_name(kind: ir::RangeKind) -> &'static str {
 fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
     match reason {
         ir::InvalidStatementReason::BlankIdentifier => "cannot use _ as value or type".to_string(),
+        ir::InvalidStatementReason::BuiltinFunctionValue(name) => {
+            format!("{name} must be called, not used as a function value")
+        }
         ir::InvalidStatementReason::InvalidArrayType { reason } => {
             format!("invalid array type: {reason}")
         }

@@ -400,7 +400,11 @@ pub fn builtin_call_kind(call_expr: &ast::CallExpr<'_>) -> Option<BuiltinCallKin
     let ast::Expr::Ident(ident) = call_expr.fun.as_ref() else {
         return None;
     };
-    match ident.name {
+    builtin_kind_by_name(ident.name)
+}
+
+fn builtin_kind_by_name(name: &str) -> Option<BuiltinCallKind> {
+    match name {
         "append" => Some(BuiltinCallKind::Append),
         "cap" => Some(BuiltinCallKind::Cap),
         "clear" => Some(BuiltinCallKind::Clear),
@@ -1187,6 +1191,7 @@ pub enum DefaultClauseKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatementReason {
     BlankIdentifier,
+    BuiltinFunctionValue(String),
     InvalidArrayType { reason: String },
     InvalidBinary { op: String, reason: String },
     DisallowedBuiltin(String),
@@ -6955,7 +6960,12 @@ fn invalid_return_in_stmt(
 ) -> Option<InvalidStatement> {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
-            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+            for expr in &assign.lhs {
+                if let Some(invalid) = invalid_return_in_assignment_lhs(expr, env) {
+                    return Some(invalid);
+                }
+            }
+            for expr in &assign.rhs {
                 if let Some(invalid) = invalid_return_in_expr(expr, env) {
                     return Some(invalid);
                 }
@@ -7308,7 +7318,9 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
     if let Some(reason) = invalid_builtin_call_expression(call, env) {
         return Some(InvalidStatement::Expression { reason });
     }
-    if let Some(invalid) = invalid_return_in_expr(&call.fun, env) {
+    if unshadowed_builtin_call_kind(call, env).is_none()
+        && let Some(invalid) = invalid_return_in_expr(&call.fun, env)
+    {
         return Some(invalid);
     }
     if let Some(args) = &call.args {
@@ -7341,6 +7353,33 @@ fn invalid_return_in_statement_expr(
 ) -> Option<InvalidStatement> {
     match unparen_expr(expr) {
         ast::Expr::CallExpr(call) => invalid_return_in_call_statement(call, env),
+        _ => invalid_return_in_expr(expr, env),
+    }
+}
+
+fn invalid_return_in_assignment_lhs(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    match expr {
+        ast::Expr::Ident(_) => None,
+        ast::Expr::ParenExpr(paren) => invalid_return_in_assignment_lhs(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_return_in_expr(&selector.x, env),
+        ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
+            .or_else(|| invalid_return_in_expr(&index.index, env)),
+        ast::Expr::IndexListExpr(index) => invalid_return_in_expr(&index.x, env).or_else(|| {
+            index
+                .indices
+                .iter()
+                .find_map(|index| invalid_return_in_expr(index, env))
+        }),
+        ast::Expr::StarExpr(star) => invalid_return_in_expr(&star.x, env),
+        ast::Expr::TypeAssertExpr(assert) => invalid_return_in_expr(&assert.x, env).or_else(|| {
+            assert
+                .type_
+                .as_ref()
+                .and_then(|type_| invalid_return_in_expr(type_, env))
+        }),
         _ => invalid_return_in_expr(expr, env),
     }
 }
@@ -7466,7 +7505,9 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
         ast::Expr::UnaryExpr(unary) => invalid_return_in_expr(&unary.x, env).or_else(|| {
             invalid_unary_expr(unary, env).map(|reason| InvalidStatement::Expression { reason })
         }),
-        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+        ast::Expr::Ident(ident) => invalid_builtin_function_value(ident, env)
+            .map(|reason| InvalidStatement::Expression { reason }),
+        ast::Expr::BasicLit(_) => None,
     }
 }
 
@@ -8637,7 +8678,12 @@ fn invalid_expression_in_call_operands(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    if let Some(reason) = invalid_expression_in_expr(&call.fun, env).or_else(|| {
+    let invalid_fun = if unshadowed_builtin_call_kind(call, env).is_some() {
+        None
+    } else {
+        invalid_expression_in_expr(&call.fun, env)
+    };
+    if let Some(reason) = invalid_fun.or_else(|| {
         call.args.as_ref().and_then(|args| {
             args.iter()
                 .find_map(|arg| invalid_expression_in_expr(arg, env))
@@ -8697,6 +8743,7 @@ fn invalid_expression_in_expr(
         ast::Expr::Ident(ident) if ident.name == "_" => {
             Some(InvalidStatementReason::BlankIdentifier)
         }
+        ast::Expr::Ident(ident) => invalid_builtin_function_value(ident, env),
         ast::Expr::ArrayType(array) => array
             .len
             .as_ref()
@@ -8791,8 +8838,22 @@ fn invalid_expression_in_expr(
         ast::Expr::UnaryExpr(unary) => {
             invalid_expression_in_expr(&unary.x, env).or_else(|| invalid_unary_expr(unary, env))
         }
-        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+        ast::Expr::BasicLit(_) => None,
     }
+}
+
+fn invalid_builtin_function_value(
+    ident: &ast::Ident<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if env.get_var(ident.name).is_some()
+        || env.has_func(ident.name)
+        || env.get_type_kind(ident.name).is_some()
+    {
+        return None;
+    }
+    builtin_kind_by_name(ident.name)
+        .map(|kind| InvalidStatementReason::BuiltinFunctionValue(kind.name().to_string()))
 }
 
 fn invalid_expression_in_func_lit(
@@ -18985,6 +19046,91 @@ mod tests {
     }
 
     #[test]
+    fn rejects_builtin_functions_used_as_values() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = len
+                    }
+                "#,
+                "len",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        f := append
+                        _ = f
+                    }
+                "#,
+                "append",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        f := panic
+                        _ = f
+                    }
+                "#,
+                "panic",
+            ),
+        ];
+
+        for (source, name) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::BuiltinFunctionValue(name.to_string()),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_builtin_functions_returned_as_values() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func f() any {
+                    return panic
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
+            Some(super::InvalidStatement::Expression {
+                reason: super::InvalidStatementReason::BuiltinFunctionValue("panic".to_string()),
+            })
+        );
+    }
+
+    #[test]
     fn rejects_invalid_ordinary_function_calls() {
         let cases = vec![
             (
@@ -20810,8 +20956,12 @@ mod tests {
                     _ = func(len func(int) int) {
                         _ = len(1)
                     }
+                    _ = func(len int) {
+                        _ = len
+                    }
                     len := func(int) int { return 1 }
                     _ = len(1)
+                    _ = len
                     takesInt(1.0)
                 }
 
