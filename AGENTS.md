@@ -684,7 +684,8 @@ const, var, type, and function declarations while ignoring `_` and receiver
 methods. The package-block name `init` is special: multiple `func init()`
 declarations are allowed and do not introduce a binding, but non-function
 top-level `init` declarations and `init` functions with type parameters,
-parameters, or results are rejected in IR.
+parameters, or results are rejected in IR. Package clause validation rejects
+the blank package name `_` before backend lowering.
 IR declaration validation also rejects duplicate non-blank names within a
 single grouped or multi-name const, var, or type declaration, including local
 declaration statements.

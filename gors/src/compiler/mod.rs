@@ -13226,6 +13226,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::InvalidInitIdentifier => {
             "init can only be used for init function declarations".to_string()
         }
+        ir::InvalidDeclaration::InvalidPackageName { name } => {
+            format!("invalid package name {name}")
+        }
         ir::InvalidDeclaration::MethodFieldConflict { base, name } => {
             format!("method {name} conflicts with field on struct {base}")
         }

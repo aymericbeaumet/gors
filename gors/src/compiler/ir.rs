@@ -1287,6 +1287,9 @@ pub enum InvalidDeclaration {
         name: String,
     },
     InvalidInitIdentifier,
+    InvalidPackageName {
+        name: String,
+    },
     MethodFieldConflict {
         base: String,
         name: String,
@@ -1418,18 +1421,26 @@ pub fn invalid_receiver_type_in_file(
 }
 
 pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
-    invalid_import_names_in_file(file).or_else(|| {
-        invalid_top_level_names_in_file(file).or_else(|| {
-            invalid_method_names_in_file(file).or_else(|| {
-                for decl in &file.decls {
-                    if let Some(invalid) = invalid_declaration_in_decl(decl) {
-                        return Some(invalid);
+    invalid_package_name_in_file(file).or_else(|| {
+        invalid_import_names_in_file(file).or_else(|| {
+            invalid_top_level_names_in_file(file).or_else(|| {
+                invalid_method_names_in_file(file).or_else(|| {
+                    for decl in &file.decls {
+                        if let Some(invalid) = invalid_declaration_in_decl(decl) {
+                            return Some(invalid);
+                        }
                     }
-                }
-                invalid_local_declaration_names_in_file(file)
-                    .or_else(|| invalid_type_parameter_type_declarations_in_file(file))
+                    invalid_local_declaration_names_in_file(file)
+                        .or_else(|| invalid_type_parameter_type_declarations_in_file(file))
+                })
             })
         })
+    })
+}
+
+fn invalid_package_name_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    (file.name.name == "_").then(|| InvalidDeclaration::InvalidPackageName {
+        name: file.name.name.to_string(),
     })
 }
 
@@ -13047,6 +13058,22 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         super::invalid_value_declaration_in_file(&file, &env)
+    }
+
+    #[test]
+    fn rejects_blank_package_name() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package _
+
+                    func main() {}
+                "#,
+            ),
+            Some(super::InvalidDeclaration::InvalidPackageName {
+                name: "_".to_string(),
+            })
+        );
     }
 
     #[test]
