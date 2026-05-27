@@ -497,6 +497,9 @@ statements, type conversions used as statements, and builtins that the Go spec
 forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,
 `new`, `real`, and the corresponding `unsafe` builtins). Keep it type-env aware
 so shadowed predeclared names are not treated as builtins.
+IR assignment validation applies type checks to ordinary assignments and to
+redeclarations within `:=`: existing non-blank names on the left side of a short
+variable declaration must receive values assignable to their original type.
 IR expression validation rejects blank identifier uses as values or types while
 still allowing `_` in assignment targets, short declarations, range assignment
 targets, and blank declarations/import aliases.

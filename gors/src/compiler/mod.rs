@@ -13390,7 +13390,9 @@ fn validate_function_semantics(
     if let Some(invalid) = ir::invalid_branch_in_func(body) {
         return Err(invalid_branch_error(invalid));
     }
-    if let Some(invalid) = TYPE_ENV.with(|env| ir::invalid_statement_in_func(body, &env.borrow())) {
+    if let Some(invalid) =
+        TYPE_ENV.with(|env| ir::invalid_statement_in_func_with_type(func_type, body, &env.borrow()))
+    {
         return Err(invalid_statement_error(invalid));
     }
     if let Some(invalid) =
@@ -18613,6 +18615,33 @@ var X int
                     x := 1
                     x = "go"
                     _ = x
+                }
+            "#,
+            "invalid assignment: cannot assign string to int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x, y := "go", 2
+                    _, _ = x, y
+                }
+            "#,
+            "invalid assignment: cannot assign string to int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func f(x int) {
+                    x, y := "go", 2
+                    _, _ = x, y
+                }
+
+                func main() {
+                    f(1)
                 }
             "#,
             "invalid assignment: cannot assign string to int",

@@ -809,6 +809,17 @@ fn record_define_bindings(assign: &ast::AssignStmt<'_>, env: &mut TypeEnv) {
     }
 }
 
+fn declare_define_names(assign: &ast::AssignStmt<'_>, scopes: &mut ShortVarScopes) {
+    if assign.tok != token::Token::DEFINE {
+        return;
+    }
+    for lhs in &assign.lhs {
+        if let Some(name) = short_var_decl_ident_name(lhs) {
+            scopes.declare(name);
+        }
+    }
+}
+
 fn record_range_bindings(range: &ast::RangeStmt<'_>, env: &mut TypeEnv) {
     if range.tok != Some(token::Token::DEFINE) {
         return;
@@ -838,11 +849,38 @@ fn record_range_bindings(range: &ast::RangeStmt<'_>, env: &mut TypeEnv) {
     }
 }
 
+fn declare_range_names(range: &ast::RangeStmt<'_>, scopes: &mut ShortVarScopes) {
+    if range.tok != Some(token::Token::DEFINE) {
+        return;
+    }
+    if let Some(key) = &range.key
+        && let Some(name) = short_var_decl_ident_name(key)
+    {
+        scopes.declare(name);
+    }
+    if let Some(value) = &range.value
+        && let Some(name) = short_var_decl_ident_name(value)
+    {
+        scopes.declare(name);
+    }
+}
+
 fn record_range_binding(target: Option<&ast::Expr<'_>>, ty: GoType, env: &mut TypeEnv) {
     if let Some(ast::Expr::Ident(ident)) = target
         && ident.name != "_"
     {
         env.set_var(ident.name, ty);
+    }
+}
+
+fn declare_gen_decl_names(gen_decl: &ast::GenDecl<'_>, scopes: &mut ShortVarScopes) {
+    for spec in &gen_decl.specs {
+        let ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        for name in &value_spec.names {
+            scopes.declare(name.name);
+        }
     }
 }
 
@@ -1447,7 +1485,22 @@ pub fn invalid_statement_in_func(
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
-    invalid_statement_in_block(block, &mut env)
+    let mut scopes = ShortVarScopes::new();
+    invalid_statement_in_block(block, &mut env, &mut scopes)
+}
+
+pub fn invalid_statement_in_func_with_type(
+    func_type: &ast::FuncType<'_>,
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    let mut env = env.clone();
+    let mut scopes = ShortVarScopes::new();
+    seed_field_names_in_short_var_scope(&func_type.params, &mut scopes);
+    if let Some(results) = &func_type.results {
+        seed_field_names_in_short_var_scope(results, &mut scopes);
+    }
+    invalid_statement_in_block(block, &mut env, &mut scopes)
 }
 
 pub fn invalid_return_in_func(
@@ -5707,9 +5760,10 @@ fn invalid_branch_in_expr(
 fn invalid_statement_in_block(
     block: &ast::BlockStmt<'_>,
     env: &mut TypeEnv,
+    scopes: &mut ShortVarScopes,
 ) -> Option<InvalidStatement> {
     for stmt in &block.list {
-        if let Some(invalid) = invalid_statement_in_stmt(stmt, env) {
+        if let Some(invalid) = invalid_statement_in_stmt(stmt, env, scopes) {
             return Some(invalid);
         }
     }
@@ -5719,12 +5773,17 @@ fn invalid_statement_in_block(
 fn invalid_statement_in_nested_block(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
+    scopes: &mut ShortVarScopes,
 ) -> Option<InvalidStatement> {
     let mut block_env = env.clone();
-    invalid_statement_in_block(block, &mut block_env)
+    scopes.with_scope(|scopes| invalid_statement_in_block(block, &mut block_env, scopes))
 }
 
-fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<InvalidStatement> {
+fn invalid_statement_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &mut TypeEnv,
+    scopes: &mut ShortVarScopes,
+) -> Option<InvalidStatement> {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
             if assign.tok == token::Token::DEFINE
@@ -5758,29 +5817,36 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             {
                 return Some(InvalidStatement::Expression { reason });
             }
-            if let Some(reason) = invalid_assignment(assign, env) {
+            if let Some(reason) = invalid_assignment(assign, env, scopes) {
                 return Some(InvalidStatement::Assignment { reason });
             }
             record_define_bindings(assign, env);
+            declare_define_names(assign, scopes);
             None
         }
-        ast::Stmt::BlockStmt(block) => invalid_statement_in_nested_block(block, env),
+        ast::Stmt::BlockStmt(block) => invalid_statement_in_nested_block(block, env, scopes),
         ast::Stmt::BranchStmt(_) => None,
         ast::Stmt::CaseClause(case) => {
             let mut case_env = env.clone();
-            invalid_statement_in_stmt_list(&case.body, &mut case_env)
+            scopes.with_scope(|scopes| {
+                invalid_statement_in_stmt_list(&case.body, &mut case_env, scopes)
+            })
         }
         ast::Stmt::CommClause(comm) => {
             let mut comm_env = env.clone();
-            if let Some(comm_stmt) = &comm.comm {
-                if let Some(reason) = invalid_select_comm_stmt(comm_stmt) {
-                    return Some(InvalidStatement::SelectComm { reason });
+            scopes.with_scope(|scopes| {
+                if let Some(comm_stmt) = &comm.comm {
+                    if let Some(reason) = invalid_select_comm_stmt(comm_stmt) {
+                        return Some(InvalidStatement::SelectComm { reason });
+                    }
+                    if let Some(invalid) =
+                        invalid_statement_in_stmt(comm_stmt, &mut comm_env, scopes)
+                    {
+                        return Some(invalid);
+                    }
                 }
-                if let Some(invalid) = invalid_statement_in_stmt(comm_stmt, &mut comm_env) {
-                    return Some(invalid);
-                }
-            }
-            invalid_statement_in_stmt_list(&comm.body, &mut comm_env)
+                invalid_statement_in_stmt_list(&comm.body, &mut comm_env, scopes)
+            })
         }
         ast::Stmt::DeclStmt(decl) => {
             if let Some(reason) = invalid_receive_in_gen_decl(&decl.decl, env) {
@@ -5793,6 +5859,7 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 return Some(InvalidStatement::Declaration { reason });
             }
             record_decl_bindings(&decl.decl, env);
+            declare_gen_decl_names(&decl.decl, scopes);
             None
         }
         ast::Stmt::DeferStmt(defer) => {
@@ -5815,37 +5882,39 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         }
         ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
-            if let Some(init) = &for_stmt.init
-                && let Some(invalid) = invalid_statement_in_stmt(init, &mut loop_env)
-            {
-                return Some(invalid);
-            }
-            if let Some(cond) = &for_stmt.cond
-                && let Some(reason) = invalid_receive_expr(cond, &loop_env)
-            {
-                return Some(InvalidStatement::Receive { reason });
-            }
-            if let Some(cond) = &for_stmt.cond
-                && let Some(reason) = invalid_expression_in_expr(cond, &loop_env)
-            {
-                return Some(InvalidStatement::Expression { reason });
-            }
-            if let Some(cond) = &for_stmt.cond
-                && let Some(reason) = invalid_condition(cond, &loop_env, ConditionKind::For)
-            {
-                return Some(InvalidStatement::Condition { reason });
-            }
-            if let Some(post) = &for_stmt.post
-                && is_short_var_decl_stmt(post)
-            {
-                return Some(InvalidStatement::ForPostShortVarDecl);
-            }
-            if let Some(post) = &for_stmt.post
-                && let Some(invalid) = invalid_statement_in_stmt(post, &mut loop_env)
-            {
-                return Some(invalid);
-            }
-            invalid_statement_in_nested_block(&for_stmt.body, &loop_env)
+            scopes.with_scope(|scopes| {
+                if let Some(init) = &for_stmt.init
+                    && let Some(invalid) = invalid_statement_in_stmt(init, &mut loop_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(cond) = &for_stmt.cond
+                    && let Some(reason) = invalid_receive_expr(cond, &loop_env)
+                {
+                    return Some(InvalidStatement::Receive { reason });
+                }
+                if let Some(cond) = &for_stmt.cond
+                    && let Some(reason) = invalid_expression_in_expr(cond, &loop_env)
+                {
+                    return Some(InvalidStatement::Expression { reason });
+                }
+                if let Some(cond) = &for_stmt.cond
+                    && let Some(reason) = invalid_condition(cond, &loop_env, ConditionKind::For)
+                {
+                    return Some(InvalidStatement::Condition { reason });
+                }
+                if let Some(post) = &for_stmt.post
+                    && is_short_var_decl_stmt(post)
+                {
+                    return Some(InvalidStatement::ForPostShortVarDecl);
+                }
+                if let Some(post) = &for_stmt.post
+                    && let Some(invalid) = invalid_statement_in_stmt(post, &mut loop_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                invalid_statement_in_nested_block(&for_stmt.body, &loop_env, scopes)
+            })
         }
         ast::Stmt::GoStmt(go) => {
             if let Some(reason) = invalid_call_statement(&go.call, env) {
@@ -5856,28 +5925,32 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
         }
         ast::Stmt::IfStmt(if_stmt) => {
             let mut if_env = env.clone();
-            if let Some(init) = if_stmt.init.as_ref().as_ref()
-                && let Some(invalid) = invalid_statement_in_stmt(init, &mut if_env)
-            {
-                return Some(invalid);
-            }
-            if let Some(reason) = invalid_receive_expr(&if_stmt.cond, &if_env) {
-                return Some(InvalidStatement::Receive { reason });
-            }
-            if let Some(reason) = invalid_expression_in_expr(&if_stmt.cond, &if_env) {
-                return Some(InvalidStatement::Expression { reason });
-            }
-            if let Some(reason) = invalid_condition(&if_stmt.cond, &if_env, ConditionKind::If) {
-                return Some(InvalidStatement::Condition { reason });
-            }
-            if let Some(invalid) = invalid_statement_in_nested_block(&if_stmt.body, &if_env) {
-                return Some(invalid);
-            }
-            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
-                let mut else_env = if_env;
-                return invalid_statement_in_stmt(else_branch, &mut else_env);
-            }
-            None
+            scopes.with_scope(|scopes| {
+                if let Some(init) = if_stmt.init.as_ref().as_ref()
+                    && let Some(invalid) = invalid_statement_in_stmt(init, &mut if_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(reason) = invalid_receive_expr(&if_stmt.cond, &if_env) {
+                    return Some(InvalidStatement::Receive { reason });
+                }
+                if let Some(reason) = invalid_expression_in_expr(&if_stmt.cond, &if_env) {
+                    return Some(InvalidStatement::Expression { reason });
+                }
+                if let Some(reason) = invalid_condition(&if_stmt.cond, &if_env, ConditionKind::If) {
+                    return Some(InvalidStatement::Condition { reason });
+                }
+                if let Some(invalid) =
+                    invalid_statement_in_nested_block(&if_stmt.body, &if_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                    let mut else_env = if_env;
+                    return invalid_statement_in_stmt(else_branch, &mut else_env, scopes);
+                }
+                None
+            })
         }
         ast::Stmt::IncDecStmt(inc_dec) => {
             if let Some(reason) = invalid_expression_in_assignment_lhs(&inc_dec.x, env) {
@@ -5885,7 +5958,7 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             }
             invalid_inc_dec(inc_dec, env).map(|reason| InvalidStatement::IncDec { reason })
         }
-        ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
+        ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env, scopes),
         ast::Stmt::RangeStmt(range) => {
             if range.tok == Some(token::Token::DEFINE)
                 && let Some(reason) = invalid_range_short_var_decl_names(range)
@@ -5912,7 +5985,8 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             }
             let mut range_env = env.clone();
             record_range_bindings(range, &mut range_env);
-            invalid_statement_in_nested_block(&range.body, &range_env)
+            declare_range_names(range, scopes);
+            invalid_statement_in_nested_block(&range.body, &range_env, scopes)
         }
         ast::Stmt::ReturnStmt(_) => None,
         ast::Stmt::SelectStmt(select) => {
@@ -5922,12 +5996,15 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 });
             }
             let mut select_env = env.clone();
-            for stmt in &select.body.list {
-                if let Some(invalid) = invalid_statement_in_stmt(stmt, &mut select_env) {
-                    return Some(invalid);
+            scopes.with_scope(|scopes| {
+                for stmt in &select.body.list {
+                    if let Some(invalid) = invalid_statement_in_stmt(stmt, &mut select_env, scopes)
+                    {
+                        return Some(invalid);
+                    }
                 }
-            }
-            None
+                None
+            })
         }
         ast::Stmt::SendStmt(send) => {
             if let Some(reason) = invalid_expression_in_expr(&send.chan, env)
@@ -5944,20 +6021,22 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 });
             }
             let mut switch_env = env.clone();
-            if let Some(init) = &switch.init
-                && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
-            {
-                return Some(invalid);
-            }
-            if let Some(tag) = &switch.tag
-                && let Some(reason) = invalid_expression_in_expr(tag, &switch_env)
-            {
-                return Some(InvalidStatement::Expression { reason });
-            }
-            if let Some(reason) = invalid_expression_switch(switch, &switch_env) {
-                return Some(InvalidStatement::Switch { reason });
-            }
-            invalid_statement_in_case_block(&switch.body, &switch_env)
+            scopes.with_scope(|scopes| {
+                if let Some(init) = &switch.init
+                    && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(tag) = &switch.tag
+                    && let Some(reason) = invalid_expression_in_expr(tag, &switch_env)
+                {
+                    return Some(InvalidStatement::Expression { reason });
+                }
+                if let Some(reason) = invalid_expression_switch(switch, &switch_env) {
+                    return Some(InvalidStatement::Switch { reason });
+                }
+                invalid_statement_in_case_block(&switch.body, &switch_env, scopes)
+            })
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
             if has_duplicate_case_default(&type_switch.body) {
@@ -5969,15 +6048,17 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 return Some(InvalidStatement::TypeSwitchGuard { reason });
             }
             let mut switch_env = env.clone();
-            if let Some(init) = &type_switch.init
-                && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env)
-            {
-                return Some(invalid);
-            }
-            if let Some(reason) = invalid_type_switch_stmt(type_switch, &switch_env) {
-                return Some(InvalidStatement::TypeSwitch { reason });
-            }
-            invalid_statement_in_case_block(&type_switch.body, &switch_env)
+            scopes.with_scope(|scopes| {
+                if let Some(init) = &type_switch.init
+                    && let Some(invalid) = invalid_statement_in_stmt(init, &mut switch_env, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(reason) = invalid_type_switch_stmt(type_switch, &switch_env) {
+                    return Some(InvalidStatement::TypeSwitch { reason });
+                }
+                invalid_statement_in_case_block(&type_switch.body, &switch_env, scopes)
+            })
         }
     }
 }
@@ -6007,6 +6088,7 @@ fn has_duplicate_select_default(block: &ast::BlockStmt<'_>) -> bool {
 fn invalid_assignment(
     assign: &ast::AssignStmt<'_>,
     env: &TypeEnv,
+    scopes: &ShortVarScopes,
 ) -> Option<InvalidAssignmentReason> {
     if assign.tok.is_assign_op() {
         if assign.lhs.len() != 1 || assign.rhs.len() != 1 {
@@ -6063,7 +6145,7 @@ fn invalid_assignment(
                 values,
             });
         }
-        if let Some(reason) = invalid_assignment_type_mismatch(assign, env) {
+        if let Some(reason) = invalid_assignment_type_mismatch(assign, env, scopes) {
             return Some(reason);
         }
         return None;
@@ -6085,7 +6167,7 @@ fn invalid_assignment(
         });
     }
 
-    if let Some(reason) = invalid_assignment_type_mismatch(assign, env) {
+    if let Some(reason) = invalid_assignment_type_mismatch(assign, env, scopes) {
         return Some(reason);
     }
 
@@ -6095,8 +6177,9 @@ fn invalid_assignment(
 fn invalid_assignment_type_mismatch(
     assign: &ast::AssignStmt<'_>,
     env: &TypeEnv,
+    scopes: &ShortVarScopes,
 ) -> Option<InvalidAssignmentReason> {
-    if assign.tok != token::Token::ASSIGN {
+    if !matches!(assign.tok, token::Token::ASSIGN | token::Token::DEFINE) {
         return None;
     }
     let actual_types = assignment_rhs_types(assign, env)?;
@@ -6108,10 +6191,12 @@ fn invalid_assignment_type_mismatch(
         .iter()
         .zip(actual_types.iter())
         .find_map(|(lhs, actual)| {
-            if is_blank_ident(lhs) {
+            let expected = assignment_lhs_expected_type(assign.tok, lhs, env, scopes)?;
+            if matches!(expected, GoType::Unknown | GoType::Named(_))
+                || matches!(actual, GoType::Unknown | GoType::Named(_))
+            {
                 return None;
             }
-            let expected = env.resolve_alias(&GoType::infer_expr(lhs, env));
             let actual = env.resolve_alias(actual);
             (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
                 InvalidAssignmentReason::TypeMismatch {
@@ -6120,6 +6205,25 @@ fn invalid_assignment_type_mismatch(
                 }
             })
         })
+}
+
+fn assignment_lhs_expected_type(
+    tok: token::Token,
+    lhs: &ast::Expr<'_>,
+    env: &TypeEnv,
+    scopes: &ShortVarScopes,
+) -> Option<GoType> {
+    if is_blank_ident(lhs) {
+        return None;
+    }
+    match tok {
+        token::Token::ASSIGN => Some(env.resolve_alias(&GoType::infer_expr(lhs, env))),
+        token::Token::DEFINE => short_var_decl_ident_name(lhs)
+            .filter(|name| scopes.contains_current(name))
+            .and_then(|name| env.get_var(name))
+            .map(|ty| env.resolve_alias(&ty)),
+        _ => None,
+    }
 }
 
 fn invalid_compound_assignment(
@@ -8078,9 +8182,10 @@ fn is_blank_ident(expr: &ast::Expr<'_>) -> bool {
 fn invalid_statement_in_stmt_list(
     stmts: &[ast::Stmt<'_>],
     env: &mut TypeEnv,
+    scopes: &mut ShortVarScopes,
 ) -> Option<InvalidStatement> {
     for stmt in stmts {
-        if let Some(invalid) = invalid_statement_in_stmt(stmt, env) {
+        if let Some(invalid) = invalid_statement_in_stmt(stmt, env, scopes) {
             return Some(invalid);
         }
     }
@@ -8090,13 +8195,16 @@ fn invalid_statement_in_stmt_list(
 fn invalid_statement_in_case_block(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
+    scopes: &mut ShortVarScopes,
 ) -> Option<InvalidStatement> {
     for stmt in &block.list {
         let ast::Stmt::CaseClause(case) = stmt else {
             continue;
         };
         let mut case_env = env.clone();
-        if let Some(invalid) = invalid_statement_in_stmt_list(&case.body, &mut case_env) {
+        if let Some(invalid) = scopes
+            .with_scope(|scopes| invalid_statement_in_stmt_list(&case.body, &mut case_env, scopes))
+        {
             return Some(invalid);
         }
     }
@@ -20315,6 +20423,36 @@ mod tests {
                 "int",
                 "string",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x, y := "go", 2
+                        _, _ = x, y
+                    }
+                "#,
+                "int",
+                "string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func pair() (string, int) {
+                        return "go", 2
+                    }
+
+                    func main() {
+                        x := 1
+                        x, y := pair()
+                        _, _ = x, y
+                    }
+                "#,
+                "int",
+                "string",
+            ),
         ];
 
         for (source, expected, actual) in cases {
@@ -20467,6 +20605,10 @@ mod tests {
                     y := 0
                     z := ""
                     y, z = pair()
+                    {
+                        x, text := "shadow", 2
+                        _, _ = x, text
+                    }
                 }
             "#,
         )
@@ -20482,6 +20624,43 @@ mod tests {
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
+        );
+    }
+
+    #[test]
+    fn rejects_short_redeclaration_type_mismatch_for_parameters() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func f(x int) {
+                    x, y := "go", 2
+                    _, _ = x, y
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "f" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func_with_type(
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env
+            ),
+            Some(super::InvalidStatement::Assignment {
+                reason: super::InvalidAssignmentReason::TypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "string".to_string(),
+                },
+            })
         );
     }
 
