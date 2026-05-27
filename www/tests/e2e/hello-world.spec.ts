@@ -1,4 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { gostdlibCoverageSummary } from "../../src/gostdlib-coverage";
+
+function coverageMetric(tested: number, total: number): string {
+	if (total === 0) return "0/0 (0%)";
+	return `${tested}/${total} (${((tested / total) * 100).toFixed(1)}%)`;
+}
 
 test("default hello world auto-compiles and runs manually", async ({
 	page,
@@ -83,8 +89,22 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 		page.getByRole("heading", { name: "Go standard library conformance" }),
 	).toBeVisible();
 	await expect(page.getByText("Go specification conformance")).toBeVisible();
-	await expect(page.getByText("51/353 (14.4%)")).toBeVisible();
-	await expect(page.getByText("344/12599 (2.7%)")).toBeVisible();
+	await expect(
+		page.getByText(
+			coverageMetric(
+				gostdlibCoverageSummary.testedPackageCount,
+				gostdlibCoverageSummary.packageCount,
+			),
+		),
+	).toBeVisible();
+	await expect(
+		page.getByText(
+			coverageMetric(
+				gostdlibCoverageSummary.testedSymbolCount,
+				gostdlibCoverageSummary.symbolCount,
+			),
+		),
+	).toBeVisible();
 
 	await page.getByRole("searchbox").fill("fmt");
 	await expect(

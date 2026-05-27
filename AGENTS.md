@@ -435,6 +435,9 @@ bundle. Set `GORS_WEB_SOURCE_MAPS=1` only when intentionally debugging webpack
 bundle source maps. The playground also caps client-side source-map indexing for
 very large compiler outputs; when the cap is exceeded, Rust output remains
 visible but hover/cursor mapping is disabled for that result.
+Coverage-page tests should derive package and symbol totals from
+`www/src/gostdlib-coverage.ts`, not hardcode rendered summary strings, because
+adding a `gostdlib_` fixture intentionally changes those generated totals.
 
 CI deploys `www/dist` with native GitHub Pages artifacts
 (`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by
