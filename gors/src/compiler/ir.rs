@@ -6522,12 +6522,61 @@ fn expr_is_assignable_for_validation(
 ) -> bool {
     let expected = env.resolve_alias(expected);
     let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+    if let Some(assignable) = named_interface_assignment_for_validation(&expected, &actual, env) {
+        return assignable;
+    }
     if matches!(expected, GoType::Unknown | GoType::Named(_))
         || matches!(actual, GoType::Unknown | GoType::Named(_))
     {
         return true;
     }
     comparison_operand_is_assignable_to(value, &actual, &expected, env)
+}
+
+fn named_interface_assignment_for_validation(
+    expected: &GoType,
+    actual: &GoType,
+    env: &TypeEnv,
+) -> Option<bool> {
+    let GoType::Named(interface_name) = expected else {
+        return None;
+    };
+    if !env.is_interface(interface_name) {
+        return None;
+    }
+    Some(match actual {
+        GoType::Unknown | GoType::Any | GoType::Interface(_) | GoType::Error => true,
+        GoType::Named(type_name) if env.is_interface(type_name) => {
+            named_interface_includes_methods_for_validation(type_name, interface_name, env)
+        }
+        GoType::Named(type_name) => {
+            env.named_type_implements_interface(type_name, interface_name, false)
+        }
+        GoType::Pointer(inner) => match inner.as_ref() {
+            GoType::Named(type_name) => {
+                env.named_type_implements_interface(type_name, interface_name, true)
+            }
+            GoType::Unknown => true,
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+fn named_interface_includes_methods_for_validation(
+    actual_interface: &str,
+    expected_interface: &str,
+    env: &TypeEnv,
+) -> bool {
+    env.get_interface_methods(expected_interface)
+        .is_none_or(|expected_methods| {
+            let actual_methods = env
+                .get_interface_methods(actual_interface)
+                .unwrap_or_default();
+            expected_methods
+                .iter()
+                .all(|method| actual_methods.contains(method))
+        })
 }
 
 fn go_type_is_numeric(ty: &GoType) -> bool {
@@ -10663,12 +10712,7 @@ fn named_type_implements_interface_for_validation(
     interface_name: &str,
     env: &TypeEnv,
 ) -> bool {
-    env.get_interface_methods(interface_name)
-        .is_none_or(|methods| {
-            methods
-                .iter()
-                .all(|method| env.has_func(&format!("{type_name}.{method}")))
-        })
+    env.named_type_implements_interface(type_name, interface_name, false)
 }
 
 fn type_expr_named_type_for_validation(expr: &ast::Expr<'_>) -> Option<String> {
@@ -12074,6 +12118,11 @@ fn invalid_call_arg_expr(
             ),
         ));
     }
+    if let Some(reason) =
+        invalid_type_parameter_constraint_call_arg(target, position, &expected, arg, env)
+    {
+        return Some(reason);
+    }
     let actual = env.resolve_alias(&GoType::infer_expr(arg, env));
     if expr_is_assignable_for_validation(&expected, arg, env) {
         return None;
@@ -12086,6 +12135,46 @@ fn invalid_call_arg_expr(
             go_type_display_name(&actual)
         ),
     ))
+}
+
+fn invalid_type_parameter_constraint_call_arg(
+    target: &str,
+    position: usize,
+    expected: &GoType,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let GoType::Named(type_param) = expected else {
+        return None;
+    };
+    let constraints = env.get_func_type_param_constraint(target, type_param)?;
+    let actual = env.resolve_alias(&GoType::infer_expr(arg, env));
+    if matches!(actual, GoType::Unknown)
+        || constraints
+            .iter()
+            .any(|constraint| type_param_constraint_allows_arg(constraint, &actual, arg, env))
+    {
+        return None;
+    }
+    Some(invalid_call_reason(
+        target,
+        format!(
+            "argument {position} does not satisfy constraint for {type_param}: got {}",
+            go_type_display_name(&actual)
+        ),
+    ))
+}
+
+fn type_param_constraint_allows_arg(
+    constraint: &GoType,
+    actual: &GoType,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    let constraint = env.resolve_alias(constraint);
+    actual == &constraint
+        || (expr_is_untyped_constant_for_comparison(arg, env)
+            && comparison_constant_is_assignable_to(arg, actual, &constraint, env))
 }
 
 fn invalid_call_arg_types<'a>(

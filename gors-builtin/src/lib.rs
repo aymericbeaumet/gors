@@ -1152,17 +1152,17 @@ pub fn print_empty() {}
 
 #[inline]
 pub fn println_empty() {
-    ::std::println!();
+    ::std::eprintln!();
 }
 
 #[inline]
 pub fn print_value<T: std::fmt::Display>(value: T) {
-    ::std::print!("{value}");
+    ::std::eprint!("{value}");
 }
 
 #[inline]
 pub fn println_value<T: std::fmt::Display>(value: T) {
-    ::std::println!("{value}");
+    ::std::eprintln!("{value}");
 }
 
 pub fn format_slice<T: std::fmt::Display>(values: &[T]) -> std::string::String {

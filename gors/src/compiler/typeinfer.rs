@@ -663,6 +663,11 @@ pub struct TypeEnv {
     funcs: HashMap<std::string::String, Vec<GoType>>,
     /// Function/method name → parameter types
     func_params: HashMap<std::string::String, Vec<GoType>>,
+    /// Method names declared with pointer receivers.
+    pointer_receiver_methods: HashSet<std::string::String>,
+    /// Function/method name → type parameter name → accepted constraint terms.
+    func_type_param_constraints:
+        HashMap<std::string::String, HashMap<std::string::String, Vec<GoType>>>,
     /// Function/method name → index where a variadic parameter starts
     func_variadic_start: HashMap<std::string::String, usize>,
     /// Type name → kind (struct, interface, alias)
@@ -724,6 +729,84 @@ fn type_parameter_count(type_params: Option<&ast::FieldList<'_>>) -> usize {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+fn type_param_constraints(
+    type_params: Option<&ast::FieldList<'_>>,
+) -> HashMap<std::string::String, Vec<GoType>> {
+    let mut constraints = HashMap::new();
+    let Some(type_params) = type_params else {
+        return constraints;
+    };
+    let type_param_names: HashSet<_> = type_params
+        .list
+        .iter()
+        .filter_map(|field| field.names.as_ref())
+        .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+        .collect();
+    for field in &type_params.list {
+        let Some(names) = &field.names else {
+            continue;
+        };
+        let terms: Vec<_> = field
+            .type_
+            .as_ref()
+            .map(constraint_type_terms)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|term| !go_type_mentions_names(term, &type_param_names))
+            .collect();
+        if terms.is_empty() {
+            continue;
+        }
+        for name in names {
+            constraints.insert(name.name.to_string(), terms.clone());
+        }
+    }
+    constraints
+}
+
+fn go_type_mentions_names(ty: &GoType, names: &HashSet<std::string::String>) -> bool {
+    match ty {
+        GoType::Named(name) => names.contains(name),
+        GoType::Slice(elem) | GoType::Pointer(elem) | GoType::Array(elem) => {
+            go_type_mentions_names(elem, names)
+        }
+        GoType::Map(key, value) => {
+            go_type_mentions_names(key, names) || go_type_mentions_names(value, names)
+        }
+        GoType::Chan { elem, .. } => go_type_mentions_names(elem, names),
+        GoType::Func {
+            params, results, ..
+        } => params
+            .iter()
+            .chain(results.iter())
+            .any(|ty| go_type_mentions_names(ty, names)),
+        _ => false,
+    }
+}
+
+fn constraint_type_terms(expr: &ast::Expr<'_>) -> Vec<GoType> {
+    match expr {
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::OR => {
+            let mut terms = constraint_type_terms(&binary.x);
+            terms.extend(constraint_type_terms(&binary.y));
+            terms
+        }
+        ast::Expr::ParenExpr(paren) => constraint_type_terms(&paren.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
+            constraint_type_terms(&unary.x)
+        }
+        ast::Expr::Ident(ident) if ident.name == "any" => Vec::new(),
+        other => {
+            let ty = GoType::from_expr(other);
+            if matches!(ty, GoType::Unknown | GoType::Any) {
+                Vec::new()
+            } else {
+                vec![ty]
+            }
+        }
+    }
 }
 
 fn type_expr_is_instantiated(expr: &ast::Expr<'_>) -> bool {
@@ -793,8 +876,42 @@ impl TypeEnv {
         self.func_params.get(name).cloned().unwrap_or_default()
     }
 
+    pub fn set_func_type_param_constraints(
+        &mut self,
+        name: &str,
+        constraints: HashMap<std::string::String, Vec<GoType>>,
+    ) {
+        if !constraints.is_empty() {
+            self.func_type_param_constraints
+                .insert(name.to_string(), constraints);
+        }
+    }
+
+    pub fn get_func_type_param_constraint(
+        &self,
+        func_name: &str,
+        type_param: &str,
+    ) -> Option<Vec<GoType>> {
+        self.func_type_param_constraints
+            .get(func_name)
+            .and_then(|constraints| constraints.get(type_param))
+            .cloned()
+    }
+
     pub fn has_func(&self, name: &str) -> bool {
         self.funcs.contains_key(name) || self.func_params.contains_key(name)
+    }
+
+    pub fn set_pointer_receiver_method(&mut self, name: &str) {
+        self.pointer_receiver_methods.insert(name.to_string());
+    }
+
+    pub fn method_has_pointer_receiver(&self, name: &str) -> bool {
+        self.pointer_receiver_methods.contains(name)
+    }
+
+    pub fn has_value_method(&self, name: &str) -> bool {
+        self.has_func(name) && !self.method_has_pointer_receiver(name)
     }
 
     pub fn get_func_return(&self, name: &str) -> GoType {
@@ -896,17 +1013,33 @@ impl TypeEnv {
                 matches!(kind, TypeKind::Struct)
                     .then_some(type_name)
                     .filter(|type_name| {
-                        required_methods.iter().all(|method| {
-                            let method_key = format!("{type_name}.{method}");
-                            self.funcs.contains_key(&method_key)
-                                || self.func_params.contains_key(&method_key)
-                        })
+                        self.named_type_implements_interface(type_name, name, false)
                     })
                     .cloned()
             })
             .collect();
         implementors.sort();
         implementors
+    }
+
+    pub fn named_type_implements_interface(
+        &self,
+        type_name: &str,
+        interface_name: &str,
+        include_pointer_receiver_methods: bool,
+    ) -> bool {
+        self.interface_methods
+            .get(interface_name)
+            .is_none_or(|methods| {
+                methods.iter().all(|method| {
+                    let method_key = format!("{type_name}.{method}");
+                    if include_pointer_receiver_methods {
+                        self.has_func(&method_key)
+                    } else {
+                        self.has_value_method(&method_key)
+                    }
+                })
+            })
     }
 
     pub fn resolve_alias(&self, ty: &GoType) -> GoType {
@@ -1014,6 +1147,15 @@ impl TypeEnv {
         }
         for (name, params) in &package_env.func_params {
             self.set_func_params(&format!("{package_name}.{name}"), params.clone());
+        }
+        for name in &package_env.pointer_receiver_methods {
+            self.set_pointer_receiver_method(&format!("{package_name}.{name}"));
+        }
+        for (name, constraints) in &package_env.func_type_param_constraints {
+            self.set_func_type_param_constraints(
+                &format!("{package_name}.{name}"),
+                constraints.clone(),
+            );
         }
         for (name, start) in &package_env.func_variadic_start {
             self.set_func_variadic_start(&format!("{package_name}.{name}"), *start);
@@ -1210,6 +1352,7 @@ impl TypeEnv {
             .unwrap_or_default();
 
         let is_method = fd.recv.is_some();
+        let type_param_constraints = type_param_constraints(fd.type_.type_params.as_ref());
 
         if let Some(ref recv) = fd.recv {
             if let Some(recv_field) = recv.list.first() {
@@ -1218,6 +1361,13 @@ impl TypeEnv {
                     let method_key = format!("{}.{}", recv_name, name);
                     self.set_func_params(&method_key, params.clone());
                     self.set_func(&method_key, returns.clone());
+                    self.set_func_type_param_constraints(
+                        &method_key,
+                        type_param_constraints.clone(),
+                    );
+                    if receiver_type_has_pointer_indirection(recv_type) {
+                        self.set_pointer_receiver_method(&method_key);
+                    }
                     if let Some(start) = variadic_start {
                         self.set_func_variadic_start(&method_key, start);
                     }
@@ -1227,6 +1377,7 @@ impl TypeEnv {
         if !is_method {
             self.set_func_params(name, params);
             self.set_func(name, returns);
+            self.set_func_type_param_constraints(name, type_param_constraints);
             if let Some(start) = variadic_start {
                 self.set_func_variadic_start(name, start);
             }
@@ -1326,5 +1477,13 @@ fn extract_type_name<'a>(expr: &'a ast::Expr<'a>) -> &'a str {
         ast::Expr::IndexExpr(index) => extract_type_name(&index.x),
         ast::Expr::IndexListExpr(index) => extract_type_name(&index.x),
         _ => "",
+    }
+}
+
+fn receiver_type_has_pointer_indirection(expr: &ast::Expr<'_>) -> bool {
+    match expr {
+        ast::Expr::StarExpr(_) => true,
+        ast::Expr::ParenExpr(paren) => receiver_type_has_pointer_indirection(&paren.x),
+        _ => false,
     }
 }

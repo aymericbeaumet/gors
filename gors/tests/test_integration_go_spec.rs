@@ -8,6 +8,7 @@ mod generated_programs;
 use common::fixtures_dir;
 use std::collections::HashSet;
 use std::fs;
+use std::path::Path;
 
 #[derive(serde::Deserialize)]
 struct SpecManifest {
@@ -26,6 +27,7 @@ struct SpecCase {
     status: String,
     fixtures: Option<Vec<String>>,
     reason: Option<String>,
+    expect: Option<String>,
 }
 
 #[test]
@@ -92,6 +94,56 @@ fn go_spec_manifest_has_valid_statuses_and_fixtures() {
     }
 
     assert!(total > 0, "spec manifest is empty");
+}
+
+#[test]
+fn go_spec_compile_error_fixtures_reject_like_go() {
+    let manifest_path = fixtures_dir().join("go_spec/spec.json");
+    let manifest: SpecManifest = serde_json::from_str(
+        &fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", manifest_path.display(), e)),
+    )
+    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e));
+    let go_spec = fixtures_dir().join("go_spec");
+    let mut checked = 0usize;
+
+    for category in manifest.categories {
+        for case in category.tests {
+            if case.status != "passing" || case.expect.as_deref() != Some("compile_error") {
+                continue;
+            }
+            for fixture in case.fixtures.unwrap_or_default() {
+                checked += 1;
+                assert_compile_error_fixture(&go_spec.join(&fixture), &case.id);
+            }
+        }
+    }
+
+    assert!(checked > 0, "no compile-error spec fixtures found");
+}
+
+fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
+    let go_output = common::go_command()
+        .args(["run", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("{case_id}: failed to run Go oracle: {e}"));
+    assert!(
+        !go_output.status.success(),
+        "{case_id}: Go accepted negative fixture {}",
+        dir.display()
+    );
+
+    let source_path = dir.to_string_lossy().into_owned();
+    let rejected = match gors::parser::parse_program_files(&[source_path]) {
+        Ok(program) => gors::compiler::compile_program_multi(program).is_err(),
+        Err(_) => true,
+    };
+    assert!(
+        rejected,
+        "{case_id}: gors accepted negative fixture {}",
+        dir.display()
+    );
 }
 
 #[test]

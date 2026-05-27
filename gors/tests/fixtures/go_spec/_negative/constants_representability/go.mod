@@ -1,0 +1,3 @@
+module go_spec_negative_constants_representability
+
+go 1.22

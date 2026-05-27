@@ -40,8 +40,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Source code representation",
 		"testCount": 4,
-		"passingTestCount": 1,
-		"unsupportedTestCount": 3,
+		"passingTestCount": 2,
+		"unsupportedTestCount": 2,
 		"tests": [
 			{
 				"id": "source-utf8-executable-text",
@@ -57,9 +57,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "source-unicode-text",
 				"section": "Source code representation",
 				"title": "Source text is UTF-8 Unicode and code points are distinct",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs explicit scanner/parser fixtures for non-ASCII identifiers and canonical-equivalent code points."
+				"status": "passing",
+				"fixtures": [
+					"source_code_representation"
+				],
+				"reason": ""
 			},
 			{
 				"id": "source-nul-character",
@@ -250,8 +252,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Constants",
 		"testCount": 9,
-		"passingTestCount": 8,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 9,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "constants-boolean",
@@ -317,9 +319,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "constants-representability",
 				"section": "Representability",
 				"title": "Untyped constants are checked for representability by target type",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs negative diagnostics for overflow and non-representable assignments."
+				"status": "passing",
+				"fixtures": [
+					"_negative/constants_representability"
+				],
+				"reason": ""
 			},
 			{
 				"id": "constants-complex",
@@ -424,8 +428,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Types",
 		"testCount": 20,
-		"passingTestCount": 15,
-		"unsupportedTestCount": 5,
+		"passingTestCount": 18,
+		"unsupportedTestCount": 2,
 		"tests": [
 			{
 				"id": "types-booleans",
@@ -569,9 +573,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-interface-method-sets",
 				"section": "Method sets",
 				"title": "Interface method sets match pointer and value receiver rules",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs method-set fixtures that distinguish pointer-only and value receiver assignability."
+				"status": "passing",
+				"fixtures": [
+					"_negative/types_interface_method_sets"
+				],
+				"reason": ""
 			},
 			{
 				"id": "types-maps",
@@ -597,9 +603,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-directional-channels",
 				"section": "Channel types",
 				"title": "Channel types may restrict values to send-only or receive-only operations",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Directional channel type checking and lowering are not represented in the generated-program harness yet."
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
 			},
 			{
 				"id": "types-aliases",
@@ -615,17 +623,19 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-recursive",
 				"section": "Type declarations",
 				"title": "Recursive named types compile and execute",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs fixtures for self-referential structs, interfaces, and pointer cycles."
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
 			}
 		]
 	},
 	{
 		"name": "Properties of types and values",
 		"testCount": 4,
-		"passingTestCount": 3,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 4,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "properties-assignability",
@@ -651,9 +661,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "properties-non-comparable",
 				"section": "Comparison operators",
 				"title": "Non-comparable values are rejected by comparison and map-key contexts",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs negative semantic diagnostics for slices, maps, and functions."
+				"status": "passing",
+				"fixtures": [
+					"_negative/properties_non_comparable"
+				],
+				"reason": ""
 			},
 			{
 				"id": "properties-method-sets",
@@ -768,8 +780,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Expressions",
 		"testCount": 13,
-		"passingTestCount": 12,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 13,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "expr-primary",
@@ -895,9 +907,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "expr-evaluation-order",
 				"section": "Order of evaluation",
 				"title": "Evaluation order is preserved for side-effecting expressions",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs focused side-effect fixtures across calls, indexing, map updates, and multi-assignment."
+				"status": "passing",
+				"fixtures": [
+					"expressions"
+				],
+				"reason": ""
 			}
 		]
 	},
@@ -1100,8 +1114,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Built-in functions",
 		"testCount": 11,
-		"passingTestCount": 9,
-		"unsupportedTestCount": 2,
+		"passingTestCount": 10,
+		"unsupportedTestCount": 1,
 		"tests": [
 			{
 				"id": "builtin-append-copy",
@@ -1185,9 +1199,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "builtin-print-println",
 				"section": "Bootstrapping",
 				"title": "print and println emit values",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs stderr-aware generated-program comparison for Go predeclared print and println output."
+				"status": "passing",
+				"fixtures": [
+					"built_in_functions"
+				],
+				"reason": ""
 			},
 			{
 				"id": "builtin-close",
@@ -1278,8 +1294,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Generics",
 		"testCount": 6,
-		"passingTestCount": 5,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 6,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "generics-functions",
@@ -1325,9 +1341,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "generics-constraints",
 				"section": "Interface types",
 				"title": "Constraint interfaces and type sets restrict type arguments",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs semantic validation and lowering for type-set operations beyond current generic fixtures."
+				"status": "passing",
+				"fixtures": [
+					"_negative/generics_constraints"
+				],
+				"reason": ""
 			},
 			{
 				"id": "generics-type-inference",
@@ -1345,8 +1363,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 3,
+	"passingCategoryCount": 7,
 	"testCount": 124,
-	"passingTestCount": 107,
-	"unsupportedTestCount": 17
+	"passingTestCount": 116,
+	"unsupportedTestCount": 8
 } as const;

@@ -23,9 +23,10 @@
           "id": "source-unicode-text",
           "section": "Source code representation",
           "title": "Source text is UTF-8 Unicode and code points are distinct",
-          "status": "unsupported",
-          "reason": "Needs explicit scanner/parser fixtures for non-ASCII identifiers and canonical-equivalent code points.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ]
         },
         {
           "id": "source-nul-character",
@@ -255,9 +256,11 @@
           "id": "constants-representability",
           "section": "Representability",
           "title": "Untyped constants are checked for representability by target type",
-          "status": "unsupported",
-          "reason": "Needs negative diagnostics for overflow and non-representable assignments.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_negative/constants_representability"
+          ],
+          "expect": "compile_error"
         },
         {
           "id": "constants-complex",
@@ -480,9 +483,11 @@
           "id": "types-interface-method-sets",
           "section": "Method sets",
           "title": "Interface method sets match pointer and value receiver rules",
-          "status": "unsupported",
-          "reason": "Needs method-set fixtures that distinguish pointer-only and value receiver assignability.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_negative/types_interface_method_sets"
+          ],
+          "expect": "compile_error"
         },
         {
           "id": "types-maps",
@@ -506,9 +511,10 @@
           "id": "types-directional-channels",
           "section": "Channel types",
           "title": "Channel types may restrict values to send-only or receive-only operations",
-          "status": "unsupported",
-          "reason": "Directional channel type checking and lowering are not represented in the generated-program harness yet.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
         },
         {
           "id": "types-aliases",
@@ -523,9 +529,10 @@
           "id": "types-recursive",
           "section": "Type declarations",
           "title": "Recursive named types compile and execute",
-          "status": "unsupported",
-          "reason": "Needs fixtures for self-referential structs, interfaces, and pointer cycles.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
         }
       ]
     },
@@ -554,9 +561,11 @@
           "id": "properties-non-comparable",
           "section": "Comparison operators",
           "title": "Non-comparable values are rejected by comparison and map-key contexts",
-          "status": "unsupported",
-          "reason": "Needs negative semantic diagnostics for slices, maps, and functions.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_negative/properties_non_comparable"
+          ],
+          "expect": "compile_error"
         },
         {
           "id": "properties-method-sets",
@@ -770,9 +779,10 @@
           "id": "expr-evaluation-order",
           "section": "Order of evaluation",
           "title": "Evaluation order is preserved for side-effecting expressions",
-          "status": "unsupported",
-          "reason": "Needs focused side-effect fixtures across calls, indexing, map updates, and multi-assignment.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
         }
       ]
     },
@@ -1029,9 +1039,10 @@
           "id": "builtin-print-println",
           "section": "Bootstrapping",
           "title": "print and println emit values",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Needs stderr-aware generated-program comparison for Go predeclared print and println output."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
         },
         {
           "id": "builtin-close",
@@ -1153,9 +1164,11 @@
           "id": "generics-constraints",
           "section": "Interface types",
           "title": "Constraint interfaces and type sets restrict type arguments",
-          "status": "unsupported",
-          "reason": "Needs semantic validation and lowering for type-set operations beyond current generic fixtures.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_negative/generics_constraints"
+          ],
+          "expect": "compile_error"
         },
         {
           "id": "generics-type-inference",

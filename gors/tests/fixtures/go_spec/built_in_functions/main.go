@@ -24,5 +24,7 @@ func main() {
 	close(channel)
 	received, ok := <-channel
 	_, closedOk := <-channel
+	print("ignored")
+	println("ignored", 1)
 	fmt.Println(len(values), cap(values), clone[2], *pointer, real(complexValue), imag(complexValue), len(text), mapLen, channelLen, received, ok, closedOk)
 }

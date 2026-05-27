@@ -19,8 +19,21 @@ type Namer interface {
 	Label() string
 }
 
+type Node struct {
+	Value    int
+	Children []Node
+}
+
 func Name(n Namer) string {
 	return n.Label()
+}
+
+func SendOnly(ch chan<- int, value int) {
+	ch <- value
+}
+
+func ReceiveOnly(ch <-chan int) int {
+	return <-ch
 }
 
 func main() {
@@ -37,6 +50,11 @@ func main() {
 	mapping := map[string]int{"answer": 42}
 	channel := make(chan int, 1)
 	channel <- mapping["answer"]
+	sendDirectional := make(chan int, 1)
+	SendOnly(sendDirectional, 7)
+	receiveDirectional := make(chan int, 1)
+	receiveDirectional <- 8
+	node := Node{Value: 1, Children: []Node{{Value: 2}}}
 	function := func(value int) int { return value + pointer.Value }
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, function(3))
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, function(3))
 }

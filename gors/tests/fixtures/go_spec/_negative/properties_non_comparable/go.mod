@@ -1,0 +1,3 @@
+module go_spec_negative_properties_non_comparable
+
+go 1.22
