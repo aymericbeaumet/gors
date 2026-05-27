@@ -10411,6 +10411,25 @@ fn comparison_operand_effective_type(
             let right = env.resolve_alias(&GoType::infer_expr(&binary.y, env));
             let left_const = expr_is_untyped_numeric_constant_for_comparison(&binary.x, env);
             let right_const = expr_is_untyped_numeric_constant_for_comparison(&binary.y, env);
+            if go_type_is_numeric(expected) {
+                let left_effective =
+                    comparison_operand_effective_type(&binary.x, &left, expected, env);
+                let right_effective =
+                    comparison_operand_effective_type(&binary.y, &right, expected, env);
+                if numeric_expr_is_compatible_with_expected(
+                    &binary.x,
+                    &left_effective,
+                    expected,
+                    env,
+                ) && numeric_expr_is_compatible_with_expected(
+                    &binary.y,
+                    &right_effective,
+                    expected,
+                    env,
+                ) {
+                    return expected.clone();
+                }
+            }
             match (left_const, right_const) {
                 (true, false) if go_type_is_numeric(&right) => right,
                 (true, false)
@@ -10429,6 +10448,19 @@ fn comparison_operand_effective_type(
         }
         _ => inferred.clone(),
     }
+}
+
+fn numeric_expr_is_compatible_with_expected(
+    expr: &ast::Expr<'_>,
+    actual: &GoType,
+    expected: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    let actual = env.resolve_alias(actual);
+    matches!(actual, GoType::Unknown)
+        || actual == *expected
+        || (expr_is_untyped_numeric_constant_for_comparison(expr, env)
+            && comparison_constant_is_assignable_to(expr, &actual, expected, env))
 }
 
 fn binary_op_is_numeric_for_type_inference(op: token::Token) -> bool {
@@ -24756,6 +24788,9 @@ mod tests {
                     count <<= 1
                     count <<= 1.0
                     count &= 3
+                    var r rune
+                    var c byte
+                    r = 16*r + rune(c) - '0'
                     y := 0
                     z := ""
                     y, z = pair()

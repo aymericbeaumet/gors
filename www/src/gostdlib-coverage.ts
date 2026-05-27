@@ -11203,52 +11203,68 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "crypto/subtle",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"crypto/subtle"
+		],
 		"symbolCount": 8,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 7,
 		"symbols": [
 			{
 				"name": "ConstantTimeByteEq",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "ConstantTimeCompare",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "ConstantTimeCopy",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "ConstantTimeEq",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "ConstantTimeLessOrEq",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "ConstantTimeSelect",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "WithDataIndependentTiming",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/subtle"
+				]
 			},
 			{
 				"name": "XORBytes",
@@ -30850,6 +30866,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/sha1",
 			"crypto/sha256",
 			"crypto/sha512",
+			"crypto/subtle",
 			"debug/elf",
 			"encoding/ascii85",
 			"encoding/hex",
@@ -31023,6 +31040,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"crypto/sha1",
 					"crypto/sha256",
 					"crypto/sha512",
+					"crypto/subtle",
 					"debug/elf",
 					"encoding/ascii85",
 					"encoding/hex",
@@ -79744,11 +79762,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 56,
+	"fixtureCount": 57,
 	"packageCount": 353,
-	"testedPackageCount": 56,
-	"untestedPackageCount": 297,
+	"testedPackageCount": 57,
+	"untestedPackageCount": 296,
 	"symbolCount": 12599,
-	"testedSymbolCount": 364,
-	"untestedSymbolCount": 12235
+	"testedSymbolCount": 371,
+	"untestedSymbolCount": 12228
 } as const;
