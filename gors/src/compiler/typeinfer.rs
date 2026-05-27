@@ -468,6 +468,8 @@ pub struct TypeEnv {
     func_variadic_start: HashMap<std::string::String, usize>,
     /// Type name → kind (struct, interface, alias)
     type_kinds: HashMap<std::string::String, TypeKind>,
+    /// Type name → declared type parameter count
+    type_param_counts: HashMap<std::string::String, usize>,
     /// Interface name → required method names
     interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
     /// Struct name → field types
@@ -503,6 +505,18 @@ fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn type_parameter_count(type_params: Option<&ast::FieldList<'_>>) -> usize {
+    type_params
+        .map(|fields| {
+            fields
+                .list
+                .iter()
+                .map(|field| field.names.as_ref().map_or(1, Vec::len))
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 impl TypeEnv {
@@ -572,6 +586,14 @@ impl TypeEnv {
 
     pub fn get_type_kind(&self, name: &str) -> Option<&TypeKind> {
         self.type_kinds.get(name)
+    }
+
+    pub fn set_type_param_count(&mut self, name: &str, count: usize) {
+        self.type_param_counts.insert(name.to_string(), count);
+    }
+
+    pub fn get_type_param_count(&self, name: &str) -> Option<usize> {
+        self.type_param_counts.get(name).copied()
     }
 
     pub fn is_interface(&self, name: &str) -> bool {
@@ -762,6 +784,7 @@ impl TypeEnv {
 
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
+        self.set_type_param_count(name.name, type_parameter_count(ts.type_params.as_ref()));
         match &ts.type_ {
             ast::Expr::StructType(st) => {
                 self.set_type_kind(name.name, TypeKind::Struct);

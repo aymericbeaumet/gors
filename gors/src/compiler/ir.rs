@@ -1222,6 +1222,11 @@ pub enum InvalidSignature {
         base: Option<String>,
         reason: InvalidReceiverTypeReason,
     },
+    ReceiverTypeParameterCount {
+        base: String,
+        expected: usize,
+        got: usize,
+    },
     ReceiverTypeParameterNotIdentifier,
     ReceiverVariadic,
     VariadicNotFinal,
@@ -1608,6 +1613,16 @@ fn invalid_receiver_type_in_func_decl(
             reason: InvalidReceiverTypeReason::Unnamed,
         });
     };
+    if let Some(expected) = env.get_type_param_count(&base) {
+        let got = receiver_type_parameter_count(recv);
+        if expected != got {
+            return Some(InvalidSignature::ReceiverTypeParameterCount {
+                base,
+                expected,
+                got,
+            });
+        }
+    }
     invalid_receiver_base_type(&base, env).map(|reason| InvalidSignature::ReceiverType {
         base: Some(base),
         reason,
@@ -2282,6 +2297,24 @@ fn struct_field_name_set(struct_type: &ast::StructType<'_>) -> BTreeSet<String> 
 fn receiver_base_type_name(recv: &ast::FieldList<'_>) -> Option<String> {
     let field = recv.list.first()?;
     receiver_type_base_name(field.type_.as_ref()?)
+}
+
+fn receiver_type_parameter_count(recv: &ast::FieldList<'_>) -> usize {
+    recv.list
+        .first()
+        .and_then(|field| field.type_.as_ref())
+        .map(receiver_type_expr_parameter_count)
+        .unwrap_or(0)
+}
+
+fn receiver_type_expr_parameter_count(expr: &ast::Expr<'_>) -> usize {
+    match expr {
+        ast::Expr::IndexExpr(_) => 1,
+        ast::Expr::IndexListExpr(index) => index.indices.len(),
+        ast::Expr::ParenExpr(paren) => receiver_type_expr_parameter_count(&paren.x),
+        ast::Expr::StarExpr(star) => receiver_type_expr_parameter_count(&star.x),
+        _ => 0,
+    }
 }
 
 fn receiver_type_base_name(expr: &ast::Expr<'_>) -> Option<String> {
@@ -12837,6 +12870,51 @@ mod tests {
                 reason: super::InvalidReceiverTypeReason::Pointer,
             })
         );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair[A]) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverTypeParameterCount {
+                base: "Pair".to_string(),
+                expected: 2,
+                got: 1,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverTypeParameterCount {
+                base: "Pair".to_string(),
+                expected: 2,
+                got: 0,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Number int
+                    func (n Number[T]) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverTypeParameterCount {
+                base: "Number".to_string(),
+                expected: 0,
+                got: 1,
+            })
+        );
     }
 
     #[test]
@@ -12850,6 +12928,8 @@ mod tests {
                     type S struct{}
                     type N int
                     func (*N) N() {}
+                    type Pair[A, B any] struct{}
+                    func (p Pair[A, B]) Pair() {}
                 "#,
             ),
             None

@@ -13123,6 +13123,13 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         ir::InvalidSignature::ReceiverType { base, reason } => {
             invalid_receiver_type_reason(base.as_deref(), reason)
         }
+        ir::InvalidSignature::ReceiverTypeParameterCount {
+            base,
+            expected,
+            got,
+        } => format!(
+            "method receiver base type {base} requires {expected} type parameter(s), got {got}"
+        ),
         ir::InvalidSignature::ReceiverTypeParameterNotIdentifier => {
             "receiver type parameter must be an identifier".to_string()
         }
