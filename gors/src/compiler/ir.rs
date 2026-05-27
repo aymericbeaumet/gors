@@ -1321,8 +1321,23 @@ pub enum InvalidDeclaration {
 }
 
 pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
+    invalid_forward_goto_in_stmt_list(&block.list)
+}
+
+pub fn invalid_forward_goto_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
+    invalid_forward_goto_in_func_scope(block).or_else(|| {
+        invalid_in_func_lits_in_block(block, &mut |body| invalid_forward_goto_in_func(body))
+    })
+}
+
+fn invalid_forward_goto_in_func_scope(block: &ast::BlockStmt<'_>) -> Option<InvalidGoto> {
+    invalid_forward_goto_in_stmt_list(&block.list)
+        .or_else(|| invalid_forward_goto_in_nested_stmt_list(&block.list))
+}
+
+fn invalid_forward_goto_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Option<InvalidGoto> {
     let mut label_positions = BTreeMap::new();
-    for (idx, stmt) in block.list.iter().enumerate() {
+    for (idx, stmt) in stmts.iter().enumerate() {
         for label in direct_label_names_in_stmt(stmt) {
             label_positions.entry(label).or_insert(idx);
         }
@@ -1331,7 +1346,7 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
         return None;
     }
 
-    for (idx, stmt) in block.list.iter().enumerate() {
+    for (idx, stmt) in stmts.iter().enumerate() {
         let mut targets = BTreeSet::new();
         collect_goto_targets_in_stmt(stmt, &mut targets);
         for target in targets {
@@ -1342,7 +1357,7 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
                 continue;
             }
             let mut skipped_names = BTreeSet::new();
-            for skipped in block.list.iter().take(target_idx).skip(idx + 1) {
+            for skipped in stmts.iter().take(target_idx).skip(idx + 1) {
                 collect_direct_declared_names_in_stmt(skipped, &mut skipped_names);
             }
             if !skipped_names.is_empty() {
@@ -1354,6 +1369,72 @@ pub fn invalid_forward_goto_in_block(block: &ast::BlockStmt<'_>) -> Option<Inval
         }
     }
     None
+}
+
+fn invalid_forward_goto_in_nested_stmt_list(stmts: &[ast::Stmt<'_>]) -> Option<InvalidGoto> {
+    stmts.iter().find_map(invalid_forward_goto_in_nested_stmt)
+}
+
+fn invalid_forward_goto_in_nested_stmt(stmt: &ast::Stmt<'_>) -> Option<InvalidGoto> {
+    match stmt {
+        ast::Stmt::BlockStmt(block) => invalid_forward_goto_in_func_scope(block),
+        ast::Stmt::CaseClause(case) => invalid_forward_goto_in_stmt_list(&case.body)
+            .or_else(|| invalid_forward_goto_in_nested_stmt_list(&case.body)),
+        ast::Stmt::CommClause(comm) => comm
+            .comm
+            .as_deref()
+            .and_then(invalid_forward_goto_in_nested_stmt)
+            .or_else(|| invalid_forward_goto_in_stmt_list(&comm.body))
+            .or_else(|| invalid_forward_goto_in_nested_stmt_list(&comm.body)),
+        ast::Stmt::ForStmt(for_stmt) => for_stmt
+            .init
+            .as_deref()
+            .and_then(invalid_forward_goto_in_nested_stmt)
+            .or_else(|| {
+                for_stmt
+                    .post
+                    .as_deref()
+                    .and_then(invalid_forward_goto_in_nested_stmt)
+            })
+            .or_else(|| invalid_forward_goto_in_func_scope(&for_stmt.body)),
+        ast::Stmt::IfStmt(if_stmt) => if_stmt
+            .init
+            .as_ref()
+            .as_ref()
+            .and_then(|init| invalid_forward_goto_in_nested_stmt(init))
+            .or_else(|| invalid_forward_goto_in_func_scope(&if_stmt.body))
+            .or_else(|| {
+                if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .and_then(|else_branch| invalid_forward_goto_in_nested_stmt(else_branch))
+            }),
+        ast::Stmt::LabeledStmt(labeled) => invalid_forward_goto_in_nested_stmt(&labeled.stmt),
+        ast::Stmt::RangeStmt(range) => invalid_forward_goto_in_func_scope(&range.body),
+        ast::Stmt::SelectStmt(select) => invalid_forward_goto_in_func_scope(&select.body),
+        ast::Stmt::SwitchStmt(switch) => switch
+            .init
+            .as_deref()
+            .and_then(invalid_forward_goto_in_nested_stmt)
+            .or_else(|| invalid_forward_goto_in_func_scope(&switch.body)),
+        ast::Stmt::TypeSwitchStmt(type_switch) => type_switch
+            .init
+            .as_deref()
+            .and_then(invalid_forward_goto_in_nested_stmt)
+            .or_else(|| invalid_forward_goto_in_nested_stmt(&type_switch.assign))
+            .or_else(|| invalid_forward_goto_in_func_scope(&type_switch.body)),
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => None,
+    }
 }
 
 pub fn invalid_branch_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidBranch> {
@@ -1407,6 +1488,7 @@ pub fn invalid_label_in_func(block: &ast::BlockStmt<'_>) -> Option<InvalidLabel>
         .into_iter()
         .find(|label| !uses.contains(label))
         .map(|label| InvalidLabel::Unused { label })
+        .or_else(|| invalid_in_func_lits_in_block(block, &mut invalid_label_in_func))
 }
 
 pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignature> {
@@ -2491,7 +2573,7 @@ pub fn invalid_goto_target_in_func(block: &ast::BlockStmt<'_>) -> Option<Invalid
             return Some(InvalidGoto::EntersBlock { label });
         }
     }
-    None
+    invalid_in_func_lits_in_block(block, &mut invalid_goto_target_in_func)
 }
 
 fn invalid_signature_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidSignature> {
@@ -11371,6 +11453,270 @@ fn collect_goto_targets_in_stmt(stmt: &ast::Stmt<'_>, targets: &mut BTreeSet<Str
     }
 }
 
+fn invalid_in_func_lits_in_block<T>(
+    block: &ast::BlockStmt<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    invalid_in_func_lits_in_stmt_list(&block.list, check)
+}
+
+fn invalid_in_func_lits_in_stmt_list<T>(
+    stmts: &[ast::Stmt<'_>],
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    stmts
+        .iter()
+        .find_map(|stmt| invalid_in_func_lits_in_stmt(stmt, check))
+}
+
+fn invalid_in_func_lits_in_stmt<T>(
+    stmt: &ast::Stmt<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => assign
+            .lhs
+            .iter()
+            .chain(&assign.rhs)
+            .find_map(|expr| invalid_in_func_lits_in_expr(expr, check)),
+        ast::Stmt::BlockStmt(block) => invalid_in_func_lits_in_block(block, check),
+        ast::Stmt::CaseClause(case) => case
+            .list
+            .as_ref()
+            .and_then(|list| {
+                list.iter()
+                    .find_map(|expr| invalid_in_func_lits_in_expr(expr, check))
+            })
+            .or_else(|| invalid_in_func_lits_in_stmt_list(&case.body, check)),
+        ast::Stmt::CommClause(comm) => comm
+            .comm
+            .as_deref()
+            .and_then(|stmt| invalid_in_func_lits_in_stmt(stmt, check))
+            .or_else(|| invalid_in_func_lits_in_stmt_list(&comm.body, check)),
+        ast::Stmt::DeclStmt(decl) => invalid_in_func_lits_in_gen_decl(&decl.decl, check),
+        ast::Stmt::DeferStmt(defer) => invalid_in_func_lits_in_call(&defer.call, check),
+        ast::Stmt::ExprStmt(expr) => invalid_in_func_lits_in_expr(&expr.x, check),
+        ast::Stmt::ForStmt(for_stmt) => for_stmt
+            .init
+            .as_deref()
+            .and_then(|init| invalid_in_func_lits_in_stmt(init, check))
+            .or_else(|| {
+                for_stmt
+                    .cond
+                    .as_ref()
+                    .and_then(|cond| invalid_in_func_lits_in_expr(cond, check))
+            })
+            .or_else(|| {
+                for_stmt
+                    .post
+                    .as_deref()
+                    .and_then(|post| invalid_in_func_lits_in_stmt(post, check))
+            })
+            .or_else(|| invalid_in_func_lits_in_block(&for_stmt.body, check)),
+        ast::Stmt::GoStmt(go) => invalid_in_func_lits_in_call(&go.call, check),
+        ast::Stmt::IfStmt(if_stmt) => if_stmt
+            .init
+            .as_ref()
+            .as_ref()
+            .and_then(|init| invalid_in_func_lits_in_stmt(init, check))
+            .or_else(|| invalid_in_func_lits_in_expr(&if_stmt.cond, check))
+            .or_else(|| invalid_in_func_lits_in_block(&if_stmt.body, check))
+            .or_else(|| {
+                if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .and_then(|else_branch| invalid_in_func_lits_in_stmt(else_branch, check))
+            }),
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_in_func_lits_in_expr(&inc_dec.x, check),
+        ast::Stmt::LabeledStmt(labeled) => invalid_in_func_lits_in_stmt(&labeled.stmt, check),
+        ast::Stmt::RangeStmt(range) => range
+            .key
+            .as_ref()
+            .and_then(|key| invalid_in_func_lits_in_expr(key, check))
+            .or_else(|| {
+                range
+                    .value
+                    .as_ref()
+                    .and_then(|value| invalid_in_func_lits_in_expr(value, check))
+            })
+            .or_else(|| invalid_in_func_lits_in_expr(&range.x, check))
+            .or_else(|| invalid_in_func_lits_in_block(&range.body, check)),
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .find_map(|expr| invalid_in_func_lits_in_expr(expr, check)),
+        ast::Stmt::SelectStmt(select) => invalid_in_func_lits_in_block(&select.body, check),
+        ast::Stmt::SendStmt(send) => invalid_in_func_lits_in_expr(&send.chan, check)
+            .or_else(|| invalid_in_func_lits_in_expr(&send.value, check)),
+        ast::Stmt::SwitchStmt(switch) => switch
+            .init
+            .as_deref()
+            .and_then(|init| invalid_in_func_lits_in_stmt(init, check))
+            .or_else(|| {
+                switch
+                    .tag
+                    .as_ref()
+                    .and_then(|tag| invalid_in_func_lits_in_expr(tag, check))
+            })
+            .or_else(|| invalid_in_func_lits_in_block(&switch.body, check)),
+        ast::Stmt::TypeSwitchStmt(type_switch) => type_switch
+            .init
+            .as_deref()
+            .and_then(|init| invalid_in_func_lits_in_stmt(init, check))
+            .or_else(|| invalid_in_func_lits_in_stmt(&type_switch.assign, check))
+            .or_else(|| invalid_in_func_lits_in_block(&type_switch.body, check)),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+    }
+}
+
+fn invalid_in_func_lits_in_gen_decl<T>(
+    decl: &ast::GenDecl<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    decl.specs.iter().find_map(|spec| match spec {
+        ast::Spec::ImportSpec(_) => None,
+        ast::Spec::TypeSpec(type_spec) => invalid_in_func_lits_in_expr(&type_spec.type_, check)
+            .or_else(|| {
+                type_spec
+                    .type_params
+                    .as_ref()
+                    .and_then(|fields| invalid_in_func_lits_in_field_list(fields, check))
+            }),
+        ast::Spec::ValueSpec(value) => value
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_in_func_lits_in_expr(type_, check))
+            .or_else(|| {
+                value.values.as_ref().and_then(|values| {
+                    values
+                        .iter()
+                        .find_map(|expr| invalid_in_func_lits_in_expr(expr, check))
+                })
+            }),
+    })
+}
+
+fn invalid_in_func_lits_in_field_list<T>(
+    fields: &ast::FieldList<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    fields.list.iter().find_map(|field| {
+        field
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_in_func_lits_in_expr(type_, check))
+    })
+}
+
+fn invalid_in_func_lits_in_call<T>(
+    call: &ast::CallExpr<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    invalid_in_func_lits_in_expr(&call.fun, check).or_else(|| {
+        call.args.as_ref().and_then(|args| {
+            args.iter()
+                .find_map(|arg| invalid_in_func_lits_in_expr(arg, check))
+        })
+    })
+}
+
+fn invalid_in_func_lits_in_expr<T>(
+    expr: &ast::Expr<'_>,
+    check: &mut impl FnMut(&ast::BlockStmt<'_>) -> Option<T>,
+) -> Option<T> {
+    match expr {
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_in_func_lits_in_expr(len, check))
+            .or_else(|| invalid_in_func_lits_in_expr(&array.elt, check)),
+        ast::Expr::BinaryExpr(binary) => invalid_in_func_lits_in_expr(&binary.x, check)
+            .or_else(|| invalid_in_func_lits_in_expr(&binary.y, check)),
+        ast::Expr::CallExpr(call) => invalid_in_func_lits_in_call(call, check),
+        ast::Expr::ChanType(chan) => invalid_in_func_lits_in_expr(&chan.value, check),
+        ast::Expr::CompositeLit(comp) => comp
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_in_func_lits_in_expr(type_, check))
+            .or_else(|| {
+                comp.elts.as_ref().and_then(|elts| {
+                    elts.iter()
+                        .find_map(|elt| invalid_in_func_lits_in_expr(elt, check))
+                })
+            }),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_in_func_lits_in_expr(elt, check)),
+        ast::Expr::FuncLit(func_lit) => check(&func_lit.body),
+        ast::Expr::FuncType(func_type) => func_type
+            .type_params
+            .as_ref()
+            .and_then(|fields| invalid_in_func_lits_in_field_list(fields, check))
+            .or_else(|| invalid_in_func_lits_in_field_list(&func_type.params, check))
+            .or_else(|| {
+                func_type
+                    .results
+                    .as_ref()
+                    .and_then(|results| invalid_in_func_lits_in_field_list(results, check))
+            }),
+        ast::Expr::IndexExpr(index) => invalid_in_func_lits_in_expr(&index.x, check)
+            .or_else(|| invalid_in_func_lits_in_expr(&index.index, check)),
+        ast::Expr::IndexListExpr(index) => {
+            invalid_in_func_lits_in_expr(&index.x, check).or_else(|| {
+                index
+                    .indices
+                    .iter()
+                    .find_map(|index| invalid_in_func_lits_in_expr(index, check))
+            })
+        }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()
+            .and_then(|fields| invalid_in_func_lits_in_field_list(fields, check)),
+        ast::Expr::KeyValueExpr(kv) => invalid_in_func_lits_in_expr(&kv.key, check)
+            .or_else(|| invalid_in_func_lits_in_expr(&kv.value, check)),
+        ast::Expr::MapType(map) => invalid_in_func_lits_in_expr(&map.key, check)
+            .or_else(|| invalid_in_func_lits_in_expr(&map.value, check)),
+        ast::Expr::ParenExpr(paren) => invalid_in_func_lits_in_expr(&paren.x, check),
+        ast::Expr::SelectorExpr(selector) => invalid_in_func_lits_in_expr(&selector.x, check),
+        ast::Expr::SliceExpr(slice) => invalid_in_func_lits_in_expr(&slice.x, check)
+            .or_else(|| {
+                slice
+                    .low
+                    .as_ref()
+                    .and_then(|low| invalid_in_func_lits_in_expr(low, check))
+            })
+            .or_else(|| {
+                slice
+                    .high
+                    .as_ref()
+                    .and_then(|high| invalid_in_func_lits_in_expr(high, check))
+            })
+            .or_else(|| {
+                slice
+                    .max
+                    .as_ref()
+                    .and_then(|max| invalid_in_func_lits_in_expr(max, check))
+            }),
+        ast::Expr::StarExpr(star) => invalid_in_func_lits_in_expr(&star.x, check),
+        ast::Expr::StructType(struct_type) => struct_type
+            .fields
+            .as_ref()
+            .and_then(|fields| invalid_in_func_lits_in_field_list(fields, check)),
+        ast::Expr::TypeAssertExpr(assert) => invalid_in_func_lits_in_expr(&assert.x, check)
+            .or_else(|| {
+                assert
+                    .type_
+                    .as_ref()
+                    .and_then(|type_| invalid_in_func_lits_in_expr(type_, check))
+            }),
+        ast::Expr::UnaryExpr(unary) => invalid_in_func_lits_in_expr(&unary.x, check),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
 fn goto_state_hoisted_names(block: &ast::BlockStmt<'_>) -> Vec<String> {
     let mut declared_by_segment = vec![BTreeSet::new()];
     let mut referenced_by_segment = vec![BTreeSet::new()];
@@ -15957,6 +16303,73 @@ mod tests {
     }
 
     #[test]
+    fn rejects_forward_goto_over_function_literal_decl() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = func() {
+                        goto Done
+                        x := 1
+                    Done:
+                        _ = x
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_forward_goto_in_func(func.body.as_ref().expect("body")),
+            Some(super::InvalidGoto::SkipsDeclarations {
+                label: "Done".to_string(),
+                skipped_names: vec!["x".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_forward_goto_over_switch_clause_decl() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    switch 1 {
+                    case 1:
+                        goto Done
+                        x := 1
+                    Done:
+                        _ = x
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_forward_goto_in_func(func.body.as_ref().expect("body")),
+            Some(super::InvalidGoto::SkipsDeclarations {
+                label: "Done".to_string(),
+                skipped_names: vec!["x".to_string()]
+            })
+        );
+    }
+
+    #[test]
     fn rejects_goto_into_nested_block() {
         let file = parse_file(
             "test.go",
@@ -16077,6 +16490,66 @@ mod tests {
             super::invalid_goto_target_in_func(func.body.as_ref().expect("body")),
             Some(super::InvalidGoto::UndefinedLabel {
                 label: "_".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_goto_to_undefined_label_in_function_literal() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    _ = func() {
+                        goto Missing
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_goto_target_in_func(func.body.as_ref().expect("body")),
+            Some(super::InvalidGoto::UndefinedLabel {
+                label: "Missing".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_function_literal_goto_to_outer_label() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                Outer:
+                    _ = func() {
+                        goto Outer
+                    }
+                    goto Outer
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_goto_target_in_func(func.body.as_ref().expect("body")),
+            Some(super::InvalidGoto::UndefinedLabel {
+                label: "Outer".to_string()
             })
         );
     }
@@ -20593,6 +21066,58 @@ mod tests {
                         goto Done
                     Done:
                         println("done")
+                    }
+                "#,
+                super::InvalidLabel::Duplicate {
+                    label: "Done".to_string(),
+                },
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) => Some(func),
+                crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_label_in_func(func.body.as_ref().expect("body")),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unused_and_duplicate_labels_in_function_literals() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = func() {
+                        Done:
+                            println("done")
+                        }
+                    }
+                "#,
+                super::InvalidLabel::Unused {
+                    label: "Done".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = func() {
+                        Done:
+                            goto Done
+                        Done:
+                            println("done")
+                        }
                     }
                 "#,
                 super::InvalidLabel::Duplicate {

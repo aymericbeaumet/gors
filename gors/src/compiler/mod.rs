@@ -13384,6 +13384,9 @@ fn validate_function_semantics(
     if let Some(invalid) = ir::invalid_goto_target_in_func(body) {
         return Err(invalid_goto_error(invalid));
     }
+    if let Some(invalid) = ir::invalid_forward_goto_in_func(body) {
+        return Err(invalid_goto_error(invalid));
+    }
     if let Some(invalid) = ir::invalid_branch_in_func(body) {
         return Err(invalid_branch_error(invalid));
     }
@@ -18238,6 +18241,37 @@ var X int
                 }
             "#,
             "invalid goto to undefined label _",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_goto_in_function_literal() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    _ = func() {
+                        goto Missing
+                    }
+                }
+            "#,
+            "invalid goto to undefined label Missing",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    _ = func() {
+                        goto Done
+                        x := 1
+                    Done:
+                        _ = x
+                    }
+                }
+            "#,
+            "invalid goto to Done skips declarations: x",
         );
     }
 

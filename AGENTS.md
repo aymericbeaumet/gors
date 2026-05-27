@@ -482,7 +482,9 @@ the IR.
 IR goto validation rejects undefined labels, jumps into nested blocks, and
 forward gotos that would skip same-block local declarations before the Rust
 state-machine lowering hoists locals for valid forward jumps; do not use
-hoisting to make Go-invalid control flow compile.
+hoisting to make Go-invalid control flow compile. Goto validation recurses into
+function literals with a fresh label scope, and checks switch/select clause
+statement lists as implicit blocks for declaration-skipping jumps.
 IR branch validation rejects `break`, `continue`, and `fallthrough` placements
 that Go disallows before Rust lowering. Labeled `break`/`continue` must target
 an enclosing breakable statement or loop respectively, and `fallthrough` is
@@ -510,7 +512,8 @@ must not bypass Go spec checks.
 IR label validation rejects duplicate labels and labels that are never targeted
 by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
 function body; do not count labels or label uses inside nested function
-literals.
+literals, but do validate each nested function literal's labels in its own
+scope before lowering.
 IR range-clause validation rejects too many iteration variables before backend
 lowering: channels and integer ranges permit one effective binding, while
 function ranges are capped by the yield callback arity. A blank second binding
