@@ -9,7 +9,10 @@ func main() {
 	var text = "value"
 	short := packageCount + zero
 	_ = text
+	first, second := 1, 2
+	first, third := second, first+second
+	first, second = second, first
 	pointer := &short
 	*pointer = *pointer + 1
-	fmt.Println(zero, short)
+	fmt.Println(zero, short, first, second, third)
 }

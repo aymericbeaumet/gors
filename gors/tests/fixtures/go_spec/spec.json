@@ -11,6 +11,15 @@
       "name": "Source code representation",
       "tests": [
         {
+          "id": "source-utf8-executable-text",
+          "section": "Source code representation",
+          "title": "UTF-8 source text in string and rune literals compiles and executes",
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ]
+        },
+        {
           "id": "source-unicode-text",
           "section": "Source code representation",
           "title": "Source text is UTF-8 Unicode and code points are distinct",
@@ -103,9 +112,27 @@
           ]
         },
         {
+          "id": "lexical-uppercase-base-prefixes",
+          "section": "Integer literals",
+          "title": "Integer literals accept uppercase base prefixes",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
           "id": "lexical-floating-literals",
           "section": "Floating-point literals",
           "title": "Decimal floating-point literals compile and execute",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-floating-exponents",
+          "section": "Floating-point literals",
+          "title": "Decimal and hexadecimal floating-point exponents compile and execute",
           "status": "passing",
           "fixtures": [
             "lexical_elements"
@@ -133,6 +160,15 @@
           "id": "lexical-rune-literals",
           "section": "Rune literals",
           "title": "Rune literals and escapes lower to rune values",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-rune-escape-forms",
+          "section": "Rune literals",
+          "title": "Rune literals accept escaped Unicode and byte forms",
           "status": "passing",
           "fixtures": [
             "lexical_elements"
@@ -180,6 +216,15 @@
           ]
         },
         {
+          "id": "constants-repeated-expressions",
+          "section": "Constant declarations",
+          "title": "Const declarations repeat omitted expressions from the previous specification",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
           "id": "constants-string-concat",
           "section": "Constant expressions",
           "title": "String constant concatenation is evaluated",
@@ -198,6 +243,15 @@
           ]
         },
         {
+          "id": "constants-shift-expressions",
+          "section": "Constant expressions",
+          "title": "Shift expressions produce integer constants",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
           "id": "constants-representability",
           "section": "Representability",
           "title": "Untyped constants are checked for representability by target type",
@@ -209,6 +263,15 @@
           "id": "constants-complex",
           "section": "Constants",
           "title": "Complex constants preserve real and imaginary components",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
+          "id": "constants-typed-constants",
+          "section": "Constants",
+          "title": "Typed constants retain their explicit constant type at use sites",
           "status": "passing",
           "fixtures": [
             "constants"
@@ -232,6 +295,24 @@
           "id": "vars-short-declarations",
           "section": "Short variable declarations",
           "title": "Short variable declarations infer types and values",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-short-redeclaration",
+          "section": "Short variable declarations",
+          "title": "Short variable declarations may redeclare variables with at least one new name",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-multiple-assignment",
+          "section": "Assignments",
+          "title": "Multiple assignment evaluates right-hand values before assigning left-hand variables",
           "status": "passing",
           "fixtures": [
             "variables_and_zero_values"
@@ -352,6 +433,15 @@
           ]
         },
         {
+          "id": "types-embedded-fields",
+          "section": "Struct types",
+          "title": "Embedded fields promote selectors on the containing struct",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "types-pointers",
           "section": "Pointer types",
           "title": "Pointers support nil checks, dereference, and assignment",
@@ -359,6 +449,14 @@
           "fixtures": [
             "types"
           ]
+        },
+        {
+          "id": "types-nil-composite-values",
+          "section": "Pointer, slice, map, channel, function, and interface types",
+          "title": "nil is assignable to pointer, slice, map, channel, function, and interface values",
+          "status": "unsupported",
+          "reason": "Nil comparisons for generated shared struct pointers currently lower to default value comparisons.",
+          "fixtures": []
         },
         {
           "id": "types-functions",
@@ -403,6 +501,14 @@
           "fixtures": [
             "types"
           ]
+        },
+        {
+          "id": "types-directional-channels",
+          "section": "Channel types",
+          "title": "Channel types may restrict values to send-only or receive-only operations",
+          "status": "unsupported",
+          "reason": "Directional channel type checking and lowering are not represented in the generated-program harness yet.",
+          "fixtures": []
         },
         {
           "id": "types-aliases",
@@ -589,9 +695,27 @@
           ]
         },
         {
+          "id": "expr-composite-literals",
+          "section": "Composite literals",
+          "title": "Composite literals construct structs, slices, arrays, and maps",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
           "id": "expr-type-assertions",
           "section": "Type assertions",
           "title": "Type assertions support single-value and comma-ok forms",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-function-literals",
+          "section": "Function literals",
+          "title": "Function literals can be called through function values",
           "status": "passing",
           "fixtures": [
             "expressions"
@@ -619,6 +743,15 @@
           "id": "expr-operators",
           "section": "Operators",
           "title": "Arithmetic, logical, unary, and comparison operators execute",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-bit-clear-and-shifts",
+          "section": "Operators",
+          "title": "Shift and bit clear operators execute with Go precedence",
           "status": "passing",
           "fixtures": [
             "expressions"
@@ -701,9 +834,27 @@
           ]
         },
         {
+          "id": "stmt-fallthrough",
+          "section": "Fallthrough statements",
+          "title": "fallthrough transfers control to the next expression switch case",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
           "id": "stmt-type-switch",
           "section": "Type switch statements",
           "title": "Type switches bind matched dynamic values once",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-type-switch-binding",
+          "section": "Type switch statements",
+          "title": "Type switch guards expose the matched dynamic value in case clauses",
           "status": "passing",
           "fixtures": [
             "statements"
@@ -773,6 +924,15 @@
           ]
         },
         {
+          "id": "stmt-labeled-continue",
+          "section": "Continue statements",
+          "title": "continue may target an enclosing labeled for statement",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
           "id": "stmt-goto",
           "section": "Goto statements",
           "title": "goto statements target labels without entering invalid scopes",
@@ -807,6 +967,15 @@
           "id": "builtin-len-cap",
           "section": "Length and capacity",
           "title": "len and cap report values for strings, arrays, slices, maps, and channels",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-len-map-channel-string",
+          "section": "Length and capacity",
+          "title": "len reports values for maps, channels, arrays, and strings",
           "status": "passing",
           "fixtures": [
             "built_in_functions"
@@ -872,6 +1041,15 @@
           "fixtures": [
             "built_in_functions"
           ]
+        },
+        {
+          "id": "builtin-close-buffered-channel",
+          "section": "Channel types",
+          "title": "Receiving from a closed buffered channel returns queued values before zero values",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
         }
       ]
     },
@@ -915,6 +1093,14 @@
           ]
         },
         {
+          "id": "packages-import-aliases",
+          "section": "Import declarations",
+          "title": "Import declarations support explicit package aliases, dot imports, and blank imports",
+          "status": "unsupported",
+          "reason": "Alias, dot, and blank import semantics need dedicated parser/resolver acceptance fixtures.",
+          "fixtures": []
+        },
+        {
           "id": "packages-initialization-order",
           "section": "Program initialization and execution",
           "title": "Package initialization runs dependencies, variables, and init functions in order",
@@ -940,6 +1126,15 @@
           "id": "generics-types",
           "section": "Type declarations",
           "title": "Generic named types instantiate and expose methods",
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ]
+        },
+        {
+          "id": "generics-multiple-type-parameters",
+          "section": "Function declarations",
+          "title": "Generic functions accept and infer multiple type parameters",
           "status": "passing",
           "fixtures": [
             "generics"

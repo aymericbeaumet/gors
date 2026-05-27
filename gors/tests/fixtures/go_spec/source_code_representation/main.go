@@ -3,5 +3,7 @@ package main
 import "fmt"
 
 func main() {
-	fmt.Println("source ok")
+	text := "source ok 世界"
+	runeValue := '界'
+	fmt.Println(text, runeValue == 30028)
 }

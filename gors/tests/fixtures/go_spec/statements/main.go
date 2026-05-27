@@ -14,8 +14,28 @@ func main() {
 	switch total {
 	case 5:
 		total++
+		fallthrough
+	case 6:
+		total++
 	default:
 		total = 0
+	}
+	labeled := 0
+Outer:
+	for x := 0; x < 3; x++ {
+		for y := 0; y < 3; y++ {
+			if y == 1 {
+				continue Outer
+			}
+			labeled += x + y
+		}
+	}
+	var dynamic any = 2
+	switch value := dynamic.(type) {
+	case int:
+		total += value
+	default:
+		total = -1
 	}
 	values := []int{1, 2, 3}
 	for _, value := range values {
@@ -35,5 +55,5 @@ Label:
 		goto Label
 	}
 	go func() {}()
-	fmt.Println(total)
+	fmt.Println(total, labeled)
 }

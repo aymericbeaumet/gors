@@ -15,6 +15,7 @@ import {
 
 const FIXTURE_GITHUB_BASE =
 	"https://github.com/aymericbeaumet/gors/tree/master/gors/tests/fixtures";
+const MAX_STDLIB_SYMBOLS_PER_PACKAGE = 16;
 
 type CoverageStatusFilter = "all" | "green" | "yellow" | "red";
 
@@ -90,7 +91,78 @@ function specStatusLabel(status: SpecConformanceStatus): string {
 }
 
 function specStatusClass(status: SpecConformanceStatus): string {
-	return status === "passing" ? "tested" : "partial";
+	return status === "passing" ? "tested" : "none";
+}
+
+function symbolStatusClass(symbol: GostdlibCoverageSymbol): string {
+	return symbol.tested ? "tested" : "none";
+}
+
+function symbolStatusLabel(symbol: GostdlibCoverageSymbol): string {
+	return symbol.tested ? "Passing" : "Unsupported";
+}
+
+function searchTerms(value: string): string[] {
+	return value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function symbolSearchText(
+	item: GostdlibCoveragePackage,
+	symbol: GostdlibCoverageSymbol,
+): string {
+	return [
+		item.packagePath,
+		symbol.name,
+		symbol.kind,
+		symbol.tested ? "tested passing" : "unsupported not tested untested",
+		...item.fixtures,
+		...symbol.fixtures,
+	]
+		.join(" ")
+		.toLowerCase();
+}
+
+function visibleStdlibSymbols(
+	item: GostdlibCoveragePackage,
+): readonly GostdlibCoverageSymbol[] {
+	const terms = searchTerms(appliedStdlibFilter);
+	if (terms.length === 0) return [];
+	const packageSearchText = [
+		item.packagePath,
+		...item.fixtures,
+		packageCoverageClass(item),
+	]
+		.join(" ")
+		.toLowerCase();
+	const symbolTerms = terms.filter((term) => !packageSearchText.includes(term));
+	const seen = new Set<string>();
+	const symbols: GostdlibCoverageSymbol[] = [];
+
+	function push(symbol: GostdlibCoverageSymbol): void {
+		if (symbols.length >= MAX_STDLIB_SYMBOLS_PER_PACKAGE) return;
+		const key = `${symbol.kind}:${symbol.name}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		symbols.push(symbol);
+	}
+
+	if (symbolTerms.length > 0) {
+		for (const symbol of item.symbols) {
+			const text = symbolSearchText(item, symbol);
+			if (symbolTerms.every((term) => text.includes(term))) push(symbol);
+		}
+	}
+	for (const symbol of item.symbols) push(symbol);
+	return symbols;
+}
+
+function hiddenStdlibSummary(
+	item: GostdlibCoveragePackage,
+	visible: number,
+): string {
+	const hidden = item.symbolCount - visible;
+	if (visible > 0) return `${hidden} more symbols hidden`;
+	return `${item.symbolCount} symbols reported`;
 }
 
 function syncFiltersToUrl(query: string, status: CoverageStatusFilter): void {
@@ -134,7 +206,7 @@ function runMainThreadSearch(
 			...item.symbols.flatMap((symbol) => [
 				symbol.name,
 				symbol.kind,
-				symbol.tested ? "tested" : "not tested untested",
+				symbol.tested ? "tested passing" : "unsupported not tested untested",
 				...symbol.fixtures,
 			]),
 		]
@@ -316,33 +388,61 @@ onDestroy(() => {
       </div>
     </div>
 
-    <div class="report-list" role="table" aria-label="Go stdlib integration coverage">
-      <div class="report-list-head" role="row">
+    <div class="spec-list stdlib-list" role="table" aria-label="Go stdlib integration coverage">
+      <div class="spec-list-head" role="row">
         <span role="columnheader">Package</span>
-        <span role="columnheader">Functions / symbols</span>
-        <span role="columnheader">Fixtures</span>
+        <span role="columnheader">Symbols</span>
       </div>
-      <div class="report-list-body">
+      <div class="spec-list-body">
         {#each filteredGostdlibCoverage as item}
-          <div class="coverage-row" role="row">
-            <div class="package-cell" role="cell">
+          {@const visibleSymbols = visibleStdlibSymbols(item)}
+          <div class="spec-category-row stdlib-package-row" role="row">
+            <div class="spec-category-cell package-cell" role="cell">
               <code class={packageCoverageClass(item)}>{item.packagePath}</code>
               <span class={packageCoverageClass(item)}>{item.testedSymbolCount}/{item.symbolCount} tested</span>
+              {#if item.fixtures.length > 0}
+                <div class="fixture-cell">
+                  {#each item.fixtures as fixture}
+                    <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
+                      <code>{fixture}</code>
+                    </a>
+                  {/each}
+                </div>
+              {/if}
             </div>
-            <div class="symbol-cell" role="cell">
-              {#each item.symbols as symbol}
-                <span class="symbol-token" class:tested={symbol.tested} class:untested={!symbol.tested} title={symbolCoverageTitle(symbol)}>
-                  <span>{symbol.name}</span>
-                  <small>{symbol.kind}</small>
-                </span>
+            <div class="spec-tests-cell stdlib-symbols-cell" role="cell">
+              {#each visibleSymbols as symbol}
+                <div class={`spec-test stdlib-symbol ${symbolStatusClass(symbol)}`} title={symbolCoverageTitle(symbol)}>
+                  <div class="spec-test-main">
+                    <strong>{symbol.name}</strong>
+                    <span>{symbol.kind}</span>
+                    {#if symbol.fixtures.length > 0}
+                      <div class="fixture-cell">
+                        {#each symbol.fixtures as fixture}
+                          <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
+                            <code>{fixture}</code>
+                          </a>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                  <span class={`spec-status ${symbolStatusClass(symbol)}`}>
+                    {symbolStatusLabel(symbol)}
+                  </span>
+                </div>
               {/each}
-            </div>
-            <div class="fixture-cell" role="cell">
-              {#each item.fixtures as fixture}
-                <a href={fixtureGithubUrl(fixture)} target="_blank" rel="noopener">
-                  <code>{fixture}</code>
-                </a>
-              {/each}
+              {#if item.symbolCount > visibleSymbols.length}
+                <div class={`spec-test stdlib-symbol-overflow ${packageCoverageClass(item)}`}>
+                  <div class="spec-test-main">
+                    <strong>{hiddenStdlibSummary(item, visibleSymbols.length)}</strong>
+                    <span>
+                      {item.testedSymbolCount} passing; {item.symbolCount - item.testedSymbolCount} unsupported.
+                      Filter by package, symbol, kind, fixture, or status to list symbol cards.
+                    </span>
+                  </div>
+                  <span class={`spec-status ${packageCoverageClass(item)}`}>Summary</span>
+                </div>
+              {/if}
             </div>
           </div>
         {:else}
@@ -358,10 +458,10 @@ onDestroy(() => {
     display: flex;
     flex: 1;
     max-width: 100%;
-    min-height: 0;
+    min-height: 100%;
     flex-direction: column;
     gap: 16px;
-    overflow-x: clip;
+    overflow: visible;
     padding: 24px;
     background: #f5f7fb;
     color: #1f2328;
@@ -376,7 +476,7 @@ onDestroy(() => {
   }
 
   .conformance-section:last-child {
-    flex: 1;
+    flex: none;
     min-height: 0;
   }
 
@@ -784,6 +884,10 @@ onDestroy(() => {
     border-left-color: #d4a72c;
   }
 
+  .spec-test.none {
+    border-left-color: #cf222e;
+  }
+
   .spec-test-main {
     display: flex;
     min-width: 0;
@@ -831,6 +935,40 @@ onDestroy(() => {
     color: #9a6700;
   }
 
+  .spec-status.none {
+    border-color: #cf222e;
+    background: #ffebe9;
+    color: #cf222e;
+  }
+
+  .stdlib-list .spec-category-row {
+    grid-template-columns: minmax(170px, 0.42fr) minmax(0, 1.58fr);
+  }
+
+  .stdlib-symbols-cell {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    align-items: start;
+  }
+
+  .stdlib-symbol {
+    min-height: 68px;
+  }
+
+  .stdlib-symbol-overflow {
+    min-height: 68px;
+    background: #ffffff;
+  }
+
+  .stdlib-symbol .spec-test-main {
+    gap: 5px;
+  }
+
+  .stdlib-symbol .fixture-cell,
+  .stdlib-symbol-overflow .spec-test-main span {
+    margin-top: 2px;
+  }
+
   @media (max-width: 900px) {
     .coverage-page {
       padding: 16px;
@@ -859,23 +997,19 @@ onDestroy(() => {
       grid-column: 1 / -1;
     }
 
-    .report-list-head {
-      display: none;
-    }
-
-    .coverage-row {
-      grid-template-columns: 1fr;
-      gap: 10px;
-    }
-
     .spec-list-head {
       display: none;
     }
 
     .spec-category-row,
+    .stdlib-list .spec-category-row,
     .spec-test {
       grid-template-columns: 1fr;
       gap: 10px;
+    }
+
+    .stdlib-symbols-cell {
+      grid-template-columns: 1fr;
     }
   }
 </style>

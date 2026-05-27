@@ -39,10 +39,20 @@ export const specConformanceSource: SpecConformanceSource = {
 export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Source code representation",
-		"testCount": 3,
-		"passingTestCount": 0,
+		"testCount": 4,
+		"passingTestCount": 1,
 		"unsupportedTestCount": 3,
 		"tests": [
+			{
+				"id": "source-utf8-executable-text",
+				"section": "Source code representation",
+				"title": "UTF-8 source text in string and rune literals compiles and executes",
+				"status": "passing",
+				"fixtures": [
+					"source_code_representation"
+				],
+				"reason": ""
+			},
 			{
 				"id": "source-unicode-text",
 				"section": "Source code representation",
@@ -71,8 +81,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Lexical elements",
-		"testCount": 13,
-		"passingTestCount": 13,
+		"testCount": 16,
+		"passingTestCount": 16,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -146,9 +156,29 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "lexical-uppercase-base-prefixes",
+				"section": "Integer literals",
+				"title": "Integer literals accept uppercase base prefixes",
+				"status": "passing",
+				"fixtures": [
+					"lexical_elements"
+				],
+				"reason": ""
+			},
+			{
 				"id": "lexical-floating-literals",
 				"section": "Floating-point literals",
 				"title": "Decimal floating-point literals compile and execute",
+				"status": "passing",
+				"fixtures": [
+					"lexical_elements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "lexical-floating-exponents",
+				"section": "Floating-point literals",
+				"title": "Decimal and hexadecimal floating-point exponents compile and execute",
 				"status": "passing",
 				"fixtures": [
 					"lexical_elements"
@@ -186,6 +216,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "lexical-rune-escape-forms",
+				"section": "Rune literals",
+				"title": "Rune literals accept escaped Unicode and byte forms",
+				"status": "passing",
+				"fixtures": [
+					"lexical_elements"
+				],
+				"reason": ""
+			},
+			{
 				"id": "lexical-string-literals",
 				"section": "String literals",
 				"title": "Interpreted string literals and escapes preserve Go values",
@@ -209,8 +249,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Constants",
-		"testCount": 6,
-		"passingTestCount": 5,
+		"testCount": 9,
+		"passingTestCount": 8,
 		"unsupportedTestCount": 1,
 		"tests": [
 			{
@@ -227,6 +267,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "constants-iota",
 				"section": "Iota",
 				"title": "iota increments across const specifications",
+				"status": "passing",
+				"fixtures": [
+					"constants"
+				],
+				"reason": ""
+			},
+			{
+				"id": "constants-repeated-expressions",
+				"section": "Constant declarations",
+				"title": "Const declarations repeat omitted expressions from the previous specification",
 				"status": "passing",
 				"fixtures": [
 					"constants"
@@ -254,6 +304,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "constants-shift-expressions",
+				"section": "Constant expressions",
+				"title": "Shift expressions produce integer constants",
+				"status": "passing",
+				"fixtures": [
+					"constants"
+				],
+				"reason": ""
+			},
+			{
 				"id": "constants-representability",
 				"section": "Representability",
 				"title": "Untyped constants are checked for representability by target type",
@@ -270,13 +330,23 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 					"constants"
 				],
 				"reason": ""
+			},
+			{
+				"id": "constants-typed-constants",
+				"section": "Constants",
+				"title": "Typed constants retain their explicit constant type at use sites",
+				"status": "passing",
+				"fixtures": [
+					"constants"
+				],
+				"reason": ""
 			}
 		]
 	},
 	{
 		"name": "Variables and zero values",
-		"testCount": 5,
-		"passingTestCount": 5,
+		"testCount": 7,
+		"passingTestCount": 7,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -293,6 +363,26 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "vars-short-declarations",
 				"section": "Short variable declarations",
 				"title": "Short variable declarations infer types and values",
+				"status": "passing",
+				"fixtures": [
+					"variables_and_zero_values"
+				],
+				"reason": ""
+			},
+			{
+				"id": "vars-short-redeclaration",
+				"section": "Short variable declarations",
+				"title": "Short variable declarations may redeclare variables with at least one new name",
+				"status": "passing",
+				"fixtures": [
+					"variables_and_zero_values"
+				],
+				"reason": ""
+			},
+			{
+				"id": "vars-multiple-assignment",
+				"section": "Assignments",
+				"title": "Multiple assignment evaluates right-hand values before assigning left-hand variables",
 				"status": "passing",
 				"fixtures": [
 					"variables_and_zero_values"
@@ -333,9 +423,9 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 17,
-		"passingTestCount": 14,
-		"unsupportedTestCount": 3,
+		"testCount": 20,
+		"passingTestCount": 15,
+		"unsupportedTestCount": 5,
 		"tests": [
 			{
 				"id": "types-booleans",
@@ -428,6 +518,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "types-embedded-fields",
+				"section": "Struct types",
+				"title": "Embedded fields promote selectors on the containing struct",
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
+			},
+			{
 				"id": "types-pointers",
 				"section": "Pointer types",
 				"title": "Pointers support nil checks, dereference, and assignment",
@@ -436,6 +536,14 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 					"types"
 				],
 				"reason": ""
+			},
+			{
+				"id": "types-nil-composite-values",
+				"section": "Pointer, slice, map, channel, function, and interface types",
+				"title": "nil is assignable to pointer, slice, map, channel, function, and interface values",
+				"status": "unsupported",
+				"fixtures": [],
+				"reason": "Nil comparisons for generated shared struct pointers currently lower to default value comparisons."
 			},
 			{
 				"id": "types-functions",
@@ -484,6 +592,14 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 					"types"
 				],
 				"reason": ""
+			},
+			{
+				"id": "types-directional-channels",
+				"section": "Channel types",
+				"title": "Channel types may restrict values to send-only or receive-only operations",
+				"status": "unsupported",
+				"fixtures": [],
+				"reason": "Directional channel type checking and lowering are not represented in the generated-program harness yet."
 			},
 			{
 				"id": "types-aliases",
@@ -651,8 +767,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Expressions",
-		"testCount": 10,
-		"passingTestCount": 9,
+		"testCount": 13,
+		"passingTestCount": 12,
 		"unsupportedTestCount": 1,
 		"tests": [
 			{
@@ -696,9 +812,29 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "expr-composite-literals",
+				"section": "Composite literals",
+				"title": "Composite literals construct structs, slices, arrays, and maps",
+				"status": "passing",
+				"fixtures": [
+					"expressions"
+				],
+				"reason": ""
+			},
+			{
 				"id": "expr-type-assertions",
 				"section": "Type assertions",
 				"title": "Type assertions support single-value and comma-ok forms",
+				"status": "passing",
+				"fixtures": [
+					"expressions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-function-literals",
+				"section": "Function literals",
+				"title": "Function literals can be called through function values",
 				"status": "passing",
 				"fixtures": [
 					"expressions"
@@ -736,6 +872,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "expr-bit-clear-and-shifts",
+				"section": "Operators",
+				"title": "Shift and bit clear operators execute with Go precedence",
+				"status": "passing",
+				"fixtures": [
+					"expressions"
+				],
+				"reason": ""
+			},
+			{
 				"id": "expr-precedence",
 				"section": "Operator precedence",
 				"title": "Operator precedence and associativity preserve Go grouping",
@@ -757,8 +903,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 16,
-		"passingTestCount": 15,
+		"testCount": 19,
+		"passingTestCount": 18,
 		"unsupportedTestCount": 1,
 		"tests": [
 			{
@@ -822,9 +968,29 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "stmt-fallthrough",
+				"section": "Fallthrough statements",
+				"title": "fallthrough transfers control to the next expression switch case",
+				"status": "passing",
+				"fixtures": [
+					"statements"
+				],
+				"reason": ""
+			},
+			{
 				"id": "stmt-type-switch",
 				"section": "Type switch statements",
 				"title": "Type switches bind matched dynamic values once",
+				"status": "passing",
+				"fixtures": [
+					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-type-switch-binding",
+				"section": "Type switch statements",
+				"title": "Type switch guards expose the matched dynamic value in case clauses",
 				"status": "passing",
 				"fixtures": [
 					"statements"
@@ -902,6 +1068,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "stmt-labeled-continue",
+				"section": "Continue statements",
+				"title": "continue may target an enclosing labeled for statement",
+				"status": "passing",
+				"fixtures": [
+					"statements"
+				],
+				"reason": ""
+			},
+			{
 				"id": "stmt-goto",
 				"section": "Goto statements",
 				"title": "goto statements target labels without entering invalid scopes",
@@ -923,8 +1099,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Built-in functions",
-		"testCount": 9,
-		"passingTestCount": 7,
+		"testCount": 11,
+		"passingTestCount": 9,
 		"unsupportedTestCount": 2,
 		"tests": [
 			{
@@ -941,6 +1117,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "builtin-len-cap",
 				"section": "Length and capacity",
 				"title": "len and cap report values for strings, arrays, slices, maps, and channels",
+				"status": "passing",
+				"fixtures": [
+					"built_in_functions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "builtin-len-map-channel-string",
+				"section": "Length and capacity",
+				"title": "len reports values for maps, channels, arrays, and strings",
 				"status": "passing",
 				"fixtures": [
 					"built_in_functions"
@@ -1012,14 +1198,24 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 					"built_in_functions"
 				],
 				"reason": ""
+			},
+			{
+				"id": "builtin-close-buffered-channel",
+				"section": "Channel types",
+				"title": "Receiving from a closed buffered channel returns queued values before zero values",
+				"status": "passing",
+				"fixtures": [
+					"built_in_functions"
+				],
+				"reason": ""
 			}
 		]
 	},
 	{
 		"name": "Packages and program initialization",
-		"testCount": 5,
+		"testCount": 6,
 		"passingTestCount": 4,
-		"unsupportedTestCount": 1,
+		"unsupportedTestCount": 2,
 		"tests": [
 			{
 				"id": "packages-single-main",
@@ -1062,6 +1258,14 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "packages-import-aliases",
+				"section": "Import declarations",
+				"title": "Import declarations support explicit package aliases, dot imports, and blank imports",
+				"status": "unsupported",
+				"fixtures": [],
+				"reason": "Alias, dot, and blank import semantics need dedicated parser/resolver acceptance fixtures."
+			},
+			{
 				"id": "packages-initialization-order",
 				"section": "Program initialization and execution",
 				"title": "Package initialization runs dependencies, variables, and init functions in order",
@@ -1073,8 +1277,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Generics",
-		"testCount": 5,
-		"passingTestCount": 4,
+		"testCount": 6,
+		"passingTestCount": 5,
 		"unsupportedTestCount": 1,
 		"tests": [
 			{
@@ -1091,6 +1295,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "generics-types",
 				"section": "Type declarations",
 				"title": "Generic named types instantiate and expose methods",
+				"status": "passing",
+				"fixtures": [
+					"generics"
+				],
+				"reason": ""
+			},
+			{
+				"id": "generics-multiple-type-parameters",
+				"section": "Function declarations",
+				"title": "Generic functions accept and infer multiple type parameters",
 				"status": "passing",
 				"fixtures": [
 					"generics"
@@ -1132,7 +1346,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 3,
-	"testCount": 102,
-	"passingTestCount": 88,
-	"unsupportedTestCount": 14
+	"testCount": 124,
+	"passingTestCount": 107,
+	"unsupportedTestCount": 17
 } as const;

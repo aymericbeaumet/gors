@@ -1107,12 +1107,11 @@ onDestroy(() => {
     display: flex;
     flex: 1;
     max-width: 100%;
-    height: calc(100vh - 51px);
-    max-height: calc(100vh - 51px);
     min-height: calc(100vh - 51px);
     min-width: 0;
     flex-direction: column;
     overflow-x: clip;
+    overflow-y: visible;
   }
 
   .hero {

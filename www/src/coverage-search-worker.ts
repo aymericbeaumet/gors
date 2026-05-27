@@ -40,7 +40,7 @@ function packageSearchText(
 			? "green tested all tested"
 			: color === "yellow"
 				? "yellow partial partially tested"
-				: "red none not tested untested";
+				: "red none unsupported not tested untested";
 	return [
 		item.packagePath,
 		packageStatus,
@@ -48,7 +48,7 @@ function packageSearchText(
 		...item.symbols.flatMap((symbol) => [
 			symbol.name,
 			symbol.kind,
-			symbol.tested ? "tested" : "not tested untested",
+			symbol.tested ? "tested passing" : "unsupported not tested untested",
 			...symbol.fixtures,
 		]),
 	]
