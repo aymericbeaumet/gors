@@ -837,6 +837,9 @@ nonzero imaginary constants must still be rejected for real targets.
 Float constant assignment/conversion must reject overflow for the target float
 type (`float64(1e1000)` is invalid) while preserving underflow-to-zero cases
 such as `float64(-1e-1000)`.
+Untyped constants assigned to `any`/interface targets must still be
+representable by their default type before boxing (`var x any = 1e1000` is
+invalid).
 Type conversions only remain compile-time constants when the conversion result
 is a scalar constant type; conversions such as `[]byte("go")` are runtime values
 and must not take the untyped-constant assignability path.

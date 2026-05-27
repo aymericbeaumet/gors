@@ -9627,9 +9627,10 @@ fn comparison_constant_is_assignable_to(
         return false;
     }
     match expected {
-        GoType::Any | GoType::Interface(_) | GoType::Error | GoType::Unknown | GoType::Named(_) => {
-            true
+        GoType::Any | GoType::Interface(_) | GoType::Error => {
+            untyped_constant_default_type_is_representable(expr, actual)
         }
+        GoType::Unknown | GoType::Named(_) => true,
         GoType::Bool => matches!(actual, GoType::Bool),
         GoType::String => matches!(actual, GoType::String),
         expected if expected.is_integer() => {
@@ -9644,10 +9645,29 @@ fn comparison_constant_is_assignable_to(
     }
 }
 
+fn untyped_constant_default_type_is_representable(expr: &ast::Expr<'_>, actual: &GoType) -> bool {
+    match actual {
+        GoType::Float64 => float_constant_is_assignable_to(expr, actual, &GoType::Float64),
+        GoType::Int => integer_constant_value_i128(expr)
+            .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int)),
+        GoType::Int32 => integer_constant_value_i128(expr)
+            .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int32)),
+        GoType::Bool | GoType::String | GoType::Complex128 => true,
+        GoType::Unknown | GoType::Named(_) => true,
+        _ => true,
+    }
+}
+
 fn target_needs_constant_representability_check(expected: &GoType) -> bool {
     matches!(
         expected,
-        GoType::Bool | GoType::String | GoType::Complex64 | GoType::Complex128
+        GoType::Any
+            | GoType::Interface(_)
+            | GoType::Error
+            | GoType::Bool
+            | GoType::String
+            | GoType::Complex64
+            | GoType::Complex128
     ) || go_type_is_numeric(expected)
 }
 
@@ -9690,8 +9710,8 @@ fn numeric_literal_is_finite_for_float_type(value: &str, expected: &GoType) -> O
         return None;
     }
     match expected {
-        GoType::Float32 => value.parse::<f32>().ok().map(f32::is_finite),
-        GoType::Float64 => value.parse::<f64>().ok().map(f64::is_finite),
+        GoType::Float32 => Some(value.parse::<f32>().map(f32::is_finite).unwrap_or(false)),
+        GoType::Float64 => Some(value.parse::<f64>().map(f64::is_finite).unwrap_or(false)),
         _ => None,
     }
 }
@@ -16562,6 +16582,19 @@ mod tests {
                 r#"
                     package main
 
+                    var A any = 1e1000
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "interface".to_string(),
+                actual: "float64".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var I int = 1i
                 "#,
             ),
@@ -16628,6 +16661,7 @@ mod tests {
                     var ZeroImagInt int = 0i
                     var ZeroImagFloat float64 = 0i
                     var UnderflowFloat float64 = -1e-1000
+                    var UnderflowAny any = -1e-1000
                     var Small int8 = -128
                     var C complex128 = 1
                     var P *int = nil
@@ -18724,6 +18758,19 @@ mod tests {
                 r#"
                     package main
 
+                    func takes(a any) {}
+
+                    func main() {
+                        takes(1e1000)
+                    }
+                "#,
+                "takes",
+                "argument 1 must be assignable to interface, got float64",
+            ),
+            (
+                r#"
+                    package main
+
                     func pair() (int, string) { return 1, "go" }
                     func takesInts(a int, b int) {}
 
@@ -18878,6 +18925,7 @@ mod tests {
                     g(nil)
                     _ = func(a int) int { return a }(1)
                     _ = func(a any) any { return a }(nil)
+                    _ = func(a any) any { return a }(-1e-1000)
                 }
             "#,
         )
