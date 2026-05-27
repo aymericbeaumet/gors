@@ -1502,6 +1502,7 @@ pub fn invalid_statement_in_func_with_type(
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
     let mut scopes = ShortVarScopes::new();
+    record_func_type_bindings(func_type, &mut env);
     seed_field_names_in_short_var_scope(&func_type.params, &mut scopes);
     if let Some(results) = &func_type.results {
         seed_field_names_in_short_var_scope(results, &mut scopes);
@@ -6195,7 +6196,7 @@ fn invalid_assignment_type_mismatch(
     if actual_types.len() != assign.lhs.len() {
         return None;
     }
-    if assign.tok == token::Token::DEFINE && assign.rhs.len() == assign.lhs.len() {
+    if assign.rhs.len() == assign.lhs.len() {
         return assign
             .lhs
             .iter()
@@ -6429,7 +6430,7 @@ fn invalid_send_value_type(
         });
     }
     let actual = env.resolve_alias(&GoType::infer_expr(value, env));
-    if types_are_assignable_for_validation(&expected, &actual) {
+    if expr_is_assignable_for_validation(&expected, value, env) {
         return None;
     }
     Some(InvalidSendReason::ValueTypeMismatch {
@@ -8098,9 +8099,7 @@ fn invalid_expression_switch_case(
             type_name: go_type_display_name(&case_type),
         });
     }
-    if types_are_assignable_for_validation(tag_type, &case_type)
-        || types_are_assignable_for_validation(&case_type, tag_type)
-    {
+    if expr_is_assignable_for_validation(tag_type, expr, env) {
         return None;
     }
     Some(InvalidSwitchReason::CaseTypeMismatch {
@@ -10743,8 +10742,18 @@ fn invalid_call_arg_expr(
             ),
         ));
     }
-    let actual = GoType::infer_expr(arg, env);
-    invalid_call_arg_type(target, position, &expected, &actual, env)
+    let actual = env.resolve_alias(&GoType::infer_expr(arg, env));
+    if expr_is_assignable_for_validation(&expected, arg, env) {
+        return None;
+    }
+    Some(invalid_call_reason(
+        target,
+        format!(
+            "argument {position} must be assignable to {}, got {}",
+            go_type_display_name(&expected),
+            go_type_display_name(&actual)
+        ),
+    ))
 }
 
 fn invalid_call_arg_types<'a>(
@@ -10833,7 +10842,7 @@ fn invalid_builtin_append_call(
             ));
         }
         let actual = env.resolve_alias(&GoType::infer_expr(value, env));
-        if !types_are_assignable_for_validation(&expected, &actual) {
+        if !expr_is_assignable_for_validation(&expected, value, env) {
             return Some(invalid_builtin_call_reason(
                 BuiltinCallKind::Append,
                 format!(
@@ -11603,7 +11612,7 @@ fn invalid_builtin_delete_call(
                 ));
             }
             let actual = env.resolve_alias(&GoType::infer_expr(key_arg, env));
-            if types_are_assignable_for_validation(&expected, &actual) {
+            if expr_is_assignable_for_validation(&expected, key_arg, env) {
                 return None;
             }
             Some(invalid_builtin_call_reason(
@@ -17702,6 +17711,19 @@ mod tests {
                     package main
 
                     func main() {
+                        m := map[int]int{1: 1}
+                        var f float64
+                        delete(m, f)
+                    }
+                "#,
+                "delete",
+                "key must be assignable to int, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         delete(map[int]int{}, nil)
                     }
                 "#,
@@ -17835,6 +17857,18 @@ mod tests {
                 "#,
                 "append",
                 "argument must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var f float64
+                        _ = append([]int{}, f)
+                    }
+                "#,
+                "append",
+                "argument must be assignable to int, got float64",
             ),
             (
                 r#"
@@ -18117,6 +18151,33 @@ mod tests {
                 "#,
                 "takes",
                 "argument 1 must be assignable to int, got nil",
+            ),
+            (
+                r#"
+                    package main
+
+                    func takes(a int) {}
+
+                    func main() {
+                        var f float64
+                        takes(f)
+                    }
+                "#,
+                "takes",
+                "argument 1 must be assignable to int, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func takes(a int) {}
+
+                    func main() {
+                        takes(1.5)
+                    }
+                "#,
+                "takes",
+                "argument 1 must be assignable to int, got float64",
             ),
             (
                 r#"
@@ -19556,11 +19617,13 @@ mod tests {
                     _ = cap([]int{1})
                     _ = copy([]byte{}, "go")
                     _ = append([]int{}, 1, 2)
+                    _ = append([]int{}, 1.0)
                     _ = append([]*int{}, nil)
                     _ = append([]any{}, nil)
                     _ = append([]int{}, []int{}...)
                     _ = append([]byte{}, "go"...)
                     delete(map[*int]int{}, nil)
+                    delete(map[int]int{}, 1.0)
                     _ = make([]int, N)
                     _ = make([]int, 1, 2)
                     _ = make(map[string]int)
@@ -19589,8 +19652,10 @@ mod tests {
                     }
                     len := func(int) int { return 1 }
                     _ = len(1)
+                    takesInt(1.0)
                 }
 
+                func takesInt(x int) {}
                 type Ints []int
                 const N = 1e3
                 const binBits = 5
@@ -19980,6 +20045,19 @@ mod tests {
 
                     func main() {
                         ch := make(chan int, 1)
+                        var f float64
+                        ch <- f
+                    }
+                "#,
+                "int",
+                "float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int, 1)
                         ch <- nil
                     }
                 "#,
@@ -20023,6 +20101,7 @@ mod tests {
                 func main() {
                     ints := make(chan int, 1)
                     ints <- 1
+                    ints <- 1.0
                     floats := make(chan float64, 1)
                     floats <- 1
                     strings := make(chan string, 1)
@@ -20518,6 +20597,38 @@ mod tests {
                     package main
 
                     func main() {
+                        var i int
+                        var f float64
+                        switch i {
+                        case f:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseTypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "float64".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        switch 1 {
+                        case 1.5:
+                        }
+                    }
+                "#,
+                super::InvalidSwitchReason::CaseTypeMismatch {
+                    expected: "int".to_string(),
+                    actual: "float64".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         switch {
                         case 1:
                         }
@@ -20618,6 +20729,9 @@ mod tests {
                 func main() {
                     switch 1 {
                     case 1, 2:
+                    }
+                    switch 1 {
+                    case 1.0:
                     }
                     switch "go" {
                     case "go":
@@ -21431,6 +21545,31 @@ mod tests {
                 r#"
                     package main
 
+                    func main() {
+                        var i int
+                        var f float64
+                        i = f
+                    }
+                "#,
+                "int",
+                "float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        i = 1.5
+                    }
+                "#,
+                "int",
+                "float64",
+            ),
+            (
+                r#"
+                    package main
+
                     func pair() (int, string) {
                         return 1, "go"
                     }
@@ -21786,6 +21925,41 @@ mod tests {
                     actual: "string".to_string(),
                 },
             })
+        );
+    }
+
+    #[test]
+    fn accepts_assignment_using_current_function_signature_bindings() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func f(hi uint64) {
+                    hi = uint64(1)
+                }
+
+                func previous() (hi uint32) {
+                    return 0
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "f" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func_with_type(
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env
+            ),
+            None
         );
     }
 

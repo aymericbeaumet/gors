@@ -807,15 +807,18 @@ expression-aware compatibility rule after checking that all arguments are
 ordered and all numeric or all string. Complex types are numeric for arithmetic
 and equality, but not ordered: `<`, `<=`, `>`, `>=`, `min`, and `max` must
 reject `complex64`/`complex128`.
-Initializer/return validation and compound assignments must be expression-aware:
-typed numeric values are not assignable across numeric types without an explicit
-conversion, while representable untyped constants are allowed. Direct `=`
-assignment still needs a scoped TypeEnv before it can be made equally strict:
-the current pre-scan registers parameter/result names globally, so stdlib
-functions that reuse names such as `hi`/`lo` can otherwise see the wrong type.
-Keep unresolved/named types conservative until imported named return types are
-package-qualified end-to-end; otherwise reachable stdlib methods such as
-`reflect.Value.Field` can appear as `Value` in importing packages.
+Initializer/return validation, equal-count assignment validation, sends, direct
+call arguments, `append`, `delete`, and expression switch cases must be
+expression-aware: typed numeric values are not assignable across numeric types
+without an explicit conversion, while representable untyped constants are
+allowed. Statement validation seeds its cloned `TypeEnv` with the current
+function signature before checking assignment semantics, because the
+compiler-wide pre-scan registers parameter/result names globally and stdlib
+functions reuse names such as `hi`/`lo`. Multi-return forwarding still uses the
+conservative type-only fallback. Keep unresolved/named types conservative until
+imported named return types are package-qualified end-to-end; otherwise
+reachable stdlib methods such as `reflect.Value.Field` can appear as `Value` in
+importing packages.
 Shift validation uses separate left-operand and count rules. The right operand
 may be an integer-valued untyped constant such as `1.0`, but the left operand
 only accepts an integer-valued float constant when the shift count is also
