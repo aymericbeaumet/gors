@@ -11224,7 +11224,10 @@ fn compile_function_value_call_args(
     let Some(variadic_start) = variadic_start else {
         let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
         for (idx, arg) in raw_args.into_iter().enumerate() {
-            args.push(compile_expr_with_expected(arg, params.get(idx)));
+            args.push(compile_function_value_arg_with_expected(
+                arg,
+                params.get(idx),
+            ));
         }
         return args;
     };
@@ -11247,7 +11250,7 @@ fn compile_function_value_call_args(
                         TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                     !go_type_is_copy(&actual)
                 };
-            let arg = compile_expr_with_expected(arg, params.get(idx));
+            let arg = compile_function_value_arg_with_expected(arg, params.get(idx));
             if should_clone {
                 args.push(syn::parse_quote! { (#arg).clone() });
             } else {
@@ -11260,13 +11263,19 @@ fn compile_function_value_call_args(
     let mut compiled_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
     for (idx, arg) in raw_args.into_iter().enumerate() {
         if idx < variadic_start {
-            compiled_args.push(compile_expr_with_expected(arg, params.get(idx)));
+            compiled_args.push(compile_function_value_arg_with_expected(
+                arg,
+                params.get(idx),
+            ));
         } else if variadic_is_any {
             let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
             compiled_args
                 .push(syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> });
         } else {
-            compiled_args.push(compile_expr_with_expected(arg, variadic_elem.as_ref()));
+            compiled_args.push(compile_function_value_arg_with_expected(
+                arg,
+                variadic_elem.as_ref(),
+            ));
         }
     }
 
@@ -11286,6 +11295,26 @@ fn compile_function_value_call_args(
     }
     args.push(vec_expr);
     args
+}
+
+fn compile_function_value_arg_with_expected(
+    arg: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> syn::Expr {
+    let should_clone = expected.map(resolved_go_type).is_some_and(|expected| {
+        matches!(
+            expected,
+            typeinfer::GoType::Pointer(_)
+                | typeinfer::GoType::Chan { .. }
+                | typeinfer::GoType::Func { .. }
+        )
+    }) && is_ir_addressable_expr(&arg);
+    let expr = compile_expr_with_expected(arg, expected);
+    if should_clone {
+        syn::parse_quote! { (#expr).clone() }
+    } else {
+        expr
+    }
 }
 
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {

@@ -72,6 +72,24 @@ func main() {
 		zero := len("")
 		_ = 1 / zero
 	}
+	sumValue := value.Sum
+	if sumValue(1, 2) != 12 {
+		zero := len("")
+		_ = 1 / zero
+	}
+	if sumValue(values...) != 14 {
+		zero := len("")
+		_ = 1 / zero
+	}
+	sumExpr := Counter.Sum
+	if sumExpr(value, 1, 2) != 12 {
+		zero := len("")
+		_ = 1 / zero
+	}
+	if sumExpr(value, values...) != 14 {
+		zero := len("")
+		_ = 1 / zero
+	}
 
 	target := Counter{Count: 7}
 	ptr := &target
@@ -82,7 +100,11 @@ func main() {
 	(*Counter).AddAll(ptr, values...)
 	bumpExpr := (*Counter).Bump
 	bumpExpr(ptr, 3)
-	if Counter.Get(target) != 28 {
+	addAllValue := ptr.AddAll
+	addAllValue(1, 2)
+	addAllExpr := (*Counter).AddAll
+	addAllExpr(ptr, values...)
+	if Counter.Get(target) != 36 {
 		zero := len("")
 		_ = 1 / zero
 	}
