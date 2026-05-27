@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { gostdlibCoverageSummary } from "../../src/gostdlib-coverage";
+import { specConformanceSummary } from "../../src/spec-conformance";
 
 function coverageMetric(tested: number, total: number): string {
 	if (total === 0) return "0/0 (0%)";
@@ -89,6 +90,18 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 		page.getByRole("heading", { name: "Go standard library conformance" }),
 	).toBeVisible();
 	await expect(page.getByText("Go specification conformance")).toBeVisible();
+	await expect(
+		page.getByText(
+			coverageMetric(
+				specConformanceSummary.passingTestCount,
+				specConformanceSummary.testCount,
+			),
+		),
+	).toBeVisible();
+	await expect(
+		page.getByText("Slice expressions share the original backing array"),
+	).toBeVisible();
+	await expect(page.getByText("Skipped").first()).toBeVisible();
 	await expect(
 		page.getByText(
 			coverageMetric(
@@ -197,6 +210,9 @@ test("home page links to playground without rendering the console", async ({
 	await expect(page.getByRole("heading", { name: "gors" })).toBeVisible();
 	await expect(
 		page.getByRole("link", { name: "Playground", exact: true }),
+	).toBeVisible();
+	await expect(
+		page.getByRole("link", { name: "Conformance", exact: true }),
 	).toBeVisible();
 	await expect(page.locator(".console-section")).toHaveCount(0);
 	await expect(page.locator(".editor-route")).toHaveCount(0);

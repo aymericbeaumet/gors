@@ -60,6 +60,25 @@ struct ProgramRunResult {
     error: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct ConformanceManifest {
+    categories: Vec<ConformanceCategory>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConformanceCategory {
+    name: String,
+    tests: Vec<ConformanceCase>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConformanceCase {
+    id: String,
+    status: String,
+    fixtures: Option<Vec<String>>,
+    reason: Option<String>,
+}
+
 #[derive(Default)]
 struct RunMetrics {
     go: AtomicU64,
@@ -504,6 +523,67 @@ fn default_run_workers_oversubscribe_cpus() {
     assert_eq!(default_run_test_thread_count_for_cpus(0), 2);
     assert_eq!(default_run_test_thread_count_for_cpus(1), 2);
     assert_eq!(default_run_test_thread_count_for_cpus(8), 16);
+}
+
+#[test]
+fn conformance_manifest_has_valid_statuses_and_fixtures() {
+    let manifest_path = fixtures_dir().join("conformance/spec.json");
+    let manifest: ConformanceManifest = serde_json::from_str(
+        &fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", manifest_path.display(), e)),
+    )
+    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e));
+    let go_programs = fixtures_dir().join("go_programs");
+    let mut ids = std::collections::HashSet::new();
+    let mut total = 0usize;
+
+    for category in manifest.categories {
+        assert!(
+            !category.name.trim().is_empty(),
+            "empty conformance category"
+        );
+        assert!(
+            !category.tests.is_empty(),
+            "conformance category {} has no tests",
+            category.name
+        );
+        for case in category.tests {
+            total += 1;
+            assert!(
+                ids.insert(case.id.clone()),
+                "duplicate conformance test id {}",
+                case.id
+            );
+            match case.status.as_str() {
+                "passing" => {
+                    let fixtures = case.fixtures.unwrap_or_default();
+                    assert!(
+                        !fixtures.is_empty(),
+                        "passing conformance test {} has no fixtures",
+                        case.id
+                    );
+                    for fixture in fixtures {
+                        assert!(
+                            go_programs.join(&fixture).join("main.go").exists(),
+                            "passing conformance test {} references missing fixture {}",
+                            case.id,
+                            fixture
+                        );
+                    }
+                }
+                "skipped" => {
+                    assert!(
+                        case.reason.is_some_and(|reason| !reason.trim().is_empty()),
+                        "skipped conformance test {} has no reason",
+                        case.id
+                    );
+                }
+                other => panic!("conformance test {} has invalid status {}", case.id, other),
+            }
+        }
+    }
+
+    assert!(total > 0, "conformance manifest is empty");
 }
 
 #[test]

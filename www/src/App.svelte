@@ -767,6 +767,7 @@ onDestroy(() => {
     <a class="brand" href="/" on:click={(event) => navigateTo("home", event)}>gors</a>
     <nav class="site-nav" aria-label="Primary navigation">
       <a href="/" class:active={route === "home"} on:click={(event) => navigateTo("home", event)}>Home</a>
+      <a href="/conformance" class:active={route === "conformance"} on:click={(event) => navigateTo("conformance", event)}>Conformance</a>
       <a href="/playground" class:active={route === "playground"} on:click={(event) => navigateTo("playground", event)}>Playground</a>
     </nav>
     <div class="spacer"></div>

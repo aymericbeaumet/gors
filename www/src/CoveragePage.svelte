@@ -6,9 +6,17 @@ import {
 	type GostdlibCoveragePackage,
 	type GostdlibCoverageSymbol,
 } from "./gostdlib-coverage";
+import {
+	specConformanceCategories,
+	specConformanceSource,
+	specConformanceSummary,
+	type SpecConformanceStatus,
+} from "./spec-conformance";
 
 const FIXTURE_GITHUB_BASE =
 	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs";
+const CONFORMANCE_FIXTURE_GITHUB_BASE =
+	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures";
 
 type CoverageStatusFilter = "all" | "green" | "yellow" | "red";
 
@@ -73,6 +81,21 @@ function packageCoverageColor(
 
 function fixtureGithubUrl(fixture: string): string {
 	return `${FIXTURE_GITHUB_BASE}/${fixture}`;
+}
+
+function conformanceFixtureGithubUrl(fixture: string): string {
+	if (fixture.startsWith("conformance/")) {
+		return `${CONFORMANCE_FIXTURE_GITHUB_BASE}/${fixture}`;
+	}
+	return fixtureGithubUrl(fixture);
+}
+
+function specStatusLabel(status: SpecConformanceStatus): string {
+	return status === "passing" ? "Passing" : "Skipped";
+}
+
+function specStatusClass(status: SpecConformanceStatus): string {
+	return status === "passing" ? "tested" : "partial";
 }
 
 function syncFiltersToUrl(query: string, status: CoverageStatusFilter): void {
@@ -190,8 +213,73 @@ onDestroy(() => {
 
 <section class="coverage-page">
   <div class="conformance-section spec-conformance">
-    <h1>Go specification conformance</h1>
-    <p>TODO</p>
+    <div class="coverage-intro">
+      <div>
+        <h1>Go specification conformance</h1>
+        <p>
+          Generated from <a href={specConformanceSource.url} target="_blank" rel="noopener">{specConformanceSource.title}</a>
+          {specConformanceSource.languageVersion}. Passing entries are backed by generated-program integration fixtures;
+          skipped entries are explicit work items that do not regress the current gate.
+        </p>
+      </div>
+    </div>
+
+    <div class="report-summary spec-summary">
+      <div class="report-metric">
+        <strong>{coverageMetric(specConformanceSummary.passingTestCount, specConformanceSummary.testCount)}</strong>
+        <span>spec tests passing</span>
+      </div>
+      <div class="report-metric">
+        <strong>{specConformanceSummary.skippedTestCount}</strong>
+        <span>tests skipped</span>
+      </div>
+      <div class="report-metric">
+        <strong>{coverageMetric(specConformanceSummary.passingCategoryCount, specConformanceSummary.categoryCount)}</strong>
+        <span>categories complete</span>
+      </div>
+    </div>
+
+    <div class="spec-list" role="table" aria-label="Go specification conformance report">
+      <div class="spec-list-head" role="row">
+        <span role="columnheader">Category</span>
+        <span role="columnheader">Tests</span>
+      </div>
+      <div class="spec-list-body">
+        {#each specConformanceCategories as category}
+          <div class="spec-category-row" role="row">
+            <div class="spec-category-cell" role="cell">
+              <strong>{category.name}</strong>
+              <span>{category.passingTestCount}/{category.testCount} passing</span>
+            </div>
+            <div class="spec-tests-cell" role="cell">
+              {#each category.tests as test}
+                <div class={`spec-test ${specStatusClass(test.status)}`}>
+                  <div class="spec-test-main">
+                    <strong>{test.title}</strong>
+                    <span>{test.section}</span>
+                    {#if test.reason}
+                      <small>{test.reason}</small>
+                    {/if}
+                    {#if test.fixtures.length > 0}
+                      <div class="fixture-cell">
+                        {#each test.fixtures as fixture}
+                          <a href={conformanceFixtureGithubUrl(fixture)} target="_blank" rel="noopener">
+                            <code>{fixture}</code>
+                          </a>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                  <span class={`spec-status ${specStatusClass(test.status)}`}>
+                    {specStatusLabel(test.status)}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
   </div>
 
   <div class="conformance-section">
@@ -308,6 +396,15 @@ onDestroy(() => {
     font-size: 13px;
   }
 
+  .spec-conformance a {
+    color: #0969da;
+    text-decoration: none;
+  }
+
+  .spec-conformance a:hover {
+    text-decoration: underline;
+  }
+
   .coverage-intro {
     display: flex;
     align-items: flex-end;
@@ -370,6 +467,10 @@ onDestroy(() => {
     margin-top: 4px;
     color: #57606a;
     font-size: 12px;
+  }
+
+  .spec-summary {
+    grid-template-columns: repeat(3, minmax(170px, 220px));
   }
 
   .report-filter {
@@ -601,6 +702,140 @@ onDestroy(() => {
     font-size: 13px;
   }
 
+  .spec-list {
+    display: flex;
+    max-width: 100%;
+    min-width: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .spec-list-head,
+  .spec-category-row {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.45fr) minmax(0, 1.55fr);
+    align-items: start;
+    column-gap: 16px;
+    min-width: 0;
+  }
+
+  .spec-list-head {
+    padding: 10px 14px;
+    border-bottom: 1px solid #d0d7de;
+    background: #f6f8fa;
+    color: #57606a;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .spec-list-body {
+    min-width: 0;
+  }
+
+  .spec-category-row {
+    padding: 14px;
+    border-bottom: 1px solid #d8dee4;
+  }
+
+  .spec-category-row:last-child {
+    border-bottom: 0;
+  }
+
+  .spec-category-cell {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .spec-category-cell strong {
+    color: #1f2328;
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .spec-category-cell span {
+    color: #57606a;
+    font-size: 12px;
+  }
+
+  .spec-tests-cell {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .spec-test {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid #d0d7de;
+    border-left-width: 4px;
+    border-radius: 6px;
+    background: #ffffff;
+  }
+
+  .spec-test.tested {
+    border-left-color: #2da44e;
+  }
+
+  .spec-test.partial {
+    border-left-color: #d4a72c;
+  }
+
+  .spec-test-main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .spec-test-main strong {
+    color: #1f2328;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+
+  .spec-test-main span,
+  .spec-test-main small {
+    color: #57606a;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .spec-test-main small {
+    overflow-wrap: anywhere;
+  }
+
+  .spec-status {
+    align-self: start;
+    padding: 3px 7px;
+    border: 1px solid #d0d7de;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .spec-status.tested {
+    border-color: #2da44e;
+    background: #dafbe1;
+    color: #1a7f37;
+  }
+
+  .spec-status.partial {
+    border-color: #d4a72c;
+    background: #fff8c5;
+    color: #9a6700;
+  }
+
   @media (max-width: 900px) {
     .coverage-page {
       padding: 16px;
@@ -613,6 +848,10 @@ onDestroy(() => {
 
     .report-summary {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .spec-summary {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .report-summary,
@@ -630,6 +869,16 @@ onDestroy(() => {
     }
 
     .coverage-row {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .spec-list-head {
+      display: none;
+    }
+
+    .spec-category-row,
+    .spec-test {
       grid-template-columns: 1fr;
       gap: 10px;
     }

@@ -357,6 +357,13 @@ After adding or changing `gostdlib_` fixtures, run
 refresh the Svelte app's stdlib coverage report. The generator marks fixture-used
 selectors as tested and derives untested package/symbol rows from the embedded
 Go stdlib source copied to `go_stdlib_src` by the `gors` build.
+The Go specification conformance matrix lives in
+`tests/fixtures/conformance/spec.json` and is rendered from
+`www/src/spec-conformance.ts`. Mark implemented entries as `passing` only when
+they point at runnable generated-program fixtures under `tests/fixtures/go_programs`;
+known gaps stay `skipped` with an explicit reason and may keep reduced repros
+under `tests/fixtures/conformance/`. After editing the matrix, run
+`npm --prefix www run generate:conformance-report` from the repository root.
 The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
