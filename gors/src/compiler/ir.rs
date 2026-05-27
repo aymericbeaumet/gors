@@ -9326,8 +9326,18 @@ fn comparison_operands_are_assignable(
     right: &GoType,
     env: &TypeEnv,
 ) -> bool {
-    comparison_operand_is_assignable_to(&binary.x, left, right, env)
-        || comparison_operand_is_assignable_to(&binary.y, right, left, env)
+    comparison_exprs_are_assignable(&binary.x, left, &binary.y, right, env)
+}
+
+fn comparison_exprs_are_assignable(
+    left_expr: &ast::Expr<'_>,
+    left: &GoType,
+    right_expr: &ast::Expr<'_>,
+    right: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    comparison_operand_is_assignable_to(left_expr, left, right, env)
+        || comparison_operand_is_assignable_to(right_expr, right, left, env)
 }
 
 fn comparison_operand_is_assignable_to(
@@ -10937,9 +10947,11 @@ fn invalid_builtin_min_max_call(
 
     let mut saw_string = false;
     let mut saw_numeric = false;
+    let mut checked_args = Vec::new();
     for arg in args {
         let ty = env.resolve_alias(&GoType::infer_expr(arg, env));
-        match min_max_arg_kind(arg, &ty, env) {
+        let arg_kind = min_max_arg_kind(arg, &ty, env);
+        match arg_kind {
             MinMaxArgKind::Numeric => saw_numeric = true,
             MinMaxArgKind::String => saw_string = true,
             MinMaxArgKind::Unknown => {}
@@ -10953,12 +10965,34 @@ fn invalid_builtin_min_max_call(
                 ));
             }
         }
+        checked_args.push((arg, ty, arg_kind));
     }
     if saw_string && saw_numeric {
         return Some(invalid_builtin_call_reason(
             kind,
             "arguments must be all numeric or all string",
         ));
+    }
+    for (index, (left_expr, left, left_kind)) in checked_args.iter().enumerate() {
+        if matches!(left_kind, MinMaxArgKind::Unknown) {
+            continue;
+        }
+        for (right_expr, right, right_kind) in checked_args.iter().skip(index + 1) {
+            if matches!(right_kind, MinMaxArgKind::Unknown) {
+                continue;
+            }
+            if comparison_exprs_are_assignable(left_expr, left, right_expr, right, env) {
+                continue;
+            }
+            return Some(invalid_builtin_call_reason(
+                kind,
+                format!(
+                    "arguments have mismatched types {} and {}",
+                    go_type_display_name(left),
+                    go_type_display_name(right)
+                ),
+            ));
+        }
     }
     None
 }
@@ -17823,6 +17857,31 @@ mod tests {
                     package main
 
                     func main() {
+                        var i int
+                        var f float64
+                        _ = max(i, f)
+                    }
+                "#,
+                "max",
+                "arguments have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        _ = min(i, 1.5)
+                    }
+                "#,
+                "min",
+                "arguments have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = recover(1)
                     }
                 "#,
@@ -19291,6 +19350,14 @@ mod tests {
                     _ = imag(complex(1, 2))
                     _ = max(1, 2.0, 3)
                     _ = min("a", "b")
+                    var i int
+                    var f float64
+                    var n64 int64
+                    _ = max(i, 1)
+                    _ = max(i, 1.0)
+                    _ = min(f, 1.5)
+                    _ = max(n64, 2*n64)
+                    _ = max(n64, -1<<binBits)
                     _ = recover()
                     println("ok", 1)
                     _ = func(len func(int) int) {
@@ -19302,6 +19369,7 @@ mod tests {
 
                 type Ints []int
                 const N = 1e3
+                const binBits = 5
             "#,
         )
         .unwrap();
