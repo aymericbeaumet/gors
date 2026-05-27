@@ -12973,6 +12973,7 @@ fn range_kind_name(kind: ir::RangeKind) -> &'static str {
 
 fn invalid_statement_reason(reason: ir::InvalidStatementReason) -> String {
     match reason {
+        ir::InvalidStatementReason::BlankIdentifier => "cannot use _ as value or type".to_string(),
         ir::InvalidStatementReason::InvalidArrayType { reason } => {
             format!("invalid array type: {reason}")
         }
@@ -20775,6 +20776,20 @@ func main() {
                 }
             },
         )
+    }
+
+    #[test]
+    fn it_should_reject_blank_identifier_as_value() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    println(_)
+                }
+            "#,
+            "cannot use _ as value or type",
+        );
     }
 
     // --- Concurrency tests (Agent 3) ---

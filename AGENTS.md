@@ -487,6 +487,9 @@ statements, type conversions used as statements, and builtins that the Go spec
 forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,
 `new`, `real`, and the corresponding `unsafe` builtins). Keep it type-env aware
 so shadowed predeclared names are not treated as builtins.
+IR expression validation rejects blank identifier uses as values or types while
+still allowing `_` in assignment targets, short declarations, range assignment
+targets, and blank declarations/import aliases.
 IR label validation rejects duplicate labels and labels that are never targeted
 by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
 function body; do not count labels or label uses inside nested function

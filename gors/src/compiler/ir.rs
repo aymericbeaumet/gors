@@ -1147,6 +1147,7 @@ pub enum DefaultClauseKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidStatementReason {
+    BlankIdentifier,
     InvalidArrayType { reason: String },
     InvalidBinary { op: String, reason: String },
     DisallowedBuiltin(String),
@@ -5131,16 +5132,26 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             if let Some(reason) = assign
                 .lhs
                 .iter()
-                .chain(assign.rhs.iter())
                 .find_map(|expr| invalid_receive_expr(expr, env))
+                .or_else(|| {
+                    assign
+                        .rhs
+                        .iter()
+                        .find_map(|expr| invalid_receive_expr(expr, env))
+                })
             {
                 return Some(InvalidStatement::Receive { reason });
             }
             if let Some(reason) = assign
                 .lhs
                 .iter()
-                .chain(assign.rhs.iter())
-                .find_map(|expr| invalid_expression_in_expr(expr, env))
+                .find_map(|expr| invalid_expression_in_assignment_lhs(expr, env))
+                .or_else(|| {
+                    assign
+                        .rhs
+                        .iter()
+                        .find_map(|expr| invalid_expression_in_expr(expr, env))
+                })
             {
                 return Some(InvalidStatement::Expression { reason });
             }
@@ -5266,6 +5277,9 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
             None
         }
         ast::Stmt::IncDecStmt(inc_dec) => {
+            if let Some(reason) = invalid_expression_in_assignment_lhs(&inc_dec.x, env) {
+                return Some(InvalidStatement::Expression { reason });
+            }
             invalid_inc_dec(inc_dec, env).map(|reason| InvalidStatement::IncDec { reason })
         }
         ast::Stmt::LabeledStmt(labeled) => invalid_statement_in_stmt(&labeled.stmt, env),
@@ -5274,6 +5288,18 @@ fn invalid_statement_in_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<
                 && let Some(reason) = invalid_range_short_var_decl_names(range)
             {
                 return Some(InvalidStatement::ShortVarDecl { reason });
+            }
+            if matches!(range.tok, Some(token::Token::ASSIGN)) {
+                if let Some(key) = &range.key
+                    && let Some(reason) = invalid_expression_in_assignment_lhs(key, env)
+                {
+                    return Some(InvalidStatement::Expression { reason });
+                }
+                if let Some(value) = &range.value
+                    && let Some(reason) = invalid_expression_in_assignment_lhs(value, env)
+                {
+                    return Some(InvalidStatement::Expression { reason });
+                }
             }
             if let Some(reason) = invalid_range_clause(range, env) {
                 return Some(InvalidStatement::Range { reason });
@@ -7540,11 +7566,45 @@ fn invalid_expression_in_call(
     invalid_ordinary_call(call, env)
 }
 
+fn invalid_expression_in_assignment_lhs(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match expr {
+        ast::Expr::Ident(_) => None,
+        ast::Expr::ParenExpr(paren) => invalid_expression_in_assignment_lhs(&paren.x, env),
+        ast::Expr::SelectorExpr(selector) => invalid_expression_in_expr(&selector.x, env),
+        ast::Expr::IndexExpr(index) => invalid_expression_in_expr(&index.x, env)
+            .or_else(|| invalid_expression_in_expr(&index.index, env)),
+        ast::Expr::IndexListExpr(index) => {
+            invalid_expression_in_expr(&index.x, env).or_else(|| {
+                index
+                    .indices
+                    .iter()
+                    .find_map(|index| invalid_expression_in_expr(index, env))
+            })
+        }
+        ast::Expr::StarExpr(star) => invalid_expression_in_expr(&star.x, env),
+        ast::Expr::TypeAssertExpr(assert) => {
+            invalid_expression_in_expr(&assert.x, env).or_else(|| {
+                assert
+                    .type_
+                    .as_ref()
+                    .and_then(|type_| invalid_expression_in_expr(type_, env))
+            })
+        }
+        _ => invalid_expression_in_expr(expr, env),
+    }
+}
+
 fn invalid_expression_in_expr(
     expr: &ast::Expr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     match expr {
+        ast::Expr::Ident(ident) if ident.name == "_" => {
+            Some(InvalidStatementReason::BlankIdentifier)
+        }
         ast::Expr::ArrayType(array) => array
             .len
             .as_ref()
@@ -7673,8 +7733,13 @@ fn invalid_expression_in_stmt(
             let invalid = assign
                 .lhs
                 .iter()
-                .chain(assign.rhs.iter())
-                .find_map(|expr| invalid_expression_in_expr(expr, env));
+                .find_map(|expr| invalid_expression_in_assignment_lhs(expr, env))
+                .or_else(|| {
+                    assign
+                        .rhs
+                        .iter()
+                        .find_map(|expr| invalid_expression_in_expr(expr, env))
+                });
             record_define_bindings(assign, env);
             invalid
         }
@@ -7749,18 +7814,20 @@ fn invalid_expression_in_stmt(
             }
             None
         }
-        ast::Stmt::IncDecStmt(inc_dec) => invalid_expression_in_expr(&inc_dec.x, env),
+        ast::Stmt::IncDecStmt(inc_dec) => invalid_expression_in_assignment_lhs(&inc_dec.x, env),
         ast::Stmt::LabeledStmt(labeled) => invalid_expression_in_stmt(&labeled.stmt, env),
         ast::Stmt::RangeStmt(range) => {
-            if let Some(key) = &range.key
-                && let Some(reason) = invalid_expression_in_expr(key, env)
-            {
-                return Some(reason);
-            }
-            if let Some(value) = &range.value
-                && let Some(reason) = invalid_expression_in_expr(value, env)
-            {
-                return Some(reason);
+            if matches!(range.tok, Some(token::Token::ASSIGN)) {
+                if let Some(key) = &range.key
+                    && let Some(reason) = invalid_expression_in_assignment_lhs(key, env)
+                {
+                    return Some(reason);
+                }
+                if let Some(value) = &range.value
+                    && let Some(reason) = invalid_expression_in_assignment_lhs(value, env)
+                {
+                    return Some(reason);
+                }
             }
             if let Some(reason) = invalid_expression_in_expr(&range.x, env) {
                 return Some(reason);
@@ -13485,6 +13552,19 @@ mod tests {
         super::invalid_value_declaration_in_file(&file, &env)
     }
 
+    fn invalid_main_statement(source: &str) -> Option<super::InvalidStatement> {
+        let file = parse_file("test.go", source).unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env)
+    }
+
     #[test]
     fn rejects_blank_package_name() {
         assert_eq!(
@@ -13997,6 +14077,63 @@ mod tests {
                     }
                 "#,
                 BTreeMap::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_blank_identifier_as_value_or_type() {
+        for source in [
+            r#"
+                package main
+
+                func main() {
+                    println(_)
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    var x _
+                    _ = x
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    xs := []int{1}
+                    _ = xs[_]
+                }
+            "#,
+        ] {
+            assert_eq!(
+                invalid_main_statement(source),
+                Some(super::InvalidStatement::Expression {
+                    reason: super::InvalidStatementReason::BlankIdentifier,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_blank_identifier_assignment_targets() {
+        assert_eq!(
+            invalid_main_statement(
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1
+                        _, x := 1, 2
+                        _ = x
+                        xs := []int{1}
+                        for _ = range xs {
+                        }
+                    }
+                "#,
             ),
             None
         );
