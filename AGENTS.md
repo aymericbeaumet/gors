@@ -602,10 +602,13 @@ with the Go `[]byte`/`string` exception; `append` requires a destination slice
 and assignable elements or a matching spread slice, with the Go `[]byte`/string
 spread exception; `make` requires a slice, map, or channel type with the
 spec-defined argument counts and integer-like size arguments; `new` rejects
-spread calls, missing/extra arguments, and `nil`; `complex`, `real`, and `imag`
-enforce the spec's complex-number operand shape; `min` and `max` require at
-least one ordered numeric/string argument and reject spread calls; `panic`,
-`recover`, `print`, and `println` enforce their fixed arity/spread rules.
+spread calls, missing/extra arguments, `nil`, and clear value arguments;
+`complex`, `real`, and `imag` enforce the spec's complex-number operand shape;
+`min` and `max` require at least one ordered numeric/string argument and reject
+spread calls; zero-result builtins (`clear`, `close`, `delete`, `panic`,
+`print`, and `println`) are valid in statement contexts but invalid where a
+value is required; `recover`, `print`, and `println` enforce their fixed
+arity/spread rules.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose

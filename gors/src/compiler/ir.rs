@@ -5876,7 +5876,7 @@ fn invalid_statement_in_stmt(
             if let Some(reason) = invalid_call_statement(&defer.call, env) {
                 return Some(InvalidStatement::Defer { reason });
             }
-            invalid_expression_in_call(&defer.call, env)
+            invalid_expression_in_call_statement(&defer.call, env)
                 .map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Stmt::EmptyStmt(_) => None,
@@ -5887,7 +5887,7 @@ fn invalid_statement_in_stmt(
             if let Some(reason) = invalid_expression_statement(&expr.x, env) {
                 return Some(InvalidStatement::Expr { reason });
             }
-            invalid_expression_in_expr(&expr.x, env)
+            invalid_expression_in_statement_expr(&expr.x, env)
                 .map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Stmt::ForStmt(for_stmt) => {
@@ -5930,7 +5930,7 @@ fn invalid_statement_in_stmt(
             if let Some(reason) = invalid_call_statement(&go.call, env) {
                 return Some(InvalidStatement::Go { reason });
             }
-            invalid_expression_in_call(&go.call, env)
+            invalid_expression_in_call_statement(&go.call, env)
                 .map(|reason| InvalidStatement::Expression { reason })
         }
         ast::Stmt::IfStmt(if_stmt) => {
@@ -6995,8 +6995,8 @@ fn invalid_return_in_stmt(
             record_decl_bindings(&decl.decl, env);
             None
         }
-        ast::Stmt::DeferStmt(defer) => invalid_return_in_call(&defer.call, env),
-        ast::Stmt::ExprStmt(expr) => invalid_return_in_expr(&expr.x, env),
+        ast::Stmt::DeferStmt(defer) => invalid_return_in_call_statement(&defer.call, env),
+        ast::Stmt::ExprStmt(expr) => invalid_return_in_statement_expr(&expr.x, env),
         ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
             if let Some(init) = &for_stmt.init
@@ -7016,7 +7016,7 @@ fn invalid_return_in_stmt(
             }
             invalid_return_in_block(&for_stmt.body, signature, &mut loop_env)
         }
-        ast::Stmt::GoStmt(go) => invalid_return_in_call(&go.call, env),
+        ast::Stmt::GoStmt(go) => invalid_return_in_call_statement(&go.call, env),
         ast::Stmt::IfStmt(if_stmt) => {
             let mut if_env = env.clone();
             if let Some(init) = if_stmt.init.as_ref().as_ref()
@@ -7325,6 +7325,24 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
         return Some(InvalidStatement::Expression { reason });
     }
     None
+}
+
+fn invalid_return_in_call_statement(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    invalid_expression_in_call_statement(call, env)
+        .map(|reason| InvalidStatement::Expression { reason })
+}
+
+fn invalid_return_in_statement_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
+    match unparen_expr(expr) {
+        ast::Expr::CallExpr(call) => invalid_return_in_call_statement(call, env),
+        _ => invalid_return_in_expr(expr, env),
+    }
 }
 
 fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatement> {
@@ -8586,6 +8604,39 @@ fn invalid_expression_in_call(
     if let Some(reason) = invalid_builtin_call_expression(call, env) {
         return Some(reason);
     }
+    invalid_expression_in_call_operands(call, env)
+        .or_else(|| invalid_expression_after_call_operands(call, env))
+}
+
+fn invalid_expression_in_call_statement(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if let Some(reason) = invalid_call_statement(call, env) {
+        return Some(reason);
+    }
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env)
+        && !builtin_call_produces_value(kind)
+    {
+        return invalid_expression_in_call_operands(call, env);
+    }
+    invalid_expression_in_call(call, env)
+}
+
+fn invalid_expression_in_statement_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    match unparen_expr(expr) {
+        ast::Expr::CallExpr(call) => invalid_expression_in_call_statement(call, env),
+        _ => invalid_expression_in_expr(expr, env),
+    }
+}
+
+fn invalid_expression_in_call_operands(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
     if let Some(reason) = invalid_expression_in_expr(&call.fun, env).or_else(|| {
         call.args.as_ref().and_then(|args| {
             args.iter()
@@ -8594,6 +8645,13 @@ fn invalid_expression_in_call(
     }) {
         return Some(reason);
     }
+    None
+}
+
+fn invalid_expression_after_call_operands(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
     if call_is_type_conversion(call, env) {
         return invalid_type_conversion_call(call, env);
     }
@@ -8807,8 +8865,8 @@ fn invalid_expression_in_stmt(
             record_decl_bindings(&decl.decl, env);
             invalid
         }
-        ast::Stmt::DeferStmt(defer) => invalid_expression_in_call(&defer.call, env),
-        ast::Stmt::ExprStmt(expr) => invalid_expression_in_expr(&expr.x, env),
+        ast::Stmt::DeferStmt(defer) => invalid_expression_in_call_statement(&defer.call, env),
+        ast::Stmt::ExprStmt(expr) => invalid_expression_in_statement_expr(&expr.x, env),
         ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
             if let Some(init) = &for_stmt.init
@@ -8828,7 +8886,7 @@ fn invalid_expression_in_stmt(
             }
             invalid_expression_in_block(&for_stmt.body, &mut loop_env)
         }
-        ast::Stmt::GoStmt(go) => invalid_expression_in_call(&go.call, env),
+        ast::Stmt::GoStmt(go) => invalid_expression_in_call_statement(&go.call, env),
         ast::Stmt::IfStmt(if_stmt) => {
             let mut if_env = env.clone();
             if let Some(init) = if_stmt.init.as_ref().as_ref()
@@ -8954,7 +9012,8 @@ fn invalid_builtin_call_expression(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    match unshadowed_builtin_call_kind(call, env)? {
+    let kind = unshadowed_builtin_call_kind(call, env)?;
+    let invalid_call = match kind {
         BuiltinCallKind::Append => invalid_builtin_append_call(call, env),
         BuiltinCallKind::Cap | BuiltinCallKind::Len => invalid_builtin_len_cap_call(call, env),
         BuiltinCallKind::Clear => invalid_builtin_clear_call(call, env),
@@ -8970,7 +9029,26 @@ fn invalid_builtin_call_expression(
         BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
         BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
         BuiltinCallKind::Recover => invalid_builtin_recover_call(call),
+    };
+    if invalid_call.is_some() {
+        return invalid_call;
     }
+    (!builtin_call_produces_value(kind)).then_some(invalid_builtin_call_reason(
+        kind,
+        "does not produce a value",
+    ))
+}
+
+fn builtin_call_produces_value(kind: BuiltinCallKind) -> bool {
+    !matches!(
+        kind,
+        BuiltinCallKind::Clear
+            | BuiltinCallKind::Close
+            | BuiltinCallKind::Delete
+            | BuiltinCallKind::Panic
+            | BuiltinCallKind::Print
+            | BuiltinCallKind::Println
+    )
 }
 
 fn invalid_builtin_call_statement(
@@ -18847,6 +18925,73 @@ mod tests {
                 "recover",
                 "expects no arguments",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = clear([]int{})
+                    }
+                "#,
+                "clear",
+                "does not produce a value",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var ch chan int
+                        _ = close(ch)
+                    }
+                "#,
+                "close",
+                "does not produce a value",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = delete(map[int]int{}, 1)
+                    }
+                "#,
+                "delete",
+                "does not produce a value",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = panic("boom")
+                    }
+                "#,
+                "panic",
+                "does not produce a value",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = print("boom")
+                    }
+                "#,
+                "print",
+                "does not produce a value",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = println("boom")
+                    }
+                "#,
+                "println",
+                "does not produce a value",
+            ),
         ];
 
         for (source, name, reason) in cases {
@@ -22248,6 +22393,7 @@ mod tests {
                     (<-ch)
                     <-ch
                     println("ok")
+                    panic("boom")
                     clear([]int{1})
                     local := func() {}
                     local()
