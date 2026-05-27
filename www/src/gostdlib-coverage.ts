@@ -9368,16 +9368,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "crypto/rc4",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"crypto/rc4"
+		],
 		"symbolCount": 6,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 2,
 		"symbols": [
 			{
 				"name": "Cipher",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/rc4"
+				]
 			},
 			{
 				"name": "Cipher.Reset",
@@ -9394,8 +9398,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "KeySizeError",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/rc4"
+				]
 			},
 			{
 				"name": "KeySizeError.Error",
@@ -29701,16 +29707,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "encoding/pem",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"encoding/pem"
+		],
 		"symbolCount": 4,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Block",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/pem"
+				]
 			},
 			{
 				"name": "Decode",
@@ -30862,6 +30872,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/des",
 			"crypto/hmac",
 			"crypto/md5",
+			"crypto/rc4",
 			"crypto/rsa",
 			"crypto/sha1",
 			"crypto/sha256",
@@ -30870,6 +30881,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"debug/elf",
 			"encoding/ascii85",
 			"encoding/hex",
+			"encoding/pem",
 			"encoding/xml",
 			"errors",
 			"fmt",
@@ -30880,6 +30892,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/scanner",
 			"go/token",
 			"go/version",
+			"hash/adler32",
 			"html/template",
 			"io",
 			"io/fs",
@@ -31036,6 +31049,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"crypto/des",
 					"crypto/hmac",
 					"crypto/md5",
+					"crypto/rc4",
 					"crypto/rsa",
 					"crypto/sha1",
 					"crypto/sha256",
@@ -31044,6 +31058,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"debug/elf",
 					"encoding/ascii85",
 					"encoding/hex",
+					"encoding/pem",
 					"encoding/xml",
 					"errors",
 					"fmt",
@@ -31054,6 +31069,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/scanner",
 					"go/token",
 					"go/version",
+					"hash/adler32",
 					"html/template",
 					"io",
 					"io/fs",
@@ -36604,10 +36620,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "hash/adler32",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"hash/adler32"
+		],
 		"symbolCount": 3,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Checksum",
@@ -36624,8 +36642,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Size",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/adler32"
+				]
 			}
 		]
 	},
@@ -79762,11 +79782,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 57,
+	"fixtureCount": 60,
 	"packageCount": 353,
-	"testedPackageCount": 57,
-	"untestedPackageCount": 296,
+	"testedPackageCount": 60,
+	"untestedPackageCount": 293,
 	"symbolCount": 12599,
-	"testedSymbolCount": 371,
-	"untestedSymbolCount": 12228
+	"testedSymbolCount": 375,
+	"untestedSymbolCount": 12224
 } as const;

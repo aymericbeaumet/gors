@@ -918,6 +918,28 @@ fn qualify_package_type(package_name: &str, ty: &GoType, package_env: &TypeEnv) 
     }
 }
 
+fn qualify_package_types(
+    package_name: &str,
+    types: &[GoType],
+    package_env: &TypeEnv,
+) -> Vec<GoType> {
+    types
+        .iter()
+        .map(|ty| qualify_package_type(package_name, ty, package_env))
+        .collect()
+}
+
+fn qualify_package_type_kind(
+    package_name: &str,
+    kind: &TypeKind,
+    package_env: &TypeEnv,
+) -> TypeKind {
+    match kind {
+        TypeKind::Alias(ty) => TypeKind::Alias(qualify_package_type(package_name, ty, package_env)),
+        _ => kind.clone(),
+    }
+}
+
 impl TypeEnv {
     pub fn new() -> Self {
         Self::default()
@@ -1326,10 +1348,16 @@ impl TypeEnv {
 
     pub fn merge_package(&mut self, package_name: &str, package_env: &TypeEnv) {
         for (name, returns) in &package_env.funcs {
-            self.set_func(&format!("{package_name}.{name}"), returns.clone());
+            self.set_func(
+                &format!("{package_name}.{name}"),
+                qualify_package_types(package_name, returns, package_env),
+            );
         }
         for (name, params) in &package_env.func_params {
-            self.set_func_params(&format!("{package_name}.{name}"), params.clone());
+            self.set_func_params(
+                &format!("{package_name}.{name}"),
+                qualify_package_types(package_name, params, package_env),
+            );
         }
         for name in &package_env.pointer_receiver_methods {
             self.set_pointer_receiver_method(&format!("{package_name}.{name}"));
@@ -1344,7 +1372,10 @@ impl TypeEnv {
             self.set_func_variadic_start(&format!("{package_name}.{name}"), *start);
         }
         for (name, kind) in &package_env.type_kinds {
-            self.set_type_kind(&format!("{package_name}.{name}"), kind.clone());
+            self.set_type_kind(
+                &format!("{package_name}.{name}"),
+                qualify_package_type_kind(package_name, kind, package_env),
+            );
         }
         for (name, methods) in &package_env.interface_methods {
             self.set_interface_methods(&format!("{package_name}.{name}"), methods.clone());
@@ -1359,7 +1390,16 @@ impl TypeEnv {
             );
         }
         for (name, fields) in &package_env.struct_fields {
-            self.set_struct_fields(&format!("{package_name}.{name}"), fields.clone());
+            let qualified_fields = fields
+                .iter()
+                .map(|(field_name, ty)| {
+                    (
+                        field_name.clone(),
+                        qualify_package_type(package_name, ty, package_env),
+                    )
+                })
+                .collect();
+            self.set_struct_fields(&format!("{package_name}.{name}"), qualified_fields);
         }
         for (name, fields) in &package_env.struct_field_array_lengths {
             let struct_name = format!("{package_name}.{name}");
@@ -1368,18 +1408,27 @@ impl TypeEnv {
             }
         }
         for (name, ty) in &package_env.vars {
-            self.set_var(&format!("{package_name}.{name}"), ty.clone());
+            self.set_var(
+                &format!("{package_name}.{name}"),
+                qualify_package_type(package_name, ty, package_env),
+            );
         }
         for name in &package_env.top_level_vars {
             if let Some(ty) = package_env.top_level_var_types.get(name) {
-                self.set_top_level_var(&format!("{package_name}.{name}"), ty.clone());
+                self.set_top_level_var(
+                    &format!("{package_name}.{name}"),
+                    qualify_package_type(package_name, ty, package_env),
+                );
             }
         }
         for name in &package_env.consts {
             self.set_const(&format!("{package_name}.{name}"));
         }
         for (name, ty) in &package_env.const_types {
-            self.set_const_type(&format!("{package_name}.{name}"), ty.clone());
+            self.set_const_type(
+                &format!("{package_name}.{name}"),
+                qualify_package_type(package_name, ty, package_env),
+            );
         }
         for name in &package_env.string_consts {
             self.set_string_const(&format!("{package_name}.{name}"));
@@ -1683,4 +1732,37 @@ fn receiver_type_has_pointer_indirection(expr: &ast::Expr<'_>) -> bool {
 
 fn go_name_is_exported(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_uppercase)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_package_qualifies_local_types_in_signatures() {
+        let mut io_env = TypeEnv::new();
+        io_env.set_type_kind("Reader", TypeKind::Interface);
+        io_env.set_interface_methods("Reader", vec!["Read".to_string()]);
+
+        let mut bytes_env = TypeEnv::new();
+        bytes_env.set_type_kind("Reader", TypeKind::Struct);
+        bytes_env.set_func(
+            "NewReader",
+            vec![GoType::Pointer(Box::new(GoType::Named(
+                "Reader".to_string(),
+            )))],
+        );
+        bytes_env.set_func("Reader.Read", vec![GoType::Int, GoType::Error]);
+        bytes_env.set_pointer_receiver_method("Reader.Read");
+
+        let mut env = TypeEnv::new();
+        env.merge_package("io", &io_env);
+        env.merge_package("bytes", &bytes_env);
+
+        assert_eq!(
+            env.get_func_return("bytes.NewReader"),
+            GoType::Pointer(Box::new(GoType::Named("bytes.Reader".to_string())))
+        );
+        assert!(env.named_type_implements_interface("bytes.Reader", "io.Reader", true));
+    }
 }

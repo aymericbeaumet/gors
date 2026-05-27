@@ -4656,16 +4656,18 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             }
             prune_display_impls_without_string_method(&mut module.file.items);
             if has_main {
-                prune_unused_struct_fields(&mut module.file.items);
+                prune_unused_struct_fields(&mut module.file.items, roots);
             }
             if module.is_stdlib {
                 module.content_hash = String::new();
             }
         }
 
+        let empty_roots = HashSet::new();
         for module in modules.values_mut() {
             if has_main {
-                prune_unused_struct_fields(&mut module.file.items);
+                let roots = required.get(&module.mod_name).unwrap_or(&empty_roots);
+                prune_unused_struct_fields(&mut module.file.items, roots);
             }
             prune_unused_use_items(&mut module.file.items);
         }
@@ -5074,7 +5076,10 @@ fn builtin_trait_required_root(trait_name: &str) -> Option<&'static str> {
     }
 }
 
-fn prune_unused_struct_fields(items: &mut Vec<syn::Item>) {
+fn prune_unused_struct_fields(
+    items: &mut Vec<syn::Item>,
+    preserved_structs: &std::collections::HashSet<String>,
+) {
     use syn::visit::Visit;
     use syn::visit_mut::VisitMut;
 
@@ -5118,6 +5123,10 @@ fn prune_unused_struct_fields(items: &mut Vec<syn::Item>) {
         let syn::Fields::Named(fields) = &mut item_struct.fields else {
             continue;
         };
+        if preserved_structs.contains(&item_struct.ident.to_string()) {
+            allow_dead_code_attr(&mut item_struct.attrs);
+            continue;
+        }
         fields.named = fields
             .named
             .clone()
@@ -5161,6 +5170,15 @@ fn prune_unused_struct_fields(items: &mut Vec<syn::Item>) {
     let mut pruner = StructLiteralPruner { removed: &removed };
     for item in items {
         pruner.visit_item_mut(item);
+    }
+}
+
+fn allow_dead_code_attr(attrs: &mut Vec<syn::Attribute>) {
+    let has_attr = attrs.iter().any(|attr| {
+        attr.path().is_ident("allow") && quote::quote!(#attr).to_string().contains("dead_code")
+    });
+    if !has_attr {
+        attrs.push(syn::parse_quote!(#[allow(dead_code)]));
     }
 }
 
@@ -21944,6 +21962,32 @@ func main() {
         });
         assert!(source.contains("pub const PathSeparator"), "{source}");
         assert!(source.contains("pub const PathListSeparator"), "{source}");
+    }
+
+    #[test]
+    fn prune_unused_struct_fields_keeps_reachable_root_struct_shape() {
+        let file: syn::File = rust! {
+            pub struct Block {
+                pub Type: String,
+                pub Bytes: Vec<u8>,
+            }
+
+            pub fn use_block(block: Block) -> String {
+                block.Type
+            }
+        };
+        let mut items = file.items;
+        let roots = std::collections::HashSet::from(["Block".to_string()]);
+
+        super::prune_unused_struct_fields(&mut items, &roots);
+
+        let source = prettyplease::unparse(&syn::File {
+            shebang: None,
+            attrs: vec![],
+            items,
+        });
+        assert!(source.contains("pub Type"), "{source}");
+        assert!(source.contains("pub Bytes"), "{source}");
     }
 
     #[test]
