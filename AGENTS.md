@@ -824,6 +824,9 @@ importing packages.
 `make` size arguments follow the same constant rules as indices: literal
 constants must be non-negative integer constants, and two constant slice bounds
 must satisfy `len <= cap`; non-constant integer values remain runtime-checked.
+Type conversion validation rejects concrete invalid conversions between known
+predeclared types, but stays conservative for named and unknown types so generic
+underlying-type conversion support can continue to compile real packages.
 Shift validation uses separate left-operand and count rules. The right operand
 may be an integer-valued untyped constant such as `1.0`, but the left operand
 only accepts an integer-valued float constant when the shift count is also

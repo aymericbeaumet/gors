@@ -10398,7 +10398,62 @@ fn invalid_type_conversion_call(
             format!("expects 1 argument, got {values} values"),
         ));
     }
+    if let Some(reason) = invalid_type_conversion_value(&call.fun, args.first()?, &target, env) {
+        return Some(reason);
+    }
     None
+}
+
+fn invalid_type_conversion_value(
+    target_expr: &ast::Expr<'_>,
+    value: &ast::Expr<'_>,
+    target_name: &str,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    let target = env.resolve_alias(&GoType::from_expr(target_expr));
+    let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+    if conversion_is_valid_for_validation(value, &actual, &target, env) {
+        return None;
+    }
+    Some(invalid_type_conversion_reason(
+        target_name,
+        format!(
+            "cannot convert {} to {}",
+            go_type_display_name(&actual),
+            go_type_display_name(&target)
+        ),
+    ))
+}
+
+fn conversion_is_valid_for_validation(
+    value: &ast::Expr<'_>,
+    actual: &GoType,
+    target: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    if matches!(target, GoType::Unknown | GoType::Named(_))
+        || matches!(actual, GoType::Unknown | GoType::Named(_))
+    {
+        return true;
+    }
+    if actual == target || expr_is_assignable_for_validation(target, value, env) {
+        return true;
+    }
+    match (target, actual) {
+        (target, actual) if go_type_is_numeric(target) && go_type_is_numeric(actual) => true,
+        (GoType::String, actual) if actual.is_integer() => true,
+        (GoType::String, GoType::Slice(elem))
+            if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32) =>
+        {
+            true
+        }
+        (GoType::Slice(elem), GoType::String)
+            if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32) =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 fn type_conversion_target_name(fun: &ast::Expr<'_>, env: &TypeEnv) -> String {
@@ -18499,6 +18554,40 @@ mod tests {
                 "int",
                 "cannot use spread arguments",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var s string
+                        _ = int(s)
+                    }
+                "#,
+                "int",
+                "cannot convert string to int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = bool(1)
+                    }
+                "#,
+                "bool",
+                "cannot convert int to bool",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = string(true)
+                    }
+                "#,
+                "string",
+                "cannot convert bool to string",
+            ),
         ];
 
         for (source, target, reason) in cases {
@@ -18521,6 +18610,45 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn accepts_valid_type_conversion_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Count int
+
+                func main() {
+                    var i int
+                    _ = float64(i)
+                    _ = int32(i)
+                    _ = string(i)
+                    _ = string(65)
+                    _ = []byte("go")
+                    _ = []rune("go")
+                    _ = string([]byte{})
+                    _ = string([]rune{})
+                    var c Count
+                    _ = Count(c)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]
