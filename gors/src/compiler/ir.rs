@@ -6195,6 +6195,22 @@ fn invalid_assignment_type_mismatch(
     if actual_types.len() != assign.lhs.len() {
         return None;
     }
+    if assign.tok == token::Token::DEFINE && assign.rhs.len() == assign.lhs.len() {
+        return assign
+            .lhs
+            .iter()
+            .zip(assign.rhs.iter())
+            .find_map(|(lhs, rhs)| {
+                let expected = assignment_lhs_expected_type(assign.tok, lhs, env, scopes)?;
+                let actual = env.resolve_alias(&GoType::infer_expr(rhs, env));
+                (!expr_is_assignable_for_validation(&expected, rhs, env)).then(|| {
+                    InvalidAssignmentReason::TypeMismatch {
+                        expected: go_type_display_name(&expected),
+                        actual: go_type_display_name(&actual),
+                    }
+                })
+            });
+    }
     assign
         .lhs
         .iter()
@@ -6271,7 +6287,11 @@ fn invalid_compound_assignment(
     let rhs = assign.rhs.first()?;
     let lhs_ty = env.resolve_alias(&GoType::infer_expr(lhs, env));
     let rhs_ty = env.resolve_alias(&GoType::infer_expr(rhs, env));
-    if !types_are_assignable_for_validation(&lhs_ty, &rhs_ty) {
+    if !matches!(
+        assign.tok,
+        token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN
+    ) && !expr_is_assignable_for_validation(&lhs_ty, rhs, env)
+    {
         return Some(InvalidAssignmentReason::TypeMismatch {
             expected: go_type_display_name(&lhs_ty),
             actual: go_type_display_name(&rhs_ty),
@@ -6300,7 +6320,7 @@ fn invalid_compound_assignment(
             None
         }
         token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN if lhs_ty.is_integer() => {
-            if rhs_ty.is_integer() {
+            if binary_operand_is_integer(&rhs_ty, rhs) {
                 None
             } else {
                 Some(invalid_compound_operand(&op, "right", &rhs_ty))
@@ -6428,6 +6448,21 @@ fn types_are_assignable_for_validation(expected: &GoType, actual: &GoType) -> bo
         (GoType::Bool, _) | (_, GoType::Bool) | (GoType::String, _) | (_, GoType::String) => false,
         _ => true,
     }
+}
+
+fn expr_is_assignable_for_validation(
+    expected: &GoType,
+    value: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    let expected = env.resolve_alias(expected);
+    let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+    if matches!(expected, GoType::Unknown | GoType::Named(_))
+        || matches!(actual, GoType::Unknown | GoType::Named(_))
+    {
+        return true;
+    }
+    comparison_operand_is_assignable_to(value, &actual, &expected, env)
 }
 
 fn go_type_is_numeric(ty: &GoType) -> bool {
@@ -7157,14 +7192,31 @@ fn invalid_return_type_mismatch(
     if actual_types.len() != signature.types.len() {
         return None;
     }
+    if results.len() != signature.types.len() {
+        return signature
+            .types
+            .iter()
+            .zip(actual_types.iter())
+            .find_map(|(expected, actual)| {
+                let expected = env.resolve_alias(expected);
+                let actual = env.resolve_alias(actual);
+                (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+                    InvalidReturnReason::TypeMismatch {
+                        expected: go_type_display_name(&expected),
+                        actual: go_type_display_name(&actual),
+                    }
+                })
+            });
+    }
     signature
         .types
         .iter()
+        .zip(results.iter())
         .zip(actual_types.iter())
-        .find_map(|(expected, actual)| {
+        .find_map(|((expected, result), actual)| {
             let expected = env.resolve_alias(expected);
             let actual = env.resolve_alias(actual);
-            (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+            (!expr_is_assignable_for_validation(&expected, result, env)).then(|| {
                 InvalidReturnReason::TypeMismatch {
                     expected: go_type_display_name(&expected),
                     actual: go_type_display_name(&actual),
@@ -7732,7 +7784,7 @@ fn invalid_const_type_mismatch(
     values.iter().find_map(|value| {
         let expected = env.resolve_alias(&expected);
         let actual = env.resolve_alias(&GoType::infer_expr(value, env));
-        (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+        (!expr_is_assignable_for_validation(&expected, value, env)).then(|| {
             InvalidDeclaration::ConstTypeMismatch {
                 expected: go_type_display_name(&expected),
                 actual: go_type_display_name(&actual),
@@ -7834,10 +7886,25 @@ fn invalid_var_type_mismatch(
     if actual_types.len() != value_spec.names.len() {
         return None;
     }
-    actual_types.iter().find_map(|actual| {
+    let Some(values) = &value_spec.values else {
+        return None;
+    };
+    if values.len() != value_spec.names.len() {
+        return actual_types.iter().find_map(|actual| {
+            let expected = env.resolve_alias(&expected);
+            let actual = env.resolve_alias(actual);
+            (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+                InvalidDeclaration::VarTypeMismatch {
+                    expected: go_type_display_name(&expected),
+                    actual: go_type_display_name(&actual),
+                }
+            })
+        });
+    }
+    values.iter().find_map(|value| {
         let expected = env.resolve_alias(&expected);
-        let actual = env.resolve_alias(actual);
-        (!types_are_assignable_for_validation(&expected, &actual)).then(|| {
+        let actual = env.resolve_alias(&GoType::infer_expr(value, env));
+        (!expr_is_assignable_for_validation(&expected, value, env)).then(|| {
             InvalidDeclaration::VarTypeMismatch {
                 expected: go_type_display_name(&expected),
                 actual: go_type_display_name(&actual),
@@ -15896,6 +15963,33 @@ mod tests {
                 r#"
                     package main
 
+                    var I int
+                    var F float64 = I
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "float64".to_string(),
+                actual: "int".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var I int = 1.5
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "int".to_string(),
+                actual: "float64".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     func pair() (int, string) { return 1, "go" }
 
                     var X, Y int = pair()
@@ -16017,6 +16111,8 @@ mod tests {
                     var Z int
                     var S string = "go"
                     var F float64 = 1
+                    var I int = 1.0
+                    var C complex128 = 1
                     var P *int = nil
                     var Slice []int = nil
                     var Map map[string]int = nil
@@ -21601,10 +21697,13 @@ mod tests {
                 func main() {
                     x := 1
                     x = 2
+                    x = 2.0
                     f := 1.5
                     f = 1
                     s := "go"
                     s = "rs"
+                    var complexValue complex128
+                    complexValue = 1
                     var count Count
                     count = 1
                     xs := []int{1}
@@ -21622,9 +21721,11 @@ mod tests {
                     var named I
                     named = nil
                     x += 1
+                    x += 1.0
                     f /= 2
                     s += "!"
                     count <<= 1
+                    count <<= 1.0
                     count &= 3
                     y := 0
                     z := ""
@@ -21899,6 +22000,31 @@ mod tests {
                 "int",
                 "nil",
             ),
+            (
+                r#"
+                    package main
+
+                    func f() float64 {
+                        var i int
+                        return i
+                    }
+                "#,
+                "f",
+                "float64",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func f() int {
+                        return 1.5
+                    }
+                "#,
+                "f",
+                "int",
+                "float64",
+            ),
         ];
 
         for (source, name, expected, actual) in cases {
@@ -21944,6 +22070,14 @@ mod tests {
                     return 1
                 }
 
+                func intFromIntegerFloatConstant() int {
+                    return 1.0
+                }
+
+                func complexResult() complex128 {
+                    return 1
+                }
+
                 func forwarded() (int, string) {
                     return pair()
                 }
@@ -21984,6 +22118,8 @@ mod tests {
         for name in [
             "intResult",
             "floatResult",
+            "intFromIntegerFloatConstant",
+            "complexResult",
             "forwarded",
             "namedResult",
             "nilLike",
