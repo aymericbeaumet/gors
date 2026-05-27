@@ -1454,6 +1454,24 @@ fn rust_int_literal_text(lit: &str) -> String {
     }
 }
 
+fn rust_float_literal_text(lit: &str) -> String {
+    let normalized = if lit.starts_with('.') {
+        format!("0{lit}")
+    } else if lit.ends_with('.') {
+        format!("{lit}0")
+    } else {
+        lit.to_string()
+    };
+
+    if normalized.to_ascii_lowercase().starts_with("0x") {
+        if let Some(value) = parse_go_float_literal(&normalized) {
+            return format!("{value:e}");
+        }
+    }
+
+    normalized
+}
+
 fn parse_go_float_literal(lit: &str) -> Option<f64> {
     let lit = lit.replace('_', "");
     let lower = lit.to_ascii_lowercase();
@@ -12686,16 +12704,10 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
                 let lit_str = format!("{value}");
                 Self::Int(syn::LitInt::new(&lit_str, Span::mixed_site()))
             }
-            FLOAT => {
-                let value = if basic_lit.value.starts_with('.') {
-                    format!("0{}", basic_lit.value)
-                } else if basic_lit.value.ends_with('.') {
-                    format!("{}0", basic_lit.value)
-                } else {
-                    basic_lit.value.to_string()
-                };
-                Self::Float(syn::LitFloat::new(&value, Span::mixed_site()))
-            }
+            FLOAT => Self::Float(syn::LitFloat::new(
+                &rust_float_literal_text(basic_lit.value),
+                Span::mixed_site(),
+            )),
             _ => {
                 // Return a placeholder for unsupported literals
                 Self::Str(syn::LitStr::new(
@@ -20805,6 +20817,29 @@ func main() {
             "{output}"
         );
         assert!(!output.contains("let mut legacyOctal = 052;"), "{output}");
+    }
+
+    #[test]
+    fn it_should_lower_go_hex_float_literals() {
+        let go_source = r#"
+package main
+
+func main() {
+	quarter := 0x1p-2
+	large := 0x2.p10
+	fraction := 0x1.Fp+0
+	underscored := 0X_1FFFP-16
+	_, _, _, _ = quarter, large, fraction, underscored
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(!output.contains("0x1p-2"), "{output}");
+        assert!(!output.contains("0x2.p10"), "{output}");
+        assert!(!output.contains("0x1.Fp+0"), "{output}");
+        assert!(!output.contains("0X_1FFFP-16"), "{output}");
     }
 
     #[test]

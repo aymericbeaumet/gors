@@ -72,8 +72,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Lexical elements",
 		"testCount": 13,
-		"passingTestCount": 12,
-		"skippedTestCount": 1,
+		"passingTestCount": 13,
+		"skippedTestCount": 0,
 		"tests": [
 			{
 				"id": "lexical-comments",
@@ -170,9 +170,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "lexical-hex-floating-literals",
 				"section": "Floating-point literals",
 				"title": "Hexadecimal floating-point literals compile and execute",
-				"status": "skipped",
-				"fixtures": [],
-				"reason": "Needs literal lowering because Rust syntax does not accept Go hexadecimal float forms directly."
+				"status": "passing",
+				"fixtures": [
+					"conformance_hex_float_literals"
+				],
+				"reason": ""
 			},
 			{
 				"id": "lexical-imaginary-literals",
@@ -1246,8 +1248,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 2,
+	"passingCategoryCount": 3,
 	"testCount": 102,
-	"passingTestCount": 87,
-	"skippedTestCount": 15
+	"passingTestCount": 88,
+	"skippedTestCount": 14
 } as const;

@@ -96,8 +96,8 @@
           "id": "lexical-hex-floating-literals",
           "section": "Floating-point literals",
           "title": "Hexadecimal floating-point literals compile and execute",
-          "status": "skipped",
-          "reason": "Needs literal lowering because Rust syntax does not accept Go hexadecimal float forms directly."
+          "status": "passing",
+          "fixtures": ["conformance_hex_float_literals"]
         },
         {
           "id": "lexical-imaginary-literals",

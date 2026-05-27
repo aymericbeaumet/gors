@@ -1,0 +1,1 @@
+module conformance_hex_float_literals
