@@ -660,6 +660,11 @@ Receiver-type validation uses the package type environment and rejects method
 receiver bases that are undefined, unnamed, interfaces, or pointer types.
 Method signature validation rejects method declarations with their own type
 parameter list; receiver type parameters belong on the receiver type instead.
+Generic type parameter declarations are validated in the same IR layer:
+function and type declaration type-parameter lists must have explicit names and
+constraints, non-blank type parameter names must be unique, receiver generic
+argument lists must use identifiers, and receiver type-parameter names share the
+method signature uniqueness set.
 Single-file and multi-package compile entrypoints run the same IR validation
 helper before Rust AST lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,

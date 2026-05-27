@@ -1195,11 +1195,15 @@ pub enum InvalidSignature {
     DuplicateName {
         name: String,
     },
+    DuplicateTypeParameterName {
+        name: String,
+    },
     InitFunction {
         type_params: usize,
         params: usize,
         results: usize,
     },
+    InvalidTypeParameterDecl,
     MainFunction {
         type_params: usize,
         params: usize,
@@ -1218,6 +1222,7 @@ pub enum InvalidSignature {
         base: Option<String>,
         reason: InvalidReceiverTypeReason,
     },
+    ReceiverTypeParameterNotIdentifier,
     ReceiverVariadic,
     VariadicNotFinal,
     VariadicResult,
@@ -1644,6 +1649,10 @@ fn invalid_signature_in_func_decl(func: &ast::FuncDecl<'_>) -> Option<InvalidSig
         }
     }
     let mut names = BTreeSet::new();
+    if let Some(invalid) = invalid_type_parameter_list(func.type_.type_params.as_ref(), &mut names)
+    {
+        return Some(invalid);
+    }
     if let Some(recv) = &func.recv
         && let Some(invalid) = invalid_receiver_signature(recv, &mut names)
     {
@@ -1701,6 +1710,11 @@ fn invalid_receiver_signature(
             return Some(InvalidSignature::ReceiverVariadic);
         }
         if let Some(invalid) = record_signature_field_names(field, names) {
+            return Some(invalid);
+        }
+        if let Some(type_) = &field.type_
+            && let Some(invalid) = invalid_receiver_type_parameter_names(type_, names)
+        {
             return Some(invalid);
         }
         if let Some(type_) = &field.type_
@@ -1812,7 +1826,11 @@ fn invalid_signature_in_gen_decl(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidS
 fn invalid_signature_in_spec(spec: &ast::Spec<'_>) -> Option<InvalidSignature> {
     match spec {
         ast::Spec::ImportSpec(_) => None,
-        ast::Spec::TypeSpec(type_spec) => invalid_signature_in_expr(&type_spec.type_),
+        ast::Spec::TypeSpec(type_spec) => {
+            let mut names = BTreeSet::new();
+            invalid_type_parameter_list(type_spec.type_params.as_ref(), &mut names)
+                .or_else(|| invalid_signature_in_expr(&type_spec.type_))
+        }
         ast::Spec::ValueSpec(value_spec) => {
             if let Some(type_) = &value_spec.type_
                 && let Some(invalid) = invalid_signature_in_expr(type_)
@@ -1829,6 +1847,71 @@ fn invalid_signature_in_spec(spec: &ast::Spec<'_>) -> Option<InvalidSignature> {
             None
         }
     }
+}
+
+fn invalid_type_parameter_list(
+    type_params: Option<&ast::FieldList<'_>>,
+    names: &mut BTreeSet<String>,
+) -> Option<InvalidSignature> {
+    let type_params = type_params?;
+    for field in &type_params.list {
+        let Some(field_names) = &field.names else {
+            return Some(InvalidSignature::InvalidTypeParameterDecl);
+        };
+        if field_names.is_empty() || field.type_.is_none() {
+            return Some(InvalidSignature::InvalidTypeParameterDecl);
+        }
+        for name in field_names {
+            if name.name == "_" {
+                continue;
+            }
+            if !names.insert(name.name.to_string()) {
+                return Some(InvalidSignature::DuplicateTypeParameterName {
+                    name: name.name.to_string(),
+                });
+            }
+        }
+        if let Some(type_) = &field.type_
+            && let Some(invalid) = invalid_signature_in_expr(type_)
+        {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_receiver_type_parameter_names(
+    expr: &ast::Expr<'_>,
+    names: &mut BTreeSet<String>,
+) -> Option<InvalidSignature> {
+    match expr {
+        ast::Expr::IndexExpr(index) => invalid_receiver_type_parameter_name(&index.index, names),
+        ast::Expr::IndexListExpr(index) => index
+            .indices
+            .iter()
+            .find_map(|expr| invalid_receiver_type_parameter_name(expr, names)),
+        ast::Expr::ParenExpr(paren) => invalid_receiver_type_parameter_names(&paren.x, names),
+        ast::Expr::StarExpr(star) => invalid_receiver_type_parameter_names(&star.x, names),
+        _ => None,
+    }
+}
+
+fn invalid_receiver_type_parameter_name(
+    expr: &ast::Expr<'_>,
+    names: &mut BTreeSet<String>,
+) -> Option<InvalidSignature> {
+    let ast::Expr::Ident(ident) = expr else {
+        return Some(InvalidSignature::ReceiverTypeParameterNotIdentifier);
+    };
+    if ident.name == "_" {
+        return None;
+    }
+    if !names.insert(ident.name.to_string()) {
+        return Some(InvalidSignature::DuplicateTypeParameterName {
+            name: ident.name.to_string(),
+        });
+    }
+    None
 }
 
 fn invalid_signature_in_block(block: &ast::BlockStmt<'_>) -> Option<InvalidSignature> {
@@ -2684,7 +2767,9 @@ fn invalid_local_declaration_names_in_func(func: &ast::FuncDecl<'_>) -> Option<I
     let mut scopes = DeclarationScopes::new();
     if let Some(recv) = &func.recv {
         seed_decl_scope_field_names(recv, &mut scopes);
+        seed_decl_scope_receiver_type_parameter_names(recv, &mut scopes);
     }
+    seed_decl_scope_type_parameter_names(func.type_.type_params.as_ref(), &mut scopes);
     seed_decl_scope_field_names(&func.type_.params, &mut scopes);
     if let Some(results) = &func.type_.results {
         seed_decl_scope_field_names(results, &mut scopes);
@@ -2699,6 +2784,54 @@ fn seed_decl_scope_field_names(fields: &ast::FieldList<'_>, scopes: &mut Declara
                 scopes.declare_if_new(name.name);
             }
         }
+    }
+}
+
+fn seed_decl_scope_type_parameter_names(
+    type_params: Option<&ast::FieldList<'_>>,
+    scopes: &mut DeclarationScopes,
+) {
+    let Some(type_params) = type_params else {
+        return;
+    };
+    seed_decl_scope_field_names(type_params, scopes);
+}
+
+fn seed_decl_scope_receiver_type_parameter_names(
+    recv: &ast::FieldList<'_>,
+    scopes: &mut DeclarationScopes,
+) {
+    for field in &recv.list {
+        if let Some(type_) = &field.type_ {
+            seed_decl_scope_receiver_type_parameter_names_in_expr(type_, scopes);
+        }
+    }
+}
+
+fn seed_decl_scope_receiver_type_parameter_names_in_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut DeclarationScopes,
+) {
+    match expr {
+        ast::Expr::IndexExpr(index) => {
+            if let ast::Expr::Ident(ident) = index.index.as_ref() {
+                scopes.declare_if_new(ident.name);
+            }
+        }
+        ast::Expr::IndexListExpr(index) => {
+            for expr in &index.indices {
+                if let ast::Expr::Ident(ident) = expr {
+                    scopes.declare_if_new(ident.name);
+                }
+            }
+        }
+        ast::Expr::ParenExpr(paren) => {
+            seed_decl_scope_receiver_type_parameter_names_in_expr(&paren.x, scopes);
+        }
+        ast::Expr::StarExpr(star) => {
+            seed_decl_scope_receiver_type_parameter_names_in_expr(&star.x, scopes);
+        }
+        _ => {}
     }
 }
 
@@ -11989,6 +12122,110 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_type_parameter_declarations() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func f[T any, T comparable]() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateTypeParameterName {
+                name: "T".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type Box[T any, T comparable] struct{}
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateTypeParameterName {
+                name: "T".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func f[T]() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::InvalidTypeParameterDecl)
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func f[T any](T T) {}
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateName {
+                name: "T".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validates_receiver_type_parameter_declarations() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair[A, A]) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateTypeParameterName {
+                name: "A".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair[*int, string]) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverTypeParameterNotIdentifier)
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair[A, B]) M(A int) {}
+                "#,
+            ),
+            Some(super::InvalidSignature::DuplicateName {
+                name: "A".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{ a A }
+                    func (p Pair[First, _]) First() First {
+                        return p.a
+                    }
+                "#,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_invalid_init_declarations() {
         assert_eq!(
             invalid_signature(
@@ -12444,6 +12681,20 @@ mod tests {
             ),
             Some(super::InvalidDeclaration::DuplicateLexicalName {
                 name: "x".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f[T any]() {
+                        var T int
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateLexicalName {
+                name: "T".to_string(),
             })
         );
     }

@@ -13086,6 +13086,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         ir::InvalidSignature::DuplicateName { name } => {
             format!("duplicate parameter/result name {}", name)
         }
+        ir::InvalidSignature::DuplicateTypeParameterName { name } => {
+            format!("duplicate type parameter name {name}")
+        }
         ir::InvalidSignature::InitFunction {
             type_params,
             params,
@@ -13094,6 +13097,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
             "init function must not declare type parameters, parameters, or results \
              (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
         ),
+        ir::InvalidSignature::InvalidTypeParameterDecl => {
+            "type parameter declaration must include names and a constraint".to_string()
+        }
         ir::InvalidSignature::MainFunction {
             type_params,
             params,
@@ -13116,6 +13122,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         }
         ir::InvalidSignature::ReceiverType { base, reason } => {
             invalid_receiver_type_reason(base.as_deref(), reason)
+        }
+        ir::InvalidSignature::ReceiverTypeParameterNotIdentifier => {
+            "receiver type parameter must be an identifier".to_string()
         }
         ir::InvalidSignature::ReceiverVariadic => "method receiver cannot be variadic".to_string(),
         ir::InvalidSignature::VariadicNotFinal => {
