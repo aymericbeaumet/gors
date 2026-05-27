@@ -7973,10 +7973,7 @@ fn invalid_range_assignment_type_mismatch(
             }
             let expected = env.resolve_alias(&GoType::infer_expr(target, env));
             let actual = env.resolve_alias(iteration_types.get(idx)?);
-            if matches!(expected, GoType::Unknown | GoType::Named(_))
-                || matches!(actual, GoType::Unknown | GoType::Named(_))
-                || types_are_assignable_for_validation(&expected, &actual)
-            {
+            if range_iteration_value_is_assignable(range, idx, &expected, &actual, env) {
                 return None;
             }
             Some(InvalidRangeReason::TypeMismatch {
@@ -7985,6 +7982,41 @@ fn invalid_range_assignment_type_mismatch(
             })
         })
         .next()
+}
+
+fn range_iteration_value_is_assignable(
+    range: &ast::RangeStmt<'_>,
+    idx: usize,
+    expected: &GoType,
+    actual: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    if matches!(expected, GoType::Unknown | GoType::Named(_))
+        || matches!(actual, GoType::Unknown | GoType::Named(_))
+    {
+        return true;
+    }
+    if range_integer_constant_iteration_uses_target_type(range, idx, expected, env) {
+        return true;
+    }
+    match (expected, actual) {
+        (expected, actual) if expected == actual => true,
+        (GoType::Any | GoType::Interface(_) | GoType::Error, _) => true,
+        (expected, actual) if go_type_is_numeric(expected) && go_type_is_numeric(actual) => false,
+        (GoType::Bool, _) | (_, GoType::Bool) | (GoType::String, _) | (_, GoType::String) => false,
+        _ => true,
+    }
+}
+
+fn range_integer_constant_iteration_uses_target_type(
+    range: &ast::RangeStmt<'_>,
+    idx: usize,
+    expected: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    idx == 0
+        && expected.is_integer()
+        && expr_is_untyped_integer_constant_for_comparison(&range.x, env)
 }
 
 fn range_iteration_types(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
@@ -10222,7 +10254,7 @@ fn invalid_composite_element_type(
 ) -> Option<InvalidStatementReason> {
     let expected = env.resolve_alias(expected);
     let actual = env.resolve_alias(&GoType::infer_expr(expr, env));
-    if types_are_assignable_for_validation(&expected, &actual) {
+    if expr_is_assignable_for_validation(&expected, expr, env) {
         return None;
     }
     Some(invalid_composite_literal_reason(format!(
@@ -19359,10 +19391,32 @@ mod tests {
                     package main
 
                     func main() {
+                        var f float64
+                        _ = map[int]int{f: 1}
+                    }
+                "#,
+                "key must be assignable to int, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = map[string]int{"go": "rs"}
                     }
                 "#,
                 "value must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var f float64
+                        _ = map[string]int{"go": f}
+                    }
+                "#,
+                "value must be assignable to int, got float64",
             ),
             (
                 r#"
@@ -19383,6 +19437,17 @@ mod tests {
                     }
                 "#,
                 "element must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var f float64
+                        _ = []int{f}
+                    }
+                "#,
+                "element must be assignable to int, got float64",
             ),
             (
                 r#"
@@ -19427,6 +19492,19 @@ mod tests {
                     }
                 "#,
                 "field must be assignable to int, got string",
+            ),
+            (
+                r#"
+                    package main
+
+                    type T struct { A int }
+
+                    func main() {
+                        var f float64
+                        _ = T{A: f}
+                    }
+                "#,
+                "field must be assignable to int, got float64",
             ),
             (
                 r#"
@@ -19491,12 +19569,14 @@ mod tests {
 
                 func main() {
                     _ = []int{1, 2}
+                    _ = []int{1.0}
                     _ = Ints{0: 1, 2}
                     _ = [3]int{0: 1, 2: 3}
                     _ = map[string]int{"go": 1}
+                    _ = map[int]int{1.0: 2.0}
                     _ = Dict{"go": 1}
                     _ = T{}
-                    _ = T{A: 1}
+                    _ = T{A: 1.0}
                     _ = T{1, "go"}
                     _ = struct { A int }{A: 1}
                     _ = []T{{A: 1}, {1, "go"}}
@@ -22579,6 +22659,45 @@ mod tests {
                     package main
 
                     func main() {
+                        var i int8
+                        for i = range []int{1} {
+                        }
+                    }
+                "#,
+                "int8",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var value int64
+                        for _, value = range []uint32{1} {
+                        }
+                    }
+                "#,
+                "int64",
+                "uint32",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var f float64
+                        for f = range 10 {
+                        }
+                    }
+                "#,
+                "float64",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         var value string
                         for _, value = range []int{1} {
                         }
@@ -22679,6 +22798,10 @@ mod tests {
 
                     ch := make(chan int)
                     for n = range ch {
+                    }
+
+                    var small uint8
+                    for small = range 10 {
                     }
 
                     for key, n = range pairs {
