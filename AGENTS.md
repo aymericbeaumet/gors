@@ -800,10 +800,13 @@ not silently accept `nil`.
 Comparison validation has its own assignability check: typed numeric operands
 with different types are not comparable merely because both are numeric, while
 untyped constants are allowed when representable by the other operand's type.
-`min` and `max` reuse the same expression-aware compatibility rule after
-checking that all arguments are ordered and all numeric or all string. Complex
-types are numeric for arithmetic and equality, but not ordered: `<`, `<=`, `>`,
-`>=`, `min`, and `max` must reject `complex64`/`complex128`.
+Non-shift arithmetic and bitwise binary validation enforces the related operator
+rule: operand types must be identical unless one side is an untyped constant
+that can be converted to the other side's type. `min` and `max` reuse the same
+expression-aware compatibility rule after checking that all arguments are
+ordered and all numeric or all string. Complex types are numeric for arithmetic
+and equality, but not ordered: `<`, `<=`, `>`, `>=`, `min`, and `max` must
+reject `complex64`/`complex128`.
 
 Imaginary literals are treated as untyped complex constants in the Go front end
 and lower through `crate::builtin::complex128`; expected `complex64` constant

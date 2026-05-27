@@ -9060,15 +9060,15 @@ fn invalid_binary_expr(
     }
     match binary.op {
         token::Token::LAND | token::Token::LOR => binary_bool_operands(binary.op, &left, &right),
-        token::Token::ADD => binary_add_operands(&left, &right),
+        token::Token::ADD => binary_add_operands(binary, &left, &right, env),
         token::Token::SUB | token::Token::MUL | token::Token::QUO => {
-            binary_numeric_operands(binary.op, &left, &right)
+            binary_numeric_operands(binary, &left, &right, env)
         }
         token::Token::REM
         | token::Token::AND
         | token::Token::OR
         | token::Token::XOR
-        | token::Token::AND_NOT => binary_integer_operands(binary.op, &left, &right, binary),
+        | token::Token::AND_NOT => binary_integer_operands(&left, &right, binary, env),
         token::Token::SHL | token::Token::SHR => {
             binary_shift_operands(binary.op, &left, &right, binary)
         }
@@ -9105,11 +9105,19 @@ fn binary_bool_operands(
     ))
 }
 
-fn binary_add_operands(left: &GoType, right: &GoType) -> Option<InvalidStatementReason> {
+fn binary_add_operands(
+    binary: &ast::BinaryExpr<'_>,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
     if (go_type_is_numeric(left) && go_type_is_numeric(right))
         || matches!((left, right), (GoType::String, GoType::String))
     {
-        return None;
+        if binary_operator_operands_are_compatible(binary, left, right, env) {
+            return None;
+        }
+        return Some(binary_operator_type_mismatch(binary.op, left, right, env));
     }
     Some(invalid_binary_reason(
         token::Token::ADD,
@@ -9122,15 +9130,19 @@ fn binary_add_operands(left: &GoType, right: &GoType) -> Option<InvalidStatement
 }
 
 fn binary_numeric_operands(
-    op: token::Token,
+    binary: &ast::BinaryExpr<'_>,
     left: &GoType,
     right: &GoType,
+    env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     if go_type_is_numeric(left) && go_type_is_numeric(right) {
-        return None;
+        if binary_operator_operands_are_compatible(binary, left, right, env) {
+            return None;
+        }
+        return Some(binary_operator_type_mismatch(binary.op, left, right, env));
     }
     Some(invalid_binary_reason(
-        op,
+        binary.op,
         format!(
             "operands must both be numeric, got {} and {}",
             go_type_display_name(left),
@@ -9140,22 +9152,63 @@ fn binary_numeric_operands(
 }
 
 fn binary_integer_operands(
-    op: token::Token,
     left: &GoType,
     right: &GoType,
     binary: &ast::BinaryExpr<'_>,
+    env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     if binary_operand_is_integer(left, &binary.x) && binary_operand_is_integer(right, &binary.y) {
-        return None;
+        if binary_operator_operands_are_compatible(binary, left, right, env) {
+            return None;
+        }
+        return Some(binary_operator_type_mismatch(binary.op, left, right, env));
     }
     Some(invalid_binary_reason(
-        op,
+        binary.op,
         format!(
             "operands must both be integer, got {} and {}",
             go_type_display_name(left),
             go_type_display_name(right)
         ),
     ))
+}
+
+fn binary_operator_operands_are_compatible(
+    binary: &ast::BinaryExpr<'_>,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    let inferred_left = env.resolve_alias(left);
+    let inferred_right = env.resolve_alias(right);
+    let left = comparison_operand_effective_type(&binary.x, &inferred_left, &inferred_right, env);
+    let right = comparison_operand_effective_type(&binary.y, &inferred_right, &inferred_left, env);
+    if matches!(left, GoType::Unknown) || matches!(right, GoType::Unknown) {
+        return true;
+    }
+    if left == right {
+        return true;
+    }
+    comparison_constant_is_assignable_to(&binary.x, &left, &right, env)
+        || comparison_constant_is_assignable_to(&binary.y, &right, &left, env)
+}
+
+fn binary_operator_type_mismatch(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> InvalidStatementReason {
+    let left = env.resolve_alias(left);
+    let right = env.resolve_alias(right);
+    invalid_binary_reason(
+        op,
+        format!(
+            "operands have mismatched types {} and {}",
+            go_type_display_name(&left),
+            go_type_display_name(&right)
+        ),
+    )
 }
 
 fn binary_shift_operands(
@@ -18652,6 +18705,44 @@ mod tests {
                     package main
 
                     func main() {
+                        var i int
+                        var f float64
+                        _ = i + f
+                    }
+                "#,
+                "+",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        _ = i + 1.5
+                    }
+                "#,
+                "+",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        var u uint
+                        _ = i & u
+                    }
+                "#,
+                "&",
+                "operands have mismatched types int and uint",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = 1 << 1.5
                     }
                 "#,
@@ -18865,18 +18956,27 @@ mod tests {
                     _ = "go" < "rs"
                     _ = 1 == 2
                     var i int
+                    _ = i + 1
+                    _ = i + 1.0
                     _ = i < 1
                     _ = i <= 1.0
                     _ = i == 1
                     var f64 float64
+                    _ = f64 + 1
+                    _ = f64 + 1.5
                     _ = f64 >= 1
                     _ = f64 != 1.5
                     var n64 int64
+                    _ = 2 * n64
+                    _ = n64 % 1
+                    _ = n64 & 3
                     _ = n64 != 2*n64
                     binBits := uint(i+1) * 8
                     _ = n64 >= -1<<binBits
                     _ = n64 < 1<<binBits
                     var c128 complex128
+                    _ = c128 + 1
+                    _ = c128 + 1i
                     _ = c128 == 1
                     xs := []int{}
                     _ = xs == nil
