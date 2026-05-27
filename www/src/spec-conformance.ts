@@ -72,8 +72,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Lexical elements",
 		"testCount": 13,
-		"passingTestCount": 10,
-		"skippedTestCount": 3,
+		"passingTestCount": 12,
+		"skippedTestCount": 1,
 		"tests": [
 			{
 				"id": "lexical-comments",
@@ -149,9 +149,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "lexical-integer-base-prefixes",
 				"section": "Integer literals",
 				"title": "Integer literals support binary, octal, and hexadecimal prefixes",
-				"status": "skipped",
-				"fixtures": [],
-				"reason": "Needs focused generated-program fixtures for every base-prefix spelling and separator placement."
+				"status": "passing",
+				"fixtures": [
+					"conformance_integer_base_literals"
+				],
+				"reason": ""
 			},
 			{
 				"id": "lexical-floating-literals",
@@ -208,9 +210,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "lexical-raw-string-literals",
 				"section": "String literals",
 				"title": "Raw string literals preserve content except carriage returns",
-				"status": "skipped",
-				"fixtures": [],
-				"reason": "Needs focused raw-string fixtures, including carriage-return normalization."
+				"status": "passing",
+				"fixtures": [
+					"conformance_raw_string_literals"
+				],
+				"reason": ""
 			}
 		]
 	},
@@ -1244,6 +1248,6 @@ export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 2,
 	"testCount": 102,
-	"passingTestCount": 85,
-	"skippedTestCount": 17
+	"passingTestCount": 87,
+	"skippedTestCount": 15
 } as const;

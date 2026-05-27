@@ -1440,6 +1440,20 @@ fn parse_go_int_literal(lit: &str) -> Option<ConstValue> {
     }
 }
 
+fn rust_int_literal_text(lit: &str) -> String {
+    match parse_go_int_literal(lit) {
+        Some(ConstValue::Int(value)) => value.to_string(),
+        Some(ConstValue::Uint(value, _)) => value.to_string(),
+        Some(
+            ConstValue::Bool(_)
+            | ConstValue::Complex(_, _)
+            | ConstValue::Float(_)
+            | ConstValue::Str(_),
+        )
+        | None => lit.to_string(),
+    }
+}
+
 fn parse_go_float_literal(lit: &str) -> Option<f64> {
     let lit = lit.replace('_', "");
     let lower = lit.to_ascii_lowercase();
@@ -12648,7 +12662,10 @@ impl From<ast::BasicLit<'_>> for syn::Lit {
     fn from(basic_lit: ast::BasicLit) -> Self {
         use token::Token::*;
         match basic_lit.kind {
-            INT => Self::Int(syn::LitInt::new(basic_lit.value, Span::mixed_site())),
+            INT => Self::Int(syn::LitInt::new(
+                &rust_int_literal_text(basic_lit.value),
+                Span::mixed_site(),
+            )),
             STRING => {
                 let raw = basic_lit.value;
                 let inner = &raw[1..raw.len() - 1];
@@ -20761,6 +20778,33 @@ func main() {
         assert!(output.contains("crate::builtin::complex64"));
         assert!(output.contains("crate::builtin::to_complex64"));
         assert!(!output.contains("unsupported literal"));
+    }
+
+    #[test]
+    fn it_should_lower_go_integer_literal_radices() {
+        let go_source = r#"
+package main
+
+func main() {
+	decimal := 42
+	binary := 0b101010
+	octal := 0o52
+	legacyOctal := 052
+	separatedLegacyOctal := 0_52
+	hex := 0x2a
+	_, _, _, _, _, _ = decimal, binary, octal, legacyOctal, separatedLegacyOctal, hex
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("let mut legacyOctal = 42;"), "{output}");
+        assert!(
+            output.contains("let mut separatedLegacyOctal = 42;"),
+            "{output}"
+        );
+        assert!(!output.contains("let mut legacyOctal = 052;"), "{output}");
     }
 
     #[test]

@@ -82,8 +82,8 @@
           "id": "lexical-integer-base-prefixes",
           "section": "Integer literals",
           "title": "Integer literals support binary, octal, and hexadecimal prefixes",
-          "status": "skipped",
-          "reason": "Needs focused generated-program fixtures for every base-prefix spelling and separator placement."
+          "status": "passing",
+          "fixtures": ["conformance_integer_base_literals"]
         },
         {
           "id": "lexical-floating-literals",
@@ -124,8 +124,8 @@
           "id": "lexical-raw-string-literals",
           "section": "String literals",
           "title": "Raw string literals preserve content except carriage returns",
-          "status": "skipped",
-          "reason": "Needs focused raw-string fixtures, including carriage-return normalization."
+          "status": "passing",
+          "fixtures": ["conformance_raw_string_literals"]
         }
       ]
     },
