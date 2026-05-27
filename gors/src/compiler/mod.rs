@@ -42,6 +42,7 @@ thread_local! {
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
+    static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static STRING_CONST_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -683,6 +684,23 @@ fn set_import_renames(import_renames: BTreeMap<String, String>) {
     IMPORT_RENAMES.with(|renames| {
         *renames.borrow_mut() = import_renames;
     });
+}
+
+fn set_import_package_names(import_package_names: BTreeMap<String, String>) {
+    IMPORT_PACKAGE_NAMES.with(|names| {
+        *names.borrow_mut() = import_package_names;
+    });
+}
+
+fn import_local_name(import: &ast::ImportSpec<'_>) -> Option<String> {
+    let path = import.path.value.trim_matches('"');
+    if let Some(name) = &import.name {
+        return (!matches!(name.name, "." | "_")).then(|| name.name.to_string());
+    }
+    IMPORT_PACKAGE_NAMES
+        .with(|names| names.borrow().get(path).cloned())
+        .or_else(|| crate::resolve::scan_type_env(path).map(|(package_name, _)| package_name))
+        .or_else(|| path.rsplit('/').next().map(str::to_string))
 }
 
 fn import_rust_name(name: &str) -> String {
@@ -2826,6 +2844,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
+    set_import_package_names(BTreeMap::new());
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
@@ -2858,6 +2877,7 @@ pub fn compile_with_type_env_and_import_renames(
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(import_renames);
+    set_import_package_names(BTreeMap::new());
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -2871,13 +2891,23 @@ fn validate_file_with_type_env(
     file: &ast::File<'_>,
     type_env: &typeinfer::TypeEnv,
 ) -> Result<(), CompilerError> {
+    validate_file_with_type_env_and_import_package_names(file, type_env, &BTreeMap::new())
+}
+
+fn validate_file_with_type_env_and_import_package_names(
+    file: &ast::File<'_>,
+    type_env: &typeinfer::TypeEnv,
+    import_package_names: &BTreeMap<String, String>,
+) -> Result<(), CompilerError> {
     if let Some(invalid) = ir::invalid_signature_in_file(file) {
         return Err(invalid_signature_error(invalid));
     }
     if let Some(invalid) = ir::invalid_receiver_type_in_file(file, type_env) {
         return Err(invalid_signature_error(invalid));
     }
-    if let Some(invalid) = ir::invalid_declaration_in_file(file) {
+    if let Some(invalid) =
+        ir::invalid_declaration_in_file_with_import_package_names(file, import_package_names)
+    {
         return Err(invalid_declaration_error(invalid));
     }
     if let Some(invalid) = ir::invalid_value_declaration_in_file(file, type_env) {
@@ -2888,6 +2918,18 @@ fn validate_file_with_type_env(
     }
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(file) {
         return Err(invalid_statement_error(invalid));
+    }
+    Ok(())
+}
+
+fn validate_unused_imports(
+    file: &ast::File<'_>,
+    import_package_names: &BTreeMap<String, String>,
+) -> Result<(), CompilerError> {
+    if let Some(invalid) =
+        ir::invalid_unused_import_in_file_with_import_package_names(file, import_package_names)
+    {
+        return Err(invalid_declaration_error(invalid));
     }
     Ok(())
 }
@@ -3086,6 +3128,16 @@ fn compile_program_impl(
         }
     }
 
+    let import_package_names: BTreeMap<String, String> = local_type_envs
+        .iter()
+        .map(|(path, (package_name, _))| (path.clone(), package_name.clone()))
+        .chain(
+            stdlib_type_envs
+                .iter()
+                .map(|(path, (package_name, _))| (path.clone(), package_name.clone())),
+        )
+        .collect();
+
     let stdlib_mod_names: std::collections::HashSet<String> =
         std::iter::once("builtin".to_string())
             .chain(
@@ -3136,8 +3188,14 @@ fn compile_program_impl(
             &stdlib_type_envs,
             &stdlib_module_names,
         );
-        validate_file_with_type_env(&pkg.ast, &type_env)?;
+        validate_file_with_type_env_and_import_package_names(
+            &pkg.ast,
+            &type_env,
+            &import_package_names,
+        )?;
+        validate_unused_imports(&pkg.ast, &import_package_names)?;
         let _ir = ir::lower_file(&pkg.ast, &type_env);
+        set_import_package_names(import_package_names.clone());
         set_type_env(type_env);
         set_import_renames(import_rewrites.clone());
         let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
@@ -3207,8 +3265,14 @@ fn compile_program_impl(
         &stdlib_type_envs,
         &stdlib_module_names,
     );
-    validate_file_with_type_env(&program.main_package.ast, &main_type_env)?;
+    validate_file_with_type_env_and_import_package_names(
+        &program.main_package.ast,
+        &main_type_env,
+        &import_package_names,
+    )?;
+    validate_unused_imports(&program.main_package.ast, &import_package_names)?;
     let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
+    set_import_package_names(import_package_names);
     set_type_env(main_type_env);
     set_import_renames(main_import_rewrites.clone());
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
@@ -13247,6 +13311,13 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::TypeDefinitionFromTypeParameter { name } => {
             format!("type definition cannot use type parameter {name} as the defined type")
         }
+        ir::InvalidDeclaration::UnusedImport { path, alias } => {
+            if let Some(alias) = alias {
+                format!("{path} imported as {alias} and not used")
+            } else {
+                format!("{path} imported and not used")
+            }
+        }
         ir::InvalidDeclaration::VarMissingTypeOrInitializer => {
             "var declaration missing type or initializer".to_string()
         }
@@ -14109,9 +14180,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
             let mut set = names.borrow_mut();
             set.clear();
             for import in file.imports() {
-                let path_str = import.path.value.trim_matches('"');
-                if let Some(pkg_name) = path_str.rsplit('/').next() {
-                    set.insert(pkg_name.to_string());
+                if let Some(pkg_name) = import_local_name(import) {
+                    set.insert(pkg_name);
                 }
             }
         });
@@ -17890,6 +17960,14 @@ func main() {
         printer::generate_multi(compiled).unwrap()
     }
 
+    fn compile_temp_program_error(dir: &Path) -> super::CompilerError {
+        let program = crate::parser::parse_program(dir.to_str().unwrap()).unwrap();
+        match super::compile_program_multi(program) {
+            Err(err) => err,
+            Ok(_) => panic!("expected program compile error"),
+        }
+    }
+
     #[test]
     fn compile_program_multi_applies_ir_validation_to_merged_package() {
         let tmp = tempfile::tempdir().unwrap();
@@ -19225,6 +19303,79 @@ func Hello() {}
     }
 
     #[test]
+    fn compile_program_multi_uses_imported_package_clause_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/lib"
+
+func main() {
+	renamed.Hello()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("lib/lib.go").as_path(),
+            r#"
+package renamed
+
+func Hello() {}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("renamed::Hello()"), "{main_rs}");
+        assert!(output.files.contains_key("example__lib.rs"));
+    }
+
+    #[test]
+    fn compile_program_multi_rejects_duplicate_default_import_package_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import (
+	"example/a"
+	"example/b"
+)
+
+func main() {}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("a/a.go").as_path(),
+            r#"
+package same
+
+func A() {}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("b/b.go").as_path(),
+            r#"
+package same
+
+func B() {}
+"#,
+        );
+
+        match compile_temp_program_error(tmp.path()) {
+            super::CompilerError::UnsupportedConstruct(err) => {
+                assert!(err.contains("duplicate import name same"), "{err:?}");
+            }
+            err => panic!("expected duplicate import rejection, got {err:?}"),
+        }
+    }
+
+    #[test]
     fn generated_output_prunes_unreachable_items_and_builtin_helpers() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -19263,7 +19414,7 @@ func main() {
     }
 
     #[test]
-    fn generated_output_prunes_unreferenced_imported_package_modules() {
+    fn compile_program_multi_rejects_unreferenced_imported_package_modules() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
         write_fixture_file(
@@ -19298,16 +19449,15 @@ func Hello() {}
 "#,
         );
 
-        let output = compile_temp_program(tmp.path());
-        assert!(output.files.contains_key("example__live.rs"));
-        assert!(!output.files.contains_key("example__dead.rs"));
-        assert!(
-            !output
-                .files
-                .get("lib.rs")
-                .unwrap()
-                .contains("example__dead")
-        );
+        match compile_temp_program_error(tmp.path()) {
+            super::CompilerError::UnsupportedConstruct(err) => {
+                assert!(
+                    err.contains("example/dead imported and not used"),
+                    "{err:?}"
+                );
+            }
+            err => panic!("expected unused import rejection, got {err:?}"),
+        }
     }
 
     #[test]

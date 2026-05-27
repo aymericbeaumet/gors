@@ -1300,6 +1300,10 @@ pub enum InvalidDeclaration {
     TypeDefinitionFromTypeParameter {
         name: String,
     },
+    UnusedImport {
+        path: String,
+        alias: Option<String>,
+    },
     VarMissingTypeOrInitializer,
     VarMultiValueInSingleValueContext,
     VarTypeMismatch {
@@ -1436,8 +1440,15 @@ pub fn invalid_receiver_type_in_file(
 }
 
 pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    invalid_declaration_in_file_with_import_package_names(file, &BTreeMap::new())
+}
+
+pub fn invalid_declaration_in_file_with_import_package_names(
+    file: &ast::File<'_>,
+    import_package_names: &BTreeMap<String, String>,
+) -> Option<InvalidDeclaration> {
     invalid_package_name_in_file(file).or_else(|| {
-        invalid_import_names_in_file(file).or_else(|| {
+        invalid_import_names_in_file(file, import_package_names).or_else(|| {
             invalid_top_level_names_in_file(file).or_else(|| {
                 invalid_method_names_in_file(file).or_else(|| {
                     for decl in &file.decls {
@@ -1459,7 +1470,10 @@ fn invalid_package_name_in_file(file: &ast::File<'_>) -> Option<InvalidDeclarati
     })
 }
 
-fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+fn invalid_import_names_in_file(
+    file: &ast::File<'_>,
+    import_package_names: &BTreeMap<String, String>,
+) -> Option<InvalidDeclaration> {
     let package_names = package_block_declared_names(file);
     let mut names_by_file: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
     for decl in &file.decls {
@@ -1473,16 +1487,40 @@ fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclarati
             let ast::Spec::ImportSpec(import) = spec else {
                 continue;
             };
-            let Some(name) = explicit_import_binding_name(import) else {
+            let Some(binding) = import_binding_name(import, import_package_names) else {
                 continue;
             };
-            if package_names.contains(&name) {
-                return Some(InvalidDeclaration::ImportPackageBlockConflict { name });
+            let file_key = import_file_key(import);
+            if package_names.contains(&binding.name) {
+                return Some(InvalidDeclaration::ImportPackageBlockConflict { name: binding.name });
             }
-            let names = names_by_file.entry(import_file_key(import)).or_default();
-            if !names.insert(name.clone()) {
-                return Some(InvalidDeclaration::DuplicateImportName { name });
+            let names = names_by_file.entry(file_key.clone()).or_default();
+            if !names.insert(binding.name.clone()) {
+                return Some(InvalidDeclaration::DuplicateImportName { name: binding.name });
             }
+        }
+    }
+    None
+}
+
+pub fn invalid_unused_import_in_file_with_import_package_names(
+    file: &ast::File<'_>,
+    import_package_names: &BTreeMap<String, String>,
+) -> Option<InvalidDeclaration> {
+    let used_import_names_by_file = used_import_names_by_file(file);
+    for import in file.imports() {
+        let Some(binding) = import_binding_name(import, import_package_names) else {
+            continue;
+        };
+        let file_key = import_file_key(import);
+        if !used_import_names_by_file
+            .get(&file_key)
+            .is_some_and(|used| used.contains(&binding.name))
+        {
+            return Some(InvalidDeclaration::UnusedImport {
+                path: binding.path,
+                alias: binding.alias,
+            });
         }
     }
     None
@@ -1505,9 +1543,336 @@ fn package_block_declared_names(file: &ast::File<'_>) -> BTreeSet<String> {
     names
 }
 
-fn explicit_import_binding_name(import: &ast::ImportSpec<'_>) -> Option<String> {
-    let name = import.name.as_ref()?.name;
-    (!matches!(name, "_" | ".")).then(|| name.to_string())
+struct ImportBinding {
+    name: String,
+    path: String,
+    alias: Option<String>,
+}
+
+fn import_binding_name(
+    import: &ast::ImportSpec<'_>,
+    import_package_names: &BTreeMap<String, String>,
+) -> Option<ImportBinding> {
+    let path = import.path.value.trim_matches('"').to_string();
+    if let Some(name) = &import.name {
+        return (!matches!(name.name, "_" | ".")).then(|| ImportBinding {
+            name: name.name.to_string(),
+            path,
+            alias: Some(name.name.to_string()),
+        });
+    }
+
+    let path_base = path.rsplit('/').next().unwrap_or(&path);
+    let name = import_package_names
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(|| path_base.to_string());
+    let alias = (name != path_base).then(|| name.clone());
+    Some(ImportBinding { name, path, alias })
+}
+
+fn used_import_names_by_file(file: &ast::File<'_>) -> BTreeMap<(String, String), BTreeSet<String>> {
+    let mut used = BTreeMap::new();
+    for decl in &file.decls {
+        collect_used_import_names_in_decl(decl, &mut used);
+    }
+    used
+}
+
+fn collect_used_import_names_in_decl(
+    decl: &ast::Decl<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    match decl {
+        ast::Decl::FuncDecl(func) => {
+            collect_used_import_names_in_func_type(&func.type_, used);
+            if let Some(recv) = &func.recv {
+                collect_used_import_names_in_field_list(recv, used);
+            }
+            if let Some(body) = &func.body {
+                collect_used_import_names_in_block(body, used);
+            }
+        }
+        ast::Decl::GenDecl(gen_decl) if gen_decl.tok != token::Token::IMPORT => {
+            for spec in &gen_decl.specs {
+                collect_used_import_names_in_spec(spec, used);
+            }
+        }
+        ast::Decl::GenDecl(_) => {}
+    }
+}
+
+fn collect_used_import_names_in_spec(
+    spec: &ast::Spec<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    match spec {
+        ast::Spec::ImportSpec(_) => {}
+        ast::Spec::TypeSpec(type_spec) => {
+            if let Some(type_params) = &type_spec.type_params {
+                collect_used_import_names_in_field_list(type_params, used);
+            }
+            collect_used_import_names_in_expr(&type_spec.type_, used);
+        }
+        ast::Spec::ValueSpec(value) => {
+            if let Some(type_) = &value.type_ {
+                collect_used_import_names_in_expr(type_, used);
+            }
+            if let Some(values) = &value.values {
+                for value in values {
+                    collect_used_import_names_in_expr(value, used);
+                }
+            }
+        }
+    }
+}
+
+fn collect_used_import_names_in_field_list(
+    fields: &ast::FieldList<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    for field in &fields.list {
+        if let Some(type_) = &field.type_ {
+            collect_used_import_names_in_expr(type_, used);
+        }
+    }
+}
+
+fn collect_used_import_names_in_func_type(
+    func_type: &ast::FuncType<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    if let Some(type_params) = &func_type.type_params {
+        collect_used_import_names_in_field_list(type_params, used);
+    }
+    collect_used_import_names_in_field_list(&func_type.params, used);
+    if let Some(results) = &func_type.results {
+        collect_used_import_names_in_field_list(results, used);
+    }
+}
+
+fn collect_used_import_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    for stmt in &block.list {
+        collect_used_import_names_in_stmt(stmt, used);
+    }
+}
+
+fn collect_used_import_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_used_import_names_in_expr(expr, used);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => collect_used_import_names_in_block(block, used),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+        ast::Stmt::CaseClause(case) => {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    collect_used_import_names_in_expr(expr, used);
+                }
+            }
+            for stmt in &case.body {
+                collect_used_import_names_in_stmt(stmt, used);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = comm.comm.as_deref() {
+                collect_used_import_names_in_stmt(stmt, used);
+            }
+            for stmt in &comm.body {
+                collect_used_import_names_in_stmt(stmt, used);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                collect_used_import_names_in_spec(spec, used);
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => collect_used_import_names_in_call(&defer.call, used),
+        ast::Stmt::ExprStmt(expr) => collect_used_import_names_in_expr(&expr.x, used),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_used_import_names_in_stmt(init, used);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_used_import_names_in_expr(cond, used);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_used_import_names_in_stmt(post, used);
+            }
+            collect_used_import_names_in_block(&for_stmt.body, used);
+        }
+        ast::Stmt::GoStmt(go) => collect_used_import_names_in_call(&go.call, used),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_used_import_names_in_stmt(init, used);
+            }
+            collect_used_import_names_in_expr(&if_stmt.cond, used);
+            collect_used_import_names_in_block(&if_stmt.body, used);
+            if let Some(else_) = if_stmt.else_.as_ref().as_ref() {
+                collect_used_import_names_in_stmt(else_, used);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => collect_used_import_names_in_expr(&inc_dec.x, used),
+        ast::Stmt::LabeledStmt(label) => collect_used_import_names_in_stmt(&label.stmt, used),
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                collect_used_import_names_in_expr(key, used);
+            }
+            if let Some(value) = &range.value {
+                collect_used_import_names_in_expr(value, used);
+            }
+            collect_used_import_names_in_expr(&range.x, used);
+            collect_used_import_names_in_block(&range.body, used);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_used_import_names_in_expr(expr, used);
+            }
+        }
+        ast::Stmt::SelectStmt(select) => collect_used_import_names_in_block(&select.body, used),
+        ast::Stmt::SendStmt(send) => {
+            collect_used_import_names_in_expr(&send.chan, used);
+            collect_used_import_names_in_expr(&send.value, used);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_used_import_names_in_stmt(init, used);
+            }
+            if let Some(tag) = &switch.tag {
+                collect_used_import_names_in_expr(tag, used);
+            }
+            collect_used_import_names_in_block(&switch.body, used);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_used_import_names_in_stmt(init, used);
+            }
+            collect_used_import_names_in_stmt(&type_switch.assign, used);
+            collect_used_import_names_in_block(&type_switch.body, used);
+        }
+    }
+}
+
+fn collect_used_import_names_in_call(
+    call: &ast::CallExpr<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    collect_used_import_names_in_expr(&call.fun, used);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_used_import_names_in_expr(arg, used);
+        }
+    }
+}
+
+fn collect_used_import_names_in_expr(
+    expr: &ast::Expr<'_>,
+    used: &mut BTreeMap<(String, String), BTreeSet<String>>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_used_import_names_in_expr(len, used);
+            }
+            collect_used_import_names_in_expr(&array.elt, used);
+        }
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::BinaryExpr(binary) => {
+            collect_used_import_names_in_expr(&binary.x, used);
+            collect_used_import_names_in_expr(&binary.y, used);
+        }
+        ast::Expr::CallExpr(call) => collect_used_import_names_in_call(call, used),
+        ast::Expr::ChanType(chan) => collect_used_import_names_in_expr(&chan.value, used),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(type_) = &comp.type_ {
+                collect_used_import_names_in_expr(type_, used);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    collect_used_import_names_in_expr(elt, used);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_used_import_names_in_expr(elt, used);
+            }
+        }
+        ast::Expr::FuncLit(func) => {
+            collect_used_import_names_in_func_type(&func.type_, used);
+            collect_used_import_names_in_block(&func.body, used);
+        }
+        ast::Expr::FuncType(func_type) => collect_used_import_names_in_func_type(func_type, used),
+        ast::Expr::IndexExpr(index) => {
+            collect_used_import_names_in_expr(&index.x, used);
+            collect_used_import_names_in_expr(&index.index, used);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_used_import_names_in_expr(&index.x, used);
+            for index in &index.indices {
+                collect_used_import_names_in_expr(index, used);
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                collect_used_import_names_in_field_list(methods, used);
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_used_import_names_in_expr(&kv.key, used);
+            collect_used_import_names_in_expr(&kv.value, used);
+        }
+        ast::Expr::MapType(map) => {
+            collect_used_import_names_in_expr(&map.key, used);
+            collect_used_import_names_in_expr(&map.value, used);
+        }
+        ast::Expr::ParenExpr(paren) => collect_used_import_names_in_expr(&paren.x, used),
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = &*selector.x {
+                used.entry(import_file_key_from_position(base.name_pos))
+                    .or_default()
+                    .insert(base.name.to_string());
+            }
+            collect_used_import_names_in_expr(&selector.x, used);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_used_import_names_in_expr(&slice.x, used);
+            if let Some(low) = &slice.low {
+                collect_used_import_names_in_expr(low, used);
+            }
+            if let Some(high) = &slice.high {
+                collect_used_import_names_in_expr(high, used);
+            }
+            if let Some(max) = &slice.max {
+                collect_used_import_names_in_expr(max, used);
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_used_import_names_in_expr(&star.x, used),
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                collect_used_import_names_in_field_list(fields, used);
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_used_import_names_in_expr(&assert.x, used);
+            if let Some(type_) = &assert.type_ {
+                collect_used_import_names_in_expr(type_, used);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => collect_used_import_names_in_expr(&unary.x, used),
+    }
+}
+
+fn import_file_key_from_position(pos: crate::token::Position<'_>) -> (String, String) {
+    (pos.directory.to_string(), pos.file.to_string())
 }
 
 fn invalid_top_level_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
@@ -12516,6 +12881,7 @@ mod tests {
     use super::{Addressability, CaptureMode, Completion, ExprKind, Item, Stmt, lower_file};
     use crate::compiler::typeinfer::{GoType, TypeEnv};
     use crate::parser::parse_file;
+    use std::collections::BTreeMap;
 
     fn lower(source: &str) -> super::File {
         let file = parse_file("test.go", source).unwrap();
@@ -13084,6 +13450,22 @@ mod tests {
         super::invalid_declaration_in_file(&file)
     }
 
+    fn invalid_declaration_with_import_package_names(
+        source: &str,
+        import_package_names: BTreeMap<String, String>,
+    ) -> Option<super::InvalidDeclaration> {
+        let file = parse_file("test.go", source).unwrap();
+        super::invalid_declaration_in_file_with_import_package_names(&file, &import_package_names)
+    }
+
+    fn invalid_unused_import(
+        source: &str,
+        import_package_names: BTreeMap<String, String>,
+    ) -> Option<super::InvalidDeclaration> {
+        let file = parse_file("test.go", source).unwrap();
+        super::invalid_unused_import_in_file_with_import_package_names(&file, &import_package_names)
+    }
+
     fn invalid_declaration_in_merged_files(
         first_path: &'static str,
         first_source: &'static str,
@@ -13502,6 +13884,121 @@ mod tests {
             Some(super::InvalidDeclaration::ImportPackageBlockConflict {
                 name: "f".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_implicit_import_names() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import "fmt"
+                    import "fmt"
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateImportName {
+                name: "fmt".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import "fmt"
+
+                    var fmt int
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ImportPackageBlockConflict {
+                name: "fmt".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration_with_import_package_names(
+                r#"
+                    package main
+
+                    import "crypto/rand"
+                    import "math/rand/v2"
+                "#,
+                BTreeMap::from([
+                    ("crypto/rand".to_string(), "rand".to_string()),
+                    ("math/rand/v2".to_string(), "rand".to_string()),
+                ]),
+            ),
+            Some(super::InvalidDeclaration::DuplicateImportName {
+                name: "rand".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unused_normal_imports() {
+        assert_eq!(
+            invalid_unused_import(
+                r#"
+                    package main
+
+                    import "fmt"
+
+                    func main() {}
+                "#,
+                BTreeMap::new(),
+            ),
+            Some(super::InvalidDeclaration::UnusedImport {
+                path: "fmt".to_string(),
+                alias: None,
+            })
+        );
+        assert_eq!(
+            invalid_unused_import(
+                r#"
+                    package main
+
+                    import f "fmt"
+
+                    func main() {}
+                "#,
+                BTreeMap::new(),
+            ),
+            Some(super::InvalidDeclaration::UnusedImport {
+                path: "fmt".to_string(),
+                alias: Some("f".to_string()),
+            })
+        );
+        assert_eq!(
+            invalid_unused_import(
+                r#"
+                    package main
+
+                    import "math/rand/v2"
+
+                    func main() {}
+                "#,
+                BTreeMap::from([("math/rand/v2".to_string(), "rand".to_string())]),
+            ),
+            Some(super::InvalidDeclaration::UnusedImport {
+                path: "math/rand/v2".to_string(),
+                alias: Some("rand".to_string()),
+            })
+        );
+        assert_eq!(
+            invalid_unused_import(
+                r#"
+                    package main
+
+                    import "fmt"
+
+                    func main() {
+                        fmt.Println("ok")
+                    }
+                "#,
+                BTreeMap::new(),
+            ),
+            None
         );
     }
 
