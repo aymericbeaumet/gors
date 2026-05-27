@@ -717,8 +717,10 @@ package ASTs before validation, import-name validation groups imports by their
 original source file positions rather than treating the merged AST as one file
 block. Single-file `compile()` and complete `compile_program_multi()` builds
 also reject unused normal imports by looking for same-file qualified selectors;
-this check intentionally stays out of `compile_with_type_env*`, which is used
-for root-pruned stdlib ASTs where pruning can leave otherwise-unused imports.
+single-file `compile()` resolves stdlib package names before that validation so
+versioned stdlib paths use their package clause name. This check intentionally
+stays out of `compile_with_type_env*`, which is used for root-pruned stdlib ASTs
+where pruning can leave otherwise-unused imports.
 For package `main`, the same signature validation rejects `func main` when it
 declares type parameters, parameters, or results.
 Short variable declarations are also checked there for duplicate non-blank names

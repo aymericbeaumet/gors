@@ -703,6 +703,18 @@ fn import_local_name(import: &ast::ImportSpec<'_>) -> Option<String> {
         .or_else(|| path.rsplit('/').next().map(str::to_string))
 }
 
+fn file_import_package_names(file: &ast::File<'_>) -> BTreeMap<String, String> {
+    file.imports()
+        .into_iter()
+        .filter(|import| import.name.is_none())
+        .filter_map(|import| {
+            let path = import.path.value.trim_matches('"');
+            crate::resolve::scan_type_env(path)
+                .map(|(package_name, _)| (path.to_string(), package_name))
+        })
+        .collect()
+}
+
 fn import_rust_name(name: &str) -> String {
     let renamed = IMPORT_RENAMES.with(|renames| {
         renames
@@ -2848,9 +2860,11 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
-    validate_file_with_type_env(&file, &type_env)?;
-    validate_unused_imports(&file, &BTreeMap::new())?;
+    let import_package_names = file_import_package_names(&file);
+    validate_file_with_type_env_and_import_package_names(&file, &type_env, &import_package_names)?;
+    validate_unused_imports(&file, &import_package_names)?;
     let _ir = ir::lower_file(&file, &type_env);
+    set_import_package_names(import_package_names);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -20856,6 +20870,23 @@ func main() {
                 func main() {}
             "#,
             "fmt imported and not used",
+        );
+    }
+
+    #[test]
+    fn it_should_validate_single_file_default_import_package_names() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                import (
+                    "crypto/rand"
+                    "math/rand/v2"
+                )
+
+                func main() {}
+            "#,
+            "duplicate import name rand",
         );
     }
 
