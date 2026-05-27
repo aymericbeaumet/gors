@@ -33,6 +33,7 @@ pub enum GoType {
     Func {
         params: Vec<GoType>,
         results: Vec<GoType>,
+        variadic_start: Option<usize>,
     },
     Named(std::string::String),
     Interface(std::string::String),
@@ -166,20 +167,20 @@ impl GoType {
     }
 
     fn from_func_type(ft: &ast::FuncType) -> GoType {
-        let params: Vec<GoType> = ft
-            .params
-            .list
-            .iter()
-            .flat_map(|f| {
-                let ty = f
-                    .type_
-                    .as_ref()
-                    .map(GoType::from_expr)
-                    .unwrap_or(GoType::Unknown);
-                let count = f.names.as_ref().map_or(1, |n| n.len());
-                std::iter::repeat_n(ty, count)
-            })
-            .collect();
+        let mut params = Vec::new();
+        let mut variadic_start = None;
+        for f in &ft.params.list {
+            let ty = f
+                .type_
+                .as_ref()
+                .map(GoType::from_expr)
+                .unwrap_or(GoType::Unknown);
+            let count = f.names.as_ref().map_or(1, |n| n.len());
+            if matches!(f.type_, Some(ast::Expr::Ellipsis(_))) && variadic_start.is_none() {
+                variadic_start = Some(params.len());
+            }
+            params.extend(std::iter::repeat_n(ty, count));
+        }
         let results: Vec<GoType> = ft
             .results
             .as_ref()
@@ -198,7 +199,11 @@ impl GoType {
                     .collect()
             })
             .unwrap_or_default();
-        GoType::Func { params, results }
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        }
     }
 
     pub fn from_name(name: &str) -> GoType {
@@ -246,6 +251,7 @@ impl GoType {
                         GoType::Func {
                             params: env.get_func_params(name),
                             results: env.get_func_returns(name),
+                            variadic_start: env.get_func_variadic_start(name),
                         }
                     } else {
                         GoType::Unknown
@@ -420,6 +426,7 @@ impl GoType {
                         return GoType::Func {
                             params: env.get_func_params(&package_key),
                             results: env.get_func_returns(&package_key),
+                            variadic_start: env.get_func_variadic_start(&package_key),
                         };
                     }
                 }
@@ -579,6 +586,7 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
                 GoType::Func {
                     params: env.get_func_params(&key),
                     results: env.get_func_returns(&key),
+                    variadic_start: env.get_func_variadic_start(&key),
                 }
             } else {
                 GoType::Unknown
@@ -640,6 +648,9 @@ fn type_method_expression_func(sel: &ast::SelectorExpr, env: &TypeEnv) -> Option
     Some(GoType::Func {
         params,
         results: env.get_func_returns(&method_key),
+        variadic_start: env
+            .get_func_variadic_start(&method_key)
+            .map(|start| start + 1),
     })
 }
 

@@ -8389,6 +8389,7 @@ fn range_function_yield_params(params: &[GoType]) -> Option<Vec<GoType>> {
     let GoType::Func {
         params: yield_params,
         results,
+        ..
     } = yield_param
     else {
         return None;
@@ -8807,6 +8808,7 @@ fn range_function_max_binding_count(params: &[GoType]) -> Option<usize> {
     let GoType::Func {
         params: yield_params,
         results,
+        ..
     } = yield_param
     else {
         return None;
@@ -11699,10 +11701,14 @@ fn call_signature_for_ident(name: &str, env: &TypeEnv) -> Option<CallSignature> 
         });
     }
     match env.get_var(name) {
-        Some(GoType::Func { params, .. }) => Some(CallSignature {
+        Some(GoType::Func {
+            params,
+            variadic_start,
+            ..
+        }) => Some(CallSignature {
             target: name.to_string(),
             params,
-            variadic_start: None,
+            variadic_start,
         }),
         _ => None,
     }
@@ -11790,10 +11796,14 @@ fn call_signature_from_inferred_type(
     env: &TypeEnv,
 ) -> Option<CallSignature> {
     match env.resolve_alias(&GoType::infer_expr(fun, env)) {
-        GoType::Func { params, .. } => Some(CallSignature {
+        GoType::Func {
+            params,
+            variadic_start,
+            ..
+        } => Some(CallSignature {
             target: target.to_string(),
             params,
-            variadic_start: None,
+            variadic_start,
         }),
         _ => None,
     }
@@ -12646,6 +12656,7 @@ fn make_type_arg(expr: &ast::Expr<'_>, env: &TypeEnv) -> MakeTypeArg {
         ast::Expr::FuncType(_) => MakeTypeArg::NonMakeType(GoType::Func {
             params: Vec::new(),
             results: Vec::new(),
+            variadic_start: None,
         }),
         ast::Expr::InterfaceType(_) => MakeTypeArg::NonMakeType(GoType::Any),
         ast::Expr::StructType(_) => MakeTypeArg::NonMakeType(GoType::Named("struct".to_string())),
@@ -18634,6 +18645,7 @@ mod tests {
             GoType::Func {
                 params: vec![GoType::String],
                 results: vec![GoType::String],
+                variadic_start: None,
             },
         );
         shadowed.set_var("byte", GoType::Int);

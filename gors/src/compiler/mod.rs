@@ -7322,6 +7322,14 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
             let inner = type_from_expr_ref(&chan_type.value);
             syn::parse_quote! { crate::builtin::Chan<#inner> }
         }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                let inner = type_from_expr_ref(elt);
+                syn::parse_quote! { Vec<#inner> }
+            } else {
+                syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
+            }
+        }
         ast::Expr::SelectorExpr(selector_expr) => {
             if matches!(&*selector_expr.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
                 && selector_expr.sel.name == "Pointer"
@@ -9140,9 +9148,9 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
             let inner = rust_type_from_inferred_go_type(&elem);
             syn::parse_quote! { crate::builtin::Chan<#inner> }
         }
-        typeinfer::GoType::Func { params, results } => {
-            shared_func_type_from_go_parts(&params, &results)
-        }
+        typeinfer::GoType::Func {
+            params, results, ..
+        } => shared_func_type_from_go_parts(&params, &results),
         typeinfer::GoType::Named(name) => named_go_type_path(&name),
         typeinfer::GoType::Any | typeinfer::GoType::Interface(_) => {
             syn::parse_quote! { Box<dyn std::any::Any> }
@@ -9180,18 +9188,18 @@ fn shared_func_box_type_from_go_parts(
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
     match resolved_go_type(go_type) {
-        typeinfer::GoType::Func { params, results } => {
-            Some(shared_func_type_from_go_parts(&params, &results))
-        }
+        typeinfer::GoType::Func {
+            params, results, ..
+        } => Some(shared_func_type_from_go_parts(&params, &results)),
         _ => None,
     }
 }
 
 fn shared_func_box_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
     match resolved_go_type(go_type) {
-        typeinfer::GoType::Func { params, results } => {
-            Some(shared_func_box_type_from_go_parts(&params, &results))
-        }
+        typeinfer::GoType::Func {
+            params, results, ..
+        } => Some(shared_func_box_type_from_go_parts(&params, &results)),
         _ => None,
     }
 }
@@ -11147,6 +11155,15 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
 }
 
 fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
+    function_value_call_info(fun).map(|info| info.params)
+}
+
+struct FunctionValueCallInfo {
+    params: Vec<typeinfer::GoType>,
+    variadic_start: Option<usize>,
+}
+
+fn function_value_call_info(fun: &ast::Expr) -> Option<FunctionValueCallInfo> {
     if is_function_item_expr(fun) || is_function_literal_expr(fun) {
         return None;
     }
@@ -11157,7 +11174,14 @@ fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>>
     }
     let ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(fun, &env.borrow()));
     match resolved_go_type(&ty) {
-        typeinfer::GoType::Func { params, .. } => Some(params),
+        typeinfer::GoType::Func {
+            params,
+            variadic_start,
+            ..
+        } => Some(FunctionValueCallInfo {
+            params,
+            variadic_start,
+        }),
         _ => None,
     }
 }
@@ -11171,14 +11195,14 @@ fn function_field_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>>
 }
 
 fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
-    let params = function_value_call_params(&call_expr.fun)?;
+    let info = function_value_call_info(&call_expr.fun)?;
     let func: syn::Expr = (*call_expr.fun).into();
-    let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
-    if let Some(raw_args) = call_expr.args {
-        for (idx, arg) in raw_args.into_iter().enumerate() {
-            args.push(compile_expr_with_expected(arg, params.get(idx)));
-        }
-    }
+    let args = compile_function_value_call_args(
+        call_expr.args.unwrap_or_default(),
+        &info.params,
+        info.variadic_start,
+        call_expr.ellipsis.is_some(),
+    );
     Some(syn::parse_quote! {{
         let __gors_func = {
             let __gors_func = crate::builtin::lock_func(&(#func));
@@ -11189,6 +11213,79 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
         };
         (&*__gors_func)(#args)
     }})
+}
+
+fn compile_function_value_call_args(
+    raw_args: Vec<ast::Expr>,
+    params: &[typeinfer::GoType],
+    variadic_start: Option<usize>,
+    has_variadic_spread: bool,
+) -> syn::punctuated::Punctuated<syn::Expr, Token![,]> {
+    let Some(variadic_start) = variadic_start else {
+        let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+        for (idx, arg) in raw_args.into_iter().enumerate() {
+            args.push(compile_expr_with_expected(arg, params.get(idx)));
+        }
+        return args;
+    };
+
+    let variadic_elem = params.get(variadic_start).and_then(|ty| match ty {
+        typeinfer::GoType::Slice(inner) => Some((**inner).clone()),
+        _ => None,
+    });
+    let variadic_is_any = matches!(
+        variadic_elem.as_ref().map(resolved_go_type),
+        Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+    );
+
+    if has_variadic_spread {
+        let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+        for (idx, arg) in raw_args.into_iter().enumerate() {
+            let should_clone =
+                idx >= variadic_start && !variadic_is_any && is_ir_addressable_expr(&arg) && {
+                    let actual =
+                        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                    !go_type_is_copy(&actual)
+                };
+            let arg = compile_expr_with_expected(arg, params.get(idx));
+            if should_clone {
+                args.push(syn::parse_quote! { (#arg).clone() });
+            } else {
+                args.push(arg);
+            }
+        }
+        return args;
+    }
+
+    let mut compiled_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    for (idx, arg) in raw_args.into_iter().enumerate() {
+        if idx < variadic_start {
+            compiled_args.push(compile_expr_with_expected(arg, params.get(idx)));
+        } else if variadic_is_any {
+            let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
+            compiled_args
+                .push(syn::parse_quote! { Box::new((#arg).clone()) as Box<dyn std::any::Any> });
+        } else {
+            compiled_args.push(compile_expr_with_expected(arg, variadic_elem.as_ref()));
+        }
+    }
+
+    let variadic_args: Vec<&syn::Expr> = compiled_args.iter().skip(variadic_start).collect();
+    let fixed_args: Vec<&syn::Expr> = compiled_args.iter().take(variadic_start).collect();
+    let vec_expr: syn::Expr = if variadic_args.is_empty() && variadic_is_any {
+        syn::parse_quote! { Vec::<Box<dyn std::any::Any>>::new() }
+    } else if variadic_args.is_empty() {
+        syn::parse_quote! { Vec::new() }
+    } else {
+        syn::parse_quote! { Vec::from([#(#variadic_args),*]) }
+    };
+
+    let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    for arg in fixed_args {
+        args.push(arg.clone());
+    }
+    args.push(vec_expr);
+    args
 }
 
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
@@ -11480,7 +11577,10 @@ fn set_range_bindings(
 }
 
 fn range_function_yield_params(range_type: &typeinfer::GoType) -> Option<Vec<typeinfer::GoType>> {
-    let typeinfer::GoType::Func { params, results } = resolved_go_type(range_type) else {
+    let typeinfer::GoType::Func {
+        params, results, ..
+    } = resolved_go_type(range_type)
+    else {
         return None;
     };
     if !results.is_empty() || params.len() != 1 {
@@ -11490,6 +11590,7 @@ fn range_function_yield_params(range_type: &typeinfer::GoType) -> Option<Vec<typ
     let typeinfer::GoType::Func {
         params: yield_params,
         results: yield_results,
+        ..
     } = resolved_go_type(&yield_type)
     else {
         return None;
@@ -12122,6 +12223,7 @@ fn compile_range_function_stmt(
     let yield_go_type = typeinfer::GoType::Func {
         params: yield_params,
         results: vec![typeinfer::GoType::Bool],
+        variadic_start: None,
     };
     let yield_ty = shared_func_box_type_from_go_type(&yield_go_type).ok_or_else(|| {
         CompilerError::InvalidFunctionSignature("invalid range function yield type".to_string())
@@ -19171,6 +19273,7 @@ var X int
             super::typeinfer::GoType::Func {
                 params: Vec::new(),
                 results: Vec::new(),
+                variadic_start: None,
             },
         );
         super::set_type_env(env);
@@ -19220,6 +19323,7 @@ var X int
             super::typeinfer::GoType::Func {
                 params: vec![super::typeinfer::GoType::String],
                 results: vec![super::typeinfer::GoType::String],
+                variadic_start: None,
             },
         );
         super::set_type_env(env);
