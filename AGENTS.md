@@ -722,6 +722,11 @@ lexical scope stack rather than whole-body declaration/reference set subtraction
 Keep nested shadowing cases there: a name declared in an inner block must not
 mask a later reference to an outer captured name, and nested function literals
 must propagate their free-variable uses to the enclosing literal.
+For-clause variables declared by `:=` need Go 1.22 per-iteration identity when
+their identity is observable, such as closure capture or address-taking inside
+the loop. Keep the IR helper that detects those names aligned with backend loop
+lowering: the generated loop must create the next iteration's cell before
+running the post statement, including `continue` paths.
 
 Go function-typed values use the shared function-value representation
 `Arc<Mutex<Option<Arc<dyn Fn...>>>>` consistently. If type inference learns that

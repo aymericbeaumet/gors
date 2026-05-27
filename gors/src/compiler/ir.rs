@@ -14811,6 +14811,37 @@ pub fn mutable_func_lit_capture_names_in_block(
     names
 }
 
+pub fn for_clause_per_iteration_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_for_clause_per_iteration_capture_names_in_block(block, env, &mut names);
+    names
+}
+
+pub fn for_clause_per_iteration_capture_names(
+    for_stmt: &ast::ForStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
+    let init_names = for_clause_init_define_names(for_stmt.init.as_deref());
+    if init_names.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut observed = func_lit_capture_names_in_block(&for_stmt.body, env);
+    collect_address_taken_names_in_block(&for_stmt.body, &mut observed);
+    if let Some(post) = &for_stmt.post {
+        collect_func_lit_capture_names_in_stmt(post, env, &mut observed);
+        collect_address_taken_names_in_stmt(post, &mut observed);
+    }
+
+    init_names
+        .into_iter()
+        .filter(|name| observed.contains(name))
+        .collect()
+}
+
 pub fn mutable_range_function_capture_names_in_block(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
@@ -14832,6 +14863,349 @@ pub fn mutable_range_function_capture_names(
         .into_iter()
         .filter(|name| !is_predeclared_name(name))
         .collect()
+}
+
+fn for_clause_init_define_names(init: Option<&ast::Stmt<'_>>) -> BTreeSet<String> {
+    let Some(ast::Stmt::AssignStmt(assign)) = init else {
+        return BTreeSet::new();
+    };
+    if assign.tok != token::Token::DEFINE {
+        return BTreeSet::new();
+    }
+    assign
+        .lhs
+        .iter()
+        .filter_map(ident_name)
+        .filter(|name| name != "_")
+        .collect()
+}
+
+fn func_lit_capture_names_in_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_func_lit_capture_names_in_block(block, env, &mut names);
+    names
+}
+
+fn collect_func_lit_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    for stmt in &block.list {
+        collect_func_lit_capture_names_in_stmt(stmt, env, names);
+    }
+}
+
+fn collect_func_lit_capture_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_func_lit_capture_names_in_expr(expr, env, names);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => collect_func_lit_capture_names_in_block(block, env, names),
+        ast::Stmt::CaseClause(case_clause) => {
+            if let Some(exprs) = &case_clause.list {
+                for expr in exprs {
+                    collect_func_lit_capture_names_in_expr(expr, env, names);
+                }
+            }
+            for stmt in &case_clause.body {
+                collect_func_lit_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = &comm_clause.comm {
+                collect_func_lit_capture_names_in_stmt(comm, env, names);
+            }
+            for stmt in &comm_clause.body {
+                collect_func_lit_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                match spec {
+                    ast::Spec::TypeSpec(type_spec) => {
+                        collect_func_lit_capture_names_in_expr(&type_spec.type_, env, names);
+                    }
+                    ast::Spec::ValueSpec(value_spec) => {
+                        if let Some(type_) = &value_spec.type_ {
+                            collect_func_lit_capture_names_in_expr(type_, env, names);
+                        }
+                        if let Some(values) = &value_spec.values {
+                            for expr in values {
+                                collect_func_lit_capture_names_in_expr(expr, env, names);
+                            }
+                        }
+                    }
+                    ast::Spec::ImportSpec(_) => {}
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer_stmt) => {
+            collect_func_lit_capture_names_in_call(&defer_stmt.call, env, names);
+        }
+        ast::Stmt::ExprStmt(expr) => collect_func_lit_capture_names_in_expr(&expr.x, env, names),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_func_lit_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_func_lit_capture_names_in_expr(cond, env, names);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_func_lit_capture_names_in_stmt(post, env, names);
+            }
+            collect_func_lit_capture_names_in_block(&for_stmt.body, env, names);
+        }
+        ast::Stmt::GoStmt(go_stmt) => {
+            collect_func_lit_capture_names_in_call(&go_stmt.call, env, names)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_func_lit_capture_names_in_stmt(init, env, names);
+            }
+            collect_func_lit_capture_names_in_expr(&if_stmt.cond, env, names);
+            collect_func_lit_capture_names_in_block(&if_stmt.body, env, names);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_func_lit_capture_names_in_stmt(else_branch, env, names);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_func_lit_capture_names_in_expr(&inc_dec.x, env, names);
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_func_lit_capture_names_in_stmt(&label.stmt, env, names);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                collect_func_lit_capture_names_in_expr(key, env, names);
+            }
+            if let Some(value) = &range.value {
+                collect_func_lit_capture_names_in_expr(value, env, names);
+            }
+            collect_func_lit_capture_names_in_expr(&range.x, env, names);
+            collect_func_lit_capture_names_in_block(&range.body, env, names);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_func_lit_capture_names_in_expr(expr, env, names);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_func_lit_capture_names_in_expr(&send.chan, env, names);
+            collect_func_lit_capture_names_in_expr(&send.value, env, names);
+        }
+        ast::Stmt::SelectStmt(select_stmt) => {
+            collect_func_lit_capture_names_in_block(&select_stmt.body, env, names);
+        }
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = &switch_stmt.init {
+                collect_func_lit_capture_names_in_stmt(init, env, names);
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                collect_func_lit_capture_names_in_expr(tag, env, names);
+            }
+            collect_func_lit_capture_names_in_block(&switch_stmt.body, env, names);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_func_lit_capture_names_in_stmt(init, env, names);
+            }
+            collect_func_lit_capture_names_in_stmt(&type_switch.assign, env, names);
+            collect_func_lit_capture_names_in_block(&type_switch.body, env, names);
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+    }
+}
+
+fn collect_func_lit_capture_names_in_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    collect_func_lit_capture_names_in_expr(&call.fun, env, names);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_func_lit_capture_names_in_expr(arg, env, names);
+        }
+    }
+}
+
+fn collect_func_lit_capture_names_in_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match expr {
+        ast::Expr::FuncLit(func_lit) => {
+            names.extend(
+                func_lit_captures(func_lit, env)
+                    .into_iter()
+                    .map(|capture| capture.name),
+            );
+        }
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_func_lit_capture_names_in_expr(len, env, names);
+            }
+            collect_func_lit_capture_names_in_expr(&array.elt, env, names);
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            collect_func_lit_capture_names_in_expr(&binary.x, env, names);
+            collect_func_lit_capture_names_in_expr(&binary.y, env, names);
+        }
+        ast::Expr::CallExpr(call) => collect_func_lit_capture_names_in_call(call, env, names),
+        ast::Expr::ChanType(chan) => {
+            collect_func_lit_capture_names_in_expr(&chan.value, env, names)
+        }
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(ty) = &comp.type_ {
+                collect_func_lit_capture_names_in_expr(ty, env, names);
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    collect_func_lit_capture_names_in_expr(elt, env, names);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_func_lit_capture_names_in_expr(elt, env, names);
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_func_lit_capture_names_in_expr(&index.x, env, names);
+            collect_func_lit_capture_names_in_expr(&index.index, env, names);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_func_lit_capture_names_in_expr(&index.x, env, names);
+            for index in &index.indices {
+                collect_func_lit_capture_names_in_expr(index, env, names);
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_func_lit_capture_names_in_expr(&kv.key, env, names);
+            collect_func_lit_capture_names_in_expr(&kv.value, env, names);
+        }
+        ast::Expr::MapType(map) => {
+            collect_func_lit_capture_names_in_expr(&map.key, env, names);
+            collect_func_lit_capture_names_in_expr(&map.value, env, names);
+        }
+        ast::Expr::ParenExpr(paren) => collect_func_lit_capture_names_in_expr(&paren.x, env, names),
+        ast::Expr::SelectorExpr(selector) => {
+            collect_func_lit_capture_names_in_expr(&selector.x, env, names);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_func_lit_capture_names_in_expr(&slice.x, env, names);
+            if let Some(low) = &slice.low {
+                collect_func_lit_capture_names_in_expr(low, env, names);
+            }
+            if let Some(high) = &slice.high {
+                collect_func_lit_capture_names_in_expr(high, env, names);
+            }
+            if let Some(max) = &slice.max {
+                collect_func_lit_capture_names_in_expr(max, env, names);
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_func_lit_capture_names_in_expr(&star.x, env, names),
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_func_lit_capture_names_in_expr(&assert.x, env, names);
+            if let Some(ty) = &assert.type_ {
+                collect_func_lit_capture_names_in_expr(ty, env, names);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => collect_func_lit_capture_names_in_expr(&unary.x, env, names),
+        ast::Expr::Ident(_)
+        | ast::Expr::BasicLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::StructType(_) => {}
+    }
+}
+
+fn collect_for_clause_per_iteration_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    for stmt in &block.list {
+        collect_for_clause_per_iteration_capture_names_in_stmt(stmt, env, names);
+    }
+}
+
+fn collect_for_clause_per_iteration_capture_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match stmt {
+        ast::Stmt::ForStmt(for_stmt) => {
+            names.extend(for_clause_per_iteration_capture_names(for_stmt, env));
+            collect_for_clause_per_iteration_capture_names_in_block(&for_stmt.body, env, names);
+        }
+        ast::Stmt::BlockStmt(block) => {
+            collect_for_clause_per_iteration_capture_names_in_block(block, env, names);
+        }
+        ast::Stmt::CaseClause(case_clause) => {
+            for stmt in &case_clause.body {
+                collect_for_clause_per_iteration_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = &comm_clause.comm {
+                collect_for_clause_per_iteration_capture_names_in_stmt(comm, env, names);
+            }
+            for stmt in &comm_clause.body {
+                collect_for_clause_per_iteration_capture_names_in_stmt(stmt, env, names);
+            }
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_for_clause_per_iteration_capture_names_in_stmt(init, env, names);
+            }
+            collect_for_clause_per_iteration_capture_names_in_block(&if_stmt.body, env, names);
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                collect_for_clause_per_iteration_capture_names_in_stmt(else_branch, env, names);
+            }
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_for_clause_per_iteration_capture_names_in_stmt(&label.stmt, env, names);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            collect_for_clause_per_iteration_capture_names_in_block(&range.body, env, names);
+        }
+        ast::Stmt::SelectStmt(select_stmt) => {
+            collect_for_clause_per_iteration_capture_names_in_block(&select_stmt.body, env, names);
+        }
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = &switch_stmt.init {
+                collect_for_clause_per_iteration_capture_names_in_stmt(init, env, names);
+            }
+            collect_for_clause_per_iteration_capture_names_in_block(&switch_stmt.body, env, names);
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_for_clause_per_iteration_capture_names_in_stmt(init, env, names);
+            }
+            collect_for_clause_per_iteration_capture_names_in_stmt(&type_switch.assign, env, names);
+            collect_for_clause_per_iteration_capture_names_in_block(&type_switch.body, env, names);
+        }
+        ast::Stmt::AssignStmt(_)
+        | ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => {}
+    }
 }
 
 pub fn address_taken_names_in_block(block: &ast::BlockStmt<'_>) -> BTreeSet<String> {
@@ -18528,6 +18902,45 @@ mod tests {
         };
         assert_eq!(plan.labels, vec!["Done"]);
         assert_eq!(plan.hoisted_names, vec!["x"]);
+    }
+
+    #[test]
+    fn detects_for_clause_iteration_captures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    var prints []func()
+                    for i := 0; i < 5; i++ {
+                        prints = append(prints, func() { println(i) })
+                        i++
+                    }
+                    _ = prints
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(for_stmt) = func.body.as_ref().and_then(|body| {
+            body.list.iter().find_map(|stmt| match stmt {
+                crate::ast::Stmt::ForStmt(for_stmt) => Some(for_stmt),
+                _ => None,
+            })
+        }) else {
+            panic!("expected for statement");
+        };
+
+        let names = super::for_clause_per_iteration_capture_names(for_stmt, &env);
+        assert!(names.contains("i"));
     }
 
     #[test]

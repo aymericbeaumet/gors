@@ -8619,6 +8619,9 @@ fn compile_method(
                     names.extend(ir::mutable_range_function_capture_names_in_block(
                         body, &env,
                     ));
+                    names.extend(ir::for_clause_per_iteration_capture_names_in_block(
+                        body, &env,
+                    ));
                     names
                 })
             });
@@ -13788,11 +13791,15 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
         let range_function_capture_names = TYPE_ENV.with(|env| {
             ir::mutable_range_function_capture_names_in_block(&block_stmt, &env.borrow())
         });
+        let for_clause_iteration_capture_names = TYPE_ENV.with(|env| {
+            ir::for_clause_per_iteration_capture_names_in_block(&block_stmt, &env.borrow())
+        });
         let address_taken_names = ir::address_taken_names_in_block(&block_stmt);
         let _shared_capture_names = SharedCaptureNamesGuard::extend(
             shared_capture_names
                 .into_iter()
                 .chain(range_function_capture_names)
+                .chain(for_clause_iteration_capture_names)
                 .chain(address_taken_names),
         );
         if let Some(invalid) = ir::invalid_forward_goto_in_block(&block_stmt) {
@@ -15675,6 +15682,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                         names.extend(ir::mutable_range_function_capture_names_in_block(
                             body, &env,
                         ));
+                        names.extend(ir::for_clause_per_iteration_capture_names_in_block(
+                            body, &env,
+                        ));
                         names
                     })
                 });
@@ -16168,6 +16178,8 @@ fn compile_for_stmt(
     label_ident: Option<syn::Ident>,
 ) -> Result<syn::Expr, CompilerError> {
     let mut stmts = vec![];
+    let per_iteration_capture_names =
+        TYPE_ENV.with(|env| ir::for_clause_per_iteration_capture_names(&for_stmt, &env.borrow()));
 
     if let Some(init) = for_stmt.init {
         stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
@@ -16176,6 +16188,8 @@ fn compile_for_stmt(
     let mut body: syn::Block = for_stmt.body.try_into()?;
     let loop_label_name = label_ident.as_ref().map(ToString::to_string);
 
+    let per_iteration_stmts = for_clause_per_iteration_capture_stmts(&per_iteration_capture_names);
+
     if let Some(post) = for_stmt.post {
         let post_stmts = Vec::<syn::Stmt>::try_from(*post)?;
 
@@ -16183,7 +16197,8 @@ fn compile_for_stmt(
             // Go runs the post statement before the next iteration, including
             // `continue label` targeting this loop. Rust `continue` jumps
             // straight to the condition, so route matching continues through a
-            // body block and then emit post statements after that block.
+            // body block and then emit per-iteration rebinding and post
+            // statements after that block.
             let body_label = next_loop_body_label();
             rewrite_continue_for_post(
                 &mut body.stmts,
@@ -16205,6 +16220,7 @@ fn compile_for_stmt(
             );
 
             let mut loop_stmts = vec![labeled_body];
+            loop_stmts.extend(per_iteration_stmts);
             loop_stmts.extend(post_stmts);
 
             body = syn::Block {
@@ -16212,7 +16228,40 @@ fn compile_for_stmt(
                 stmts: loop_stmts,
             };
         } else {
+            body.stmts.extend(per_iteration_stmts);
             body.stmts.extend(post_stmts);
+        }
+    } else if !per_iteration_stmts.is_empty() {
+        if has_continue_for_post(&body.stmts, loop_label_name.as_deref(), true) {
+            let body_label = next_loop_body_label();
+            rewrite_continue_for_post(
+                &mut body.stmts,
+                loop_label_name.as_deref(),
+                true,
+                &body_label,
+            );
+
+            let labeled_body = syn::Stmt::Expr(
+                syn::Expr::Block(syn::ExprBlock {
+                    attrs: vec![],
+                    label: Some(syn::Label {
+                        name: body_label,
+                        colon_token: <Token![:]>::default(),
+                    }),
+                    block: body,
+                }),
+                Some(<Token![;]>::default()),
+            );
+
+            let mut loop_stmts = vec![labeled_body];
+            loop_stmts.extend(per_iteration_stmts);
+
+            body = syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: loop_stmts,
+            };
+        } else {
+            body.stmts.extend(per_iteration_stmts);
         }
     }
 
@@ -16252,6 +16301,24 @@ fn compile_for_stmt(
             brace_token: syn::token::Brace::default(),
         },
     }))
+}
+
+fn for_clause_per_iteration_capture_stmts(
+    names: &std::collections::BTreeSet<String>,
+) -> Vec<syn::Stmt> {
+    names
+        .iter()
+        .filter_map(|name| {
+            if !is_shared_capture_name(name) {
+                return None;
+            }
+            let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+            let value = shared_capture_read_expr(name)?;
+            Some(syn::parse_quote! {
+                #ident = std::sync::Arc::new(std::sync::Mutex::new(#value));
+            })
+        })
+        .collect()
 }
 
 impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
