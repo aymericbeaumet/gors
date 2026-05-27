@@ -13181,6 +13181,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::DuplicateTopLevelName { name } => {
             format!("duplicate top-level declaration {name}")
         }
+        ir::InvalidDeclaration::DuplicateDeclarationName { name } => {
+            format!("duplicate declaration {name}")
+        }
         ir::InvalidDeclaration::InvalidInitIdentifier => {
             "init can only be used for init function declarations".to_string()
         }

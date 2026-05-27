@@ -669,6 +669,9 @@ methods. The package-block name `init` is special: multiple `func init()`
 declarations are allowed and do not introduce a binding, but non-function
 top-level `init` declarations and `init` functions with type parameters,
 parameters, or results are rejected in IR.
+IR declaration validation also rejects duplicate non-blank names within a
+single grouped or multi-name const, var, or type declaration, including local
+declaration statements.
 For package `main`, the same signature validation rejects `func main` when it
 declares type parameters, parameters, or results.
 Short variable declarations are also checked there for duplicate non-blank names

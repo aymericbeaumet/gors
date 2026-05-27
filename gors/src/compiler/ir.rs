@@ -1256,6 +1256,9 @@ pub enum InvalidDeclaration {
     DuplicateTopLevelName {
         name: String,
     },
+    DuplicateDeclarationName {
+        name: String,
+    },
     InvalidInitIdentifier,
     MethodFieldConflict {
         base: String,
@@ -2145,12 +2148,49 @@ fn invalid_declaration_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidDeclaratio
 }
 
 fn invalid_declaration_in_gen_decl(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDeclaration> {
+    if let Some(invalid) = invalid_gen_decl_names(gen_decl) {
+        return Some(invalid);
+    }
     for spec in &gen_decl.specs {
         if let Some(invalid) = invalid_declaration_in_spec(spec) {
             return Some(invalid);
         }
     }
     None
+}
+
+fn invalid_gen_decl_names(gen_decl: &ast::GenDecl<'_>) -> Option<InvalidDeclaration> {
+    if gen_decl.tok == token::Token::IMPORT {
+        return None;
+    }
+    let mut names = BTreeSet::new();
+    for spec in &gen_decl.specs {
+        for name in spec_declared_names(spec) {
+            if name == "_" {
+                continue;
+            }
+            if !names.insert(name.clone()) {
+                return Some(InvalidDeclaration::DuplicateDeclarationName { name });
+            }
+        }
+    }
+    None
+}
+
+fn spec_declared_names(spec: &ast::Spec<'_>) -> Vec<String> {
+    match spec {
+        ast::Spec::ImportSpec(_) => Vec::new(),
+        ast::Spec::TypeSpec(type_spec) => type_spec
+            .name
+            .as_ref()
+            .map(|name| vec![name.name.to_string()])
+            .unwrap_or_default(),
+        ast::Spec::ValueSpec(value_spec) => value_spec
+            .names
+            .iter()
+            .map(|name| name.name.to_string())
+            .collect(),
+    }
 }
 
 fn invalid_declaration_in_spec(spec: &ast::Spec<'_>) -> Option<InvalidDeclaration> {
@@ -11776,6 +11816,58 @@ mod tests {
             ),
             Some(super::InvalidDeclaration::DuplicateTopLevelName {
                 name: "A".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_names_in_declaration_groups() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        var x, x int
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateDeclarationName {
+                name: "x".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        const (
+                            A = 1
+                            A = 2
+                        )
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateDeclarationName {
+                name: "A".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        type (
+                            T int
+                            T string
+                        )
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateDeclarationName {
+                name: "T".to_string(),
             })
         );
     }
