@@ -9615,6 +9615,9 @@ fn comparison_constant_is_assignable_to(
         GoType::Bool => matches!(actual, GoType::Bool),
         GoType::String => matches!(actual, GoType::String),
         expected if expected.is_integer() => {
+            if let Some(value) = integer_constant_value_i128(expr) {
+                return integer_constant_fits_type(value, expected);
+            }
             actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
         }
         expected if expected.is_float() => go_type_is_ordered_numeric(actual),
@@ -10325,6 +10328,62 @@ fn parse_integer_literal_usize(value: &str) -> Option<usize> {
     usize::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
 }
 
+fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
+            parse_integer_literal_i128(lit.value)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            integer_constant_value_i128(&unary.x)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
+            integer_constant_value_i128(&unary.x).and_then(i128::checked_neg)
+        }
+        _ => None,
+    }
+}
+
+fn parse_integer_literal_i128(value: &str) -> Option<i128> {
+    let cleaned = value.replace('_', "");
+    let (radix, digits) = if let Some(rest) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
+        (8, cleaned.trim_start_matches('0'))
+    } else {
+        (10, cleaned.as_str())
+    };
+    i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+}
+
+fn integer_constant_fits_type(value: i128, ty: &GoType) -> bool {
+    match ty {
+        GoType::Int => (isize::MIN as i128..=isize::MAX as i128).contains(&value),
+        GoType::Int8 => (i8::MIN as i128..=i8::MAX as i128).contains(&value),
+        GoType::Int16 => (i16::MIN as i128..=i16::MAX as i128).contains(&value),
+        GoType::Int32 => (i32::MIN as i128..=i32::MAX as i128).contains(&value),
+        GoType::Int64 => (i64::MIN as i128..=i64::MAX as i128).contains(&value),
+        GoType::Uint | GoType::Uintptr => (0..=usize::MAX as i128).contains(&value),
+        GoType::Uint8 => (0..=u8::MAX as i128).contains(&value),
+        GoType::Uint16 => (0..=u16::MAX as i128).contains(&value),
+        GoType::Uint32 => (0..=u32::MAX as i128).contains(&value),
+        GoType::Uint64 => (0..=u64::MAX as i128).contains(&value),
+        _ => false,
+    }
+}
+
 fn expr_is_negative_integer_constant(expr: &ast::Expr<'_>) -> bool {
     match unparen_expr(expr) {
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
@@ -10439,21 +10498,25 @@ fn conversion_is_valid_for_validation(
     if actual == target || expr_is_assignable_for_validation(target, value, env) {
         return true;
     }
+    if string_slice_conversion_is_valid(actual, target) {
+        return true;
+    }
+    if expr_is_untyped_constant_for_comparison(value, env) {
+        return matches!((target, actual), (GoType::String, actual) if actual.is_integer());
+    }
     match (target, actual) {
         (target, actual) if go_type_is_numeric(target) && go_type_is_numeric(actual) => true,
         (GoType::String, actual) if actual.is_integer() => true,
-        (GoType::String, GoType::Slice(elem))
-            if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32) =>
-        {
-            true
-        }
-        (GoType::Slice(elem), GoType::String)
-            if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32) =>
-        {
-            true
-        }
         _ => false,
     }
+}
+
+fn string_slice_conversion_is_valid(actual: &GoType, target: &GoType) -> bool {
+    matches!(
+        (target, actual),
+        (GoType::String, GoType::Slice(elem)) | (GoType::Slice(elem), GoType::String)
+            if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32)
+    )
 }
 
 fn type_conversion_target_name(fun: &ast::Expr<'_>, env: &TypeEnv) -> String {
@@ -16204,6 +16267,32 @@ mod tests {
                 r#"
                     package main
 
+                    var B byte = 256
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "uint8".to_string(),
+                actual: "int".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var U uint = -1
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "uint".to_string(),
+                actual: "int".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     const X bool = 1
                 "#,
             ),
@@ -16237,6 +16326,8 @@ mod tests {
                     var S string = "go"
                     var F float64 = 1
                     var I int = 1.0
+                    var B byte = 255
+                    var Small int8 = -128
                     var C complex128 = 1
                     var P *int = nil
                     var Slice []int = nil
@@ -18588,6 +18679,28 @@ mod tests {
                 "string",
                 "cannot convert bool to string",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = byte(256)
+                    }
+                "#,
+                "byte",
+                "cannot convert int to uint8",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = uint(-1)
+                    }
+                "#,
+                "uint",
+                "cannot convert int to uint",
+            ),
         ];
 
         for (source, target, reason) in cases {
@@ -18625,6 +18738,7 @@ mod tests {
                     var i int
                     _ = float64(i)
                     _ = int32(i)
+                    _ = byte(255)
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")
