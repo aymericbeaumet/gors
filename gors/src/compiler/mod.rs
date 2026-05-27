@@ -13696,13 +13696,18 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
 
     if !is_function_item_expr(&call.fun)
         && !is_function_literal_expr(&call.fun)
-        && let typeinfer::GoType::Func { params, .. } = resolved_go_type(&fun_ty)
+        && let typeinfer::GoType::Func {
+            params,
+            variadic_start,
+            ..
+        } = resolved_go_type(&fun_ty)
         && let Some(fun_ty) = shared_func_box_type_from_go_type(&fun_ty)
     {
         let fun_temp_ident = quote::format_ident!("_defer_{}_fun", n);
         let fun_expr: syn::Expr = (*call.fun).into();
-        let (mut prelude, _, arg_idents) =
-            compile_defer_saved_args(call.args.take(), n, &params, None);
+        let has_variadic_spread = call.ellipsis.is_some();
+        let (mut prelude, saved_args, _) =
+            compile_defer_saved_args(call.args.take(), n, &params, variadic_start);
         prelude.insert(
             0,
             syn::parse_quote! {
@@ -13715,8 +13720,14 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
                 };
             },
         );
+        let call_args = compile_function_value_call_args(
+            saved_args.unwrap_or_default(),
+            &params,
+            variadic_start,
+            has_variadic_spread,
+        );
         let call: syn::Expr = syn::parse_quote! {
-            (&*#fun_temp_ident)(#(#arg_idents),*)
+            (&*#fun_temp_ident)(#call_args)
         };
         prelude.push(push_defer_stack_stmt(Vec::new(), call));
         return prelude;

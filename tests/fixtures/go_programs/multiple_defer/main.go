@@ -12,6 +12,14 @@ func printer(prefix string) func(string) {
 	}
 }
 
+func printSum(label string, nums ...int) {
+	total := 0
+	for _, n := range nums {
+		total += n
+	}
+	fmt.Println(label, total)
+}
+
 func deferNamedReturn() (out int) {
 	defer func() {
 		out = 7
@@ -36,6 +44,10 @@ func main() {
 	fn := printer("fn")
 	defer fn(msg)
 	fn = printer("updated-fn")
+	variadic := printSum
+	values := []int{4, 5}
+	defer variadic("defer spread", values...)
+	defer variadic("defer packed", 1, 2, 3)
 	msg = "changed"
 	fmt.Println("current", msg)
 	defer fmt.Println("first")
