@@ -433,8 +433,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Types",
 		"testCount": 20,
-		"passingTestCount": 19,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 20,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "types-booleans",
@@ -510,11 +510,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-slice-backing-array",
 				"section": "Slice types",
 				"title": "Slice expressions share the original backing array",
-				"status": "unsupported",
+				"status": "passing",
 				"fixtures": [
-					"_unsupported/types_slice_alias_mutation"
+					"types_slice_alias_mutation"
 				],
-				"reason": "Current lowering materializes Vec copies for ordinary slice expressions."
+				"reason": ""
 			},
 			{
 				"id": "types-structs",
@@ -1374,8 +1374,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 9,
+	"passingCategoryCount": 10,
 	"testCount": 124,
-	"passingTestCount": 121,
-	"unsupportedTestCount": 3
+	"passingTestCount": 122,
+	"unsupportedTestCount": 2
 } as const;

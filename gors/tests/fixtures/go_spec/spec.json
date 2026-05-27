@@ -425,11 +425,10 @@
           "id": "types-slice-backing-array",
           "section": "Slice types",
           "title": "Slice expressions share the original backing array",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/types_slice_alias_mutation"
-          ],
-          "reason": "Current lowering materializes Vec copies for ordinary slice expressions."
+            "types_slice_alias_mutation"
+          ]
         },
         {
           "id": "types-structs",

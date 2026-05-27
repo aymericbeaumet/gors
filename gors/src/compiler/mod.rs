@@ -60,6 +60,7 @@ thread_local! {
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 #[derive(Clone)]
@@ -101,6 +102,17 @@ struct GotoStateContextGuard;
 
 struct BorrowedPointerParamNamesGuard {
     previous: std::collections::HashSet<String>,
+}
+
+#[derive(Clone)]
+struct SliceAliasTarget {
+    base_name: String,
+    base_expr: syn::Expr,
+    offset: syn::Expr,
+}
+
+struct SliceAliasTargetsGuard {
+    previous: BTreeMap<String, SliceAliasTarget>,
 }
 
 impl MainPackageVarModeGuard {
@@ -192,6 +204,22 @@ impl Drop for BorrowedPointerParamNamesGuard {
     fn drop(&mut self) {
         BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
             *borrowed.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl SliceAliasTargetsGuard {
+    fn clear() -> Self {
+        let previous =
+            SLICE_ALIAS_TARGETS.with(|aliases| std::mem::take(&mut *aliases.borrow_mut()));
+        Self { previous }
+    }
+}
+
+impl Drop for SliceAliasTargetsGuard {
+    fn drop(&mut self) {
+        SLICE_ALIAS_TARGETS.with(|aliases| {
+            *aliases.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -16650,6 +16678,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             })
         });
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
+        let _slice_alias_targets = SliceAliasTargetsGuard::clear();
         let block_result = if let Some(body) = func_decl.body {
             body.try_into()
         } else {
@@ -16986,12 +17015,28 @@ fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>,
     if let Some((key_ty, _)) = map_index_types(&inc_dec_stmt.x) {
         return compile_map_index_inc_dec(inc_dec_stmt, key_ty);
     }
+    if let Some((alias_left, backing_left)) = slice_alias_index_lvalues(&inc_dec_stmt.x) {
+        return Ok(match inc_dec_stmt.tok {
+            token::Token::INC => vec![syn::parse_quote! {{
+                #alias_left += 1;
+                #backing_left = (#alias_left).clone();
+            }}],
+            token::Token::DEC => vec![syn::parse_quote! {{
+                #alias_left -= 1;
+                #backing_left = (#alias_left).clone();
+            }}],
+            _ => vec![],
+        });
+    }
+    let base_alias_sync_stmts = slice_base_alias_sync_stmts(&inc_dec_stmt.x);
     let x = compile_assignment_lhs_checked(inc_dec_stmt.x)?;
-    Ok(match inc_dec_stmt.tok {
+    let mut out = match inc_dec_stmt.tok {
         token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
         token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
         _ => vec![],
-    })
+    };
+    out.extend(base_alias_sync_stmts);
+    Ok(out)
 }
 
 impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
@@ -18726,10 +18771,163 @@ fn syn_expr_from_type_expr_like(expr: &ast::Expr) -> Option<syn::Expr> {
     }
 }
 
+fn slice_alias_target_from_rhs(rhs: &ast::Expr) -> Option<SliceAliasTarget> {
+    let ast::Expr::SliceExpr(slice) = rhs else {
+        return None;
+    };
+    let ast::Expr::Ident(base_ident) = slice.x.as_ref() else {
+        return None;
+    };
+    let base_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&slice.x, &env.borrow()));
+    if resolved_go_type(&base_type).is_string() {
+        return None;
+    }
+    let base_expr = lvalue_expr_from_ref(&slice.x)?;
+    let low = slice
+        .low
+        .as_ref()
+        .and_then(|expr| syn_expr_from_type_expr_like(expr))
+        .unwrap_or_else(|| syn::parse_quote! { 0usize });
+    let offset = syn::parse_quote! { (#low) as usize };
+    Some(SliceAliasTarget {
+        base_name: base_ident.name.to_string(),
+        base_expr,
+        offset,
+    })
+}
+
+fn direct_assignment_ident_name<'a>(expr: &ast::Expr<'a>) -> Option<&'a str> {
+    match expr {
+        ast::Expr::Ident(ident) if ident.name != "_" => Some(ident.name),
+        _ => None,
+    }
+}
+
+fn update_slice_alias_targets_for_assignment(assign_stmt: &ast::AssignStmt) {
+    let assigned_names = assign_stmt
+        .lhs
+        .iter()
+        .filter_map(direct_assignment_ident_name)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    if !assigned_names.is_empty() {
+        SLICE_ALIAS_TARGETS.with(|aliases| {
+            let mut aliases = aliases.borrow_mut();
+            for name in &assigned_names {
+                aliases.remove(name);
+                aliases.retain(|_, target| target.base_name != *name);
+            }
+        });
+    }
+
+    if assign_stmt.lhs.len() != 1 || assign_stmt.rhs.len() != 1 {
+        return;
+    }
+
+    let Some(lhs_name) = assign_stmt
+        .lhs
+        .first()
+        .and_then(direct_assignment_ident_name)
+    else {
+        return;
+    };
+    let Some(target) = assign_stmt
+        .rhs
+        .first()
+        .and_then(slice_alias_target_from_rhs)
+    else {
+        return;
+    };
+    if target.base_name == lhs_name {
+        return;
+    }
+    SLICE_ALIAS_TARGETS.with(|aliases| {
+        aliases.borrow_mut().insert(lhs_name.to_string(), target);
+    });
+}
+
+fn slice_alias_index_lvalues(lhs: &ast::Expr) -> Option<(syn::Expr, syn::Expr)> {
+    let ast::Expr::IndexExpr(index) = lhs else {
+        return None;
+    };
+    let ast::Expr::Ident(alias_ident) = index.x.as_ref() else {
+        return None;
+    };
+    let target =
+        SLICE_ALIAS_TARGETS.with(|aliases| aliases.borrow().get(alias_ident.name).cloned())?;
+    let alias_left = lvalue_expr_from_ref(lhs)?;
+    let index_expr = syn_expr_from_type_expr_like(&index.index)?;
+    let base = target.base_expr;
+    let offset = target.offset;
+    let backing_left = syn::parse_quote! { #base[((#index_expr) as usize + #offset) as usize] };
+    Some((alias_left, backing_left))
+}
+
+fn slice_base_alias_sync_stmts(lhs: &ast::Expr) -> Vec<syn::Stmt> {
+    let ast::Expr::IndexExpr(index) = lhs else {
+        return vec![];
+    };
+    let ast::Expr::Ident(base_ident) = index.x.as_ref() else {
+        return vec![];
+    };
+    let Some(index_expr) = syn_expr_from_type_expr_like(&index.index) else {
+        return vec![];
+    };
+    let targets = SLICE_ALIAS_TARGETS.with(|aliases| {
+        aliases
+            .borrow()
+            .iter()
+            .filter(|(_, target)| target.base_name == base_ident.name)
+            .map(|(alias_name, target)| (alias_name.clone(), target.clone()))
+            .collect::<Vec<_>>()
+    });
+    targets
+        .into_iter()
+        .map(|(alias_name, target)| {
+            let alias = syn::Ident::new(&rust_safe_ident_name(&alias_name), Span::mixed_site());
+            let base = target.base_expr;
+            let offset = target.offset;
+            syn::parse_quote! {{
+                let __gors_slice_base_index = (#index_expr) as usize;
+                let __gors_slice_alias_offset = #offset;
+                if __gors_slice_base_index >= __gors_slice_alias_offset {
+                    let __gors_slice_alias_index =
+                        __gors_slice_base_index - __gors_slice_alias_offset;
+                    if __gors_slice_alias_index < #alias.len() {
+                        #alias[__gors_slice_alias_index] =
+                            #base[__gors_slice_base_index].clone();
+                    }
+                }
+            }}
+        })
+        .collect()
+}
+
+fn slice_alias_writeback_assignment_stmts(
+    lhs: &ast::Expr,
+    right: syn::Expr,
+    lhs_ty: &typeinfer::GoType,
+) -> Option<Vec<syn::Stmt>> {
+    let (alias_left, backing_left) = slice_alias_index_lvalues(lhs)?;
+    let value_ident = quote::format_ident!("__gors_slice_alias_value");
+    let alias_value: syn::Expr = if go_type_is_copy(lhs_ty) {
+        syn::parse_quote! { #value_ident }
+    } else {
+        syn::parse_quote! { (#value_ident).clone() }
+    };
+    Some(vec![syn::parse_quote! {{
+        let #value_ident = #right;
+        #alias_left = #alias_value;
+        #backing_left = #value_ident;
+    }}])
+}
+
 impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
     type Error = CompilerError;
 
     fn try_from(assign_stmt: ast::AssignStmt) -> Result<Self, Self::Error> {
+        update_slice_alias_targets_for_assignment(&assign_stmt);
         if assign_stmt.tok == token::Token::DEFINE && assign_stmt.lhs.len() == assign_stmt.rhs.len()
         {
             TYPE_ENV.with(|env| {
@@ -19186,6 +19384,12 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
+                if let Some(stmts) =
+                    slice_alias_writeback_assignment_stmts(&lhs_ast, right.clone(), &lhs_ty)
+                {
+                    return Ok(stmts);
+                }
+                let base_alias_sync_stmts = slice_base_alias_sync_stmts(&lhs_ast);
                 if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
                     let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
                     let value_ident = quote::format_ident!("__gors_shared_value");
@@ -19205,7 +19409,9 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     )]);
                 }
                 let left = compile_assignment_lhs_checked(lhs_ast)?;
-                return Ok(vec![assign_expr_stmt(left, right)]);
+                let mut out = vec![assign_expr_stmt(left, right)];
+                out.extend(base_alias_sync_stmts);
+                return Ok(out);
             }
 
             let mut out = vec![];
@@ -19301,6 +19507,14 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             } else {
                 compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
             };
+            if let Some((alias_left, backing_left)) = slice_alias_index_lvalues(&lhs_ast) {
+                let op: syn::BinOp = assign_stmt.tok.into();
+                return Ok(vec![syn::parse_quote! {{
+                    #alias_left #op #right;
+                    #backing_left = (#alias_left).clone();
+                }}]);
+            }
+            let base_alias_sync_stmts = slice_base_alias_sync_stmts(&lhs_ast);
             if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
                 let op: syn::BinOp = assign_stmt.tok.into();
                 let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
@@ -19322,7 +19536,9 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             }
             let left = compile_assignment_lhs_checked(lhs_ast)?;
             let op: syn::BinOp = assign_stmt.tok.into();
-            return Ok(vec![binary_expr_stmt(left, op, right)]);
+            let mut out = vec![binary_expr_stmt(left, op, right)];
+            out.extend(base_alias_sync_stmts);
+            return Ok(out);
         }
 
         Err(CompilerError::UnsupportedConstruct(format!(
@@ -22227,6 +22443,46 @@ func main() {
                     let mut s = Vec::from([1, 2, 3]);
                     let mut t = (s[(1) as usize..(2) as usize]).to_vec();
                     let _ = t;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_write_slice_alias_mutations_back_to_base_slice() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2, 3}
+                    t := s[1:]
+                    t[0] = 9
+                    s[1] = 7
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = Vec::from([1, 2, 3]);
+                    let mut t = (s[(1) as usize..]).to_vec();
+                    {
+                        let __gors_slice_alias_value = 9;
+                        t[(0) as usize] = __gors_slice_alias_value;
+                        s[((0) as usize + (1) as usize) as usize] = __gors_slice_alias_value;
+                    }
+                    s[(1) as usize] = 7;
+                    {
+                        let __gors_slice_base_index = (1) as usize;
+                        let __gors_slice_alias_offset = (1) as usize;
+                        if __gors_slice_base_index >= __gors_slice_alias_offset {
+                            let __gors_slice_alias_index =
+                                __gors_slice_base_index - __gors_slice_alias_offset;
+                            if __gors_slice_alias_index < t.len() {
+                                t[(__gors_slice_alias_index) as usize] =
+                                    s[(__gors_slice_base_index) as usize].clone();
+                            }
+                        }
+                    }
                 }
             },
         );
