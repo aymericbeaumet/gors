@@ -9130,6 +9130,8 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
             })
         });
     let is_unsafe_pointer_arg = expr_contains_unsafe_pointer_conversion(&raw_arg);
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let arg_go_type = typeinfer::GoType::infer_expr(&raw_arg, &env);
     let arg: syn::Expr = raw_arg.into();
 
     if matches!(&target_fun, ast::Expr::SelectorExpr(sel) if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") && sel.sel.name == "Pointer")
@@ -9155,6 +9157,15 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
         }
         return syn::parse_quote! { #target_ty(#arg) };
     }
+    if typeinfer::GoType::from_expr(&target_fun).is_numeric()
+        && let Some(inner) = named_numeric_newtype_inner(&arg_go_type, &env)
+        && let Some(inner_ty) = rust_type_from_go_type(&inner)
+    {
+        if syn_expr_is_self(&arg) {
+            return syn::parse_quote! { ((self.0) as #target_ty) };
+        }
+        return syn::parse_quote! { ((#inner_ty::from(#arg)) as #target_ty) };
+    }
     if let Some(inner_ty) = arc_mutex_inner_type(&target_ty) {
         return syn::parse_quote! {
             std::sync::Arc::new(std::sync::Mutex::new(<#inner_ty>::default()))
@@ -9169,6 +9180,36 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     } else {
         syn::parse_quote! { ((#arg) as #target_ty) }
     }
+}
+
+fn syn_expr_is_self(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Path(path) => {
+            path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == "self")
+        }
+        syn::Expr::Paren(paren) => syn_expr_is_self(&paren.expr),
+        syn::Expr::Group(group) => syn_expr_is_self(&group.expr),
+        syn::Expr::Reference(reference) => syn_expr_is_self(&reference.expr),
+        _ => quote::quote!(#expr).to_string().replace(' ', "") == "self",
+    }
+}
+
+fn named_numeric_newtype_inner(
+    ty: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> Option<typeinfer::GoType> {
+    let typeinfer::GoType::Named(name) = ty else {
+        return None;
+    };
+    matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Alias(_)))
+        .then(|| env.resolve_alias(ty))
+        .filter(typeinfer::GoType::is_numeric)
 }
 
 fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
@@ -20175,6 +20216,61 @@ var X int
             Some(super::ir::SpecialTypeConversionKind::String)
         );
         assert_eq!(shadowed_kind, None);
+    }
+
+    #[test]
+    fn it_should_convert_named_numeric_values_through_inner_type() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Level int
+                const Default Level = 1
+
+                func main() {
+                    println(int(Default))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("isize :: from (Default)"),
+            "expected named numeric conversion to use From before casting: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_convert_named_numeric_receiver_through_inner_field() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type KeySizeError int
+
+                func (err KeySizeError) Code() int {
+                    return int(err)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("isize :: from (* self)") || output.contains("self . 0"),
+            "expected named numeric receiver conversion to dereference the receiver: {output}"
+        );
+        assert!(
+            !output.contains("isize :: from (self)"),
+            "expected borrowed receiver conversion not to call From<&Self>: {output}"
+        );
     }
 
     #[test]

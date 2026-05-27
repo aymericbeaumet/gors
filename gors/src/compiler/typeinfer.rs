@@ -247,7 +247,9 @@ impl GoType {
                 "true" | "false" => GoType::Bool,
                 "nil" => GoType::Any,
                 name => env.get_var(name).unwrap_or_else(|| {
-                    if env.has_func(name) {
+                    if name == "iota" {
+                        GoType::Int
+                    } else if env.has_func(name) {
                         GoType::Func {
                             params: env.get_func_params(name),
                             results: env.get_func_returns(name),
@@ -1440,13 +1442,24 @@ impl TypeEnv {
         for decl in &file.decls {
             match decl {
                 ast::Decl::GenDecl(gd) => {
+                    let mut inherited_const_type = None;
                     for spec in &gd.specs {
                         match spec {
                             ast::Spec::TypeSpec(ts) => {
                                 self.scan_type_spec(ts);
                             }
                             ast::Spec::ValueSpec(vs) => {
-                                self.scan_value_spec(vs, gd.tok);
+                                self.scan_value_spec(vs, gd.tok, inherited_const_type.as_ref());
+                                if gd.tok == token::Token::CONST {
+                                    if let Some(type_expr) = &vs.type_ {
+                                        inherited_const_type = Some(GoType::from_expr(type_expr));
+                                    } else if let Some(values) = &vs.values
+                                        && let Some(first) = values.first()
+                                    {
+                                        inherited_const_type =
+                                            Some(GoType::infer_expr(first, self));
+                                    }
+                                }
                                 for name in &vs.names {
                                     if let Some(ty) = self.get_var(name.name) {
                                         self.set_top_level_var(name.name, ty);
@@ -1518,8 +1531,17 @@ impl TypeEnv {
         }
     }
 
-    fn scan_value_spec(&mut self, vs: &ast::ValueSpec, tok: token::Token) {
-        let explicit_type = vs.type_.as_ref().map(GoType::from_expr);
+    fn scan_value_spec(
+        &mut self,
+        vs: &ast::ValueSpec,
+        tok: token::Token,
+        inherited_const_type: Option<&GoType>,
+    ) {
+        let explicit_type = vs.type_.as_ref().map(GoType::from_expr).or_else(|| {
+            (tok == token::Token::CONST && vs.values.is_none())
+                .then(|| inherited_const_type.cloned())
+                .flatten()
+        });
         let values = vs.values.as_ref();
 
         for (i, name) in vs.names.iter().enumerate() {
@@ -1735,8 +1757,10 @@ fn go_name_is_exported(name: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::parser::parse_file;
 
     #[test]
     fn merge_package_qualifies_local_types_in_signatures() {
@@ -1764,5 +1788,84 @@ mod tests {
             GoType::Pointer(Box::new(GoType::Named("bytes.Reader".to_string())))
         );
         assert!(env.named_type_implements_interface("bytes.Reader", "io.Reader", true));
+    }
+
+    #[test]
+    fn scan_file_carries_grouped_const_type_to_implicit_specs() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type ParameterSizes int
+
+                const (
+                    L1024N160 ParameterSizes = iota
+                    L2048N224
+                    L2048N256
+                )
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(
+            env.get_var("L2048N224"),
+            Some(GoType::Named("ParameterSizes".to_string()))
+        );
+        assert_eq!(
+            env.get_var("L2048N256"),
+            Some(GoType::Named("ParameterSizes".to_string()))
+        );
+    }
+
+    #[test]
+    fn scan_file_does_not_inherit_const_type_when_value_is_present() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                const (
+                    magic = "md5"
+                    marshaledSize = len(magic) + 4
+                )
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(env.get_var("magic"), Some(GoType::String));
+        assert_eq!(env.get_var("marshaledSize"), Some(GoType::Int));
+    }
+
+    #[test]
+    fn scan_file_infers_untyped_iota_consts_as_int() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                const (
+                    UpperCase = iota
+                    LowerCase
+                    TitleCase
+                    MaxCase
+                )
+
+                type d [MaxCase]rune
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(env.get_var("UpperCase"), Some(GoType::Int));
+        assert_eq!(env.get_var("MaxCase"), Some(GoType::Int));
     }
 }

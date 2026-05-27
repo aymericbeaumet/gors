@@ -3242,10 +3242,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "crypto/dsa",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"crypto/dsa"
+		],
 		"symbolCount": 14,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "ErrInvalidPublicKey",
@@ -3274,26 +3276,34 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "L1024N160",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/dsa"
+				]
 			},
 			{
 				"name": "L2048N224",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/dsa"
+				]
 			},
 			{
 				"name": "L2048N256",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/dsa"
+				]
 			},
 			{
 				"name": "L3072N256",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/dsa"
+				]
 			},
 			{
 				"name": "Parameters",
@@ -28171,10 +28181,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "debug/plan9obj",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"debug/plan9obj"
+		],
 		"symbolCount": 17,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "ErrNoSymbols",
@@ -28215,8 +28227,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Magic386",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"debug/plan9obj"
+				]
 			},
 			{
 				"name": "Magic64",
@@ -28227,14 +28241,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "MagicAMD64",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"debug/plan9obj"
+				]
 			},
 			{
 				"name": "MagicARM",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"debug/plan9obj"
+				]
 			},
 			{
 				"name": "NewFile",
@@ -30870,6 +30888,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"compress/zlib",
 			"crypto/aes",
 			"crypto/des",
+			"crypto/dsa",
 			"crypto/hmac",
 			"crypto/md5",
 			"crypto/rc4",
@@ -30879,6 +30898,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/sha512",
 			"crypto/subtle",
 			"debug/elf",
+			"debug/plan9obj",
 			"encoding/ascii85",
 			"encoding/hex",
 			"encoding/pem",
@@ -30894,6 +30914,9 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/version",
 			"hash/adler32",
 			"html/template",
+			"image/gif",
+			"image/jpeg",
+			"image/png",
 			"io",
 			"io/fs",
 			"log",
@@ -31047,6 +31070,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"compress/zlib",
 					"crypto/aes",
 					"crypto/des",
+					"crypto/dsa",
 					"crypto/hmac",
 					"crypto/md5",
 					"crypto/rc4",
@@ -31056,6 +31080,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"crypto/sha512",
 					"crypto/subtle",
 					"debug/elf",
+					"debug/plan9obj",
 					"encoding/ascii85",
 					"encoding/hex",
 					"encoding/pem",
@@ -31071,6 +31096,9 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/version",
 					"hash/adler32",
 					"html/template",
+					"image/gif",
+					"image/jpeg",
+					"image/png",
 					"io",
 					"io/fs",
 					"log",
@@ -38921,10 +38949,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "image/gif",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"image/gif"
+		],
 		"symbolCount": 10,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Decode",
@@ -38947,20 +38977,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "DisposalBackground",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/gif"
+				]
 			},
 			{
 				"name": "DisposalNone",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/gif"
+				]
 			},
 			{
 				"name": "DisposalPrevious",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/gif"
+				]
 			},
 			{
 				"name": "Encode",
@@ -39005,10 +39041,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "image/jpeg",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"image/jpeg"
+		],
 		"symbolCount": 10,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Decode",
@@ -39025,8 +39063,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "DefaultQuality",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/jpeg"
+				]
 			},
 			{
 				"name": "Encode",
@@ -39074,22 +39114,28 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "image/png",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"image/png"
+		],
 		"symbolCount": 16,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "BestCompression",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/png"
+				]
 			},
 			{
 				"name": "BestSpeed",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/png"
+				]
 			},
 			{
 				"name": "CompressionLevel",
@@ -39112,8 +39158,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "DefaultCompression",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/png"
+				]
 			},
 			{
 				"name": "Encode",
@@ -39160,8 +39208,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NoCompression",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"image/png"
+				]
 			},
 			{
 				"name": "UnsupportedError",
@@ -79782,11 +79832,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 60,
+	"fixtureCount": 65,
 	"packageCount": 353,
-	"testedPackageCount": 60,
-	"untestedPackageCount": 293,
+	"testedPackageCount": 65,
+	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 375,
-	"untestedSymbolCount": 12224
+	"testedSymbolCount": 390,
+	"untestedSymbolCount": 12209
 } as const;

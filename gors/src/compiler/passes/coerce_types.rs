@@ -255,6 +255,14 @@ impl VisitMut for CoerceTypes {
 
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         visit_mut::visit_expr_call_mut(self, call);
+        if let Some(self_ty) = self.impl_self_types.last()
+            && self.tuple_newtypes.contains(self_ty)
+            && is_numeric_from_call(&call.func)
+            && call.args.first().is_some_and(is_self_expr)
+            && let Some(first) = call.args.first_mut()
+        {
+            *first = syn::parse_quote! { *self };
+        }
         coerce_scoped_call_args(
             &mut call.args,
             self.mutable_ref_params.last(),
@@ -1429,6 +1437,15 @@ fn is_self_expr(expr: &syn::Expr) -> bool {
         if path.path.leading_colon.is_none()
             && path.path.segments.len() == 1
             && path.path.segments.first().is_some_and(|seg| seg.ident == "self"))
+}
+
+fn is_numeric_from_call(func: &syn::Expr) -> bool {
+    const NUMERIC_TYPES: &[&str] = &[
+        "isize", "i8", "i16", "i32", "i64", "usize", "u8", "u16", "u32", "u64", "f32", "f64",
+    ];
+    NUMERIC_TYPES
+        .iter()
+        .any(|ty| is_path_call(func, &[*ty, "from"]))
 }
 
 fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
