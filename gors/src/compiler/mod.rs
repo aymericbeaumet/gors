@@ -1905,6 +1905,10 @@ fn const_eval_array_len(
             let type_expr = lit.type_.as_ref()?;
             const_eval_array_type_len(type_expr, lit.elts.as_deref(), iota_value, values, env)
         }
+        ast::Expr::SelectorExpr(selector) => {
+            let receiver_type = typeinfer::GoType::infer_expr(&selector.x, env);
+            env.get_field_array_len_from_receiver(&receiver_type, selector.sel.name)
+        }
         _ => None,
     }
 }
@@ -21243,6 +21247,35 @@ func main() {
             "{output}"
         );
         assert!(output.contains("pub const MaxPart: isize = 4;"), "{output}");
+    }
+
+    #[test]
+    fn it_should_evaluate_len_of_array_struct_fields() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type dirent struct {
+                    name [256]byte
+                }
+
+                const NameLen = len(dirent{}.name)
+
+                var _ [len(dirent{}.name)]int
+
+                func main() {}
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("pub const NameLen: isize = 256;"),
+            "{output}"
+        );
+        assert!(output.contains("[isize; 256]"), "{output}");
     }
 
     #[test]

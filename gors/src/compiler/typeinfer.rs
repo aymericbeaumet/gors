@@ -572,6 +572,8 @@ pub struct TypeEnv {
     interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
     /// Struct name → field types
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
+    /// Struct name → array field lengths
+    struct_field_array_lengths: HashMap<std::string::String, HashMap<std::string::String, i128>>,
     /// Package-level string constants emitted as owned-String functions.
     string_consts: HashSet<std::string::String>,
     top_level_vars: HashSet<std::string::String>,
@@ -825,6 +827,13 @@ impl TypeEnv {
         self.struct_fields.insert(name.to_string(), fields);
     }
 
+    pub fn set_struct_field_array_len(&mut self, struct_name: &str, field_name: &str, len: i128) {
+        self.struct_field_array_lengths
+            .entry(struct_name.to_string())
+            .or_default()
+            .insert(field_name.to_string(), len);
+    }
+
     pub fn get_field_type(&self, struct_name: &str, field_name: &str) -> GoType {
         self.struct_fields
             .get(struct_name)
@@ -842,6 +851,25 @@ impl TypeEnv {
             .get(struct_name)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub fn get_field_array_len(&self, struct_name: &str, field_name: &str) -> Option<i128> {
+        self.struct_field_array_lengths
+            .get(struct_name)
+            .and_then(|fields| fields.get(field_name))
+            .copied()
+    }
+
+    pub fn get_field_array_len_from_receiver(
+        &self,
+        receiver_type: &GoType,
+        field_name: &str,
+    ) -> Option<i128> {
+        match self.resolve_alias(receiver_type) {
+            GoType::Named(name) => self.get_field_array_len(&name, field_name),
+            GoType::Pointer(inner) => self.get_field_array_len_from_receiver(&inner, field_name),
+            _ => None,
+        }
     }
 
     pub fn set_string_const(&mut self, name: &str) {
@@ -891,6 +919,12 @@ impl TypeEnv {
         }
         for (name, fields) in &package_env.struct_fields {
             self.set_struct_fields(&format!("{package_name}.{name}"), fields.clone());
+        }
+        for (name, fields) in &package_env.struct_field_array_lengths {
+            let struct_name = format!("{package_name}.{name}");
+            for (field_name, len) in fields {
+                self.set_struct_field_array_len(&struct_name, field_name, *len);
+            }
         }
         for (name, ty) in &package_env.vars {
             self.set_var(&format!("{package_name}.{name}"), ty.clone());
@@ -956,19 +990,27 @@ impl TypeEnv {
                 if let Some(ref field_list) = st.fields {
                     let mut fields = vec![];
                     for field in &field_list.list {
+                        let array_len = field.type_.as_ref().and_then(array_type_len_value);
                         let ty = field
                             .type_
                             .as_ref()
                             .map(GoType::from_expr)
                             .unwrap_or(GoType::Unknown);
                         if let Some(ref names) = field.names {
-                            for n in names {
-                                fields.push((n.name.to_string(), ty.clone()));
+                            for field_name in names {
+                                fields.push((field_name.name.to_string(), ty.clone()));
+                                if let Some(len) = array_len {
+                                    self.set_struct_field_array_len(
+                                        name.name,
+                                        field_name.name,
+                                        len,
+                                    );
+                                }
                             }
                         } else if let Some(type_expr) = &field.type_
-                            && let Some(name) = embedded_field_name(type_expr)
+                            && let Some(field_name) = embedded_field_name(type_expr)
                         {
-                            fields.push((name, ty.clone()));
+                            fields.push((field_name, ty.clone()));
                         }
                     }
                     self.set_struct_fields(name.name, fields);
@@ -1124,6 +1166,50 @@ fn embedded_field_name(expr: &ast::Expr) -> Option<String> {
         ast::Expr::IndexListExpr(index) => embedded_field_name(&index.x),
         _ => None,
     }
+}
+
+fn array_type_len_value(expr: &ast::Expr<'_>) -> Option<i128> {
+    match expr {
+        ast::Expr::ArrayType(array) => integer_array_len_value(array.len.as_deref()?),
+        ast::Expr::ParenExpr(paren) => array_type_len_value(&paren.x),
+        _ => None,
+    }
+}
+
+fn integer_array_len_value(expr: &ast::Expr<'_>) -> Option<i128> {
+    match expr {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => parse_int_literal(lit.value),
+        ast::Expr::ParenExpr(paren) => integer_array_len_value(&paren.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            integer_array_len_value(&unary.x)
+        }
+        _ => None,
+    }
+}
+
+fn parse_int_literal(value: &str) -> Option<i128> {
+    let cleaned = value.replace('_', "");
+    let (radix, digits) = if let Some(rest) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
+        (8, &cleaned[1..])
+    } else {
+        (10, cleaned.as_str())
+    };
+    i128::from_str_radix(digits, radix).ok()
 }
 
 fn extract_type_name<'a>(expr: &'a ast::Expr<'a>) -> &'a str {

@@ -20639,6 +20639,9 @@ mod tests {
                 package main
 
                 const n = 2
+                type dirent struct {
+                    name [256]byte
+                }
 
                 var _ [0]int
                 var _ [-0]int
@@ -20646,6 +20649,7 @@ mod tests {
                 var _ [n]int
                 var _ [2*n]int
                 var _ [len([3]int{})]int
+                var _ [len(dirent{}.name)]int
             "#,
         )
         .unwrap();

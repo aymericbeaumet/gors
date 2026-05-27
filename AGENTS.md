@@ -447,6 +447,9 @@ before compilation to collect variable types, function signatures, struct fields
 and interface declarations. The `GoType` enum represents Go types. Used during
 code generation for type-aware decisions (string indexing, numeric casts,
 interface detection).
+Struct field scanning also records fixed array field lengths so compile-time
+`len`/`cap` evaluation can fold selectors such as `len(Dirent{}.Name)` without
+hardcoding package-specific stdlib behavior.
 Package-level function signatures and method signatures live in separate
 `TypeEnv` namespaces. Methods must be registered only as receiver-qualified keys
 such as `StringSlice.Search`, never as plain `Search`, because Go permits package
