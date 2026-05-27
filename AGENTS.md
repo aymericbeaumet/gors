@@ -487,7 +487,9 @@ IR branch validation rejects `break`, `continue`, and `fallthrough` placements
 that Go disallows before Rust lowering. Labeled `break`/`continue` must target
 an enclosing breakable statement or loop respectively, and `fallthrough` is
 accepted only as the final non-empty top-level statement of a non-final
-expression-switch case.
+expression-switch case. Branch validation recurses into function literals with a
+fresh branch context, because labels, loops, and switches outside the literal do
+not enclose its body.
 IR statement-context validation rejects non-call/non-receive expression
 statements, type conversions used as statements, and builtins that the Go spec
 forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,

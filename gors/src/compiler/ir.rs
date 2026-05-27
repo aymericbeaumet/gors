@@ -5562,7 +5562,7 @@ fn invalid_branch_in_expr(
             .elt
             .as_ref()
             .and_then(|expr| invalid_branch_in_expr(expr, context)),
-        ast::Expr::FuncLit(_) => None,
+        ast::Expr::FuncLit(func_lit) => invalid_branch_in_func(&func_lit.body),
         ast::Expr::IndexExpr(index) => invalid_branch_in_expr(&index.x, context)
             .or_else(|| invalid_branch_in_expr(&index.index, context)),
         ast::Expr::IndexListExpr(index) => {
@@ -16188,6 +16188,18 @@ mod tests {
                     }
                 "#,
                 super::InvalidBranch::FallthroughOutsideSwitch,
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = func() {
+                            break
+                        }
+                    }
+                "#,
+                super::InvalidBranch::BreakOutside,
             ),
         ];
 
