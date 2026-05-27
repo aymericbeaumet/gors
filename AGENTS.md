@@ -91,6 +91,9 @@ gors-builtin/
   function-value path. `GoType::Func` also carries the variadic parameter start;
   preserve that metadata when inferring, assigning, or validating function
   values so stored variadic functions keep packed and spread call semantics.
+  Deferred and goroutine function-value calls must use the same argument
+  packing path as ordinary function-value calls; `go f(...)` also clones a
+  function-value identifier before entering the spawned closure.
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are stored

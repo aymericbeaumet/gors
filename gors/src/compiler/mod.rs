@@ -16499,6 +16499,15 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 } else {
                     // go someFunc(args...)
                     let mut clone_stmts: Vec<syn::Stmt> = Vec::new();
+                    if let ast::Expr::Ident(ident) = call_expr.fun.as_ref()
+                        && function_value_call_info(&call_expr.fun).is_some()
+                    {
+                        let name =
+                            syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                        clone_stmts.push(syn::parse_quote! {
+                            let #name = #name.clone();
+                        });
+                    }
                     if let Some(ref args) = call_expr.args {
                         for arg in args.iter() {
                             if let ast::Expr::Ident(ident) = arg {
@@ -16512,7 +16521,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                             }
                         }
                     }
-                    let call: syn::ExprCall = call_expr.into();
+                    let call: syn::Expr = ast::Expr::CallExpr(call_expr).into();
                     if clone_stmts.is_empty() {
                         Ok(vec![syn::parse_quote! {
                             ::std::thread::spawn(move || { #call; });
