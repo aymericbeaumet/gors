@@ -3458,6 +3458,11 @@ fn compile_program_impl(
             (pkg.import_path.clone(), mod_name)
         })
         .collect();
+    let local_init_modules: Vec<String> = program
+        .imports
+        .iter()
+        .filter_map(|pkg| local_module_names.get(&pkg.import_path).cloned())
+        .collect();
     let stdlib_module_names: BTreeMap<String, String> = stdlib_imports
         .iter()
         .map(|path| (path.clone(), crate::resolve::module_name(path)))
@@ -3585,6 +3590,7 @@ fn compile_program_impl(
         &stdlib_module_names,
     ));
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
+    prepend_local_package_init_calls(&mut main_file, &local_init_modules);
     rewrite_import_module_paths(&mut main_file, &main_import_rewrites);
     passes::pass(&mut main_file);
     rewrite_import_module_paths(&mut main_file, &main_import_rewrites);
@@ -4474,6 +4480,31 @@ fn prefix_final_module_paths(modules: &mut BTreeMap<String, CompiledModule>) {
         .filter(|module| !module.is_main && module.mod_name != "builtin")
     {
         prefix_sibling_paths(&mut module.file, &module_names);
+    }
+}
+
+fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String]) {
+    if module_names.is_empty() {
+        return;
+    }
+    let init_calls: Vec<syn::Stmt> = module_names
+        .iter()
+        .map(|module_name| {
+            let module = syn::Ident::new(&rust_safe_ident_name(module_name), Span::mixed_site());
+            syn::parse_quote! { #module::__gors_init(); }
+        })
+        .collect();
+    for item in &mut file.items {
+        let syn::Item::Fn(func) = item else {
+            continue;
+        };
+        if func.sig.ident != "main" {
+            continue;
+        }
+        let existing = std::mem::take(&mut func.block.stmts);
+        func.block.stmts = init_calls;
+        func.block.stmts.extend(existing);
+        break;
     }
 }
 
@@ -15729,6 +15760,18 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     }
                 }
             }
+        }
+
+        if !is_main_package {
+            let mut init_stmts = Vec::new();
+            for body in &init_bodies {
+                init_stmts.extend(body.stmts.clone());
+            }
+            items.push(syn::parse_quote! {
+                pub fn __gors_init() {
+                    #(#init_stmts)*
+                }
+            });
         }
 
         for (type_name, method_list) in &methods {

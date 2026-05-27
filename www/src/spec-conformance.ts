@@ -1237,8 +1237,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Packages and program initialization",
 		"testCount": 6,
-		"passingTestCount": 5,
-		"unsupportedTestCount": 1,
+		"passingTestCount": 6,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "packages-single-main",
@@ -1294,9 +1294,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "packages-initialization-order",
 				"section": "Program initialization and execution",
 				"title": "Package initialization runs dependencies, variables, and init functions in order",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs multi-package ordering fixtures with observable init side effects."
+				"status": "passing",
+				"fixtures": [
+					"packages_and_program_initialization"
+				],
+				"reason": ""
 			}
 		]
 	},
@@ -1372,8 +1374,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 8,
+	"passingCategoryCount": 9,
 	"testCount": 124,
-	"passingTestCount": 120,
-	"unsupportedTestCount": 4
+	"passingTestCount": 121,
+	"unsupportedTestCount": 3
 } as const;

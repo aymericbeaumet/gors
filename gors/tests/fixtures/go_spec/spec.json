@@ -1122,9 +1122,10 @@
           "id": "packages-initialization-order",
           "section": "Program initialization and execution",
           "title": "Package initialization runs dependencies, variables, and init functions in order",
-          "status": "unsupported",
-          "reason": "Needs multi-package ordering fixtures with observable init side effects.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ]
         }
       ]
     },
