@@ -6235,9 +6235,11 @@ fn invalid_assignment_untyped_nil(
             let Some(expected) = assignment_lhs_expected_type(assign.tok, lhs, env, scopes) else {
                 return Some(InvalidAssignmentReason::UntypedNil);
             };
-            (!type_can_compare_to_nil(&expected)).then(|| InvalidAssignmentReason::TypeMismatch {
-                expected: go_type_display_name(&expected),
-                actual: "nil".to_string(),
+            (!type_can_compare_to_nil(&expected, env)).then(|| {
+                InvalidAssignmentReason::TypeMismatch {
+                    expected: go_type_display_name(&expected),
+                    actual: "nil".to_string(),
+                }
             })
         })
 }
@@ -6400,7 +6402,7 @@ fn invalid_send_value_type(
     env: &TypeEnv,
 ) -> Option<InvalidSendReason> {
     let expected = env.resolve_alias(expected);
-    if expr_is_nil(value) && !type_can_compare_to_nil(&expected) {
+    if expr_is_nil(value) && !type_can_compare_to_nil(&expected, env) {
         return Some(InvalidSendReason::ValueTypeMismatch {
             expected: go_type_display_name(&expected),
             actual: "nil".to_string(),
@@ -7182,7 +7184,7 @@ fn invalid_return_nil_mismatch(
         .filter(|(_, result)| expr_is_nil(result))
         .find_map(|(expected, _)| {
             let expected = env.resolve_alias(expected);
-            (!type_can_compare_to_nil(&expected)).then(|| InvalidReturnReason::TypeMismatch {
+            (!type_can_compare_to_nil(&expected, env)).then(|| InvalidReturnReason::TypeMismatch {
                 expected: go_type_display_name(&expected),
                 actual: "nil".to_string(),
             })
@@ -7810,9 +7812,11 @@ fn invalid_var_nil_initializer(
         .iter()
         .filter(|value| expr_is_nil(value))
         .find_map(|_| {
-            (!type_can_compare_to_nil(&expected)).then(|| InvalidDeclaration::VarTypeMismatch {
-                expected: go_type_display_name(&expected),
-                actual: "nil".to_string(),
+            (!type_can_compare_to_nil(&expected, env)).then(|| {
+                InvalidDeclaration::VarTypeMismatch {
+                    expected: go_type_display_name(&expected),
+                    actual: "nil".to_string(),
+                }
             })
         })
 }
@@ -8011,7 +8015,7 @@ fn invalid_expression_switch_case(
 ) -> Option<InvalidSwitchReason> {
     let case_type = env.resolve_alias(&GoType::infer_expr(expr, env));
     if expr_is_nil(expr) {
-        return (!type_can_compare_to_nil(tag_type)).then(|| {
+        return (!type_can_compare_to_nil(tag_type, env)).then(|| {
             InvalidSwitchReason::CaseTypeMismatch {
                 expected: go_type_display_name(tag_type),
                 actual: "nil".to_string(),
@@ -8178,20 +8182,23 @@ fn expr_is_nil(expr: &ast::Expr<'_>) -> bool {
     matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
 }
 
-fn type_can_compare_to_nil(ty: &GoType) -> bool {
-    matches!(
-        ty,
+fn type_can_compare_to_nil(ty: &GoType, env: &TypeEnv) -> bool {
+    let ty = env.resolve_alias(ty);
+    match &ty {
         GoType::Any
-            | GoType::Error
-            | GoType::Interface(_)
-            | GoType::Pointer(_)
-            | GoType::Func { .. }
-            | GoType::Slice(_)
-            | GoType::Map(_, _)
-            | GoType::Chan { .. }
-            | GoType::Unknown
-            | GoType::Named(_)
-    )
+        | GoType::Error
+        | GoType::Interface(_)
+        | GoType::Pointer(_)
+        | GoType::Func { .. }
+        | GoType::Slice(_)
+        | GoType::Map(_, _)
+        | GoType::Chan { .. }
+        | GoType::Unknown => true,
+        GoType::Named(name) => env
+            .get_type_kind(name)
+            .is_none_or(|kind| matches!(kind, TypeKind::Interface)),
+        _ => false,
+    }
 }
 
 fn invalid_short_var_decl_names(lhs: &[ast::Expr<'_>]) -> Option<InvalidShortVarDeclReason> {
@@ -9039,6 +9046,9 @@ fn invalid_binary_expr(
 ) -> Option<InvalidStatementReason> {
     let left = env.resolve_alias(&GoType::infer_expr(&binary.x, env));
     let right = env.resolve_alias(&GoType::infer_expr(&binary.y, env));
+    if expr_is_nil(&binary.x) || expr_is_nil(&binary.y) {
+        return binary_nil_operands(binary, &left, &right, env);
+    }
     if binary_type_should_skip_validation(&left, binary.op)
         || binary_type_should_skip_validation(&right, binary.op)
     {
@@ -9222,9 +9232,6 @@ fn binary_equality_operands(
     right: &GoType,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    if binary_side_is_nil(&binary.x) || binary_side_is_nil(&binary.y) {
-        return None;
-    }
     if !type_is_comparable_for_validation(left, env)
         || !type_is_comparable_for_validation(right, env)
     {
@@ -9254,6 +9261,39 @@ fn binary_equality_operands(
     ))
 }
 
+fn binary_nil_operands(
+    binary: &ast::BinaryExpr<'_>,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
+    if !matches!(binary.op, token::Token::EQL | token::Token::NEQ) {
+        return Some(invalid_binary_reason(
+            binary.op,
+            "operator not defined on untyped nil",
+        ));
+    }
+    let left_is_nil = expr_is_nil(&binary.x);
+    let right_is_nil = expr_is_nil(&binary.y);
+    if left_is_nil && right_is_nil {
+        return Some(invalid_binary_reason(
+            binary.op,
+            "operator not defined on untyped nil",
+        ));
+    }
+    let other = if left_is_nil { right } else { left };
+    if type_can_compare_to_nil(other, env) {
+        return None;
+    }
+    Some(invalid_binary_reason(
+        binary.op,
+        format!(
+            "operand must be comparable to nil, got {}",
+            go_type_display_name(other)
+        ),
+    ))
+}
+
 fn binary_ordered_operands(
     op: token::Token,
     left: &GoType,
@@ -9272,10 +9312,6 @@ fn binary_ordered_operands(
             go_type_display_name(right)
         ),
     ))
-}
-
-fn binary_side_is_nil(expr: &ast::Expr<'_>) -> bool {
-    matches!(unparen_expr(expr), ast::Expr::Ident(ident) if ident.name == "nil")
 }
 
 fn type_is_comparable_for_validation(ty: &GoType, env: &TypeEnv) -> bool {
@@ -10347,7 +10383,7 @@ fn invalid_call_arg_expr(
         ));
     }
     let expected = env.resolve_alias(expected);
-    if expr_is_nil(arg) && !type_can_compare_to_nil(&expected) {
+    if expr_is_nil(arg) && !type_can_compare_to_nil(&expected, env) {
         return Some(invalid_call_reason(
             target,
             format!(
@@ -10436,7 +10472,7 @@ fn invalid_builtin_append_call(
 
     let expected = env.resolve_alias(&dst_elem);
     for value in values {
-        if expr_is_nil(value) && !type_can_compare_to_nil(&expected) {
+        if expr_is_nil(value) && !type_can_compare_to_nil(&expected, env) {
             return Some(invalid_builtin_call_reason(
                 BuiltinCallKind::Append,
                 format!(
@@ -11182,7 +11218,7 @@ fn invalid_builtin_delete_call(
     match ty {
         GoType::Map(key, _) => {
             let expected = env.resolve_alias(&key);
-            if expr_is_nil(key_arg) && !type_can_compare_to_nil(&expected) {
+            if expr_is_nil(key_arg) && !type_can_compare_to_nil(&expected, env) {
                 return Some(invalid_builtin_call_reason(
                     BuiltinCallKind::Delete,
                     format!(
@@ -15602,6 +15638,21 @@ mod tests {
                 r#"
                     package main
 
+                    type S struct{}
+
+                    var X S = nil
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "S".to_string(),
+                actual: "nil".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var y = 1
                     const X = y
                 "#,
@@ -15643,6 +15694,8 @@ mod tests {
                 r#"
                     package main
 
+                    type NamedIface interface{}
+
                     func pair() (int, int) { return 1, 2 }
 
                     const (
@@ -15662,6 +15715,7 @@ mod tests {
                     var Ch chan int = nil
                     var Fn func() = nil
                     var Iface any = nil
+                    var Named NamedIface = nil
                 "#,
             ),
             None
@@ -18363,6 +18417,53 @@ mod tests {
                 "==",
                 "operands have mismatched types int and string",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 == nil
+                    }
+                "#,
+                "==",
+                "operand must be comparable to nil, got int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = nil == nil
+                    }
+                "#,
+                "==",
+                "operator not defined on untyped nil",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = nil < nil
+                    }
+                "#,
+                "<",
+                "operator not defined on untyped nil",
+            ),
+            (
+                r#"
+                    package main
+
+                    type S struct{}
+
+                    func main() {
+                        var s S
+                        _ = s != nil
+                    }
+                "#,
+                "!=",
+                "operand must be comparable to nil, got S",
+            ),
         ];
 
         for (source, op, reason) in cases {
@@ -18394,6 +18495,10 @@ mod tests {
             r#"
                 package main
 
+                type I interface{}
+                type P *int
+                type Slice []int
+
                 func main() {
                     _ = 1 + 2
                     _ = "go" + "rs"
@@ -18412,6 +18517,12 @@ mod tests {
                     _ = m != nil
                     var f func()
                     _ = f == nil
+                    var i I
+                    _ = nil == i
+                    var p P
+                    _ = p == nil
+                    var s Slice
+                    _ = s != nil
                     ch := make(chan int)
                     _ = ch == ch
                 }
@@ -19307,6 +19418,7 @@ mod tests {
                 package main
 
                 type Count int
+                type I interface{}
 
                 func main() {
                     ints := make(chan int, 1)
@@ -19324,6 +19436,8 @@ mod tests {
                     pointers <- nil
                     values := make(chan any, 1)
                     values <- nil
+                    interfaces := make(chan I, 1)
+                    interfaces <- nil
                 }
             "#,
         )
@@ -20772,6 +20886,34 @@ mod tests {
                 "int",
                 "nil",
             ),
+            (
+                r#"
+                    package main
+
+                    type S struct{}
+
+                    func main() {
+                        var s S
+                        s = nil
+                    }
+                "#,
+                "S",
+                "nil",
+            ),
+            (
+                r#"
+                    package main
+
+                    type Count int
+
+                    func main() {
+                        var c Count
+                        c = nil
+                    }
+                "#,
+                "int",
+                "nil",
+            ),
         ];
 
         for (source, expected, actual) in cases {
@@ -20973,6 +21115,8 @@ mod tests {
                     fn = nil
                     var iface any
                     iface = nil
+                    var named I
+                    named = nil
                     x += 1
                     f /= 2
                     s += "!"

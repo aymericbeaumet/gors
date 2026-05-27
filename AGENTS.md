@@ -792,6 +792,12 @@ Assignment and compound-assignment lowering should also construct `syn`
 assignment/binary expression nodes directly when either side is dynamic; do not
 round-trip generated assignment tokens back through `parse_quote!`.
 
+IR validation treats `nil` as assignable/comparable only to nilable types
+(pointer, func, slice, map, channel, interface, `any`, `error`, or unresolved
+unknowns). Use `TypeEnv::resolve_alias()` and named interface metadata before
+deciding nilability; named structs and named numeric/string/bool aliases must
+not silently accept `nil`.
+
 Imaginary literals are treated as untyped complex constants in the Go front end
 and lower through `crate::builtin::complex128`; expected `complex64` constant
 contexts use the builtin `complex64` constructor instead of a Rust cast.
