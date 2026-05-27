@@ -30856,6 +30856,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/parser",
 			"go/printer",
 			"go/scanner",
+			"go/token",
 			"html/template",
 			"io",
 			"io/fs",
@@ -31026,6 +31027,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/parser",
 					"go/printer",
 					"go/scanner",
+					"go/token",
 					"html/template",
 					"io",
 					"io/fs",
@@ -33614,16 +33616,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "go/token",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"go/token"
+		],
 		"symbolCount": 132,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "ADD",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/token"
+				]
 			},
 			{
 				"name": "ADD_ASSIGN",
@@ -33970,8 +33976,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "FUNC",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/token"
+				]
 			},
 			{
 				"name": "GEQ",
@@ -34312,8 +34320,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "STRING",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"go/token"
+				]
 			},
 			{
 				"name": "STRUCT",
@@ -79718,11 +79728,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 53,
+	"fixtureCount": 54,
 	"packageCount": 353,
-	"testedPackageCount": 53,
-	"untestedPackageCount": 300,
+	"testedPackageCount": 54,
+	"untestedPackageCount": 299,
 	"symbolCount": 12599,
-	"testedSymbolCount": 357,
-	"untestedSymbolCount": 12242
+	"testedSymbolCount": 360,
+	"untestedSymbolCount": 12239
 } as const;
