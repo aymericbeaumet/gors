@@ -129,6 +129,10 @@ gors-builtin/
   interface contract. DCE must preserve the hook on reachable traits and trait
   impls, and any injected structural stdlib helper that implements a Go
   interface, such as `os.File` for `io.Writer`, must implement the hook too.
+- Values boxed into `any`/`interface{}` must first materialize the Go concrete
+  Rust type. In particular, numeric constants need an explicit cast such as
+  `42 as isize` before boxing so type assertions and type switches downcast to
+  Go's `int` representation instead of Rust's default literal type.
 - Backward `goto Label` targeting the immediately labeled statement is still
   lowered by wrapping that statement in a generated Rust labeled `loop` and
   translating the `goto` to `continue 'Label`. Scope-safe forward gotos whose
@@ -315,6 +319,10 @@ For broad stdlib API coverage, prefer grouping related checks into one package
 fixture such as `tests/fixtures/go_programs/stdlib/strings/main.go` rather than
 creating one runnable fixture per function; `rust-test-integration-run` pays a
 full transpile plus `rustc` execution cost per discovered program directory.
+Generated-program fixtures compare stdout only. Use `fmt.Print*` for observable
+fixture output unless the fixture is explicitly testing the predeclared
+`print`/`println` builtins, because Go's predeclared `print` and `println`
+write to stderr under the pinned SDK.
 After adding or changing `gostdlib_` fixtures, run
 `npm --prefix www run generate:gostdlib-report` from the repository root to
 refresh the Svelte app's stdlib coverage report. The generator marks fixture-used

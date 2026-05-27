@@ -2198,8 +2198,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
 
             let rust_type: syn::Type = if let Some(name) = type_name_str {
-                let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
-                syn::parse_quote! { #type_ident }
+                const_rust_type_from_type_name(name)
             } else if let Some(value) = &evaluated {
                 TYPE_ENV.with(|env| {
                     env.borrow()
@@ -2307,6 +2306,18 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
         }
     }
     Ok(items)
+}
+
+fn const_rust_type_from_type_name(name: &str) -> syn::Type {
+    let go_type = typeinfer::GoType::from_name(name);
+    if matches!(go_type, typeinfer::GoType::String) {
+        return syn::parse_quote! { &str };
+    }
+    if let Some(rust_type) = rust_type_from_go_type(&go_type) {
+        return rust_type;
+    }
+    let type_ident = syn::Ident::new(&import_rust_name(name), Span::mixed_site());
+    syn::parse_quote! { #type_ident }
 }
 
 /// Helper to get the zero value expression for a Go type name.
@@ -9390,18 +9401,56 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 ir::BuiltinCallKind::Recover => {
                     syn::parse_quote! { String::new() }
                 }
-                ir::BuiltinCallKind::Println => match args.first() {
-                    Some(first) => syn::parse_quote! { crate::builtin::println_value(#first) },
-                    None => syn::parse_quote! { crate::builtin::println_empty() },
-                },
-                ir::BuiltinCallKind::Print => match args.first() {
-                    Some(first) => syn::parse_quote! { crate::builtin::print_value(#first) },
-                    None => syn::parse_quote! { crate::builtin::print_empty() },
-                },
+                ir::BuiltinCallKind::Println => compile_builtin_println(args),
+                ir::BuiltinCallKind::Print => compile_builtin_print(args),
                 _ => compile_error_expr(format!("invalid builtin call: {name}")),
             }
         }
     }
+}
+
+fn compile_builtin_println(args: Vec<syn::Expr>) -> syn::Expr {
+    if args.is_empty() {
+        return syn::parse_quote! { crate::builtin::println_empty() };
+    }
+    if args.len() == 1 {
+        let arg = args
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| syn::parse_quote! { "" });
+        return syn::parse_quote! { crate::builtin::println_value(#arg) };
+    }
+
+    let len = args.len();
+    let mut stmts = Vec::<syn::Stmt>::new();
+    for (idx, arg) in args.into_iter().enumerate() {
+        if idx + 1 == len {
+            stmts.push(syn::parse_quote! { crate::builtin::println_value(#arg); });
+        } else {
+            stmts.push(syn::parse_quote! { crate::builtin::print_value(#arg); });
+            stmts.push(syn::parse_quote! { crate::builtin::print_value(" "); });
+        }
+    }
+    syn::parse_quote! {{ #(#stmts)* }}
+}
+
+fn compile_builtin_print(args: Vec<syn::Expr>) -> syn::Expr {
+    if args.is_empty() {
+        return syn::parse_quote! { crate::builtin::print_empty() };
+    }
+    if args.len() == 1 {
+        let arg = args
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| syn::parse_quote! { "" });
+        return syn::parse_quote! { crate::builtin::print_value(#arg) };
+    }
+
+    let stmts = args
+        .into_iter()
+        .map(|arg| syn::parse_quote! { crate::builtin::print_value(#arg); })
+        .collect::<Vec<syn::Stmt>>();
+    syn::parse_quote! {{ #(#stmts)* }}
 }
 
 fn compile_sort_slice_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
@@ -10645,7 +10694,21 @@ fn compile_expr_with_expected(
         if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
             return expr.into();
         }
-        let expr: syn::Expr = expr.into();
+        let numeric_const_target = if is_const_like_expr(&expr) {
+            numeric_cast_type(&actual)
+        } else {
+            None
+        };
+        let expr = if matches!(actual, typeinfer::GoType::Unknown) {
+            expr.into()
+        } else {
+            compile_expr_with_expected(expr, Some(&actual))
+        };
+        let expr = if let Some(target_ty) = numeric_const_target {
+            syn::parse_quote! { (#expr as #target_ty) }
+        } else {
+            expr
+        };
         return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
     }
 
@@ -14239,6 +14302,15 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 let env = TYPE_ENV.with(|e| e.borrow().clone());
                 let container_type = typeinfer::GoType::infer_expr(&index_expr.x, &env);
                 let base: syn::Expr = (*index_expr.x).into();
+
+                if let typeinfer::GoType::Map(key_ty, _) = env.resolve_alias(&container_type) {
+                    let key = compile_expr_with_expected(*index_expr.index, Some(&key_ty));
+                    return syn::parse_quote! {{
+                        let __gors_map_key = #key;
+                        (#base).get(&__gors_map_key).cloned().unwrap_or_default()
+                    }};
+                }
+
                 let idx: syn::Expr = (*index_expr.index).into();
 
                 if is_byte_seq_type_param(&container_type) {
@@ -20444,6 +20516,29 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_map_index_read_with_zero_value_fallback() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    m := map[string]int{"a": 1}
+                    _ = m["missing"]
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut m = std::collections::HashMap::from([("a".to_string(), 1)]);
+                    let _ = {
+                        let __gors_map_key = "missing".to_string();
+                        (m).get(&__gors_map_key).cloned().unwrap_or_default()
+                    };
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_compile_map_literal_keys_with_expected_type() {
         test(
             r#"
@@ -21169,6 +21264,48 @@ func main() {
             rust! {
                 pub fn main() {
                     crate::builtin::println_value("hello");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_builtin_println_multiple_arguments() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    println(1, "seen")
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    {
+                        crate::builtin::print_value(1);
+                        crate::builtin::print_value(" ");
+                        crate::builtin::println_value("seen");
+                    };
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_box_numeric_constants_as_go_types_for_any() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    var x any = 42
+                    _ = x
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut x: Box<dyn std::any::Any> = Box::new((42 as isize)) as Box<dyn std::any::Any>;
+                    let _ = x;
                 }
             },
         );
