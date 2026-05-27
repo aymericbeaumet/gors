@@ -13086,6 +13086,14 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
         ir::InvalidSignature::DuplicateName { name } => {
             format!("duplicate parameter/result name {}", name)
         }
+        ir::InvalidSignature::InitFunction {
+            type_params,
+            params,
+            results,
+        } => format!(
+            "init function must not declare type parameters, parameters, or results \
+             (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
+        ),
         ir::InvalidSignature::MixedNamedUnnamed { list } => {
             format!(
                 "{} list mixes named and unnamed entries",
@@ -13164,6 +13172,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         }
         ir::InvalidDeclaration::DuplicateTopLevelName { name } => {
             format!("duplicate top-level declaration {name}")
+        }
+        ir::InvalidDeclaration::InvalidInitIdentifier => {
+            "init can only be used for init function declarations".to_string()
         }
         ir::InvalidDeclaration::MethodFieldConflict { base, name } => {
             format!("method {name} conflicts with field on struct {base}")

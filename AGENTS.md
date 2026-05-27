@@ -665,7 +665,10 @@ duplicate methods for a receiver base type, and method names that collide with
 fields on the same struct base type before Rust emission.
 Top-level declaration validation rejects duplicate package-block names across
 const, var, type, and function declarations while ignoring `_` and receiver
-methods.
+methods. The package-block name `init` is special: multiple `func init()`
+declarations are allowed and do not introduce a binding, but non-function
+top-level `init` declarations and `init` functions with type parameters,
+parameters, or results are rejected in IR.
 Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than

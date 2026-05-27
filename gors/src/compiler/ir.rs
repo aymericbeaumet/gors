@@ -1195,6 +1195,11 @@ pub enum InvalidSignature {
     DuplicateName {
         name: String,
     },
+    InitFunction {
+        type_params: usize,
+        params: usize,
+        results: usize,
+    },
     MixedNamedUnnamed {
         list: SignatureList,
     },
@@ -1246,6 +1251,7 @@ pub enum InvalidDeclaration {
     DuplicateTopLevelName {
         name: String,
     },
+    InvalidInitIdentifier,
     MethodFieldConflict {
         base: String,
         name: String,
@@ -1393,6 +1399,9 @@ fn invalid_top_level_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
             if name == "_" {
                 continue;
             }
+            if name == "init" {
+                return Some(InvalidDeclaration::InvalidInitIdentifier);
+            }
             if !names.insert(name.clone()) {
                 return Some(InvalidDeclaration::DuplicateTopLevelName { name });
             }
@@ -1403,7 +1412,9 @@ fn invalid_top_level_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
 
 fn top_level_declared_names(decl: &ast::Decl<'_>) -> Vec<String> {
     match decl {
-        ast::Decl::FuncDecl(func) if func.recv.is_none() => vec![func.name.name.to_string()],
+        ast::Decl::FuncDecl(func) if func.recv.is_none() && func.name.name != "init" => {
+            vec![func.name.name.to_string()]
+        }
         ast::Decl::FuncDecl(_) => Vec::new(),
         ast::Decl::GenDecl(gen_decl) => {
             let mut names = Vec::new();
@@ -1553,6 +1564,12 @@ fn go_type_is_interface(ty: &GoType, env: &TypeEnv) -> bool {
 }
 
 fn invalid_signature_in_func_decl(func: &ast::FuncDecl<'_>) -> Option<InvalidSignature> {
+    if func.recv.is_none()
+        && func.name.name == "init"
+        && let Some(invalid) = invalid_init_signature(func)
+    {
+        return Some(invalid);
+    }
     let mut names = BTreeSet::new();
     if let Some(recv) = &func.recv
         && let Some(invalid) = invalid_receiver_signature(recv, &mut names)
@@ -1561,6 +1578,17 @@ fn invalid_signature_in_func_decl(func: &ast::FuncDecl<'_>) -> Option<InvalidSig
     }
     invalid_signature_in_func_type_with_names(&func.type_, &mut names)
         .or_else(|| func.body.as_ref().and_then(invalid_signature_in_block))
+}
+
+fn invalid_init_signature(func: &ast::FuncDecl<'_>) -> Option<InvalidSignature> {
+    let type_params = field_list_binding_count(func.type_.type_params.as_ref());
+    let params = field_list_binding_count(Some(&func.type_.params));
+    let results = field_list_binding_count(func.type_.results.as_ref());
+    (type_params != 0 || params != 0 || results != 0).then_some(InvalidSignature::InitFunction {
+        type_params,
+        params,
+        results,
+    })
 }
 
 fn invalid_receiver_signature(
@@ -11361,6 +11389,90 @@ mod tests {
             Some(super::InvalidSignature::DuplicateInterfaceMethod {
                 name: "M".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_init_declarations() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func init(x int) {}
+                "#,
+            ),
+            Some(super::InvalidSignature::InitFunction {
+                type_params: 0,
+                params: 1,
+                results: 0,
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func init[T any]() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::InitFunction {
+                type_params: 1,
+                params: 0,
+                results: 0,
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func init() int {
+                        return 0
+                    }
+                "#,
+            ),
+            Some(super::InvalidSignature::InitFunction {
+                type_params: 0,
+                params: 0,
+                results: 1,
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    var init int
+                "#,
+            ),
+            Some(super::InvalidDeclaration::InvalidInitIdentifier)
+        );
+    }
+
+    #[test]
+    fn accepts_multiple_init_functions() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func init() {}
+                    func init() {}
+                "#,
+            ),
+            None
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func init() {}
+                    func init() {}
+                "#,
+            ),
+            None
         );
     }
 
