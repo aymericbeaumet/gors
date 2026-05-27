@@ -9076,7 +9076,7 @@ fn invalid_binary_expr(
             binary_equality_operands(binary, &left, &right, env)
         }
         token::Token::LSS | token::Token::LEQ | token::Token::GTR | token::Token::GEQ => {
-            binary_ordered_operands(binary.op, &left, &right)
+            binary_ordered_operands(binary, &left, &right, env)
         }
         _ => None,
     }
@@ -9248,9 +9248,7 @@ fn binary_equality_operands(
             ),
         ));
     }
-    if types_are_assignable_for_validation(left, right)
-        || types_are_assignable_for_validation(right, left)
-    {
+    if comparison_operands_are_assignable(binary, left, right, env) {
         return None;
     }
     let left = env.resolve_alias(left);
@@ -9299,23 +9297,227 @@ fn binary_nil_operands(
 }
 
 fn binary_ordered_operands(
-    op: token::Token,
+    binary: &ast::BinaryExpr<'_>,
     left: &GoType,
     right: &GoType,
+    env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     if (go_type_is_ordered_numeric(left) && go_type_is_ordered_numeric(right))
         || matches!((left, right), (GoType::String, GoType::String))
     {
-        return None;
+        if comparison_operands_are_assignable(binary, left, right, env) {
+            return None;
+        }
+        return Some(binary_comparison_type_mismatch(binary.op, left, right, env));
     }
     Some(invalid_binary_reason(
-        op,
+        binary.op,
         format!(
             "operands must both be ordered numeric values or strings, got {} and {}",
             go_type_display_name(left),
             go_type_display_name(right)
         ),
     ))
+}
+
+fn comparison_operands_are_assignable(
+    binary: &ast::BinaryExpr<'_>,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    comparison_operand_is_assignable_to(&binary.x, left, right, env)
+        || comparison_operand_is_assignable_to(&binary.y, right, left, env)
+}
+
+fn comparison_operand_is_assignable_to(
+    expr: &ast::Expr<'_>,
+    actual: &GoType,
+    expected: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    let expected = env.resolve_alias(expected);
+    let actual =
+        comparison_operand_effective_type(expr, &env.resolve_alias(actual), &expected, env);
+    if matches!(actual, GoType::Unknown) || matches!(expected, GoType::Unknown) {
+        return true;
+    }
+    if actual == expected {
+        return true;
+    }
+    if comparison_constant_is_assignable_to(expr, &actual, &expected, env) {
+        return true;
+    }
+    match (&expected, &actual) {
+        (GoType::Any | GoType::Interface(_) | GoType::Error, _) => true,
+        (GoType::Named(expected), GoType::Named(actual)) => expected == actual,
+        (GoType::Named(_), _) | (_, GoType::Named(_)) => true,
+        (expected, actual) if go_type_is_numeric(expected) && go_type_is_numeric(actual) => false,
+        (GoType::Bool, _) | (_, GoType::Bool) | (GoType::String, _) | (_, GoType::String) => false,
+        _ => true,
+    }
+}
+
+fn comparison_operand_effective_type(
+    expr: &ast::Expr<'_>,
+    inferred: &GoType,
+    expected: &GoType,
+    env: &TypeEnv,
+) -> GoType {
+    match unparen_expr(expr) {
+        ast::Expr::UnaryExpr(unary)
+            if matches!(
+                unary.op,
+                token::Token::ADD | token::Token::SUB | token::Token::XOR
+            ) =>
+        {
+            comparison_operand_effective_type(&unary.x, inferred, expected, env)
+        }
+        ast::Expr::BinaryExpr(binary)
+            if binary.op == token::Token::SHL || binary.op == token::Token::SHR =>
+        {
+            if expr_is_untyped_integer_constant_for_comparison(&binary.x, env)
+                && expected.is_integer()
+            {
+                return expected.clone();
+            }
+            inferred.clone()
+        }
+        ast::Expr::BinaryExpr(binary) if binary_op_is_numeric_for_type_inference(binary.op) => {
+            let left = env.resolve_alias(&GoType::infer_expr(&binary.x, env));
+            let right = env.resolve_alias(&GoType::infer_expr(&binary.y, env));
+            let left_const = expr_is_untyped_numeric_constant_for_comparison(&binary.x, env);
+            let right_const = expr_is_untyped_numeric_constant_for_comparison(&binary.y, env);
+            match (left_const, right_const) {
+                (true, false) if go_type_is_numeric(&right) => right,
+                (true, false)
+                    if matches!(right, GoType::Unknown) && go_type_is_numeric(expected) =>
+                {
+                    expected.clone()
+                }
+                (false, true) if go_type_is_numeric(&left) => left,
+                (false, true)
+                    if matches!(left, GoType::Unknown) && go_type_is_numeric(expected) =>
+                {
+                    expected.clone()
+                }
+                _ => inferred.clone(),
+            }
+        }
+        _ => inferred.clone(),
+    }
+}
+
+fn binary_op_is_numeric_for_type_inference(op: token::Token) -> bool {
+    matches!(
+        op,
+        token::Token::ADD
+            | token::Token::SUB
+            | token::Token::MUL
+            | token::Token::QUO
+            | token::Token::REM
+            | token::Token::AND
+            | token::Token::OR
+            | token::Token::XOR
+            | token::Token::AND_NOT
+    )
+}
+
+fn comparison_constant_is_assignable_to(
+    expr: &ast::Expr<'_>,
+    actual: &GoType,
+    expected: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    if !expr_is_untyped_constant_for_comparison(expr, env) {
+        return false;
+    }
+    match expected {
+        GoType::Any | GoType::Interface(_) | GoType::Error | GoType::Unknown | GoType::Named(_) => {
+            true
+        }
+        GoType::Bool => matches!(actual, GoType::Bool),
+        GoType::String => matches!(actual, GoType::String),
+        expected if expected.is_integer() => {
+            actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
+        }
+        expected if expected.is_float() => go_type_is_ordered_numeric(actual),
+        GoType::Complex64 | GoType::Complex128 => go_type_is_numeric(actual),
+        _ => false,
+    }
+}
+
+fn expr_is_untyped_integer_constant_for_comparison(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    expr_is_untyped_numeric_constant_for_comparison(expr, env)
+        && matches!(
+            env.resolve_alias(&GoType::infer_expr(expr, env)),
+            GoType::Int
+                | GoType::Int8
+                | GoType::Int16
+                | GoType::Int32
+                | GoType::Int64
+                | GoType::Uint
+                | GoType::Uint8
+                | GoType::Uint16
+                | GoType::Uint32
+                | GoType::Uint64
+                | GoType::Uintptr
+        )
+}
+
+fn expr_is_untyped_numeric_constant_for_comparison(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    if !expr_is_untyped_constant_for_comparison(expr, env) {
+        return false;
+    }
+    go_type_is_numeric(&env.resolve_alias(&GoType::infer_expr(expr, env)))
+}
+
+fn expr_is_untyped_constant_for_comparison(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(_) => true,
+        ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
+        ast::Expr::Ident(ident) => env.is_const(ident.name),
+        ast::Expr::SelectorExpr(selector) => selector_expr_is_const(selector, env),
+        ast::Expr::UnaryExpr(unary)
+            if matches!(
+                unary.op,
+                token::Token::ADD | token::Token::SUB | token::Token::NOT | token::Token::XOR
+            ) =>
+        {
+            expr_is_untyped_constant_for_comparison(&unary.x, env)
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            expr_is_untyped_constant_for_comparison(&binary.x, env)
+                && expr_is_untyped_constant_for_comparison(&binary.y, env)
+        }
+        ast::Expr::CallExpr(call) => !const_call_is_known_non_constant(call, env),
+        _ => false,
+    }
+}
+
+fn selector_expr_is_const(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> bool {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return false;
+    };
+    env.is_const(&format!("{}.{}", base.name, selector.sel.name))
+}
+
+fn binary_comparison_type_mismatch(
+    op: token::Token,
+    left: &GoType,
+    right: &GoType,
+    env: &TypeEnv,
+) -> InvalidStatementReason {
+    let left = env.resolve_alias(left);
+    let right = env.resolve_alias(right);
+    invalid_binary_reason(
+        op,
+        format!(
+            "operands have mismatched types {} and {}",
+            go_type_display_name(&left),
+            go_type_display_name(&right)
+        ),
+    )
 }
 
 fn type_is_comparable_for_validation(ty: &GoType, env: &TypeEnv) -> bool {
@@ -18464,6 +18666,56 @@ mod tests {
                     package main
 
                     func main() {
+                        var i int
+                        var f float64
+                        _ = i == f
+                    }
+                "#,
+                "==",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        _ = i == 1.5
+                    }
+                "#,
+                "==",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        var f float64
+                        _ = i < f
+                    }
+                "#,
+                "<",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var i int
+                        _ = i < 1.5
+                    }
+                "#,
+                "<",
+                "operands have mismatched types int and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = 1 == nil
                     }
                 "#,
@@ -18553,6 +18805,20 @@ mod tests {
                     _ = true && false
                     _ = "go" < "rs"
                     _ = 1 == 2
+                    var i int
+                    _ = i < 1
+                    _ = i <= 1.0
+                    _ = i == 1
+                    var f64 float64
+                    _ = f64 >= 1
+                    _ = f64 != 1.5
+                    var n64 int64
+                    _ = n64 != 2*n64
+                    binBits := uint(i+1) * 8
+                    _ = n64 >= -1<<binBits
+                    _ = n64 < 1<<binBits
+                    var c128 complex128
+                    _ = c128 == 1
                     xs := []int{}
                     _ = xs == nil
                     m := map[string]int{}

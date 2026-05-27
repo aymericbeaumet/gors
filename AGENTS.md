@@ -797,6 +797,9 @@ IR validation treats `nil` as assignable/comparable only to nilable types
 unknowns). Use `TypeEnv::resolve_alias()` and named interface metadata before
 deciding nilability; named structs and named numeric/string/bool aliases must
 not silently accept `nil`.
+Comparison validation has its own assignability check: typed numeric operands
+with different types are not comparable merely because both are numeric, while
+untyped constants are allowed when representable by the other operand's type.
 Complex types are numeric for arithmetic and equality, but not ordered: `<`,
 `<=`, `>`, `>=`, `min`, and `max` must reject `complex64`/`complex128`.
 
