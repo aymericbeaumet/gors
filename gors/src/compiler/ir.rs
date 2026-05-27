@@ -1265,6 +1265,9 @@ pub enum InvalidDeclaration {
     DuplicateImportName {
         name: String,
     },
+    DuplicateLexicalName {
+        name: String,
+    },
     ImportPackageBlockConflict {
         name: String,
     },
@@ -1405,7 +1408,7 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
                         return Some(invalid);
                     }
                 }
-                None
+                invalid_local_declaration_names_in_file(file)
             })
         })
     })
@@ -2616,6 +2619,457 @@ fn embedded_field_name(expr: &ast::Expr<'_>) -> Option<String> {
         ast::Expr::StarExpr(star) => embedded_field_name(&star.x),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone)]
+struct DeclarationScopes {
+    scopes: Vec<BTreeSet<String>>,
+}
+
+impl DeclarationScopes {
+    fn new() -> Self {
+        Self {
+            scopes: vec![BTreeSet::new()],
+        }
+    }
+
+    fn contains_current(&self, name: &str) -> bool {
+        self.scopes.last().is_some_and(|scope| scope.contains(name))
+    }
+
+    fn declare(&mut self, name: &str) -> Option<InvalidDeclaration> {
+        if name == "_" {
+            return None;
+        }
+        let scope = self.scopes.last_mut()?;
+        if !scope.insert(name.to_string()) {
+            return Some(InvalidDeclaration::DuplicateLexicalName {
+                name: name.to_string(),
+            });
+        }
+        None
+    }
+
+    fn declare_if_new(&mut self, name: &str) {
+        if name != "_"
+            && !self.contains_current(name)
+            && let Some(scope) = self.scopes.last_mut()
+        {
+            scope.insert(name.to_string());
+        }
+    }
+
+    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.scopes.push(BTreeSet::new());
+        let out = f(self);
+        self.scopes.pop();
+        out
+    }
+}
+
+fn invalid_local_declaration_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    for decl in &file.decls {
+        let ast::Decl::FuncDecl(func) = decl else {
+            continue;
+        };
+        if let Some(invalid) = invalid_local_declaration_names_in_func(func) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_local_declaration_names_in_func(func: &ast::FuncDecl<'_>) -> Option<InvalidDeclaration> {
+    let body = func.body.as_ref()?;
+    let mut scopes = DeclarationScopes::new();
+    if let Some(recv) = &func.recv {
+        seed_decl_scope_field_names(recv, &mut scopes);
+    }
+    seed_decl_scope_field_names(&func.type_.params, &mut scopes);
+    if let Some(results) = &func.type_.results {
+        seed_decl_scope_field_names(results, &mut scopes);
+    }
+    invalid_local_declaration_names_in_stmt_list(&body.list, &mut scopes)
+}
+
+fn seed_decl_scope_field_names(fields: &ast::FieldList<'_>, scopes: &mut DeclarationScopes) {
+    for field in &fields.list {
+        if let Some(names) = &field.names {
+            for name in names {
+                scopes.declare_if_new(name.name);
+            }
+        }
+    }
+}
+
+fn invalid_local_declaration_names_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_local_declaration_names_in_stmt(stmt, scopes) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_local_declaration_names_in_nested_block(
+    block: &ast::BlockStmt<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    scopes.with_scope(|scopes| invalid_local_declaration_names_in_stmt_list(&block.list, scopes))
+}
+
+fn invalid_local_declaration_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => invalid_local_declaration_names_in_assign(assign, scopes),
+        ast::Stmt::BlockStmt(block) => {
+            invalid_local_declaration_names_in_nested_block(block, scopes)
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::CaseClause(case) => scopes.with_scope(|scopes| {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes) {
+                        return Some(invalid);
+                    }
+                }
+            }
+            invalid_local_declaration_names_in_stmt_list(&case.body, scopes)
+        }),
+        ast::Stmt::CommClause(comm) => scopes.with_scope(|scopes| {
+            if let Some(comm) = &comm.comm
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(comm, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_local_declaration_names_in_stmt_list(&comm.body, scopes)
+        }),
+        ast::Stmt::DeclStmt(decl) => {
+            invalid_local_declaration_names_in_gen_decl(&decl.decl, scopes)
+        }
+        ast::Stmt::DeferStmt(defer) => invalid_local_declaration_names_in_call(&defer.call, scopes),
+        ast::Stmt::ExprStmt(expr) => invalid_local_declaration_names_in_expr(&expr.x, scopes),
+        ast::Stmt::ForStmt(for_stmt) => scopes.with_scope(|scopes| {
+            if let Some(init) = &for_stmt.init
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(cond) = &for_stmt.cond
+                && let Some(invalid) = invalid_local_declaration_names_in_expr(cond, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(post) = &for_stmt.post
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(post, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_local_declaration_names_in_nested_block(&for_stmt.body, scopes)
+        }),
+        ast::Stmt::GoStmt(go) => invalid_local_declaration_names_in_call(&go.call, scopes),
+        ast::Stmt::IfStmt(if_stmt) => scopes.with_scope(|scopes| {
+            if let Some(init) = if_stmt.init.as_ref().as_ref()
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) = invalid_local_declaration_names_in_expr(&if_stmt.cond, scopes) {
+                return Some(invalid);
+            }
+            if let Some(invalid) =
+                invalid_local_declaration_names_in_nested_block(&if_stmt.body, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
+                return invalid_local_declaration_names_in_stmt(else_branch, scopes);
+            }
+            None
+        }),
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            invalid_local_declaration_names_in_expr(&inc_dec.x, scopes)
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            invalid_local_declaration_names_in_stmt(&labeled.stmt, scopes)
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(invalid) = invalid_local_declaration_names_in_expr(&range.x, scopes) {
+                return Some(invalid);
+            }
+            scopes.with_scope(|scopes| {
+                if range.tok == Some(token::Token::DEFINE) {
+                    for expr in [&range.key, &range.value].into_iter().flatten() {
+                        if let Some(name) = ident_name(expr) {
+                            scopes.declare_if_new(&name);
+                        } else if let Some(invalid) =
+                            invalid_local_declaration_names_in_expr(expr, scopes)
+                        {
+                            return Some(invalid);
+                        }
+                    }
+                } else {
+                    for expr in [&range.key, &range.value].into_iter().flatten() {
+                        if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes)
+                        {
+                            return Some(invalid);
+                        }
+                    }
+                }
+                invalid_local_declaration_names_in_nested_block(&range.body, scopes)
+            })
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes) {
+                    return Some(invalid);
+                }
+            }
+            None
+        }
+        ast::Stmt::SelectStmt(select) => {
+            invalid_local_declaration_names_in_nested_block(&select.body, scopes)
+        }
+        ast::Stmt::SendStmt(send) => invalid_local_declaration_names_in_expr(&send.chan, scopes)
+            .or_else(|| invalid_local_declaration_names_in_expr(&send.value, scopes)),
+        ast::Stmt::SwitchStmt(switch) => scopes.with_scope(|scopes| {
+            if let Some(init) = &switch.init
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(tag) = &switch.tag
+                && let Some(invalid) = invalid_local_declaration_names_in_expr(tag, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_local_declaration_names_in_nested_block(&switch.body, scopes)
+        }),
+        ast::Stmt::TypeSwitchStmt(type_switch) => scopes.with_scope(|scopes| {
+            if let Some(init) = &type_switch.init
+                && let Some(invalid) = invalid_local_declaration_names_in_stmt(init, scopes)
+            {
+                return Some(invalid);
+            }
+            if let Some(invalid) =
+                invalid_local_declaration_names_in_stmt(&type_switch.assign, scopes)
+            {
+                return Some(invalid);
+            }
+            invalid_local_declaration_names_in_nested_block(&type_switch.body, scopes)
+        }),
+    }
+}
+
+fn invalid_local_declaration_names_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    for spec in &gen_decl.specs {
+        match spec {
+            ast::Spec::ImportSpec(_) => {}
+            ast::Spec::TypeSpec(type_spec) => {
+                if let Some(invalid) =
+                    invalid_local_declaration_names_in_expr(&type_spec.type_, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(name) = &type_spec.name
+                    && let Some(invalid) = scopes.declare(name.name)
+                {
+                    return Some(invalid);
+                }
+            }
+            ast::Spec::ValueSpec(value_spec) => {
+                if let Some(type_) = &value_spec.type_
+                    && let Some(invalid) = invalid_local_declaration_names_in_expr(type_, scopes)
+                {
+                    return Some(invalid);
+                }
+                if let Some(values) = &value_spec.values {
+                    for value in values {
+                        if let Some(invalid) =
+                            invalid_local_declaration_names_in_expr(value, scopes)
+                        {
+                            return Some(invalid);
+                        }
+                    }
+                }
+                for name in &value_spec.names {
+                    if let Some(invalid) = scopes.declare(name.name) {
+                        return Some(invalid);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn invalid_local_declaration_names_in_assign(
+    assign: &ast::AssignStmt<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    for expr in &assign.rhs {
+        if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes) {
+            return Some(invalid);
+        }
+    }
+    if assign.tok == token::Token::DEFINE {
+        for expr in &assign.lhs {
+            if let Some(name) = ident_name(expr) {
+                scopes.declare_if_new(&name);
+            } else if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes) {
+                return Some(invalid);
+            }
+        }
+    } else {
+        for expr in &assign.lhs {
+            if let Some(invalid) = invalid_local_declaration_names_in_expr(expr, scopes) {
+                return Some(invalid);
+            }
+        }
+    }
+    None
+}
+
+fn invalid_local_declaration_names_in_call(
+    call: &ast::CallExpr<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    invalid_local_declaration_names_in_expr(&call.fun, scopes).or_else(|| {
+        call.args.as_ref().and_then(|args| {
+            args.iter()
+                .find_map(|arg| invalid_local_declaration_names_in_expr(arg, scopes))
+        })
+    })
+}
+
+fn invalid_local_declaration_names_in_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    match expr {
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_local_declaration_names_in_expr(len, scopes))
+            .or_else(|| invalid_local_declaration_names_in_expr(&array.elt, scopes)),
+        ast::Expr::BinaryExpr(binary) => invalid_local_declaration_names_in_expr(&binary.x, scopes)
+            .or_else(|| invalid_local_declaration_names_in_expr(&binary.y, scopes)),
+        ast::Expr::CallExpr(call) => invalid_local_declaration_names_in_call(call, scopes),
+        ast::Expr::ChanType(chan) => invalid_local_declaration_names_in_expr(&chan.value, scopes),
+        ast::Expr::CompositeLit(comp) => comp
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_local_declaration_names_in_expr(type_, scopes))
+            .or_else(|| {
+                comp.elts.as_ref().and_then(|elts| {
+                    elts.iter()
+                        .find_map(|elt| invalid_local_declaration_names_in_expr(elt, scopes))
+                })
+            }),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_local_declaration_names_in_expr(elt, scopes)),
+        ast::Expr::FuncLit(func_lit) => {
+            invalid_local_declaration_names_in_func_lit(func_lit, scopes)
+        }
+        ast::Expr::FuncType(func_type) => {
+            invalid_local_declaration_names_in_field_list(&func_type.params, scopes).or_else(|| {
+                func_type.results.as_ref().and_then(|results| {
+                    invalid_local_declaration_names_in_field_list(results, scopes)
+                })
+            })
+        }
+        ast::Expr::IndexExpr(index) => invalid_local_declaration_names_in_expr(&index.x, scopes)
+            .or_else(|| invalid_local_declaration_names_in_expr(&index.index, scopes)),
+        ast::Expr::IndexListExpr(index) => {
+            invalid_local_declaration_names_in_expr(&index.x, scopes).or_else(|| {
+                index
+                    .indices
+                    .iter()
+                    .find_map(|index| invalid_local_declaration_names_in_expr(index, scopes))
+            })
+        }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()
+            .and_then(|fields| invalid_local_declaration_names_in_field_list(fields, scopes)),
+        ast::Expr::KeyValueExpr(kv) => invalid_local_declaration_names_in_expr(&kv.key, scopes)
+            .or_else(|| invalid_local_declaration_names_in_expr(&kv.value, scopes)),
+        ast::Expr::MapType(map) => invalid_local_declaration_names_in_expr(&map.key, scopes)
+            .or_else(|| invalid_local_declaration_names_in_expr(&map.value, scopes)),
+        ast::Expr::ParenExpr(paren) => invalid_local_declaration_names_in_expr(&paren.x, scopes),
+        ast::Expr::SelectorExpr(selector) => {
+            invalid_local_declaration_names_in_expr(&selector.x, scopes)
+        }
+        ast::Expr::SliceExpr(slice) => invalid_local_declaration_names_in_expr(&slice.x, scopes)
+            .or_else(|| {
+                slice
+                    .low
+                    .as_ref()
+                    .and_then(|low| invalid_local_declaration_names_in_expr(low, scopes))
+            })
+            .or_else(|| {
+                slice
+                    .high
+                    .as_ref()
+                    .and_then(|high| invalid_local_declaration_names_in_expr(high, scopes))
+            })
+            .or_else(|| {
+                slice
+                    .max
+                    .as_ref()
+                    .and_then(|max| invalid_local_declaration_names_in_expr(max, scopes))
+            }),
+        ast::Expr::StarExpr(star) => invalid_local_declaration_names_in_expr(&star.x, scopes),
+        ast::Expr::StructType(struct_type) => struct_type
+            .fields
+            .as_ref()
+            .and_then(|fields| invalid_local_declaration_names_in_field_list(fields, scopes)),
+        ast::Expr::TypeAssertExpr(assert) => {
+            invalid_local_declaration_names_in_expr(&assert.x, scopes).or_else(|| {
+                assert
+                    .type_
+                    .as_ref()
+                    .and_then(|type_| invalid_local_declaration_names_in_expr(type_, scopes))
+            })
+        }
+        ast::Expr::UnaryExpr(unary) => invalid_local_declaration_names_in_expr(&unary.x, scopes),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => None,
+    }
+}
+
+fn invalid_local_declaration_names_in_field_list(
+    fields: &ast::FieldList<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    fields.list.iter().find_map(|field| {
+        field
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_local_declaration_names_in_expr(type_, scopes))
+    })
+}
+
+fn invalid_local_declaration_names_in_func_lit(
+    func_lit: &ast::FuncLit<'_>,
+    scopes: &mut DeclarationScopes,
+) -> Option<InvalidDeclaration> {
+    scopes.with_scope(|scopes| {
+        seed_decl_scope_field_names(&func_lit.type_.params, scopes);
+        if let Some(results) = &func_lit.type_.results {
+            seed_decl_scope_field_names(results, scopes);
+        }
+        invalid_local_declaration_names_in_stmt_list(&func_lit.body.list, scopes)
+    })
 }
 
 fn invalid_short_var_redeclaration_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidStatement> {
@@ -11942,6 +12396,77 @@ mod tests {
             Some(super::InvalidDeclaration::DuplicateDeclarationName {
                 name: "T".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_local_declarations_in_same_block() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f(x int) {
+                        var x int
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateLexicalName {
+                name: "x".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        var x int
+                        const x = 1
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateLexicalName {
+                name: "x".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        _ = func(x int) {
+                            type x int
+                        }
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateLexicalName {
+                name: "x".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_shadowed_and_short_redeclared_local_names() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f() {
+                        var x int
+                        {
+                            var x int
+                            _ = x
+                        }
+                        x, y := 1, 2
+                        _, _ = x, y
+                    }
+                "#,
+            ),
+            None
         );
     }
 

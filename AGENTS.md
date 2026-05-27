@@ -684,6 +684,10 @@ Short variable declarations are also checked there for duplicate non-blank names
 on the left side and for introducing at least one new non-blank name in the
 current lexical block. The no-new-name check is scope-based rather than
 `TypeEnv`-based so nested short declarations can still shadow outer bindings.
+Regular local const, var, and type declarations use the same lexical-block
+model to reject redeclaring parameters, named results, or earlier local
+declarations in the same block while still allowing nested-block shadowing and
+valid short redeclarations with at least one new name.
 Assignment arity is validated in the same IR statement pass before backend
 lowering. It distinguishes single-valued expressions from real multi-valued
 function calls, map indexes, channel receives, and type assertions so invalid
