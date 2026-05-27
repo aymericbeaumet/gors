@@ -8965,7 +8965,7 @@ fn invalid_builtin_call_expression(
         BuiltinCallKind::Imag | BuiltinCallKind::Real => invalid_builtin_real_imag_call(call, env),
         BuiltinCallKind::Make => invalid_builtin_make_call(call, env),
         BuiltinCallKind::Max | BuiltinCallKind::Min => invalid_builtin_min_max_call(call, env),
-        BuiltinCallKind::New => invalid_builtin_new_call(call),
+        BuiltinCallKind::New => invalid_builtin_new_call(call, env),
         BuiltinCallKind::Panic => invalid_builtin_panic_call(call),
         BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
         BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
@@ -11846,7 +11846,10 @@ fn predeclared_type_name(name: &str) -> bool {
     )
 }
 
-fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
+fn invalid_builtin_new_call(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatementReason> {
     if call.ellipsis.is_some() {
         return Some(invalid_builtin_call_reason(
             BuiltinCallKind::New,
@@ -11869,7 +11872,79 @@ fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatement
             "argument must not be nil",
         ));
     }
+    if matches!(new_arg_kind(arg, env), NewArgKind::Value) {
+        return Some(invalid_builtin_call_reason(
+            BuiltinCallKind::New,
+            "argument must be a type",
+        ));
+    }
     None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewArgKind {
+    Type,
+    Value,
+    Unknown,
+}
+
+fn new_arg_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> NewArgKind {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => {
+            if env.get_var(ident.name).is_some()
+                || env.has_func(ident.name)
+                || env.is_const(ident.name)
+                || matches!(ident.name, "true" | "false" | "nil")
+            {
+                NewArgKind::Value
+            } else if is_predeclared_type_name(ident.name)
+                || env.get_type_kind(ident.name).is_some()
+            {
+                NewArgKind::Type
+            } else {
+                NewArgKind::Unknown
+            }
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
+                if pkg.name == "unsafe" && selector.sel.name == "Pointer" {
+                    return NewArgKind::Type;
+                }
+                let key = format!("{}.{}", pkg.name, selector.sel.name);
+                if env.get_type_kind(&key).is_some() && !env.has_func(&key) {
+                    return NewArgKind::Type;
+                }
+                if env.get_var(&key).is_some() || env.has_func(&key) || env.is_const(&key) {
+                    return NewArgKind::Value;
+                }
+            }
+            NewArgKind::Unknown
+        }
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => NewArgKind::Type,
+        ast::Expr::StarExpr(star) => new_arg_kind(&star.x, env),
+        ast::Expr::IndexExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name))
+            .map_or(NewArgKind::Unknown, |_| NewArgKind::Type),
+        ast::Expr::IndexListExpr(index) => type_name(&index.x)
+            .and_then(|name| env.get_type_kind(&name))
+            .map_or(NewArgKind::Unknown, |_| NewArgKind::Type),
+        ast::Expr::BasicLit(_)
+        | ast::Expr::BinaryExpr(_)
+        | ast::Expr::CallExpr(_)
+        | ast::Expr::CompositeLit(_)
+        | ast::Expr::Ellipsis(_)
+        | ast::Expr::FuncLit(_)
+        | ast::Expr::KeyValueExpr(_)
+        | ast::Expr::SliceExpr(_)
+        | ast::Expr::TypeAssertExpr(_)
+        | ast::Expr::UnaryExpr(_) => NewArgKind::Value,
+        ast::Expr::ParenExpr(_) => NewArgKind::Unknown,
+    }
 }
 
 fn invalid_builtin_panic_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
@@ -18616,6 +18691,29 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = new(123)
+                    }
+                "#,
+                "new",
+                "argument must be a type",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        _ = new(x)
+                    }
+                "#,
+                "new",
+                "argument must be a type",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = complex("x", 1)
                     }
                 "#,
@@ -20573,7 +20671,10 @@ mod tests {
                     _ = make(chan int, 1)
                     _ = make(Ints, 1)
                     _ = new(int)
-                    _ = new(123)
+                    _ = new(*int)
+                    _ = new([]int)
+                    _ = new(struct{ X int })
+                    _ = new(Ints)
                     _ = complex(1, 2)
                     _ = complex(float32(1), float32(2))
                     _ = real(1i)

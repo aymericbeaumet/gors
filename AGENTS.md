@@ -847,6 +847,9 @@ Binary expression validation rejects `/` and `%` when the divisor is an untyped
 numeric constant zero, before falling through to ordinary operand-type checks.
 Const initializer validation uses the same constant-zero divisor rule and reports
 invalid constant expressions separately from non-constant initializers.
+`new` builtin validation requires a type argument: reject clear value
+expressions (`new(123)`, `new(x)`), but stay conservative for unknown identifiers
+and selectors so scoped type parameters/imported types are not rejected early.
 Range over an untyped integer constant with a preexisting iteration variable
 uses the iteration variable's type, but the range expression itself must still
 be representable by that type (`byte` over `256` is invalid).
