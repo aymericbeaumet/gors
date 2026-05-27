@@ -9001,6 +9001,27 @@ fn compile_variadic_any_arg(
     }
 }
 
+fn compile_new_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
+    let Some(arg) = raw_args.into_iter().next() else {
+        return compile_error_expr("new requires an argument");
+    };
+    let kind = TYPE_ENV.with(|env| ir::new_arg_kind(&arg, &env.borrow()));
+    if matches!(kind, ir::NewArgKind::Type | ir::NewArgKind::Unknown) {
+        let type_arg: syn::Type = arg.into();
+        return syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(<#type_arg>::default())) };
+    }
+
+    let inferred = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+    let value_type = rust_type_from_inferred_go_type(&inferred);
+    let value = compile_expr_with_expected(arg, Some(&inferred));
+    syn::parse_quote! {
+        {
+            let __gors_new_value: #value_type = #value;
+            std::sync::Arc::new(std::sync::Mutex::new(__gors_new_value))
+        }
+    }
+}
+
 fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
     let Some(kind) = ir::builtin_call_kind(&call_expr) else {
         return compile_error_expr("builtin call without builtin identifier");
@@ -9051,13 +9072,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
             }
         }
-        ir::BuiltinCallKind::New => {
-            let Some(type_arg) = raw_args.into_iter().next() else {
-                return compile_error_expr("new requires a type argument");
-            };
-            let type_arg: syn::Type = type_arg.into();
-            syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(<#type_arg>::default())) }
-        }
+        ir::BuiltinCallKind::New => compile_new_builtin(raw_args),
         ir::BuiltinCallKind::Append => compile_append_builtin(raw_args, has_variadic_spread),
         ir::BuiltinCallKind::Panic => compile_panic_builtin(raw_args),
         ir::BuiltinCallKind::Copy if raw_args.len() == 2 => {

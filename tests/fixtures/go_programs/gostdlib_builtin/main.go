@@ -143,6 +143,11 @@ func case_builtin_make_new() {
 
 	p := new(int)
 	fmt.Println(*p)
+	q := new(123)
+	fmt.Println(*q)
+	x := 7
+	r := new(x)
+	fmt.Println(*r)
 }
 
 func case_builtin_make_map_chan() {

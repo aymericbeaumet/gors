@@ -602,7 +602,8 @@ with the Go `[]byte`/`string` exception; `append` requires a destination slice
 and assignable elements or a matching spread slice, with the Go `[]byte`/string
 spread exception; `make` requires a slice, map, or channel type with the
 spec-defined argument counts and integer-like size arguments; `new` rejects
-spread calls, missing/extra arguments, `nil`, and clear value arguments;
+spread calls, missing/extra arguments, and `nil`, but accepts either a type
+argument or a value expression as specified by Go 1.26;
 `complex`, `real`, and `imag` enforce the spec's complex-number operand shape;
 `min` and `max` require at least one ordered numeric/string argument and reject
 spread calls; zero-result builtins (`clear`, `close`, `delete`, `panic`,

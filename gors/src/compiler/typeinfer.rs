@@ -320,7 +320,13 @@ impl GoType {
                                     .args
                                     .as_ref()
                                     .and_then(|a| a.first())
-                                    .map(|e| GoType::from_expr(e))
+                                    .map(|e| {
+                                        if new_arg_is_type(e, env) {
+                                            GoType::from_expr(e)
+                                        } else {
+                                            GoType::infer_expr(e, env)
+                                        }
+                                    })
                                     .unwrap_or(GoType::Unknown);
                                 GoType::Pointer(Box::new(inner))
                             }
@@ -436,6 +442,92 @@ impl GoType {
             ast::Expr::ParenExpr(p) => GoType::infer_expr(&p.x, env),
             _ => GoType::Unknown,
         }
+    }
+}
+
+fn new_arg_is_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => {
+            !matches!(ident.name, "true" | "false" | "nil")
+                && env.get_var(ident.name).is_none()
+                && !env.has_func(ident.name)
+                && !env.is_const(ident.name)
+                && (predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some())
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+                return false;
+            };
+            if pkg.name == "unsafe" && selector.sel.name == "Pointer" {
+                return true;
+            }
+            let key = format!("{}.{}", pkg.name, selector.sel.name);
+            env.get_type_kind(&key).is_some()
+                && env.get_var(&key).is_none()
+                && !env.has_func(&key)
+                && !env.is_const(&key)
+        }
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => true,
+        ast::Expr::StarExpr(star) => new_arg_is_type(&star.x, env),
+        ast::Expr::IndexExpr(index) => {
+            type_name(&index.x).is_some_and(|name| env.get_type_kind(&name).is_some())
+        }
+        ast::Expr::IndexListExpr(index) => {
+            type_name(&index.x).is_some_and(|name| env.get_type_kind(&name).is_some())
+        }
+        _ => false,
+    }
+}
+
+fn predeclared_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "any"
+            | "bool"
+            | "byte"
+            | "complex64"
+            | "complex128"
+            | "error"
+            | "float32"
+            | "float64"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "rune"
+            | "string"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+    )
+}
+
+fn type_name(expr: &ast::Expr<'_>) -> Option<String> {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+                return None;
+            };
+            Some(format!("{}.{}", pkg.name, selector.sel.name))
+        }
+        _ => None,
+    }
+}
+
+fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => unparen_expr(&paren.x),
+        _ => expr,
     }
 }
 

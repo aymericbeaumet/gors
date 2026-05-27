@@ -9024,7 +9024,7 @@ fn invalid_builtin_call_expression(
         BuiltinCallKind::Imag | BuiltinCallKind::Real => invalid_builtin_real_imag_call(call, env),
         BuiltinCallKind::Make => invalid_builtin_make_call(call, env),
         BuiltinCallKind::Max | BuiltinCallKind::Min => invalid_builtin_min_max_call(call, env),
-        BuiltinCallKind::New => invalid_builtin_new_call(call, env),
+        BuiltinCallKind::New => invalid_builtin_new_call(call),
         BuiltinCallKind::Panic => invalid_builtin_panic_call(call),
         BuiltinCallKind::Print => invalid_builtin_print_call(call, BuiltinCallKind::Print),
         BuiltinCallKind::Println => invalid_builtin_print_call(call, BuiltinCallKind::Println),
@@ -11924,10 +11924,7 @@ fn predeclared_type_name(name: &str) -> bool {
     )
 }
 
-fn invalid_builtin_new_call(
-    call: &ast::CallExpr<'_>,
-    env: &TypeEnv,
-) -> Option<InvalidStatementReason> {
+fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
     if call.ellipsis.is_some() {
         return Some(invalid_builtin_call_reason(
             BuiltinCallKind::New,
@@ -11950,23 +11947,17 @@ fn invalid_builtin_new_call(
             "argument must not be nil",
         ));
     }
-    if matches!(new_arg_kind(arg, env), NewArgKind::Value) {
-        return Some(invalid_builtin_call_reason(
-            BuiltinCallKind::New,
-            "argument must be a type",
-        ));
-    }
     None
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum NewArgKind {
+pub(super) enum NewArgKind {
     Type,
     Value,
     Unknown,
 }
 
-fn new_arg_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> NewArgKind {
+pub(super) fn new_arg_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> NewArgKind {
     match unparen_expr(expr) {
         ast::Expr::Ident(ident) => {
             if env.get_var(ident.name).is_some()
@@ -18769,29 +18760,6 @@ mod tests {
                     package main
 
                     func main() {
-                        _ = new(123)
-                    }
-                "#,
-                "new",
-                "argument must be a type",
-            ),
-            (
-                r#"
-                    package main
-
-                    func main() {
-                        x := 1
-                        _ = new(x)
-                    }
-                "#,
-                "new",
-                "argument must be a type",
-            ),
-            (
-                r#"
-                    package main
-
-                    func main() {
                         _ = complex("x", 1)
                     }
                 "#,
@@ -20820,6 +20788,9 @@ mod tests {
                     _ = new([]int)
                     _ = new(struct{ X int })
                     _ = new(Ints)
+                    _ = new(123)
+                    x := 1
+                    _ = new(x)
                     _ = complex(1, 2)
                     _ = complex(float32(1), float32(2))
                     _ = real(1i)
