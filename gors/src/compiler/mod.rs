@@ -12991,6 +12991,7 @@ fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
         ir::InvalidAssignmentReason::TypeMismatch { expected, actual } => {
             format!("cannot assign {actual} to {expected}")
         }
+        ir::InvalidAssignmentReason::UntypedNil => "use of untyped nil in assignment".to_string(),
     }
 }
 
@@ -13370,6 +13371,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         }
         ir::InvalidDeclaration::VarMultiValueInSingleValueContext => {
             "multi-valued expression in explicit var initializer list".to_string()
+        }
+        ir::InvalidDeclaration::VarUntypedNil => {
+            "var initializer cannot use untyped nil without an explicit nilable type".to_string()
         }
         ir::InvalidDeclaration::VarTypeMismatch { expected, actual } => {
             format!("cannot initialize {expected} variable with {actual}")
@@ -18653,6 +18657,29 @@ var X int
             r#"
                 package main
 
+                func main() {
+                    x := nil
+                    _ = x
+                }
+            "#,
+            "invalid assignment: use of untyped nil in assignment",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                    x = nil
+                    _ = x
+                }
+            "#,
+            "invalid assignment: cannot assign nil to int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
                 func pair() (int, int) {
                     return 1, 2
                 }
@@ -18709,6 +18736,16 @@ var X int
                 }
             "#,
             "invalid return statement: cannot return string as int",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func f() int {
+                    return nil
+                }
+            "#,
+            "invalid return statement: cannot return nil as int",
         );
         assert_unsupported_construct(
             r#"
@@ -18793,12 +18830,34 @@ var X int
             r#"
                 package main
 
+                var X = nil
+
+                func main() {
+                }
+            "#,
+            "var initializer cannot use untyped nil without an explicit nilable type",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
                 var X int = "go"
 
                 func main() {
                 }
             "#,
             "cannot initialize int variable with string",
+        );
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                var X int = nil
+
+                func main() {
+                }
+            "#,
+            "cannot initialize int variable with nil",
         );
         assert_unsupported_construct(
             r#"
@@ -20266,8 +20325,8 @@ func main() {
     }
 
     #[test]
-    fn it_should_compile_nil() {
-        test(
+    fn it_should_reject_untyped_nil_assignment() {
+        assert_unsupported_construct(
             r#"
                 package main
 
@@ -20276,12 +20335,7 @@ func main() {
                     _ = x
                 }
             "#,
-            rust! {
-                pub fn main() {
-                    let mut x = Default::default();
-                    let _ = x;
-                }
-            },
+            "invalid assignment: use of untyped nil in assignment",
         );
     }
 

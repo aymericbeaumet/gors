@@ -1095,6 +1095,7 @@ pub enum InvalidAssignmentReason {
         expected: String,
         actual: String,
     },
+    UntypedNil,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1352,6 +1353,7 @@ pub enum InvalidDeclaration {
     },
     VarMissingTypeOrInitializer,
     VarMultiValueInSingleValueContext,
+    VarUntypedNil,
     VarTypeMismatch {
         expected: String,
         actual: String,
@@ -6186,6 +6188,9 @@ fn invalid_assignment_type_mismatch(
     if !matches!(assign.tok, token::Token::ASSIGN | token::Token::DEFINE) {
         return None;
     }
+    if let Some(reason) = invalid_assignment_untyped_nil(assign, env, scopes) {
+        return Some(reason);
+    }
     let actual_types = assignment_rhs_types(assign, env)?;
     if actual_types.len() != assign.lhs.len() {
         return None;
@@ -6207,6 +6212,32 @@ fn invalid_assignment_type_mismatch(
                     expected: go_type_display_name(&expected),
                     actual: go_type_display_name(&actual),
                 }
+            })
+        })
+}
+
+fn invalid_assignment_untyped_nil(
+    assign: &ast::AssignStmt<'_>,
+    env: &TypeEnv,
+    scopes: &ShortVarScopes,
+) -> Option<InvalidAssignmentReason> {
+    if assign.lhs.len() != assign.rhs.len() {
+        return None;
+    }
+    assign
+        .lhs
+        .iter()
+        .zip(assign.rhs.iter())
+        .find_map(|(lhs, rhs)| {
+            if !expr_is_nil(rhs) {
+                return None;
+            }
+            let Some(expected) = assignment_lhs_expected_type(assign.tok, lhs, env, scopes) else {
+                return Some(InvalidAssignmentReason::UntypedNil);
+            };
+            (!type_can_compare_to_nil(&expected)).then(|| InvalidAssignmentReason::TypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: "nil".to_string(),
             })
         })
 }
@@ -6369,6 +6400,12 @@ fn invalid_send_value_type(
     env: &TypeEnv,
 ) -> Option<InvalidSendReason> {
     let expected = env.resolve_alias(expected);
+    if expr_is_nil(value) && !type_can_compare_to_nil(&expected) {
+        return Some(InvalidSendReason::ValueTypeMismatch {
+            expected: go_type_display_name(&expected),
+            actual: "nil".to_string(),
+        });
+    }
     let actual = env.resolve_alias(&GoType::infer_expr(value, env));
     if types_are_assignable_for_validation(&expected, &actual) {
         return None;
@@ -7107,6 +7144,9 @@ fn invalid_return_type_mismatch(
     signature: &ReturnSignature,
     env: &TypeEnv,
 ) -> Option<InvalidReturnReason> {
+    if let Some(reason) = invalid_return_nil_mismatch(results, signature, env) {
+        return Some(reason);
+    }
     let actual_types = return_result_types(results, signature, env)?;
     if actual_types.len() != signature.types.len() {
         return None;
@@ -7123,6 +7163,28 @@ fn invalid_return_type_mismatch(
                     expected: go_type_display_name(&expected),
                     actual: go_type_display_name(&actual),
                 }
+            })
+        })
+}
+
+fn invalid_return_nil_mismatch(
+    results: &[ast::Expr<'_>],
+    signature: &ReturnSignature,
+    env: &TypeEnv,
+) -> Option<InvalidReturnReason> {
+    if results.len() != signature.types.len() {
+        return None;
+    }
+    signature
+        .types
+        .iter()
+        .zip(results.iter())
+        .filter(|(_, result)| expr_is_nil(result))
+        .find_map(|(expected, _)| {
+            let expected = env.resolve_alias(expected);
+            (!type_can_compare_to_nil(&expected)).then(|| InvalidReturnReason::TypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: "nil".to_string(),
             })
         })
 }
@@ -7697,6 +7759,9 @@ fn invalid_var_value_spec(
         if let Some(invalid) = invalid_var_type_mismatch(value_spec, env) {
             return Some(invalid);
         }
+        if let Some(invalid) = invalid_var_nil_initializer(value_spec, env) {
+            return Some(invalid);
+        }
         return None;
     }
 
@@ -7719,8 +7784,37 @@ fn invalid_var_value_spec(
     if let Some(invalid) = invalid_var_type_mismatch(value_spec, env) {
         return Some(invalid);
     }
+    if let Some(invalid) = invalid_var_nil_initializer(value_spec, env) {
+        return Some(invalid);
+    }
 
     None
+}
+
+fn invalid_var_nil_initializer(
+    value_spec: &ast::ValueSpec<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    let values = value_spec.values.as_ref()?;
+    if values.len() != value_spec.names.len() {
+        return None;
+    }
+    let Some(type_expr) = &value_spec.type_ else {
+        return values
+            .iter()
+            .any(expr_is_nil)
+            .then_some(InvalidDeclaration::VarUntypedNil);
+    };
+    let expected = env.resolve_alias(&GoType::from_expr(type_expr));
+    values
+        .iter()
+        .filter(|value| expr_is_nil(value))
+        .find_map(|_| {
+            (!type_can_compare_to_nil(&expected)).then(|| InvalidDeclaration::VarTypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: "nil".to_string(),
+            })
+        })
 }
 
 fn invalid_var_type_mismatch(
@@ -8091,6 +8185,9 @@ fn type_can_compare_to_nil(ty: &GoType) -> bool {
             | GoType::Error
             | GoType::Interface(_)
             | GoType::Pointer(_)
+            | GoType::Func { .. }
+            | GoType::Slice(_)
+            | GoType::Map(_, _)
             | GoType::Chan { .. }
             | GoType::Unknown
             | GoType::Named(_)
@@ -15454,6 +15551,29 @@ mod tests {
                 r#"
                     package main
 
+                    var X = nil
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarUntypedNil)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var X int = nil
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "int".to_string(),
+                actual: "nil".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var y = 1
                     const X = y
                 "#,
@@ -15508,6 +15628,12 @@ mod tests {
                     var Z int
                     var S string = "go"
                     var F float64 = 1
+                    var P *int = nil
+                    var Slice []int = nil
+                    var Map map[string]int = nil
+                    var Ch chan int = nil
+                    var Fn func() = nil
+                    var Iface any = nil
                 "#,
             ),
             None
@@ -19042,6 +19168,18 @@ mod tests {
                 "bool",
                 "int",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int, 1)
+                        ch <- nil
+                    }
+                "#,
+                "int",
+                "nil",
+            ),
         ];
 
         for (source, expected, actual) in cases {
@@ -19087,6 +19225,10 @@ mod tests {
                     counts <- count
                     slices := make(chan []int, 1)
                     slices <- nil
+                    pointers := make(chan *int, 1)
+                    pointers <- nil
+                    values := make(chan any, 1)
+                    values <- nil
                 }
             "#,
         )
@@ -20523,6 +20665,18 @@ mod tests {
                 "int",
                 "string",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x = nil
+                    }
+                "#,
+                "int",
+                "nil",
+            ),
         ];
 
         for (source, expected, actual) in cases {
@@ -20542,6 +20696,53 @@ mod tests {
                         expected: expected.to_string(),
                         actual: actual.to_string(),
                     },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_untyped_nil_assignments_without_nilable_target_type() {
+        let cases = vec![
+            r#"
+                package main
+
+                func main() {
+                    x := nil
+                    _ = x
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    _ = nil
+                }
+            "#,
+            r#"
+                package main
+
+                func main() {
+                    x, y := nil, 1
+                    _, _ = x, y
+                }
+            "#,
+        ];
+
+        for source in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Assignment {
+                    reason: super::InvalidAssignmentReason::UntypedNil,
                 })
             );
         }
@@ -20667,6 +20868,16 @@ mod tests {
                     count = 1
                     xs := []int{1}
                     xs = nil
+                    p := &x
+                    p = nil
+                    m := map[string]int{"go": 1}
+                    m = nil
+                    ch := make(chan int)
+                    ch = nil
+                    fn := func() {}
+                    fn = nil
+                    var iface any
+                    iface = nil
                     x += 1
                     f /= 2
                     s += "!"
@@ -20933,6 +21144,18 @@ mod tests {
                 "int",
                 "string",
             ),
+            (
+                r#"
+                    package main
+
+                    func f() int {
+                        return nil
+                    }
+                "#,
+                "f",
+                "int",
+                "nil",
+            ),
         ];
 
         for (source, name, expected, actual) in cases {
@@ -20990,6 +21213,26 @@ mod tests {
                 func nilLike() []int {
                     return nil
                 }
+
+                func nilPointer() *int {
+                    return nil
+                }
+
+                func nilMap() map[string]int {
+                    return nil
+                }
+
+                func nilChan() chan int {
+                    return nil
+                }
+
+                func nilFunc() func() {
+                    return nil
+                }
+
+                func nilInterface() any {
+                    return nil
+                }
             "#,
         )
         .unwrap();
@@ -21001,6 +21244,11 @@ mod tests {
             "forwarded",
             "namedResult",
             "nilLike",
+            "nilPointer",
+            "nilMap",
+            "nilChan",
+            "nilFunc",
+            "nilInterface",
         ] {
             let Some(func) = file.decls.iter().find_map(|decl| match decl {
                 crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),

@@ -500,6 +500,11 @@ so shadowed predeclared names are not treated as builtins.
 IR assignment validation applies type checks to ordinary assignments and to
 redeclarations within `:=`: existing non-blank names on the left side of a short
 variable declaration must receive values assignable to their original type.
+IR nil assignability validation treats `nil` as valid only for known nilable
+targets (pointer, function, slice, map, channel, and interface types) in
+assignments, var initializers, return statements, and channel sends. Bare
+inference from `nil` such as `x := nil` or `var x = nil` is rejected before
+backend lowering.
 IR expression validation rejects blank identifier uses as values or types while
 still allowing `_` in assignment targets, short declarations, range assignment
 targets, and blank declarations/import aliases.
