@@ -162,8 +162,11 @@ gors-builtin/
   still running only when no case matches, and map unlabeled case-level `break`
   to the generated Rust switch block label. Empty expression switches are valid
   no-ops, but the tag expression must still be evaluated once when present.
-  Expression-switch and type-switch init statements both lower before the switch
-  body so their bindings are available inside cases.
+  Expression-switch and type-switch init statements both lower in the generated
+  switch block before the body so their bindings are available inside cases
+  without leaking after the switch. Type-switch guards lower to a generated
+  temporary so the guard expression is evaluated exactly once, including empty
+  type switches.
 - `for` loops with post statements wrap the body in a generated labeled block
   whenever a matching `continue` is present. This covers both unlabeled
   continues and `continue label` targeting the current loop so Go's post clause

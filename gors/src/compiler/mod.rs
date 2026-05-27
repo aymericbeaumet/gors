@@ -11364,29 +11364,25 @@ fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
 fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     // type switch: switch x := val.(type) { case T: ... }
     // Compile to if/else chain with downcast checks
-    let (binding_name, assign_expr) = match *ts.assign {
-        ast::Stmt::ExprStmt(s) => (None, syn::Expr::from(s.x)),
-        ast::Stmt::AssignStmt(s) => {
-            let name = s.lhs.first().and_then(|e| {
-                if let ast::Expr::Ident(id) = e {
-                    if id.name != "_" {
-                        Some(id.name.to_string())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            });
-            let rhs: syn::Expr = s
-                .rhs
-                .into_iter()
-                .next()
-                .map(syn::Expr::from)
-                .unwrap_or_else(|| syn::parse_quote! { () });
-            (name, rhs)
+    let mut init_stmts = vec![];
+    if let Some(init) = ts.init {
+        init_stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
+    }
+    let (binding_name, source_expr) = type_switch_guard_source(*ts.assign)?;
+    let source_go_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_expr, &env.borrow()));
+    let source_is_interface = resolved_go_type(&source_go_type).is_interface();
+    let source_is_addressable = is_ir_addressable_expr(&source_expr);
+    let source_expr: syn::Expr = source_expr.into();
+    let value_ident = next_type_switch_value_ident();
+    let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
+    let value_ref = |value: &syn::Expr| -> syn::Expr {
+        match (source_is_interface, source_is_addressable) {
+            (true, true) => syn::parse_quote! { (&**#value as &dyn std::any::Any) },
+            (true, false) => syn::parse_quote! { (&*#value as &dyn std::any::Any) },
+            (false, true) => syn::parse_quote! { (&*#value as &dyn std::any::Any) },
+            (false, false) => syn::parse_quote! { (&#value as &dyn std::any::Any) },
         }
-        _ => (None, syn::parse_quote! { () }),
     };
 
     let clauses: Vec<ast::CaseClause> = ts
@@ -11416,7 +11412,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         let mut stmts = vec![];
         if let Some(ref name) = binding_name {
             let bind_ident = syn::Ident::new(name, Span::mixed_site());
-            let val = &assign_expr;
+            let val = &value_expr;
             stmts.push(syn::parse_quote! {
                 let #bind_ident = #val;
             });
@@ -11451,31 +11447,31 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         let cond = if let Some((ty, is_interface)) =
             type_cases.first().filter(|_| type_cases.len() == 1)
         {
-            let val = &assign_expr;
+            let val = &value_expr;
+            let any_ref = value_ref(val);
             if *is_interface {
                 syn::parse_quote! { false }
             } else if is_string_syn_type(ty) {
                 syn::parse_quote! {
-                    (&*#val as &dyn std::any::Any).is::<String>()
-                        || (&*#val as &dyn std::any::Any).is::<&str>()
+                    (#any_ref).is::<String>() || (#any_ref).is::<&str>()
                 }
             } else {
-                syn::parse_quote! { (&*#val as &dyn std::any::Any).is::<#ty>() }
+                syn::parse_quote! { (#any_ref).is::<#ty>() }
             }
         } else {
             type_cases
                 .iter()
                 .map(|(ty, is_interface)| {
-                    let val = &assign_expr;
+                    let val = &value_expr;
+                    let any_ref = value_ref(val);
                     if *is_interface {
                         syn::parse_quote! { false }
                     } else if is_string_syn_type(ty) {
                         syn::parse_quote! {
-                            (&*#val as &dyn std::any::Any).is::<String>()
-                                || (&*#val as &dyn std::any::Any).is::<&str>()
+                            (#any_ref).is::<String>() || (#any_ref).is::<&str>()
                         }
                     } else {
-                        syn::parse_quote! { (&*#val as &dyn std::any::Any).is::<#ty>() }
+                        syn::parse_quote! { (#any_ref).is::<#ty>() }
                     }
                 })
                 .reduce(|acc, e| syn::parse_quote! { #acc || #e })
@@ -11485,7 +11481,8 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         let mut body_stmts = vec![];
         if let Some(ref name) = binding_name {
             if let Some((ty, is_interface)) = type_cases.first().filter(|_| type_cases.len() == 1) {
-                let val = &assign_expr;
+                let val = &value_expr;
+                let any_ref = value_ref(val);
                 let bind_ident = syn::Ident::new(name, Span::mixed_site());
                 if *is_interface {
                     body_stmts.push(syn::parse_quote! {
@@ -11493,9 +11490,9 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
                     });
                 } else if is_string_syn_type(ty) {
                     body_stmts.push(syn::parse_quote! {
-                        let #bind_ident = if let Some(__gors_s) = (&*#val as &dyn std::any::Any).downcast_ref::<String>() {
+                        let #bind_ident = if let Some(__gors_s) = (#any_ref).downcast_ref::<String>() {
                             __gors_s.clone()
-                        } else if let Some(__gors_s) = (&*#val as &dyn std::any::Any).downcast_ref::<&str>() {
+                        } else if let Some(__gors_s) = (#any_ref).downcast_ref::<&str>() {
                             __gors_s.to_string()
                         } else {
                             String::new()
@@ -11503,8 +11500,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
                     });
                 } else {
                     body_stmts.push(syn::parse_quote! {
-                        let #bind_ident = (&*#val as &dyn std::any::Any)
-                            .downcast_ref::<#ty>()
+                        let #bind_ident = (#any_ref).downcast_ref::<#ty>()
                             .cloned()
                             .unwrap_or_default();
                     });
@@ -11527,9 +11523,64 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         }));
     }
 
-    match result {
-        Some(expr) => Ok(vec![syn::Stmt::Expr(expr, None)]),
-        None => Ok(vec![]),
+    let value_stmt: syn::Stmt = if source_is_addressable {
+        syn::parse_quote! { let #value_ident = &(#source_expr); }
+    } else {
+        syn::parse_quote! { let #value_ident = #source_expr; }
+    };
+    let mut block_stmts = init_stmts;
+    block_stmts.push(value_stmt);
+    if let Some(expr) = result {
+        block_stmts.push(syn::Stmt::Expr(expr, None));
+    }
+    Ok(vec![syn::Stmt::Expr(
+        syn::Expr::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: None,
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: block_stmts,
+            },
+        }),
+        None,
+    )])
+}
+
+fn type_switch_guard_source(stmt: ast::Stmt) -> Result<(Option<String>, ast::Expr), CompilerError> {
+    match stmt {
+        ast::Stmt::ExprStmt(expr_stmt) => type_switch_source_expr(expr_stmt.x)
+            .map(|expr| (None, expr))
+            .ok_or_else(|| {
+                CompilerError::UnsupportedConstruct("invalid type switch guard".to_string())
+            }),
+        ast::Stmt::AssignStmt(assign_stmt) => {
+            let name = assign_stmt.lhs.first().and_then(|e| {
+                if let ast::Expr::Ident(id) = e {
+                    (id.name != "_").then(|| id.name.to_string())
+                } else {
+                    None
+                }
+            });
+            let rhs = assign_stmt.rhs.into_iter().next().ok_or_else(|| {
+                CompilerError::UnsupportedConstruct("invalid type switch guard".to_string())
+            })?;
+            type_switch_source_expr(rhs)
+                .map(|expr| (name, expr))
+                .ok_or_else(|| {
+                    CompilerError::UnsupportedConstruct("invalid type switch guard".to_string())
+                })
+        }
+        _ => Err(CompilerError::UnsupportedConstruct(
+            "invalid type switch guard".to_string(),
+        )),
+    }
+}
+
+fn type_switch_source_expr(expr: ast::Expr) -> Option<ast::Expr> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => type_switch_source_expr(*paren.x),
+        ast::Expr::TypeAssertExpr(assert) if assert.type_.is_none() => Some(*assert.x),
+        _ => None,
     }
 }
 
@@ -16659,14 +16710,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                 stmts.push(syn::Stmt::Expr(s.try_into()?, Some(<Token![;]>::default())));
                 Ok(stmts)
             }
-            ast::Stmt::TypeSwitchStmt(mut s) => {
-                let mut stmts = vec![];
-                if let Some(init) = s.init.take() {
-                    stmts.extend(Vec::<syn::Stmt>::try_from(*init)?);
-                }
-                stmts.extend(compile_type_switch_stmt(s)?);
-                Ok(stmts)
-            }
+            ast::Stmt::TypeSwitchStmt(s) => compile_type_switch_stmt(s),
             ast::Stmt::SendStmt(send_stmt) => {
                 // ch <- value  =>  ch.send(value);
                 let chan: syn::Expr = send_stmt.chan.into();
@@ -17430,6 +17474,16 @@ fn next_switch_label() -> syn::Lifetime {
         n
     });
     syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
+}
+
+fn next_type_switch_value_ident() -> syn::Ident {
+    let n = SWITCH_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
 }
 
 fn next_select_label() -> syn::Lifetime {
