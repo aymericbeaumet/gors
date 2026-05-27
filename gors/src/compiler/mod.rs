@@ -2836,6 +2836,14 @@ fn compile_breakable_stmt_list(
     body: Vec<ast::Stmt>,
     break_label: &syn::Lifetime,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
+    if let Some(goto_plan) = ir::goto_state_plan_for_stmt_list(&body) {
+        return Ok(vec![compile_goto_state_stmt_list_with(
+            body,
+            &goto_plan,
+            |stmt| compile_breakable_stmt(stmt, break_label),
+        )?]);
+    }
+
     let mut stmts = vec![];
     for stmt in body {
         stmts.extend(compile_breakable_stmt(stmt, break_label)?);
@@ -14537,23 +14545,13 @@ fn terminate_goto_state_segment_stmts(stmts: &mut [syn::Stmt]) {
 
 struct GotoStateHoistBinding {
     name: String,
-    ty: Option<syn::Type>,
 }
 
 fn goto_state_hoisted_bindings(plan: &ir::GotoStatePlan) -> Vec<GotoStateHoistBinding> {
     plan.hoisted_names
         .iter()
-        .map(|name| {
-            let ty = TYPE_ENV.with(|env| {
-                env.borrow()
-                    .get_var(name)
-                    .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
-                    .map(|ty| rust_type_from_inferred_go_type(&ty))
-            });
-            GotoStateHoistBinding {
-                name: rust_safe_ident_name(name),
-                ty,
-            }
+        .map(|name| GotoStateHoistBinding {
+            name: rust_safe_ident_name(name),
         })
         .collect()
 }
@@ -14572,15 +14570,8 @@ fn goto_state_hoist_stmts(bindings: &[GotoStateHoistBinding]) -> Vec<syn::Stmt> 
         .iter()
         .map(|binding| {
             let ident = syn::Ident::new(&binding.name, Span::mixed_site());
-            if let Some(ty) = &binding.ty {
-                let init = go_zero_value_from_type(Some(ty));
-                syn::parse_quote! {
-                    let mut #ident: #ty = #init;
-                }
-            } else {
-                syn::parse_quote! {
-                    let mut #ident = Default::default();
-                }
+            syn::parse_quote! {
+                let mut #ident = Default::default();
             }
         })
         .collect()
@@ -14633,7 +14624,20 @@ fn compile_goto_state_stmt(
     block_stmt: ast::BlockStmt<'_>,
     plan: &ir::GotoStatePlan,
 ) -> Result<syn::Stmt, CompilerError> {
-    let segments = split_goto_state_segments(block_stmt.list);
+    compile_goto_state_stmt_list_with(block_stmt.list, plan, |stmt| {
+        Vec::<syn::Stmt>::try_from(stmt)
+    })
+}
+
+fn compile_goto_state_stmt_list_with<'a, F>(
+    list: Vec<ast::Stmt<'a>>,
+    plan: &ir::GotoStatePlan,
+    mut compile_stmt: F,
+) -> Result<syn::Stmt, CompilerError>
+where
+    F: FnMut(ast::Stmt<'a>) -> Result<Vec<syn::Stmt>, CompilerError>,
+{
+    let segments = split_goto_state_segments(list);
     let labels = goto_state_label_map(&segments);
     let hoisted_names = goto_state_hoisted_plan_name_set(plan);
     let (state_ident, loop_label) = next_goto_state_names();
@@ -14649,7 +14653,7 @@ fn compile_goto_state_stmt(
     for (idx, segment) in segments.into_iter().enumerate() {
         let mut stmts = Vec::new();
         for stmt in segment.stmts {
-            stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            stmts.extend(compile_stmt(stmt)?);
         }
         rewrite_goto_state_hoisted_locals(&mut stmts, &hoisted_names);
         terminate_goto_state_segment_stmts(&mut stmts);

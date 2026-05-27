@@ -13483,19 +13483,23 @@ fn collect_goto_paths_in_stmt_list(
 }
 
 pub fn goto_state_plan_for_block(block: &ast::BlockStmt<'_>) -> Option<GotoStatePlan> {
-    let labels = direct_label_names_in_block(block);
+    goto_state_plan_for_stmt_list(&block.list)
+}
+
+pub fn goto_state_plan_for_stmt_list(stmts: &[ast::Stmt<'_>]) -> Option<GotoStatePlan> {
+    let labels = direct_label_names_in_stmt_list(stmts);
     if labels.is_empty() {
         return None;
     }
 
     let label_set: BTreeSet<_> = labels.iter().cloned().collect();
     let mut goto_targets = BTreeSet::new();
-    collect_goto_targets_in_block(block, &mut goto_targets);
+    collect_goto_targets_in_stmt_list(stmts, &mut goto_targets);
     if label_set.is_disjoint(&goto_targets) {
         return None;
     }
 
-    let hoisted_names = goto_state_hoisted_names(block);
+    let hoisted_names = goto_state_hoisted_names_in_stmt_list(stmts);
     Some(GotoStatePlan {
         labels,
         hoisted_names,
@@ -13518,16 +13522,20 @@ fn non_blank_label_name(name: &str) -> Option<String> {
     (name != "_").then(|| name.to_string())
 }
 
-fn direct_label_names_in_block(block: &ast::BlockStmt<'_>) -> Vec<String> {
+fn direct_label_names_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Vec<String> {
     let mut labels = Vec::new();
-    for stmt in &block.list {
+    for stmt in stmts {
         labels.extend(direct_label_names_in_stmt(stmt));
     }
     labels
 }
 
 fn collect_goto_targets_in_block(block: &ast::BlockStmt<'_>, targets: &mut BTreeSet<String>) {
-    for stmt in &block.list {
+    collect_goto_targets_in_stmt_list(&block.list, targets);
+}
+
+fn collect_goto_targets_in_stmt_list(stmts: &[ast::Stmt<'_>], targets: &mut BTreeSet<String>) {
+    for stmt in stmts {
         collect_goto_targets_in_stmt(stmt, targets);
     }
 }
@@ -13864,10 +13872,10 @@ fn invalid_in_func_lits_in_expr<T>(
     }
 }
 
-fn goto_state_hoisted_names(block: &ast::BlockStmt<'_>) -> Vec<String> {
+fn goto_state_hoisted_names_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Vec<String> {
     let mut declared_by_segment = vec![BTreeSet::new()];
     let mut referenced_by_segment = vec![BTreeSet::new()];
-    for stmt in &block.list {
+    for stmt in stmts {
         if !direct_label_names_in_stmt(stmt).is_empty() {
             declared_by_segment.push(BTreeSet::new());
             referenced_by_segment.push(BTreeSet::new());
