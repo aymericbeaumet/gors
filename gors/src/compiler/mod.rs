@@ -2849,6 +2849,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
     validate_file_with_type_env(&file, &type_env)?;
+    validate_unused_imports(&file, &BTreeMap::new())?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
@@ -20841,6 +20842,20 @@ func main() {
                 }
             "#,
             "declared and not used: x",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_unused_imports_in_single_file_compile() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                import "fmt"
+
+                func main() {}
+            "#,
+            "fmt imported and not used",
         );
     }
 

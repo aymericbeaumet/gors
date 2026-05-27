@@ -715,9 +715,10 @@ as `math/rand/v2` bind as `rand` rather than the path base. Blank and dot
 imports are ignored by this conservative name check. Because gors merges
 package ASTs before validation, import-name validation groups imports by their
 original source file positions rather than treating the merged AST as one file
-block. Complete `compile_program_multi()` builds also reject unused normal
-imports by looking for same-file qualified selectors; this check intentionally
-runs only on complete user/local packages, not on root-pruned stdlib ASTs.
+block. Single-file `compile()` and complete `compile_program_multi()` builds
+also reject unused normal imports by looking for same-file qualified selectors;
+this check intentionally stays out of `compile_with_type_env*`, which is used
+for root-pruned stdlib ASTs where pruning can leave otherwise-unused imports.
 For package `main`, the same signature validation rejects `func main` when it
 declares type parameters, parameters, or results.
 Short variable declarations are also checked there for duplicate non-blank names
