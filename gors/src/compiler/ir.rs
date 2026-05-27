@@ -1212,6 +1212,10 @@ pub enum InvalidRangeReason {
     NonRangeable {
         type_name: String,
     },
+    TypeMismatch {
+        expected: String,
+        actual: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7775,7 +7779,73 @@ fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Inv
             type_name: go_type_display_name(&ty),
         });
     };
-    (got > max).then_some(InvalidRangeReason::BindingCount { kind, max, got })
+    if got > max {
+        return Some(InvalidRangeReason::BindingCount { kind, max, got });
+    }
+    invalid_range_assignment_type_mismatch(range, env)
+}
+
+fn invalid_range_assignment_type_mismatch(
+    range: &ast::RangeStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidRangeReason> {
+    if !matches!(range.tok, Some(token::Token::ASSIGN)) {
+        return None;
+    }
+    let iteration_types = range_iteration_types(range, env)?;
+    [range.key.as_ref(), range.value.as_ref()]
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, target)| {
+            let target = target?;
+            if is_blank_ident(target) {
+                return None;
+            }
+            let expected = env.resolve_alias(&GoType::infer_expr(target, env));
+            let actual = env.resolve_alias(iteration_types.get(idx)?);
+            if matches!(expected, GoType::Unknown | GoType::Named(_))
+                || matches!(actual, GoType::Unknown | GoType::Named(_))
+                || types_are_assignable_for_validation(&expected, &actual)
+            {
+                return None;
+            }
+            Some(InvalidRangeReason::TypeMismatch {
+                expected: go_type_display_name(&expected),
+                actual: go_type_display_name(&actual),
+            })
+        })
+        .next()
+}
+
+fn range_iteration_types(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
+    match env.resolve_alias(&GoType::infer_expr(&range.x, env)) {
+        GoType::String => Some(vec![GoType::Int, GoType::Int32]),
+        GoType::Slice(elem) | GoType::Array(elem) => Some(vec![GoType::Int, *elem]),
+        GoType::Pointer(inner) => match *inner {
+            GoType::Array(elem) => Some(vec![GoType::Int, *elem]),
+            _ => None,
+        },
+        GoType::Map(key, value) => Some(vec![*key, *value]),
+        GoType::Chan { elem, direction } if direction.can_receive() => Some(vec![*elem]),
+        ty if ty.is_integer() => Some(vec![ty]),
+        GoType::Func { params, .. } => range_function_yield_params(&params),
+        GoType::Unknown | GoType::Named(_) => None,
+        _ => None,
+    }
+}
+
+fn range_function_yield_params(params: &[GoType]) -> Option<Vec<GoType>> {
+    let [yield_param] = params else {
+        return None;
+    };
+    let GoType::Func {
+        params: yield_params,
+        results,
+    } = yield_param
+    else {
+        return None;
+    };
+    matches!(results.as_slice(), [GoType::Bool]).then(|| yield_params.clone())
 }
 
 fn invalid_expression_switch(
@@ -21185,6 +21255,149 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn rejects_range_assignment_type_mismatches() {
+        let cases = vec![
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var key string
+                        for key = range []int{1} {
+                        }
+                    }
+                "#,
+                "string",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var value string
+                        for _, value = range []int{1} {
+                        }
+                    }
+                "#,
+                "string",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var r string
+                        for _, r = range "go" {
+                        }
+                    }
+                "#,
+                "string",
+                "int32",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        ch := make(chan int)
+                        var value string
+                        for value = range ch {
+                        }
+                    }
+                "#,
+                "string",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func pairs(yield func(string, int) bool) {}
+
+                    func main() {
+                        var value string
+                        for _, value = range pairs {
+                        }
+                    }
+                "#,
+                "string",
+                "int",
+            ),
+        ];
+
+        for (source, expected, actual) in cases {
+            let file = parse_file("test.go", source).unwrap();
+            let mut env = TypeEnv::new();
+            env.scan_file(&file);
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected function");
+            };
+            assert_eq!(
+                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                Some(super::InvalidStatement::Range {
+                    reason: super::InvalidRangeReason::TypeMismatch {
+                        expected: expected.to_string(),
+                        actual: actual.to_string(),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_range_assignments_with_compatible_types() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func pairs(yield func(string, int) bool) {}
+
+                func main() {
+                    var i int
+                    var n int
+                    for i, n = range []int{1} {
+                    }
+
+                    var r rune
+                    for _, r = range "go" {
+                    }
+
+                    var key string
+                    var value any
+                    for key, value = range map[string]int{"go": 1} {
+                    }
+
+                    ch := make(chan int)
+                    for n = range ch {
+                    }
+
+                    for key, n = range pairs {
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
     }
 
     #[test]

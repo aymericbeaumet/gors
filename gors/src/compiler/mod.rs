@@ -12897,6 +12897,9 @@ fn invalid_statement_error(invalid: ir::InvalidStatement) -> CompilerError {
             ir::InvalidRangeReason::NonRangeable { type_name } => {
                 format!("invalid range clause: cannot range over {type_name}")
             }
+            ir::InvalidRangeReason::TypeMismatch { expected, actual } => {
+                format!("invalid range assignment: cannot assign {actual} to {expected}")
+            }
         },
         ir::InvalidStatement::Receive { reason } => {
             format!(
@@ -18902,6 +18905,23 @@ var X int
                 }
             "#,
             "invalid range clause: cannot range over float64",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_invalid_range_assignment_types() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    var value string
+                    for _, value = range []int{1} {
+                    }
+                    _ = value
+                }
+            "#,
+            "invalid range assignment: cannot assign int to string",
         );
     }
 

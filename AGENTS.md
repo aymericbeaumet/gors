@@ -542,6 +542,10 @@ returns the channel element type for known channel operands so boolean channel
 receives are valid in `if`/`for` conditions. Known send-only channel receives
 and ranges are rejected in IR; broader nested receive validation is still
 limited by legacy expression traversal.
+IR range-clause validation treats `for ... = range ...` as assignment:
+preexisting iteration variables must be assignable from the produced key/value
+types. `for ... := range ...` introduces range-scoped variables with the
+iteration value types instead.
 IR select communication validation rejects non-communication `case` statements
 before backend lowering. A select case may be default, a send statement, a
 receive expression statement, or an `=`/`:=` receive assignment; short receive
