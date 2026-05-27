@@ -7718,6 +7718,10 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
         return true;
     }
     if call_is_type_conversion(call, env) {
+        let target = env.resolve_alias(&GoType::from_expr(&call.fun));
+        if !type_conversion_result_can_be_constant(&target) {
+            return true;
+        }
         let Some(args) = &call.args else {
             return true;
         };
@@ -7765,6 +7769,13 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
     }
 
     call_fun_is_known_runtime_value(&call.fun, env)
+}
+
+fn type_conversion_result_can_be_constant(target: &GoType) -> bool {
+    matches!(
+        target,
+        GoType::Bool | GoType::String | GoType::Unknown | GoType::Named(_)
+    ) || go_type_is_numeric(target)
 }
 
 fn call_fun_is_known_runtime_value(fun: &ast::Expr<'_>, env: &TypeEnv) -> bool {
@@ -9520,6 +9531,11 @@ fn comparison_operand_is_assignable_to(
     if matches!(actual, GoType::Unknown) || matches!(expected, GoType::Unknown) {
         return true;
     }
+    if expr_is_untyped_constant_for_comparison(expr, env)
+        && target_needs_constant_representability_check(&expected)
+    {
+        return comparison_constant_is_assignable_to(expr, &actual, &expected, env);
+    }
     if actual == expected {
         return true;
     }
@@ -9622,11 +9638,61 @@ fn comparison_constant_is_assignable_to(
             }
             actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
         }
-        expected if expected.is_float() => {
-            go_type_is_ordered_numeric(actual) || integer_constant_value_i128(expr).is_some()
-        }
+        expected if expected.is_float() => float_constant_is_assignable_to(expr, actual, expected),
         GoType::Complex64 | GoType::Complex128 => go_type_is_numeric(actual),
         _ => false,
+    }
+}
+
+fn target_needs_constant_representability_check(expected: &GoType) -> bool {
+    matches!(
+        expected,
+        GoType::Bool | GoType::String | GoType::Complex64 | GoType::Complex128
+    ) || go_type_is_numeric(expected)
+}
+
+fn float_constant_is_assignable_to(
+    expr: &ast::Expr<'_>,
+    actual: &GoType,
+    expected: &GoType,
+) -> bool {
+    if let Some(representable) = float_constant_is_representable_by_type(expr, expected) {
+        return representable;
+    }
+    go_type_is_ordered_numeric(actual) || integer_constant_value_i128(expr).is_some()
+}
+
+fn float_constant_is_representable_by_type(
+    expr: &ast::Expr<'_>,
+    expected: &GoType,
+) -> Option<bool> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => match lit.kind {
+            token::Token::INT | token::Token::FLOAT => {
+                numeric_literal_is_finite_for_float_type(lit.value, expected)
+            }
+            token::Token::CHAR => Some(true),
+            token::Token::IMAG => Some(imaginary_literal_is_zero(lit.value)),
+            _ => Some(false),
+        },
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            float_constant_is_representable_by_type(&unary.x, expected)
+        }
+        _ => None,
+    }
+}
+
+fn numeric_literal_is_finite_for_float_type(value: &str, expected: &GoType) -> Option<bool> {
+    let value = value.replace('_', "");
+    if value.starts_with("0x") || value.starts_with("0X") || value.contains(['p', 'P']) {
+        return None;
+    }
+    match expected {
+        GoType::Float32 => value.parse::<f32>().ok().map(f32::is_finite),
+        GoType::Float64 => value.parse::<f64>().ok().map(f64::is_finite),
+        _ => None,
     }
 }
 
@@ -10646,14 +10712,17 @@ fn conversion_is_valid_for_validation(
     {
         return true;
     }
-    if actual == target || expr_is_assignable_for_validation(target, value, env) {
-        return true;
-    }
     if string_slice_conversion_is_valid(actual, target) {
         return true;
     }
     if expr_is_untyped_constant_for_comparison(value, env) {
+        if expr_is_assignable_for_validation(target, value, env) {
+            return true;
+        }
         return matches!((target, actual), (GoType::String, actual) if actual.is_integer());
+    }
+    if actual == target || expr_is_assignable_for_validation(target, value, env) {
+        return true;
     }
     match (target, actual) {
         (target, actual) if go_type_is_numeric(target) && go_type_is_numeric(actual) => true,
@@ -16356,6 +16425,16 @@ mod tests {
                 r#"
                     package main
 
+                    const X = []byte("go")
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstNonConstantInitializer)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var X = nil
                 "#,
             ),
@@ -16457,6 +16536,32 @@ mod tests {
                 r#"
                     package main
 
+                    var F float64 = 1e1000
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "float64".to_string(),
+                actual: "float64".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    var F float32 = 1e1000
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "float32".to_string(),
+                actual: "float64".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var I int = 1i
                 "#,
             ),
@@ -16522,6 +16627,7 @@ mod tests {
                     var Thousand int = 1e3
                     var ZeroImagInt int = 0i
                     var ZeroImagFloat float64 = 0i
+                    var UnderflowFloat float64 = -1e-1000
                     var Small int8 = -128
                     var C complex128 = 1
                     var P *int = nil
@@ -18912,6 +19018,17 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = float64(1e1000)
+                    }
+                "#,
+                "float64",
+                "cannot convert float64 to float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = int(1i)
                     }
                 "#,
@@ -18971,6 +19088,7 @@ mod tests {
                     _ = byte('\xff')
                     _ = byte(0i)
                     _ = float64(0i)
+                    _ = float64(-1e-1000)
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")

@@ -834,6 +834,12 @@ constants for this purpose, so escaped rune values must also be checked against
 the target bounds (`byte = '\u0100'` is invalid).
 Zero imaginary constants such as `0i` are representable by real numeric types;
 nonzero imaginary constants must still be rejected for real targets.
+Float constant assignment/conversion must reject overflow for the target float
+type (`float64(1e1000)` is invalid) while preserving underflow-to-zero cases
+such as `float64(-1e-1000)`.
+Type conversions only remain compile-time constants when the conversion result
+is a scalar constant type; conversions such as `[]byte("go")` are runtime values
+and must not take the untyped-constant assignability path.
 Range over an untyped integer constant with a preexisting iteration variable
 uses the iteration variable's type, but the range expression itself must still
 be representable by that type (`byte` over `256` is invalid).
