@@ -1235,6 +1235,8 @@ pub enum InvalidSignature {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidReceiverTypeReason {
+    GenericAlias,
+    InstantiatedAlias,
     Interface,
     Pointer,
     Undefined,
@@ -1620,6 +1622,23 @@ fn invalid_receiver_type_in_func_decl(
                 base,
                 expected,
                 got,
+            });
+        }
+    }
+    if env.is_type_alias(&base) {
+        if env
+            .get_type_param_count(&base)
+            .is_some_and(|count| count > 0)
+        {
+            return Some(InvalidSignature::ReceiverType {
+                base: Some(base),
+                reason: InvalidReceiverTypeReason::GenericAlias,
+            });
+        }
+        if env.alias_denotes_instantiated_generic(&base) {
+            return Some(InvalidSignature::ReceiverType {
+                base: Some(base),
+                reason: InvalidReceiverTypeReason::InstantiatedAlias,
             });
         }
     }
@@ -12915,6 +12934,52 @@ mod tests {
                 got: 1,
             })
         );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Point struct{}
+                    type GenericAlias[P any] = Point
+                    func (p GenericAlias[P]) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("GenericAlias".to_string()),
+                reason: super::InvalidReceiverTypeReason::GenericAlias,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    type InstantiatedPair = Pair[int, string]
+                    func (p InstantiatedPair) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("InstantiatedPair".to_string()),
+                reason: super::InvalidReceiverTypeReason::InstantiatedAlias,
+            })
+        );
+        assert_eq!(
+            invalid_receiver_type(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    type InstantiatedPair = Pair[int, string]
+                    type Indirect = *InstantiatedPair
+                    func (p Indirect) M() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::ReceiverType {
+                base: Some("Indirect".to_string()),
+                reason: super::InvalidReceiverTypeReason::InstantiatedAlias,
+            })
+        );
     }
 
     #[test]
@@ -12930,6 +12995,8 @@ mod tests {
                     func (*N) N() {}
                     type Pair[A, B any] struct{}
                     func (p Pair[A, B]) Pair() {}
+                    type Alias = S
+                    func (a Alias) Alias() {}
                 "#,
             ),
             None

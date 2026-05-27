@@ -13147,6 +13147,14 @@ fn invalid_receiver_type_reason(
     reason: ir::InvalidReceiverTypeReason,
 ) -> String {
     match reason {
+        ir::InvalidReceiverTypeReason::GenericAlias => {
+            let base = base.unwrap_or("receiver");
+            format!("method receiver alias {base} cannot be generic")
+        }
+        ir::InvalidReceiverTypeReason::InstantiatedAlias => {
+            let base = base.unwrap_or("receiver");
+            format!("method receiver alias {base} cannot denote an instantiated generic type")
+        }
         ir::InvalidReceiverTypeReason::Interface => {
             let base = base.unwrap_or("receiver");
             format!("method receiver base type {base} cannot be an interface")

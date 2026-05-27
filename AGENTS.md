@@ -666,7 +666,10 @@ constraints, non-blank type parameter names must be unique, receiver generic
 argument lists must use identifiers, and receiver type-parameter names share the
 method signature uniqueness set. Receiver type-parameter arity is checked
 against `TypeEnv`'s recorded type declaration arity, including rejecting type
-arguments on non-generic receiver bases.
+arguments on non-generic receiver bases. `TypeEnv` also tracks alias syntax and
+instantiated-alias targets so receiver aliases are rejected when the alias is
+generic or denotes an instantiated generic type, including through pointer
+indirections.
 Type declarations involving type parameters are also checked in IR: type
 definitions cannot define directly from any in-scope type parameter, while a
 generic alias cannot alias a type parameter declared by that same alias

@@ -470,6 +470,12 @@ pub struct TypeEnv {
     type_kinds: HashMap<std::string::String, TypeKind>,
     /// Type name → declared type parameter count
     type_param_counts: HashMap<std::string::String, usize>,
+    /// Type names declared with alias syntax.
+    type_aliases: HashSet<std::string::String>,
+    /// Alias declarations whose right side is an instantiated generic type.
+    instantiated_type_aliases: HashSet<std::string::String>,
+    /// Alias name → direct alias target after ignoring pointer indirections.
+    type_alias_targets: HashMap<std::string::String, std::string::String>,
     /// Interface name → required method names
     interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
     /// Struct name → field types
@@ -517,6 +523,27 @@ fn type_parameter_count(type_params: Option<&ast::FieldList<'_>>) -> usize {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+fn type_expr_is_instantiated(expr: &ast::Expr<'_>) -> bool {
+    match expr {
+        ast::Expr::IndexExpr(_) | ast::Expr::IndexListExpr(_) => true,
+        ast::Expr::ParenExpr(paren) => type_expr_is_instantiated(&paren.x),
+        ast::Expr::StarExpr(star) => type_expr_is_instantiated(&star.x),
+        _ => false,
+    }
+}
+
+fn alias_target_name(expr: &ast::Expr<'_>) -> Option<std::string::String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::IndexExpr(index) => alias_target_name(&index.x),
+        ast::Expr::IndexListExpr(index) => alias_target_name(&index.x),
+        ast::Expr::ParenExpr(paren) => alias_target_name(&paren.x),
+        ast::Expr::SelectorExpr(selector) => Some(selector.sel.name.to_string()),
+        ast::Expr::StarExpr(star) => alias_target_name(&star.x),
+        _ => None,
+    }
 }
 
 impl TypeEnv {
@@ -594,6 +621,45 @@ impl TypeEnv {
 
     pub fn get_type_param_count(&self, name: &str) -> Option<usize> {
         self.type_param_counts.get(name).copied()
+    }
+
+    pub fn set_type_alias(
+        &mut self,
+        name: &str,
+        target: Option<std::string::String>,
+        instantiated: bool,
+    ) {
+        self.type_aliases.insert(name.to_string());
+        if let Some(target) = target {
+            self.type_alias_targets.insert(name.to_string(), target);
+        }
+        if instantiated {
+            self.instantiated_type_aliases.insert(name.to_string());
+        }
+    }
+
+    pub fn is_type_alias(&self, name: &str) -> bool {
+        self.type_aliases.contains(name)
+    }
+
+    pub fn alias_denotes_instantiated_generic(&self, name: &str) -> bool {
+        let mut current = name;
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current.to_string()) {
+                return false;
+            }
+            if self.instantiated_type_aliases.contains(current) {
+                return true;
+            }
+            let Some(next) = self.type_alias_targets.get(current) else {
+                return false;
+            };
+            if !self.type_aliases.contains(next) {
+                return false;
+            }
+            current = next.as_str();
+        }
     }
 
     pub fn is_interface(&self, name: &str) -> bool {
@@ -785,6 +851,13 @@ impl TypeEnv {
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
         self.set_type_param_count(name.name, type_parameter_count(ts.type_params.as_ref()));
+        if ts.assign.is_some() {
+            self.set_type_alias(
+                name.name,
+                alias_target_name(&ts.type_),
+                type_expr_is_instantiated(&ts.type_),
+            );
+        }
         match &ts.type_ {
             ast::Expr::StructType(st) => {
                 self.set_type_kind(name.name, TypeKind::Struct);
