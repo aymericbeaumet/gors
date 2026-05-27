@@ -10335,6 +10335,9 @@ fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
             parse_integer_literal_i128(lit.value)
         }
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::CHAR => {
+            rune_literal_value_i128(lit.value)
+        }
         ast::Expr::BasicLit(lit)
             if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
         {
@@ -10373,6 +10376,73 @@ fn parse_integer_literal_i128(value: &str) -> Option<i128> {
         (10, cleaned.as_str())
     };
     i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+}
+
+fn rune_literal_value_i128(value: &str) -> Option<i128> {
+    let inner = value.strip_prefix('\'')?.strip_suffix('\'')?;
+    let mut chars = inner.chars();
+    let first = chars.next()?;
+    let value = if first == '\\' {
+        rune_escape_value(&mut chars)?
+    } else {
+        first as u32
+    };
+    chars.next().is_none().then_some(i128::from(value))
+}
+
+fn rune_escape_value(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+    match chars.next()? {
+        'a' => Some(0x07),
+        'b' => Some(0x08),
+        'f' => Some(0x0c),
+        'n' => Some(0x0a),
+        'r' => Some(0x0d),
+        't' => Some(0x09),
+        'v' => Some(0x0b),
+        '\\' => Some('\\' as u32),
+        '\'' => Some('\'' as u32),
+        'x' => parse_fixed_radix_escape(chars, 2, 16).filter(|value| *value <= 0xff),
+        'u' => parse_unicode_escape(chars, 4),
+        'U' => parse_unicode_escape(chars, 8),
+        first @ '0'..='7' => parse_octal_escape(chars, first),
+        _ => None,
+    }
+}
+
+fn parse_fixed_radix_escape(
+    chars: &mut std::str::Chars<'_>,
+    count: usize,
+    radix: u32,
+) -> Option<u32> {
+    let mut digits = String::with_capacity(count);
+    for _ in 0..count {
+        let ch = chars.next()?;
+        if !ch.is_digit(radix) {
+            return None;
+        }
+        digits.push(ch);
+    }
+    u32::from_str_radix(&digits, radix).ok()
+}
+
+fn parse_unicode_escape(chars: &mut std::str::Chars<'_>, count: usize) -> Option<u32> {
+    let value = parse_fixed_radix_escape(chars, count, 16)?;
+    char::from_u32(value).map(|ch| ch as u32)
+}
+
+fn parse_octal_escape(chars: &mut std::str::Chars<'_>, first: char) -> Option<u32> {
+    let mut digits = String::with_capacity(3);
+    digits.push(first);
+    for _ in 0..2 {
+        let ch = chars.next()?;
+        if !matches!(ch, '0'..='7') {
+            return None;
+        }
+        digits.push(ch);
+    }
+    u32::from_str_radix(&digits, 8)
+        .ok()
+        .filter(|value| *value <= 0xff)
 }
 
 fn parse_decimal_float_integer_i128(value: &str) -> Option<i128> {
@@ -16340,6 +16410,19 @@ mod tests {
                 r#"
                     package main
 
+                    var B byte = '\u0100'
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "uint8".to_string(),
+                actual: "int32".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var U uint = -1
                 "#,
             ),
@@ -16388,6 +16471,7 @@ mod tests {
                     var I int = 1.0
                     var B byte = 255
                     var BFloat byte = 255.0
+                    var BRune byte = '\xff'
                     var Thousand int = 1e3
                     var Small int8 = -128
                     var C complex128 = 1
@@ -18774,6 +18858,17 @@ mod tests {
                 "uint",
                 "cannot convert int to uint",
             ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = byte('\u0100')
+                    }
+                "#,
+                "byte",
+                "cannot convert int32 to uint8",
+            ),
         ];
 
         for (source, target, reason) in cases {
@@ -18813,6 +18908,7 @@ mod tests {
                     _ = int32(i)
                     _ = byte(255)
                     _ = byte(255.0)
+                    _ = byte('\xff')
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")
