@@ -832,6 +832,8 @@ bounds (`byte = 256`, `byte = 256.0`, and `uint = -1` are invalid) before
 falling back to broad constant-kind compatibility. Rune literals are integer
 constants for this purpose, so escaped rune values must also be checked against
 the target bounds (`byte = '\u0100'` is invalid).
+Zero imaginary constants such as `0i` are representable by real numeric types;
+nonzero imaginary constants must still be rejected for real targets.
 Range over an untyped integer constant with a preexisting iteration variable
 uses the iteration variable's type, but the range expression itself must still
 be representable by that type (`byte` over `256` is invalid).

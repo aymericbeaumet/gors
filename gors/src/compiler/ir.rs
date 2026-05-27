@@ -9622,7 +9622,9 @@ fn comparison_constant_is_assignable_to(
             }
             actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
         }
-        expected if expected.is_float() => go_type_is_ordered_numeric(actual),
+        expected if expected.is_float() => {
+            go_type_is_ordered_numeric(actual) || integer_constant_value_i128(expr).is_some()
+        }
         GoType::Complex64 | GoType::Complex128 => go_type_is_numeric(actual),
         _ => false,
     }
@@ -10339,6 +10341,11 @@ fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
             rune_literal_value_i128(lit.value)
         }
         ast::Expr::BasicLit(lit)
+            if lit.kind == token::Token::IMAG && imaginary_literal_is_zero(lit.value) =>
+        {
+            Some(0)
+        }
+        ast::Expr::BasicLit(lit)
             if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
         {
             parse_decimal_float_integer_i128(lit.value)
@@ -10443,6 +10450,33 @@ fn parse_octal_escape(chars: &mut std::str::Chars<'_>, first: char) -> Option<u3
     u32::from_str_radix(&digits, 8)
         .ok()
         .filter(|value| *value <= 0xff)
+}
+
+fn imaginary_literal_is_zero(value: &str) -> bool {
+    let Some(value) = value.strip_suffix('i') else {
+        return false;
+    };
+    numeric_literal_mantissa_is_zero(value)
+}
+
+fn numeric_literal_mantissa_is_zero(value: &str) -> bool {
+    let value = value.replace('_', "").to_ascii_lowercase();
+    let mantissa = value
+        .split_once(['e', 'p'])
+        .map_or(value.as_str(), |(mantissa, _)| mantissa);
+    let mantissa = mantissa
+        .strip_prefix("0x")
+        .or_else(|| mantissa.strip_prefix("0o"))
+        .or_else(|| mantissa.strip_prefix("0b"))
+        .unwrap_or(mantissa);
+    let mut saw_digit = false;
+    for ch in mantissa.chars().filter(|ch| *ch != '.') {
+        if ch != '0' {
+            return false;
+        }
+        saw_digit = true;
+    }
+    saw_digit
 }
 
 fn parse_decimal_float_integer_i128(value: &str) -> Option<i128> {
@@ -16423,6 +16457,19 @@ mod tests {
                 r#"
                     package main
 
+                    var I int = 1i
+                "#,
+            ),
+            Some(super::InvalidDeclaration::VarTypeMismatch {
+                expected: "int".to_string(),
+                actual: "complex128".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
                     var U uint = -1
                 "#,
             ),
@@ -16473,6 +16520,8 @@ mod tests {
                     var BFloat byte = 255.0
                     var BRune byte = '\xff'
                     var Thousand int = 1e3
+                    var ZeroImagInt int = 0i
+                    var ZeroImagFloat float64 = 0i
                     var Small int8 = -128
                     var C complex128 = 1
                     var P *int = nil
@@ -18863,6 +18912,17 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = int(1i)
+                    }
+                "#,
+                "int",
+                "cannot convert complex128 to int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         _ = byte('\u0100')
                     }
                 "#,
@@ -18909,6 +18969,8 @@ mod tests {
                     _ = byte(255)
                     _ = byte(255.0)
                     _ = byte('\xff')
+                    _ = byte(0i)
+                    _ = float64(0i)
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")
