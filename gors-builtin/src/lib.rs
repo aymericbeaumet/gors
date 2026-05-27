@@ -1148,6 +1148,11 @@ pub fn recover_func<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Option<std::s
 }
 
 #[inline]
+pub fn interface_is_nil(value: &Box<dyn Any>) -> bool {
+    value.is::<()>()
+}
+
+#[inline]
 pub fn print_empty() {}
 
 #[inline]

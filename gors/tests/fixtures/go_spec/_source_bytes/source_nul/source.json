@@ -1,0 +1,4 @@
+{
+  "filename": "main.go",
+  "source": "package main\n\nfunc main() {\n\t_\u0000 = 1\n}\n"
+}

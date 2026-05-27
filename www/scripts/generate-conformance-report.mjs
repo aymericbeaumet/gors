@@ -70,8 +70,10 @@ async function validateReport(report) {
 				}
 				for (const fixture of fixtures) {
 					assertString(fixture, `${id}.fixtures[]`);
-					const mainGo = path.join(goSpecRoot, fixture, "main.go");
-					if (!(await pathExists(mainGo))) {
+					const entryFile =
+						test.expect === "source_bytes" ? "source.json" : "main.go";
+					const fixtureEntry = path.join(goSpecRoot, fixture, entryFile);
+					if (!(await pathExists(fixtureEntry))) {
 						throw new Error(`${id} references missing fixture ${fixture}`);
 					}
 				}

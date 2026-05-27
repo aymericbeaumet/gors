@@ -32,17 +32,22 @@
           "id": "source-nul-character",
           "section": "Source code representation",
           "title": "NUL character implementation restriction is diagnosed consistently",
-          "status": "unsupported",
-          "reason": "Needs negative scanner diagnostics in the conformance harness.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_source_bytes/source_nul"
+          ],
+          "expect": "source_bytes"
         },
         {
           "id": "source-byte-order-mark",
           "section": "Source code representation",
           "title": "Leading UTF-8 byte order mark is accepted and later BOMs are rejected",
-          "status": "unsupported",
-          "reason": "Needs byte-level source fixtures outside normal text-file handling.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "_source_bytes/bom_leading",
+            "_source_bytes/bom_middle"
+          ],
+          "expect": "source_bytes"
         }
       ]
     },
@@ -457,9 +462,10 @@
           "id": "types-nil-composite-values",
           "section": "Pointer, slice, map, channel, function, and interface types",
           "title": "nil is assignable to pointer, slice, map, channel, function, and interface values",
-          "status": "unsupported",
-          "reason": "Nil comparisons for generated shared struct pointers currently lower to default value comparisons.",
-          "fixtures": []
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
         },
         {
           "id": "types-functions",

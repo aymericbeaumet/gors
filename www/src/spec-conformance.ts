@@ -40,8 +40,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Source code representation",
 		"testCount": 4,
-		"passingTestCount": 2,
-		"unsupportedTestCount": 2,
+		"passingTestCount": 4,
+		"unsupportedTestCount": 0,
 		"tests": [
 			{
 				"id": "source-utf8-executable-text",
@@ -67,17 +67,22 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "source-nul-character",
 				"section": "Source code representation",
 				"title": "NUL character implementation restriction is diagnosed consistently",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs negative scanner diagnostics in the conformance harness."
+				"status": "passing",
+				"fixtures": [
+					"_source_bytes/source_nul"
+				],
+				"reason": ""
 			},
 			{
 				"id": "source-byte-order-mark",
 				"section": "Source code representation",
 				"title": "Leading UTF-8 byte order mark is accepted and later BOMs are rejected",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Needs byte-level source fixtures outside normal text-file handling."
+				"status": "passing",
+				"fixtures": [
+					"_source_bytes/bom_leading",
+					"_source_bytes/bom_middle"
+				],
+				"reason": ""
 			}
 		]
 	},
@@ -428,8 +433,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	{
 		"name": "Types",
 		"testCount": 20,
-		"passingTestCount": 18,
-		"unsupportedTestCount": 2,
+		"passingTestCount": 19,
+		"unsupportedTestCount": 1,
 		"tests": [
 			{
 				"id": "types-booleans",
@@ -545,9 +550,11 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-nil-composite-values",
 				"section": "Pointer, slice, map, channel, function, and interface types",
 				"title": "nil is assignable to pointer, slice, map, channel, function, and interface values",
-				"status": "unsupported",
-				"fixtures": [],
-				"reason": "Nil comparisons for generated shared struct pointers currently lower to default value comparisons."
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
 			},
 			{
 				"id": "types-functions",
@@ -1363,8 +1370,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 
 export const specConformanceSummary = {
 	"categoryCount": 12,
-	"passingCategoryCount": 7,
+	"passingCategoryCount": 8,
 	"testCount": 124,
-	"passingTestCount": 116,
-	"unsupportedTestCount": 8
+	"passingTestCount": 119,
+	"unsupportedTestCount": 5
 } as const;

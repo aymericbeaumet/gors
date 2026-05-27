@@ -56,5 +56,11 @@ func main() {
 	receiveDirectional <- 8
 	node := Node{Value: 1, Children: []Node{{Value: 2}}}
 	function := func(value int) int { return value + pointer.Value }
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, function(3))
+	var nilPointer *int
+	var nilSlice []int
+	var nilMap map[string]int
+	var nilChan chan int
+	var nilFunc func() int
+	var nilInterface interface{}
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
 }

@@ -13133,10 +13133,15 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         }
 
         if other_ty.is_interface() {
-            return if is_eq {
-                syn::parse_quote! { false }
+            let other_expr = if left_nil {
+                syn::Expr::from(*binary_expr.y)
             } else {
-                syn::parse_quote! { true }
+                syn::Expr::from(*binary_expr.x)
+            };
+            return if is_eq {
+                syn::parse_quote! { crate::builtin::interface_is_nil(&(#other_expr)) }
+            } else {
+                syn::parse_quote! { !crate::builtin::interface_is_nil(&(#other_expr)) }
             };
         }
 
@@ -13163,6 +13168,19 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::parse_quote! { #other_expr == 0 }
             } else {
                 syn::parse_quote! { #other_expr != 0 }
+            };
+        }
+
+        if matches!(resolved_go_type(&other_ty), typeinfer::GoType::Func { .. }) {
+            let other_expr = if left_nil {
+                syn::Expr::from(*binary_expr.y)
+            } else {
+                syn::Expr::from(*binary_expr.x)
+            };
+            return if is_eq {
+                syn::parse_quote! { #other_expr.lock().unwrap().is_none() }
+            } else {
+                syn::parse_quote! { #other_expr.lock().unwrap().is_some() }
             };
         }
 
