@@ -1259,6 +1259,12 @@ pub enum InvalidDeclaration {
     DuplicateDeclarationName {
         name: String,
     },
+    DuplicateImportName {
+        name: String,
+    },
+    ImportPackageBlockConflict {
+        name: String,
+    },
     InvalidInitIdentifier,
     MethodFieldConflict {
         base: String,
@@ -1388,16 +1394,63 @@ pub fn invalid_receiver_type_in_file(
 }
 
 pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
-    invalid_top_level_names_in_file(file).or_else(|| {
-        invalid_method_names_in_file(file).or_else(|| {
-            for decl in &file.decls {
-                if let Some(invalid) = invalid_declaration_in_decl(decl) {
-                    return Some(invalid);
+    invalid_import_names_in_file(file).or_else(|| {
+        invalid_top_level_names_in_file(file).or_else(|| {
+            invalid_method_names_in_file(file).or_else(|| {
+                for decl in &file.decls {
+                    if let Some(invalid) = invalid_declaration_in_decl(decl) {
+                        return Some(invalid);
+                    }
                 }
-            }
-            None
+                None
+            })
         })
     })
+}
+
+fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    let package_names = package_block_declared_names(file);
+    for decl in &file.decls {
+        let ast::Decl::GenDecl(gen_decl) = decl else {
+            continue;
+        };
+        if gen_decl.tok != token::Token::IMPORT {
+            continue;
+        }
+        let mut names = BTreeSet::new();
+        for spec in &gen_decl.specs {
+            let ast::Spec::ImportSpec(import) = spec else {
+                continue;
+            };
+            let Some(name) = explicit_import_binding_name(import) else {
+                continue;
+            };
+            if package_names.contains(&name) {
+                return Some(InvalidDeclaration::ImportPackageBlockConflict { name });
+            }
+            if !names.insert(name.clone()) {
+                return Some(InvalidDeclaration::DuplicateImportName { name });
+            }
+        }
+    }
+    None
+}
+
+fn package_block_declared_names(file: &ast::File<'_>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for decl in &file.decls {
+        for name in top_level_declared_names(decl) {
+            if name != "_" && name != "init" {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+fn explicit_import_binding_name(import: &ast::ImportSpec<'_>) -> Option<String> {
+    let name = import.name.as_ref()?.name;
+    (!matches!(name, "_" | ".")).then(|| name.to_string())
 }
 
 fn invalid_top_level_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
@@ -11869,6 +11922,72 @@ mod tests {
             Some(super::InvalidDeclaration::DuplicateDeclarationName {
                 name: "T".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_explicit_import_names() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import (
+                        f "fmt"
+                        f "math"
+                    )
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateImportName {
+                name: "f".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import f "fmt"
+
+                    var f int
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ImportPackageBlockConflict {
+                name: "f".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import f "fmt"
+
+                    func f() {}
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ImportPackageBlockConflict {
+                name: "f".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_blank_and_dot_import_names_for_file_block_validation() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import (
+                        _ "fmt"
+                        _ "math"
+                        . "strings"
+                        . "bytes"
+                    )
+                "#,
+            ),
+            None
         );
     }
 

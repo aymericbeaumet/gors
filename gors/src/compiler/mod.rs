@@ -13184,6 +13184,12 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::DuplicateDeclarationName { name } => {
             format!("duplicate declaration {name}")
         }
+        ir::InvalidDeclaration::DuplicateImportName { name } => {
+            format!("duplicate import name {name}")
+        }
+        ir::InvalidDeclaration::ImportPackageBlockConflict { name } => {
+            format!("import name {name} conflicts with package-block declaration")
+        }
         ir::InvalidDeclaration::InvalidInitIdentifier => {
             "init can only be used for init function declarations".to_string()
         }
