@@ -2919,6 +2919,7 @@ fn validate_file_with_type_env_and_import_package_names(
     if let Some(invalid) = ir::invalid_short_var_redeclaration_in_file(file) {
         return Err(invalid_statement_error(invalid));
     }
+    validate_unused_locals(file)?;
     Ok(())
 }
 
@@ -3201,7 +3202,6 @@ fn compile_program_impl(
             &import_package_names,
         )?;
         validate_unused_imports(&pkg.ast, &import_package_names)?;
-        validate_unused_locals(&pkg.ast)?;
         let _ir = ir::lower_file(&pkg.ast, &type_env);
         set_import_package_names(import_package_names.clone());
         set_type_env(type_env);
@@ -3279,7 +3279,6 @@ fn compile_program_impl(
         &import_package_names,
     )?;
     validate_unused_imports(&program.main_package.ast, &import_package_names)?;
-    validate_unused_locals(&program.main_package.ast)?;
     let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
     set_import_package_names(import_package_names);
     set_type_env(main_type_env);
@@ -18547,6 +18546,7 @@ var X int
                 func main() {
                     x := 1
                     x = "go"
+                    _ = x
                 }
             "#,
             "invalid assignment: cannot assign string to int",
@@ -18618,6 +18618,7 @@ var X int
 
                 func f(x any) {
                     var v any
+                    _ = v
                     switch v = x.(type) {
                     default:
                     }
@@ -19897,6 +19898,8 @@ func main() {
                 func main() {
                     m := map[string]int{"alice": 25}
                     val, ok := m["alice"]
+                    _ = val
+                    _ = ok
                 }
             "#,
             rust! {
@@ -19909,6 +19912,8 @@ func main() {
                             None => (Default::default(), false),
                         }
                     };
+                    let _ = val;
+                    let _ = ok;
                 }
             },
         );
@@ -20058,6 +20063,7 @@ func main() {
 
                 func main() {
                     p := Point{X: 1, Y: 2}
+                    _ = p
                 }
             "#,
             rust! {
@@ -20068,6 +20074,7 @@ func main() {
                 }
                 pub fn main() {
                     let mut p = Point { X: 1, Y: 2, };
+                    let _ = p;
                 }
             },
         );
@@ -20081,11 +20088,13 @@ func main() {
 
                 func main() {
                     s := []int{1, 2, 3}
+                    _ = s
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2, 3]);
+                    let _ = s;
                 }
             },
         );
@@ -20130,11 +20139,13 @@ func main() {
 
                 func main() {
                     x := nil
+                    _ = x
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut x = Default::default();
+                    let _ = x;
                 }
             },
         );
@@ -20150,6 +20161,7 @@ func main() {
                     s := []int{1, 2, 3}
                     for i, v := range s {
                         x := i + v
+                        _ = x
                     }
                 }
             "#,
@@ -20158,6 +20170,7 @@ func main() {
                     let mut s = Vec::from([1, 2, 3]);
                     for (mut i, mut v) in (s).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) {
                         let mut x = i + v;
+                        let _ = x;
                     }
                 }
             },
@@ -20201,12 +20214,14 @@ func main() {
                 func main() {
                     s := []int{1, 2, 3}
                     t := s[1:2]
+                    _ = t
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2, 3]);
                     let mut t = (s[(1) as usize..(2) as usize]).to_vec();
+                    let _ = t;
                 }
             },
         );
@@ -20263,12 +20278,14 @@ func main() {
                 func main() {
                     x := 42
                     p := &x
+                    _ = p
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut x = std::sync::Arc::new(std::sync::Mutex::new(42));
                     let mut p = x.clone();
+                    let _ = p;
                 }
             },
         );
@@ -20281,16 +20298,18 @@ func main() {
                 package main
 
                 func main() {
-                    f := func() { x := 1 }
+                    f := func() { x := 1; _ = x }
+                    _ = f
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut f = {
                         let __gors_func: std::sync::Arc<dyn Fn() -> () + Send + Sync> =
-                            std::sync::Arc::new(move || { let mut x = 1; });
+                            std::sync::Arc::new(move || { let mut x = 1; let _ = x; });
                         std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
                     };
+                    let _ = (f).clone();
                 }
             },
         );
@@ -20305,12 +20324,14 @@ func main() {
                 func main() {
                     s := []int{1, 2, 3}
                     n := len(s)
+                    _ = n
                 }
             "#,
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2, 3]);
                     let mut n = (crate::builtin::len(&s) as isize);
+                    let _ = n;
                 }
             },
         );
@@ -20642,6 +20663,7 @@ func main() {
 
                 func main() {
                     f := Flags{}
+                    _ = f
                 }
             "#,
             rust! {
@@ -20651,6 +20673,7 @@ func main() {
                 }
                 pub fn main() {
                     let mut f = Flags::default();
+                    let _ = (f).clone();
                 }
             },
         );
@@ -20781,11 +20804,13 @@ func main() {
 
                 func main() {
                     _, b := 1, 2
+                    _ = b
                 }
             "#,
             rust! {
                 pub fn main() {
                     let (_, mut b) = (1, 2);
+                    let _ = b;
                 }
             },
         )
@@ -20802,6 +20827,20 @@ func main() {
                 }
             "#,
             "cannot use _ as value or type",
+        );
+    }
+
+    #[test]
+    fn it_should_reject_unused_local_variables_in_single_file_compile() {
+        assert_unsupported_construct(
+            r#"
+                package main
+
+                func main() {
+                    x := 1
+                }
+            "#,
+            "declared and not used: x",
         );
     }
 
@@ -20845,6 +20884,7 @@ func main() {
             func main() {
                 ch := make(chan int)
                 v := <-ch
+                _ = v
             }
             "#,
         );
@@ -20862,6 +20902,7 @@ func main() {
             package main
             func main() {
                 ch := make(chan int, 5)
+                _ = ch
             }
             "#,
         );

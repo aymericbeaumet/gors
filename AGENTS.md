@@ -496,11 +496,12 @@ so shadowed predeclared names are not treated as builtins.
 IR expression validation rejects blank identifier uses as values or types while
 still allowing `_` in assignment targets, short declarations, range assignment
 targets, and blank declarations/import aliases.
-Complete `compile_program_multi()` builds also reject unused local variables in
-function bodies while allowing unused parameters, receivers, named results,
-package-level variables, blank bindings, and local const/type declarations. A
-plain assignment to a bare identifier does not count as use; reads, compound
-assignments, increments/decrements, and uses from nested function literals do.
+Shared file validation rejects unused local variables in function bodies for
+single-file and complete-program compilation while allowing unused parameters,
+receivers, named results, package-level variables, blank bindings, and local
+const/type declarations. A plain assignment to a bare identifier does not count
+as use; reads, compound assignments, increments/decrements, and uses from nested
+function literals do.
 IR label validation rejects duplicate labels and labels that are never targeted
 by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
 function body; do not count labels or label uses inside nested function
