@@ -719,6 +719,17 @@ cross-package string-constant set for identifier lowering.
 Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
 not `vec![..]` macros, so dependency discovery and later AST passes can see
 module references inside variadic arguments.
+Variadic selector calls must preserve the same package-function versus method
+receiver distinction as ordinary calls; method selectors lower to Rust
+`ExprMethodCall` with the packed variadic `Vec` as the final argument.
+Spread arguments (`f(xs...)`) for non-`any` variadics clone addressable non-Copy
+arguments before passing them to the generated variadic vector, because Go does
+not consume the caller's slice header; `...any` vectors may contain
+`Box<dyn Any>` and must remain movable rather than cloned.
+Generated-code reachability must trace receiver types through transparent
+wrappers introduced by the backend, including `Arc::new`, `Mutex::new`,
+`.clone()`, `.lock()`, and `.unwrap()`, so impl methods used through generated
+pointer cells are not pruned.
 
 Deferred calls evaluate their argument expressions at the `defer` statement, not
 inside the generated drop guard. The compiler saves deferred function values and

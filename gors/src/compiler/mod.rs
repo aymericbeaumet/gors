@@ -6139,6 +6139,18 @@ fn receiver_type_from_init_expr(
                     )
                 });
             }
+            if is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"])
+                || is_path_call_expr(&call.func, &["std", "sync", "Mutex", "new"])
+            {
+                return call.args.first().and_then(|arg| {
+                    receiver_type_from_init_expr(
+                        arg,
+                        module_names,
+                        item_names,
+                        top_level_return_types,
+                    )
+                });
+            }
             if let syn::Expr::Path(path) = &*call.func
                 && let Some(first) = path.path.segments.first()
             {
@@ -6198,6 +6210,19 @@ fn receiver_type_from_init_expr(
             .map(|seg| seg.ident.to_string())
             .filter(|name| item_names.contains(name))
             .map(|name| ReceiverTypeRef { module: None, name }),
+        syn::Expr::MethodCall(method)
+            if matches!(
+                method.method.to_string().as_str(),
+                "clone" | "lock" | "unwrap"
+            ) =>
+        {
+            receiver_type_from_init_expr(
+                &method.receiver,
+                module_names,
+                item_names,
+                top_level_return_types,
+            )
+        }
         syn::Expr::Unary(unary) => receiver_type_from_init_expr(
             &unary.expr,
             module_names,
@@ -6334,6 +6359,41 @@ fn collect_refs_from_item(
         top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
     }
 
+    impl BoundCollector<'_> {
+        fn bound_receiver_type_from_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
+            match expr {
+                syn::Expr::Cast(cast) => self.bound_receiver_type_from_expr(&cast.expr),
+                syn::Expr::Group(group) => self.bound_receiver_type_from_expr(&group.expr),
+                syn::Expr::MethodCall(method)
+                    if matches!(
+                        method.method.to_string().as_str(),
+                        "clone" | "lock" | "unwrap"
+                    ) =>
+                {
+                    receiver_type_from_init_expr(
+                        &method.receiver,
+                        self.module_names,
+                        self.item_names,
+                        self.top_level_return_types,
+                    )
+                    .or_else(|| self.bound_receiver_type_from_expr(&method.receiver))
+                }
+                syn::Expr::Paren(paren) => self.bound_receiver_type_from_expr(&paren.expr),
+                syn::Expr::Path(path)
+                    if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
+                {
+                    let name = path.path.segments.first()?.ident.to_string();
+                    self.types.get(&name).cloned()
+                }
+                syn::Expr::Reference(reference) => {
+                    self.bound_receiver_type_from_expr(&reference.expr)
+                }
+                syn::Expr::Unary(unary) => self.bound_receiver_type_from_expr(&unary.expr),
+                _ => None,
+            }
+        }
+    }
+
     impl VisitMut for BoundCollector<'_> {
         fn visit_pat_ident_mut(&mut self, pat: &mut syn::PatIdent) {
             self.names.insert(pat.ident.to_string());
@@ -6380,6 +6440,7 @@ fn collect_refs_from_item(
                     self.item_names,
                     self.top_level_return_types,
                 )
+                .or_else(|| self.bound_receiver_type_from_expr(&init.expr))
             {
                 self.types.insert(name, ty);
             }
@@ -9145,20 +9206,55 @@ fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
     TYPE_ENV.with(|env| ir::variadic_call_start(call_expr, &env.borrow()))
 }
 
+enum VariadicCallTarget {
+    Function(syn::Expr),
+    Method {
+        receiver: syn::Expr,
+        method: syn::Ident,
+    },
+}
+
+impl VariadicCallTarget {
+    fn call(self, args: syn::punctuated::Punctuated<syn::Expr, Token![,]>) -> syn::Expr {
+        match self {
+            Self::Function(fun) => syn::parse_quote! { #fun(#args) },
+            Self::Method { receiver, method } => syn::Expr::MethodCall(syn::ExprMethodCall {
+                attrs: vec![],
+                receiver: Box::new(receiver),
+                dot_token: <Token![.]>::default(),
+                method,
+                turbofish: None,
+                paren_token: syn::token::Paren::default(),
+                args,
+            }),
+        }
+    }
+}
+
+fn selector_base_is_import(selector: &ast::SelectorExpr) -> bool {
+    matches!(
+        selector.x.as_ref(),
+        ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
+    )
+}
+
+fn compile_variadic_call_target(fun: ast::Expr) -> VariadicCallTarget {
+    match fun {
+        ast::Expr::Ident(ident) => VariadicCallTarget::Function(syn::Expr::Path(ident.into())),
+        ast::Expr::SelectorExpr(selector) if selector_base_is_import(&selector) => {
+            VariadicCallTarget::Function(syn::Expr::Path(selector.into()))
+        }
+        ast::Expr::SelectorExpr(selector) => VariadicCallTarget::Method {
+            receiver: method_receiver_expr_from_ref(*selector.x),
+            method: selector.sel.into(),
+        },
+        _ => VariadicCallTarget::Function(compile_error_expr("unsupported variadic call target")),
+    }
+}
+
 fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {
     let param_types = call_param_types(&call_expr.fun);
-    let fun_expr: syn::Expr = match *call_expr.fun {
-        ast::Expr::Ident(ident) => syn::Expr::Path(ident.into()),
-        ast::Expr::SelectorExpr(sel) => {
-            let ast::Expr::Ident(pkg) = *sel.x else {
-                return compile_error_expr("unsupported variadic selector receiver");
-            };
-            let pkg_ident = syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site());
-            let method_ident: syn::Ident = sel.sel.into();
-            syn::parse_quote! { #pkg_ident::#method_ident }
-        }
-        _ => compile_error_expr("unsupported variadic call target"),
-    };
+    let target = compile_variadic_call_target(*call_expr.fun);
 
     let variadic_elem = param_types.get(variadic_start).and_then(|ty| match ty {
         typeinfer::GoType::Slice(inner) => Some((**inner).clone()),
@@ -9176,9 +9272,20 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
 
     if has_variadic_spread {
         for (i, arg) in raw_args.into_iter().enumerate() {
-            final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
+            let should_clone =
+                i >= variadic_start && !variadic_is_any && is_ir_addressable_expr(&arg) && {
+                    let actual =
+                        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                    !go_type_is_copy(&actual)
+                };
+            let arg = compile_expr_with_expected(arg, param_types.get(i));
+            if should_clone {
+                final_args.push(syn::parse_quote! { (#arg).clone() });
+            } else {
+                final_args.push(arg);
+            }
         }
-        return syn::parse_quote! { #fun_expr(#final_args) };
+        return target.call(final_args);
     }
 
     for (i, arg) in raw_args.into_iter().enumerate() {
@@ -9211,7 +9318,7 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
     }
     call_args.push(vec_expr);
 
-    syn::parse_quote! { #fun_expr(#call_args) }
+    target.call(call_args)
 }
 
 fn compile_variadic_any_arg(
@@ -10891,7 +10998,10 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
                         return package_params;
                     }
 
-                    if let Some(typeinfer::GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
+                    if let Some(name) = env
+                        .get_var(pkg_or_recv.name)
+                        .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
+                    {
                         return env.get_func_params(&format!("{}.{}", name, sel.sel.name));
                     }
                 }
@@ -10900,6 +11010,17 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
             _ => Vec::new(),
         }
     })
+}
+
+fn receiver_method_type_name_for_call(
+    ty: typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> Option<String> {
+    match env.resolve_alias(&ty) {
+        typeinfer::GoType::Named(name) => Some(name),
+        typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
+        _ => None,
+    }
 }
 
 fn function_value_call_params(fun: &ast::Expr) -> Option<Vec<typeinfer::GoType>> {
@@ -15123,12 +15244,8 @@ fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet
                         return Some(package_key);
                     }
                     env.get_var(receiver.name)
-                        .and_then(|ty| match ty {
-                            typeinfer::GoType::Named(name) => {
-                                Some(format!("{name}.{}", selector.sel.name))
-                            }
-                            _ => None,
-                        })
+                        .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
+                        .map(|name| format!("{name}.{}", selector.sel.name))
                         .or_else(|| Some(selector.sel.name.to_string()))
                 })
             } else {

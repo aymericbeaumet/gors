@@ -439,7 +439,10 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
                     return Some(package_key);
                 }
 
-                if let Some(GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
+                if let Some(name) = env
+                    .get_var(pkg_or_recv.name)
+                    .and_then(|ty| method_receiver_type_name(ty, env))
+                {
                     return Some(format!("{}.{}", name, sel.sel.name));
                 }
             }
@@ -18331,12 +18334,20 @@ mod tests {
             r#"
                 package main
 
+                type Accumulator struct{}
+
                 func sum(nums ...int) int { return 0 }
                 func add(a int, b int) int { return a + b }
+                func (a Accumulator) Sum(nums ...int) int { return 0 }
+                func (a *Accumulator) Add(nums ...int) {}
 
                 func main() {
+                    acc := Accumulator{}
+                    ptr := &acc
                     _ = sum(1, 2)
                     _ = add(1, 2)
+                    _ = acc.Sum(1, 2)
+                    ptr.Add(1, 2)
                 }
             "#,
         )
@@ -18349,8 +18360,29 @@ mod tests {
         }) else {
             panic!("expected main function");
         };
+        for stmt in func
+            .body
+            .as_ref()
+            .expect("expected body")
+            .list
+            .iter()
+            .take_while(|stmt| {
+                matches!(
+                    stmt,
+                    crate::ast::Stmt::AssignStmt(assign)
+                        if matches!(assign.tok, crate::token::Token::DEFINE)
+                )
+            })
+        {
+            if let crate::ast::Stmt::AssignStmt(assign) = stmt
+                && let Some(crate::ast::Expr::Ident(ident)) = assign.lhs.first()
+                && let Some(value) = assign.rhs.first()
+            {
+                env.set_var(ident.name, GoType::infer_expr(value, &env));
+            }
+        }
         let Some(crate::ast::Stmt::AssignStmt(variadic_assign)) =
-            func.body.as_ref().and_then(|body| body.list.first())
+            func.body.as_ref().and_then(|body| body.list.get(2))
         else {
             panic!("expected variadic assignment");
         };
@@ -18360,7 +18392,7 @@ mod tests {
         assert_eq!(super::variadic_call_start(variadic_call, &env), Some(0));
 
         let Some(crate::ast::Stmt::AssignStmt(fixed_assign)) =
-            func.body.as_ref().and_then(|body| body.list.get(1))
+            func.body.as_ref().and_then(|body| body.list.get(3))
         else {
             panic!("expected fixed assignment");
         };
@@ -18368,6 +18400,29 @@ mod tests {
             panic!("expected fixed call");
         };
         assert_eq!(super::variadic_call_start(fixed_call, &env), None);
+
+        let Some(crate::ast::Stmt::AssignStmt(method_assign)) =
+            func.body.as_ref().and_then(|body| body.list.get(4))
+        else {
+            panic!("expected method assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(method_call)) = method_assign.rhs.first() else {
+            panic!("expected method call");
+        };
+        assert_eq!(super::variadic_call_start(method_call, &env), Some(0));
+
+        let Some(crate::ast::Stmt::ExprStmt(pointer_method_stmt)) =
+            func.body.as_ref().and_then(|body| body.list.get(5))
+        else {
+            panic!("expected pointer method statement");
+        };
+        let crate::ast::Expr::CallExpr(pointer_method_call) = &pointer_method_stmt.x else {
+            panic!("expected pointer method call");
+        };
+        assert_eq!(
+            super::variadic_call_start(pointer_method_call, &env),
+            Some(0)
+        );
     }
 
     #[test]
