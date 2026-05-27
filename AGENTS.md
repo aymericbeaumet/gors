@@ -621,6 +621,8 @@ contain no channel receive or non-constant call; constant `complex`, `real`,
 IR type-conversion validation allows representable untyped numeric constants,
 including integer-valued floating constants produced by constant `real`, `imag`,
 `min`, and `max` calls, to convert to integer targets.
+IR array type validation rejects runtime values and non-numeric constants in
+length positions; constant builtin lengths such as `len([3]int{})` remain valid.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose

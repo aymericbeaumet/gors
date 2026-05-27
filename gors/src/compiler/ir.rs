@@ -8349,19 +8349,32 @@ fn invalid_expression_switch_case(
     })
 }
 
-fn invalid_array_type(array: &ast::ArrayType<'_>) -> Option<InvalidStatementReason> {
+fn invalid_array_type(array: &ast::ArrayType<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let len = array.len.as_ref()?;
-    invalid_array_length(len).map(|reason| InvalidStatementReason::InvalidArrayType { reason })
+    invalid_array_length(len, env).map(|reason| InvalidStatementReason::InvalidArrayType { reason })
 }
 
-fn invalid_array_length(expr: &ast::Expr<'_>) -> Option<String> {
+fn invalid_array_length(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    if let ast::Expr::Ident(ident) = unparen_expr(expr)
+        && ident.name == "nil"
+    {
+        return Some("length must be a numeric constant".to_string());
+    }
+    if matches!(unparen_expr(expr), ast::Expr::Ellipsis(_)) {
+        return None;
+    }
+    if expr_is_known_non_constant(expr, env) {
+        return Some("length must be a constant".to_string());
+    }
     match unparen_expr(expr) {
         ast::Expr::BasicLit(lit) => invalid_array_length_lit(lit),
-        ast::Expr::Ident(ident) if ident.name == "nil" => {
-            Some("length must be a numeric constant".to_string())
+        ast::Expr::Ident(ident) if env.is_const(ident.name) => {
+            let ty = env.resolve_alias(&GoType::infer_expr(expr, env));
+            (!go_type_is_numeric(&ty)).then(|| "length must be a numeric constant".to_string())
         }
+        ast::Expr::Ident(_) => Some("length must be a constant".to_string()),
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
-            invalid_array_length(&unary.x)
+            invalid_array_length(&unary.x, env)
         }
         ast::Expr::UnaryExpr(unary)
             if unary.op == token::Token::SUB && array_length_constant_is_numeric(&unary.x) =>
@@ -8369,6 +8382,13 @@ fn invalid_array_length(expr: &ast::Expr<'_>) -> Option<String> {
             (!array_length_constant_is_zero(&unary.x))
                 .then(|| "length must be non-negative".to_string())
         }
+        ast::Expr::BinaryExpr(binary) => {
+            invalid_array_length(&binary.x, env).or_else(|| invalid_array_length(&binary.y, env))
+        }
+        ast::Expr::CallExpr(_) if expr_is_untyped_numeric_constant_for_comparison(expr, env) => {
+            None
+        }
+        ast::Expr::CallExpr(_) => Some("length must be a numeric constant".to_string()),
         _ => None,
     }
 }
@@ -8852,7 +8872,7 @@ fn invalid_expression_in_expr(
             .as_ref()
             .and_then(|len| invalid_expression_in_expr(len, env))
             .or_else(|| invalid_expression_in_expr(&array.elt, env))
-            .or_else(|| invalid_array_type(array)),
+            .or_else(|| invalid_array_type(array, env)),
         ast::Expr::BinaryExpr(binary) => invalid_expression_in_expr(&binary.x, env)
             .or_else(|| invalid_expression_in_expr(&binary.y, env))
             .or_else(|| invalid_binary_expr(binary, env)),
@@ -20046,6 +20066,33 @@ mod tests {
                 "#,
                 "length must be a numeric constant",
             ),
+            (
+                r#"
+                    package main
+
+                    var n int
+                    var _ [n]int
+                "#,
+                "length must be a constant",
+            ),
+            (
+                r#"
+                    package main
+
+                    func n() int { return 1 }
+                    var _ [n()]int
+                "#,
+                "length must be a constant",
+            ),
+            (
+                r#"
+                    package main
+
+                    const s = "go"
+                    var _ [s]int
+                "#,
+                "length must be a numeric constant",
+            ),
         ];
 
         for (source, reason) in cases {
@@ -20077,6 +20124,7 @@ mod tests {
                 var _ [1.0]int
                 var _ [n]int
                 var _ [2*n]int
+                var _ [len([3]int{})]int
             "#,
         )
         .unwrap();
