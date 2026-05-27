@@ -1305,6 +1305,9 @@ pub enum InvalidDeclaration {
         path: String,
         alias: Option<String>,
     },
+    UnusedVariable {
+        name: String,
+    },
     VarMissingTypeOrInitializer,
     VarMultiValueInSingleValueContext,
     VarTypeMismatch {
@@ -1525,6 +1528,524 @@ pub fn invalid_unused_import_in_file_with_import_package_names(
         }
     }
     None
+}
+
+pub fn invalid_unused_local_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
+    for decl in &file.decls {
+        let ast::Decl::FuncDecl(func) = decl else {
+            continue;
+        };
+        if let Some(body) = &func.body
+            && let Some(invalid) = invalid_unused_local_in_func(func, body)
+        {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+#[derive(Clone)]
+struct LocalBinding {
+    used: bool,
+    check_unused: bool,
+}
+
+#[derive(Default)]
+struct LocalUseScopes {
+    scopes: Vec<BTreeMap<String, LocalBinding>>,
+}
+
+type LocalUseResult = Result<(), InvalidDeclaration>;
+
+impl LocalUseScopes {
+    fn push_scope(&mut self) {
+        self.scopes.push(BTreeMap::new());
+    }
+
+    fn pop_scope(&mut self) -> Option<InvalidDeclaration> {
+        let scope = self.scopes.pop()?;
+        scope.into_iter().find_map(|(name, binding)| {
+            (binding.check_unused && !binding.used)
+                .then_some(InvalidDeclaration::UnusedVariable { name })
+        })
+    }
+
+    fn declare_checked(&mut self, name: &str) {
+        self.declare(name, true);
+    }
+
+    fn declare_ignored(&mut self, name: &str) {
+        self.declare(name, false);
+    }
+
+    fn declare(&mut self, name: &str, check_unused: bool) {
+        if name == "_" {
+            return;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.entry(name.to_string()).or_insert(LocalBinding {
+                used: false,
+                check_unused,
+            });
+        }
+    }
+
+    fn mark_used(&mut self, name: &str) {
+        if name == "_" {
+            return;
+        }
+        if let Some(binding) = self
+            .scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.get_mut(name))
+        {
+            binding.used = true;
+        }
+    }
+}
+
+fn finish_local_scope(scopes: &mut LocalUseScopes) -> LocalUseResult {
+    scopes.pop_scope().map_or(Ok(()), Err)
+}
+
+fn invalid_unused_local_in_func(
+    func: &ast::FuncDecl<'_>,
+    body: &ast::BlockStmt<'_>,
+) -> Option<InvalidDeclaration> {
+    let mut scopes = LocalUseScopes::default();
+    scopes.push_scope();
+    if let Some(recv) = &func.recv {
+        declare_field_names_ignored(recv, &mut scopes);
+    }
+    declare_func_type_names_ignored(&func.type_, &mut scopes);
+    collect_unused_local_in_stmt_list(&body.list, &mut scopes)
+        .err()
+        .or_else(|| scopes.pop_scope())
+}
+
+fn declare_func_type_names_ignored(func_type: &ast::FuncType<'_>, scopes: &mut LocalUseScopes) {
+    declare_field_names_ignored(&func_type.params, scopes);
+    if let Some(results) = &func_type.results {
+        declare_field_names_ignored(results, scopes);
+    }
+}
+
+fn declare_field_names_ignored(fields: &ast::FieldList<'_>, scopes: &mut LocalUseScopes) {
+    for field in &fields.list {
+        if let Some(names) = &field.names {
+            for name in names {
+                scopes.declare_ignored(name.name);
+            }
+        }
+    }
+}
+
+fn collect_unused_local_in_nested_block(
+    block: &ast::BlockStmt<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    scopes.push_scope();
+    collect_unused_local_in_stmt_list(&block.list, scopes)?;
+    finish_local_scope(scopes)
+}
+
+fn collect_unused_local_in_nested_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    scopes.push_scope();
+    collect_unused_local_in_stmt_list(stmts, scopes)?;
+    finish_local_scope(scopes)
+}
+
+fn collect_unused_local_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    for stmt in stmts {
+        collect_unused_local_in_stmt(stmt, scopes)?;
+    }
+    Ok(())
+}
+
+fn collect_unused_local_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => collect_unused_local_in_assign(assign, scopes),
+        ast::Stmt::BlockStmt(block) => collect_unused_local_in_nested_block(block, scopes),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => Ok(()),
+        ast::Stmt::CaseClause(case) => {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    collect_unused_local_in_expr(expr, scopes)?;
+                }
+            }
+            collect_unused_local_in_nested_stmt_list(&case.body, scopes)
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(comm) = &comm.comm {
+                collect_unused_local_in_stmt(comm, scopes)?;
+            }
+            collect_unused_local_in_nested_stmt_list(&comm.body, scopes)
+        }
+        ast::Stmt::DeclStmt(decl) => collect_unused_local_in_gen_decl(&decl.decl, scopes),
+        ast::Stmt::DeferStmt(defer) => collect_unused_local_in_call(&defer.call, scopes),
+        ast::Stmt::ExprStmt(expr) => collect_unused_local_in_expr(&expr.x, scopes),
+        ast::Stmt::ForStmt(for_stmt) => {
+            let has_clause_scope = for_stmt.init.is_some();
+            if has_clause_scope {
+                scopes.push_scope();
+            }
+            if let Some(init) = &for_stmt.init {
+                collect_unused_local_in_stmt(init, scopes)?;
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_unused_local_in_expr(cond, scopes)?;
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_unused_local_in_stmt(post, scopes)?;
+            }
+            collect_unused_local_in_nested_block(&for_stmt.body, scopes)?;
+            if has_clause_scope {
+                finish_local_scope(scopes)?;
+            }
+            Ok(())
+        }
+        ast::Stmt::GoStmt(go) => collect_unused_local_in_call(&go.call, scopes),
+        ast::Stmt::IfStmt(if_stmt) => {
+            let has_clause_scope = if_stmt.init.as_ref().as_ref().is_some();
+            if has_clause_scope {
+                scopes.push_scope();
+            }
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                collect_unused_local_in_stmt(init, scopes)?;
+            }
+            collect_unused_local_in_expr(&if_stmt.cond, scopes)?;
+            collect_unused_local_in_nested_block(&if_stmt.body, scopes)?;
+            if let Some(else_) = if_stmt.else_.as_ref().as_ref() {
+                collect_unused_local_in_stmt(else_, scopes)?;
+            }
+            if has_clause_scope {
+                finish_local_scope(scopes)?;
+            }
+            Ok(())
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_unused_local_in_assignment_lhs(&inc_dec.x, scopes, true)
+        }
+        ast::Stmt::LabeledStmt(label) => collect_unused_local_in_stmt(&label.stmt, scopes),
+        ast::Stmt::RangeStmt(range) => {
+            collect_unused_local_in_expr(&range.x, scopes)?;
+            let has_range_scope = matches!(range.tok, Some(token::Token::DEFINE));
+            if has_range_scope {
+                scopes.push_scope();
+                if let Some(key) = &range.key
+                    && let Some(name) = ident_name(key)
+                {
+                    scopes.declare_checked(&name);
+                }
+                if let Some(value) = &range.value
+                    && let Some(name) = ident_name(value)
+                {
+                    scopes.declare_checked(&name);
+                }
+            } else {
+                if let Some(key) = &range.key {
+                    collect_unused_local_in_assignment_lhs(key, scopes, false)?;
+                }
+                if let Some(value) = &range.value {
+                    collect_unused_local_in_assignment_lhs(value, scopes, false)?;
+                }
+            }
+            collect_unused_local_in_nested_block(&range.body, scopes)?;
+            if has_range_scope {
+                finish_local_scope(scopes)?;
+            }
+            Ok(())
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_unused_local_in_expr(expr, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Stmt::SelectStmt(select) => collect_unused_local_in_nested_block(&select.body, scopes),
+        ast::Stmt::SendStmt(send) => {
+            collect_unused_local_in_expr(&send.chan, scopes)?;
+            collect_unused_local_in_expr(&send.value, scopes)
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            let has_clause_scope = switch.init.is_some();
+            if has_clause_scope {
+                scopes.push_scope();
+            }
+            if let Some(init) = &switch.init {
+                collect_unused_local_in_stmt(init, scopes)?;
+            }
+            if let Some(tag) = &switch.tag {
+                collect_unused_local_in_expr(tag, scopes)?;
+            }
+            collect_unused_local_in_nested_block(&switch.body, scopes)?;
+            if has_clause_scope {
+                finish_local_scope(scopes)?;
+            }
+            Ok(())
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            let has_clause_scope = type_switch.init.is_some();
+            if has_clause_scope {
+                scopes.push_scope();
+            }
+            if let Some(init) = &type_switch.init {
+                collect_unused_local_in_stmt(init, scopes)?;
+            }
+            collect_unused_local_in_stmt(&type_switch.assign, scopes)?;
+            collect_unused_local_in_nested_block(&type_switch.body, scopes)?;
+            if has_clause_scope {
+                finish_local_scope(scopes)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn collect_unused_local_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    for spec in &gen_decl.specs {
+        match spec {
+            ast::Spec::ImportSpec(_) | ast::Spec::TypeSpec(_) => {}
+            ast::Spec::ValueSpec(value) if gen_decl.tok == token::Token::VAR => {
+                if let Some(type_) = &value.type_ {
+                    collect_unused_local_in_expr(type_, scopes)?;
+                }
+                if let Some(values) = &value.values {
+                    for value in values {
+                        collect_unused_local_in_expr(value, scopes)?;
+                    }
+                }
+                for name in &value.names {
+                    scopes.declare_checked(name.name);
+                }
+            }
+            ast::Spec::ValueSpec(value) => {
+                if let Some(values) = &value.values {
+                    for value in values {
+                        collect_unused_local_in_expr(value, scopes)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_unused_local_in_assign(
+    assign: &ast::AssignStmt<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    for expr in &assign.rhs {
+        collect_unused_local_in_expr(expr, scopes)?;
+    }
+    if assign.tok == token::Token::DEFINE {
+        for expr in &assign.lhs {
+            if let Some(name) = ident_name(expr) {
+                if !scopes
+                    .scopes
+                    .last()
+                    .is_some_and(|scope| scope.contains_key(&name))
+                {
+                    scopes.declare_checked(&name);
+                }
+            } else {
+                collect_unused_local_in_assignment_lhs(expr, scopes, false)?;
+            }
+        }
+    } else {
+        let mutation_counts_as_use = assign.tok.is_assign_op();
+        for expr in &assign.lhs {
+            collect_unused_local_in_assignment_lhs(expr, scopes, mutation_counts_as_use)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_unused_local_in_assignment_lhs(
+    expr: &ast::Expr<'_>,
+    scopes: &mut LocalUseScopes,
+    bare_ident_counts_as_use: bool,
+) -> LocalUseResult {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            if bare_ident_counts_as_use {
+                scopes.mark_used(ident.name);
+            }
+            Ok(())
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_unused_local_in_assignment_lhs(&paren.x, scopes, bare_ident_counts_as_use)
+        }
+        ast::Expr::SelectorExpr(selector) => collect_unused_local_in_expr(&selector.x, scopes),
+        ast::Expr::IndexExpr(index) => {
+            collect_unused_local_in_expr(&index.x, scopes)?;
+            collect_unused_local_in_expr(&index.index, scopes)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_unused_local_in_expr(&index.x, scopes)?;
+            for index in &index.indices {
+                collect_unused_local_in_expr(index, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::StarExpr(star) => collect_unused_local_in_expr(&star.x, scopes),
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_unused_local_in_expr(&assert.x, scopes)?;
+            if let Some(type_) = &assert.type_ {
+                collect_unused_local_in_expr(type_, scopes)?;
+            }
+            Ok(())
+        }
+        _ => collect_unused_local_in_expr(expr, scopes),
+    }
+}
+
+fn collect_unused_local_in_call(
+    call: &ast::CallExpr<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    collect_unused_local_in_expr(&call.fun, scopes)?;
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_unused_local_in_expr(arg, scopes)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_unused_local_in_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            scopes.mark_used(ident.name);
+            Ok(())
+        }
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_unused_local_in_expr(len, scopes)?;
+            }
+            collect_unused_local_in_expr(&array.elt, scopes)
+        }
+        ast::Expr::BasicLit(_) => Ok(()),
+        ast::Expr::BinaryExpr(binary) => {
+            collect_unused_local_in_expr(&binary.x, scopes)?;
+            collect_unused_local_in_expr(&binary.y, scopes)
+        }
+        ast::Expr::CallExpr(call) => collect_unused_local_in_call(call, scopes),
+        ast::Expr::ChanType(chan) => collect_unused_local_in_expr(&chan.value, scopes),
+        ast::Expr::CompositeLit(comp) => {
+            if let Some(type_) = &comp.type_ {
+                collect_unused_local_in_expr(type_, scopes)?;
+            }
+            if let Some(elts) = &comp.elts {
+                for elt in elts {
+                    collect_unused_local_in_expr(elt, scopes)?;
+                }
+            }
+            Ok(())
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_unused_local_in_expr(elt, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::FuncLit(func_lit) => {
+            scopes.push_scope();
+            declare_func_type_names_ignored(&func_lit.type_, scopes);
+            collect_unused_local_in_stmt_list(&func_lit.body.list, scopes)?;
+            finish_local_scope(scopes)
+        }
+        ast::Expr::FuncType(func_type) => {
+            collect_unused_local_in_field_list(&func_type.params, scopes)?;
+            if let Some(results) = &func_type.results {
+                collect_unused_local_in_field_list(results, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_unused_local_in_expr(&index.x, scopes)?;
+            collect_unused_local_in_expr(&index.index, scopes)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_unused_local_in_expr(&index.x, scopes)?;
+            for index in &index.indices {
+                collect_unused_local_in_expr(index, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                collect_unused_local_in_field_list(methods, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_unused_local_in_expr(&kv.key, scopes)?;
+            collect_unused_local_in_expr(&kv.value, scopes)
+        }
+        ast::Expr::MapType(map) => {
+            collect_unused_local_in_expr(&map.key, scopes)?;
+            collect_unused_local_in_expr(&map.value, scopes)
+        }
+        ast::Expr::ParenExpr(paren) => collect_unused_local_in_expr(&paren.x, scopes),
+        ast::Expr::SelectorExpr(selector) => collect_unused_local_in_expr(&selector.x, scopes),
+        ast::Expr::SliceExpr(slice) => {
+            collect_unused_local_in_expr(&slice.x, scopes)?;
+            if let Some(low) = &slice.low {
+                collect_unused_local_in_expr(low, scopes)?;
+            }
+            if let Some(high) = &slice.high {
+                collect_unused_local_in_expr(high, scopes)?;
+            }
+            if let Some(max) = &slice.max {
+                collect_unused_local_in_expr(max, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::StarExpr(star) => collect_unused_local_in_expr(&star.x, scopes),
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                collect_unused_local_in_field_list(fields, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_unused_local_in_expr(&assert.x, scopes)?;
+            if let Some(type_) = &assert.type_ {
+                collect_unused_local_in_expr(type_, scopes)?;
+            }
+            Ok(())
+        }
+        ast::Expr::UnaryExpr(unary) => collect_unused_local_in_expr(&unary.x, scopes),
+    }
+}
+
+fn collect_unused_local_in_field_list(
+    fields: &ast::FieldList<'_>,
+    scopes: &mut LocalUseScopes,
+) -> LocalUseResult {
+    for field in &fields.list {
+        if let Some(type_) = &field.type_ {
+            collect_unused_local_in_expr(type_, scopes)?;
+        }
+    }
+    Ok(())
 }
 
 fn import_file_key(import: &ast::ImportSpec<'_>) -> (String, String) {
@@ -13533,6 +14054,11 @@ mod tests {
         super::invalid_unused_import_in_file_with_import_package_names(&file, &import_package_names)
     }
 
+    fn invalid_unused_local(source: &str) -> Option<super::InvalidDeclaration> {
+        let file = parse_file("test.go", source).unwrap();
+        super::invalid_unused_local_in_file(&file)
+    }
+
     fn invalid_declaration_in_merged_files(
         first_path: &'static str,
         first_source: &'static str,
@@ -14131,6 +14657,83 @@ mod tests {
                         _ = x
                         xs := []int{1}
                         for _ = range xs {
+                        }
+                    }
+                "#,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_unused_local_variables() {
+        assert_eq!(
+            invalid_unused_local(
+                r#"
+                    package main
+
+                    func main() {
+                        var x int
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::UnusedVariable {
+                name: "x".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_unused_local(
+                r#"
+                    package main
+
+                    func main() {
+                        xs := []int{1}
+                        for i := range xs {
+                        }
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::UnusedVariable {
+                name: "i".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_unused_local(
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x = 2
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::UnusedVariable {
+                name: "x".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_used_local_variables() {
+        assert_eq!(
+            invalid_unused_local(
+                r#"
+                    package main
+
+                    func f(unusedParam int) {}
+
+                    func main() {
+                        xs := []int{1}
+                        for i := range xs {
+                            _ = i
+                        }
+                        n := 0
+                        n++
+                        total := 1
+                        total += n
+                        _ = func() int {
+                            return total
                         }
                     }
                 "#,

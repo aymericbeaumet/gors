@@ -2934,6 +2934,13 @@ fn validate_unused_imports(
     Ok(())
 }
 
+fn validate_unused_locals(file: &ast::File<'_>) -> Result<(), CompilerError> {
+    if let Some(invalid) = ir::invalid_unused_local_in_file(file) {
+        return Err(invalid_declaration_error(invalid));
+    }
+    Ok(())
+}
+
 /// Compile a parsed program (main package + imports) into a single Rust file.
 ///
 /// Imported packages are emitted as `mod` blocks before the main package items.
@@ -3194,6 +3201,7 @@ fn compile_program_impl(
             &import_package_names,
         )?;
         validate_unused_imports(&pkg.ast, &import_package_names)?;
+        validate_unused_locals(&pkg.ast)?;
         let _ir = ir::lower_file(&pkg.ast, &type_env);
         set_import_package_names(import_package_names.clone());
         set_type_env(type_env);
@@ -3271,6 +3279,7 @@ fn compile_program_impl(
         &import_package_names,
     )?;
     validate_unused_imports(&program.main_package.ast, &import_package_names)?;
+    validate_unused_locals(&program.main_package.ast)?;
     let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
     set_import_package_names(import_package_names);
     set_type_env(main_type_env);
@@ -13319,6 +13328,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
                 format!("{path} imported and not used")
             }
         }
+        ir::InvalidDeclaration::UnusedVariable { name } => {
+            format!("declared and not used: {name}")
+        }
         ir::InvalidDeclaration::VarMissingTypeOrInitializer => {
             "var declaration missing type or initializer".to_string()
         }
@@ -19569,6 +19581,7 @@ func main() {
 	fmt.Println("hello")
 	e := errors.New("fail")
 	s := strconv.Itoa(42)
+	_, _ = e, s
 }
 "#;
         let ast = crate::parser::parse_file("main.go", go_source).unwrap();
