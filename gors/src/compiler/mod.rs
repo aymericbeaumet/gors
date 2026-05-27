@@ -9116,7 +9116,23 @@ fn shared_func_box_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn:
 }
 
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
-    ir::builtin_call_kind(call_expr).is_some()
+    builtin_call_kind(call_expr).is_some()
+}
+
+fn builtin_call_kind(call_expr: &ast::CallExpr) -> Option<ir::BuiltinCallKind> {
+    let ast::Expr::Ident(ident) = call_expr.fun.as_ref() else {
+        return None;
+    };
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if env.get_var(ident.name).is_some()
+            || env.has_func(ident.name)
+            || env.get_type_kind(ident.name).is_some()
+        {
+            return None;
+        }
+        ir::builtin_call_kind(call_expr)
+    })
 }
 
 fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
@@ -9263,7 +9279,7 @@ fn compile_new_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
 }
 
 fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
-    let Some(kind) = ir::builtin_call_kind(&call_expr) else {
+    let Some(kind) = builtin_call_kind(&call_expr) else {
         return compile_error_expr("builtin call without builtin identifier");
     };
     let name = kind.name();
@@ -18630,6 +18646,54 @@ var X int
         )
         .unwrap();
         compile(parsed).unwrap();
+    }
+
+    #[test]
+    fn it_should_not_treat_shadowed_predeclared_call_as_builtin() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    print()
+                }
+            "#,
+        )
+        .unwrap();
+        let crate::ast::Decl::FuncDecl(func) = parsed.decls.first().expect("expected function")
+        else {
+            panic!("expected function declaration");
+        };
+        let crate::ast::Stmt::ExprStmt(expr) = func
+            .body
+            .as_ref()
+            .and_then(|body| body.list.first())
+            .expect("expected expression statement")
+        else {
+            panic!("expected expression statement");
+        };
+        let crate::ast::Expr::CallExpr(call) = &expr.x else {
+            panic!("expected call expression");
+        };
+
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+        let builtin_kind = super::builtin_call_kind(call);
+
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_var(
+            "print",
+            super::typeinfer::GoType::Func {
+                params: Vec::new(),
+                results: Vec::new(),
+            },
+        );
+        super::set_type_env(env);
+        let shadowed_kind = super::builtin_call_kind(call);
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(builtin_kind, Some(super::ir::BuiltinCallKind::Print));
+        assert_eq!(shadowed_kind, None);
     }
 
     #[test]

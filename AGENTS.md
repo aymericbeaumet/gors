@@ -517,6 +517,10 @@ statements, type conversions used as statements, and builtins that the Go spec
 forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,
 `new`, `real`, and the corresponding `unsafe` builtins). Keep it type-env aware
 so shadowed predeclared names are not treated as builtins.
+Backend builtin-call lowering must use the same type-env-aware unshadowed check
+as IR validation. A local, package-level, or range binding named `print`,
+`println`, `len`, or any other predeclared builtin is an ordinary Go identifier,
+not a builtin lowering trigger.
 IR assignment validation applies type checks to ordinary assignments and to
 redeclarations within `:=`: existing non-blank names on the left side of a short
 variable declaration must receive values assignable to their original type.
