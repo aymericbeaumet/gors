@@ -14,9 +14,7 @@ import {
 } from "./spec-conformance";
 
 const FIXTURE_GITHUB_BASE =
-	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs";
-const CONFORMANCE_FIXTURE_GITHUB_BASE =
-	"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures";
+	"https://github.com/aymericbeaumet/gors/tree/master/gors/tests/fixtures";
 
 type CoverageStatusFilter = "all" | "green" | "yellow" | "red";
 
@@ -26,9 +24,9 @@ const STATUS_FILTERS: {
 	readonly className: string;
 }[] = [
 	{ value: "all", label: "All", className: "all" },
-	{ value: "green", label: "Green", className: "tested" },
-	{ value: "yellow", label: "Yellow", className: "partial" },
-	{ value: "red", label: "Red", className: "none" },
+	{ value: "green", label: "Passing", className: "tested" },
+	{ value: "yellow", label: "Partial", className: "partial" },
+	{ value: "red", label: "Unsupported", className: "none" },
 ];
 
 function normalizeStatusFilter(value: string | null): CoverageStatusFilter {
@@ -80,18 +78,15 @@ function packageCoverageColor(
 }
 
 function fixtureGithubUrl(fixture: string): string {
-	return `${FIXTURE_GITHUB_BASE}/${fixture}`;
+	return `${FIXTURE_GITHUB_BASE}/go_stdlib/${fixture}`;
 }
 
 function conformanceFixtureGithubUrl(fixture: string): string {
-	if (fixture.startsWith("conformance/")) {
-		return `${CONFORMANCE_FIXTURE_GITHUB_BASE}/${fixture}`;
-	}
-	return fixtureGithubUrl(fixture);
+	return `${FIXTURE_GITHUB_BASE}/go_spec/${fixture}`;
 }
 
 function specStatusLabel(status: SpecConformanceStatus): string {
-	return status === "passing" ? "Passing" : "Skipped";
+	return status === "passing" ? "Passing" : "Unsupported";
 }
 
 function specStatusClass(status: SpecConformanceStatus): string {
@@ -219,7 +214,7 @@ onDestroy(() => {
         <p>
           Generated from <a href={specConformanceSource.url} target="_blank" rel="noopener">{specConformanceSource.title}</a>
           {specConformanceSource.languageVersion}. Passing entries are backed by generated-program integration fixtures;
-          skipped entries are explicit work items that do not regress the current gate.
+          unsupported entries are explicit work items that do not regress the current gate.
         </p>
       </div>
     </div>
@@ -230,8 +225,8 @@ onDestroy(() => {
         <span>spec tests passing</span>
       </div>
       <div class="report-metric">
-        <strong>{specConformanceSummary.skippedTestCount}</strong>
-        <span>tests skipped</span>
+        <strong>{specConformanceSummary.unsupportedTestCount}</strong>
+        <span>tests unsupported</span>
       </div>
       <div class="report-metric">
         <strong>{coverageMetric(specConformanceSummary.passingCategoryCount, specConformanceSummary.categoryCount)}</strong>

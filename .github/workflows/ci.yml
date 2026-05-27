@@ -75,7 +75,7 @@ jobs:
       - name: Test unit
         run: make rust-test-unit
 
-  rust-test-integration-lexer:
+  rust-test-integration-go-repositories:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -96,34 +96,10 @@ jobs:
           path: ~/.cargo/gors-cache
           key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
-      - name: Test integration lexer
-        run: make rust-test-integration-lexer
+      - name: Test integration go repositories
+        run: make rust-test-integration-go-repositories
 
-  rust-test-integration-parser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration parser
-        run: make rust-test-integration-parser
-
-  rust-test-integration-run:
+  rust-test-integration-go-spec:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -142,8 +118,52 @@ jobs:
           path: ~/.cargo/gors-cache
           key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
-      - name: Test integration run
-        run: make rust-test-integration-run
+      - name: Test integration go spec
+        run: make rust-test-integration-go-spec
+
+  rust-test-integration-go-stdlib:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Test integration go stdlib
+        run: make rust-test-integration-go-stdlib
+
+  rust-test-integration-go-programs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Test integration go programs
+        run: make rust-test-integration-go-programs
 
   web-lint:
     runs-on: ubuntu-latest

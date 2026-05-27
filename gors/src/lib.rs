@@ -47,9 +47,10 @@ pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
 pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
 
 #[cfg(any(
-    feature = "test_integration_lexer",
-    feature = "test_integration_parser",
-    feature = "test_integration_run"
+    feature = "test_integration_go_repositories",
+    feature = "test_integration_go_spec",
+    feature = "test_integration_go_stdlib",
+    feature = "test_integration_go_programs"
 ))]
 /// Extracted Go SDK path used by integration tests for Go oracle/runtime checks.
 pub const GO_SDK_PATH: &str = env!("GORS_BUILT_GO_SDK_PATH");

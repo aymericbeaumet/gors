@@ -1,0 +1,3 @@
+module go_spec_packages_and_program_initialization
+
+go 1.22

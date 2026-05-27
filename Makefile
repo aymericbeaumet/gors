@@ -21,16 +21,19 @@ rust-test: rust-test-unit rust-test-integration
 rust-test-unit:
 	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --workspace --lib --bins --examples -- --nocapture
 
-rust-test-integration: rust-test-integration-lexer rust-test-integration-parser rust-test-integration-run
+rust-test-integration: rust-test-integration-go-repositories rust-test-integration-go-spec rust-test-integration-go-stdlib rust-test-integration-go-programs
 
-rust-test-integration-lexer:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_lexer --test test_integration_lexer -- --nocapture
+rust-test-integration-go-repositories:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_go_repositories --test test_integration_go_repositories -- --nocapture
 
-rust-test-integration-parser:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_parser --test test_integration_parser -- --nocapture
+rust-test-integration-go-spec:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_go_spec --test test_integration_go_spec -- --nocapture
 
-rust-test-integration-run:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_run --test test_integration_run -- --nocapture
+rust-test-integration-go-stdlib:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_go_stdlib --test test_integration_go_stdlib -- --nocapture
+
+rust-test-integration-go-programs:
+	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_go_programs --test test_integration_go_programs -- --nocapture
 
 #######
 # web #
@@ -91,6 +94,6 @@ fuzz-roundtrip:
 
 # .phony
 .PHONY: all dev
-.PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-integration rust-test-integration-lexer rust-test-integration-parser rust-test-integration-run
+.PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-integration rust-test-integration-go-repositories rust-test-integration-go-spec rust-test-integration-go-stdlib rust-test-integration-go-programs
 .PHONY: web-all web-build web-format web-install web-lint web-test web-test-unit web-test-integration
 .PHONY: fuzz-all fuzz-scanner fuzz-parser fuzz-roundtrip

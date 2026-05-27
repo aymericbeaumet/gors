@@ -31,14 +31,17 @@ gors/
     error.rs       # Diagnostic formatting
     lib.rs         # Library entrypoint
   tests/
-    test_integration_run.rs      # Program execution integration tests
-    test_integration_lexer.rs    # Lexer conformance vs Go oracle
-    test_integration_parser.rs   # Parser conformance vs Go oracle
-    common.rs                    # Shared integration test infrastructure
+    test_integration_go_repositories.rs # Lexer/parser acceptance vs Go oracle
+    test_integration_go_spec.rs         # Go spec generated-program acceptance
+    test_integration_go_stdlib.rs       # Go stdlib generated-program acceptance
+    test_integration_go_programs.rs     # Arbitrary generated-program acceptance
+    common.rs                           # Shared integration test infrastructure
+    support/generated_programs.rs       # Shared generated-program runner
     fixtures/
-      go_programs/     # Runnable Go programs (auto-discovered, each dir = one test)
-      go_files/        # Standalone Go source files for lexer/parser conformance
-      go_repositories/ # Go repository submodules for lexer/parser conformance
+      go_repositories/ # Lexer/parser corpus: submodules plus go_files/
+      go_spec/         # Go spec acceptance fixtures grouped by spec category
+      go_stdlib/       # Go stdlib acceptance fixtures grouped by import path
+      go_programs/     # Arbitrary runnable Go programs
     tools/
       go_oracle/ # Small Go helper that emits reference scanner/parser output
 gors-cli/
@@ -285,10 +288,10 @@ features. Compiler/printer/generator regression tests live inside the `gors`
 crate as unit tests attached to the modules they cover, such as
 `gors/src/printer/mod.rs` and `gors/src/compiler/manifest.rs`. Unit tests assert
 in-process contracts only; they must not invoke `go`, `gors`, or `rustc`.
-Shared integration test harness code lives in root `tests/common.rs`.
-Integration test entrypoints live in root `tests/` and are wired into the
+Shared integration test harness code lives in `gors/tests/common.rs`.
+Integration test entrypoints live in `gors/tests/` and are wired into the
 `gors` crate through explicit `[[test]]` entries in `gors/Cargo.toml`;
-integration fixtures remain under `tests/fixtures/`.
+integration fixtures remain under `gors/tests/fixtures/`.
 
 `make all` is the local CI-parity gate. It depends on `make rust-build`,
 `make rust-lint`, `make rust-test`, `make web-build`, `make web-lint`, and
@@ -308,29 +311,32 @@ below for clearer job boundaries and failure output.
 ### Integration tests
 
 ```bash
-make rust-test-integration-lexer
-make rust-test-integration-parser
-make rust-test-integration-run
+make rust-test-integration-go-repositories
+make rust-test-integration-go-spec
+make rust-test-integration-go-stdlib
+make rust-test-integration-go-programs
 ```
 
 Integration tests use matching Make targets and Cargo feature gates:
-`rust-test-integration-lexer` → `test_integration_lexer`,
-`rust-test-integration-parser` → `test_integration_parser`, and
-`rust-test-integration-run` → `test_integration_run`. Their integration-test
-binary names match the feature gates and are declared in `gors/Cargo.toml`, so
-the Make targets do not need extra test-name filters.
+`rust-test-integration-go-repositories` → `test_integration_go_repositories`,
+`rust-test-integration-go-spec` → `test_integration_go_spec`,
+`rust-test-integration-go-stdlib` → `test_integration_go_stdlib`, and
+`rust-test-integration-go-programs` → `test_integration_go_programs`. Their
+integration-test binary names match the feature gates and are declared in
+`gors/Cargo.toml`, so the Make targets do not need extra test-name filters.
 
 CI runs integration tests as single unsharded jobs with a 30-minute job timeout.
 Do not split them into shard targets unless the test
 contract changes again.
 
-The integration binaries in root `tests/` are feature-gated as whole files:
-lexer/parser integration targets scan the reference repositories from git
-submodules, while `rust-test-integration-run` compares in-process generated Rust
-program output with the pinned Go SDK's `go run`. Lexer/parser integration may
-execute the batched Go fixture runner for reference output, but that runner must
-be built with `tests/common.rs::go_command()` rather than system `go`; the gors
-side should use library APIs in-process rather than spawning the `gors` CLI. CLI
+The integration binaries in `gors/tests/` are feature-gated as whole files:
+`go_repositories` runs both lexer and parser acceptance against the reference
+repository corpus, while `go_spec`, `go_stdlib`, and `go_programs` compare
+in-process generated Rust program output with the pinned Go SDK's `go run`.
+Lexer/parser integration may execute the batched Go fixture runner for reference
+output, but that runner must be built with `gors/tests/common.rs::go_command()`
+rather than system `go`; the gors side should use library APIs in-process rather
+than spawning the `gors` CLI. CLI
 argument and output-file writer contracts belong in `gors-cli` unit tests.
 Compiler/printer/generator coverage belongs in module-local unit tests under
 `gors/src/` unless it must execute generated Rust or compare against Go.
@@ -340,37 +346,38 @@ file can exhaust hosted CI memory before progress is reported.
 
 ### Adding a test program
 
-1. Create a directory in `tests/fixtures/go_programs/` (e.g., `my_feature/`)
+1. Create a directory in `gors/tests/fixtures/go_programs/` (e.g., `my_feature/`)
 2. Add `main.go` (and optionally `go.mod` for multi-package programs)
 3. The test framework auto-discovers it and compares output with `go run`
 
 For broad stdlib API coverage, prefer grouping related checks into one package
-fixture such as `tests/fixtures/go_programs/stdlib/strings/main.go` rather than
-creating one runnable fixture per function; `rust-test-integration-run` pays a
+fixture such as `gors/tests/fixtures/go_stdlib/strings/main.go` rather than
+creating one runnable fixture per function; `rust-test-integration-go-stdlib` pays a
 full transpile plus `rustc` execution cost per discovered program directory.
 Generated-program fixtures compare stdout only. Use `fmt.Print*` for observable
 fixture output unless the fixture is explicitly testing the predeclared
 `print`/`println` builtins, because Go's predeclared `print` and `println`
 write to stderr under the pinned SDK.
-After adding or changing `gostdlib_` fixtures, run
+After adding or changing `gors/tests/fixtures/go_stdlib` fixtures, run
 `npm --prefix www run generate:gostdlib-report` from the repository root to
 refresh the Svelte app's stdlib coverage report. The generator marks fixture-used
 selectors as tested and derives untested package/symbol rows from the embedded
 Go stdlib source copied to `go_stdlib_src` by the `gors` build.
 The Go specification conformance matrix lives in
-`tests/fixtures/conformance/spec.json` and is rendered from
+`gors/tests/fixtures/go_spec/spec.json` and is rendered from
 `www/src/spec-conformance.ts`. Mark implemented entries as `passing` only when
-they point at runnable generated-program fixtures under `tests/fixtures/go_programs`;
-known gaps stay `skipped` with an explicit reason and may keep reduced repros
-under `tests/fixtures/conformance/`. After editing the matrix, run
+they point at runnable generated-program fixtures under `gors/tests/fixtures/go_spec`;
+known gaps stay `unsupported` with an explicit reason and may keep reduced
+repros under `gors/tests/fixtures/go_spec/_unsupported/`. After editing the
+matrix, run
 `npm --prefix www run generate:conformance-report` from the repository root.
 The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
 compiler-sensitive inputs in that key if the harness starts skipping more work.
-`rust-test-integration-run` executes generated-program fixtures in a Rayon pool
+Generated-program integration targets execute fixtures in a Rayon pool
 with 16 MiB worker stacks, matching the lexer/parser integration stack budget.
-Large stdlib fixtures such as `gostdlib_net_http` can overflow the default test
+Large stdlib fixtures such as `go_stdlib/net/http` can overflow the default test
 thread stack while parsing and compiling real Go stdlib packages.
 Each generated-program worker starts its Go reference `go run` child before the
 generated Rust compile/run path so Go, gors, and rustc work overlap across the
@@ -484,7 +491,7 @@ very large compiler outputs; when the cap is exceeded, Rust output remains
 visible but hover/cursor mapping is disabled for that result.
 Coverage-page tests should derive package and symbol totals from
 `www/src/gostdlib-coverage.ts`, not hardcode rendered summary strings, because
-adding a `gostdlib_` fixture intentionally changes those generated totals.
+adding a `go_stdlib` fixture intentionally changes those generated totals.
 
 CI deploys `www/dist` with native GitHub Pages artifacts
 (`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by

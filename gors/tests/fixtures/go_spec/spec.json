@@ -1,0 +1,977 @@
+{
+  "source": {
+    "title": "The Go Programming Language Specification",
+    "url": "https://go.dev/ref/spec",
+    "languageVersion": "go1.26",
+    "published": "2026-01-12",
+    "retrieved": "2026-05-27"
+  },
+  "categories": [
+    {
+      "name": "Source code representation",
+      "tests": [
+        {
+          "id": "source-unicode-text",
+          "section": "Source code representation",
+          "title": "Source text is UTF-8 Unicode and code points are distinct",
+          "status": "unsupported",
+          "reason": "Needs explicit scanner/parser fixtures for non-ASCII identifiers and canonical-equivalent code points.",
+          "fixtures": []
+        },
+        {
+          "id": "source-nul-character",
+          "section": "Source code representation",
+          "title": "NUL character implementation restriction is diagnosed consistently",
+          "status": "unsupported",
+          "reason": "Needs negative scanner diagnostics in the conformance harness.",
+          "fixtures": []
+        },
+        {
+          "id": "source-byte-order-mark",
+          "section": "Source code representation",
+          "title": "Leading UTF-8 byte order mark is accepted and later BOMs are rejected",
+          "status": "unsupported",
+          "reason": "Needs byte-level source fixtures outside normal text-file handling.",
+          "fixtures": []
+        }
+      ]
+    },
+    {
+      "name": "Lexical elements",
+      "tests": [
+        {
+          "id": "lexical-comments",
+          "section": "Comments",
+          "title": "Line and block comments are ignored outside literals",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-semicolons",
+          "section": "Semicolons",
+          "title": "Automatic semicolon insertion accepts idiomatic newlines",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-identifiers",
+          "section": "Identifiers",
+          "title": "Identifiers name variables, functions, packages, types, and fields",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-keywords",
+          "section": "Keywords",
+          "title": "Reserved keywords parse in declarations and statements",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-operators-punctuation",
+          "section": "Operators and punctuation",
+          "title": "Operators and punctuation are tokenized with longest-match rules",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-integer-literals",
+          "section": "Integer literals",
+          "title": "Integer literals support decimal values and separators in executable code",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-integer-base-prefixes",
+          "section": "Integer literals",
+          "title": "Integer literals support binary, octal, and hexadecimal prefixes",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-floating-literals",
+          "section": "Floating-point literals",
+          "title": "Decimal floating-point literals compile and execute",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-hex-floating-literals",
+          "section": "Floating-point literals",
+          "title": "Hexadecimal floating-point literals compile and execute",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-imaginary-literals",
+          "section": "Imaginary literals",
+          "title": "Imaginary literals lower to complex values",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-rune-literals",
+          "section": "Rune literals",
+          "title": "Rune literals and escapes lower to rune values",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-string-literals",
+          "section": "String literals",
+          "title": "Interpreted string literals and escapes preserve Go values",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        },
+        {
+          "id": "lexical-raw-string-literals",
+          "section": "String literals",
+          "title": "Raw string literals preserve content except carriage returns",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Constants",
+      "tests": [
+        {
+          "id": "constants-boolean",
+          "section": "Constants",
+          "title": "Boolean constants participate in expressions",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
+          "id": "constants-iota",
+          "section": "Iota",
+          "title": "iota increments across const specifications",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
+          "id": "constants-string-concat",
+          "section": "Constant expressions",
+          "title": "String constant concatenation is evaluated",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
+          "id": "constants-numeric-expressions",
+          "section": "Constant expressions",
+          "title": "Numeric constant expressions are folded and coerced at use sites",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        },
+        {
+          "id": "constants-representability",
+          "section": "Representability",
+          "title": "Untyped constants are checked for representability by target type",
+          "status": "unsupported",
+          "reason": "Needs negative diagnostics for overflow and non-representable assignments.",
+          "fixtures": []
+        },
+        {
+          "id": "constants-complex",
+          "section": "Constants",
+          "title": "Complex constants preserve real and imaginary components",
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Variables and zero values",
+      "tests": [
+        {
+          "id": "vars-var-declarations",
+          "section": "Variable declarations",
+          "title": "var declarations with and without explicit types initialize correctly",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-short-declarations",
+          "section": "Short variable declarations",
+          "title": "Short variable declarations infer types and values",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-zero-values",
+          "section": "The zero value",
+          "title": "Default zero values are emitted for declared variables",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-blank-identifier",
+          "section": "Blank identifier",
+          "title": "Blank identifier discards values in declarations and assignments",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        },
+        {
+          "id": "vars-addressability",
+          "section": "Address operators",
+          "title": "Addressable variables can be mutated through pointers",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Types",
+      "tests": [
+        {
+          "id": "types-booleans",
+          "section": "Boolean types",
+          "title": "Boolean values lower to Rust bool behavior",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-integers",
+          "section": "Numeric types",
+          "title": "Signed and unsigned integer operations execute",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-floats",
+          "section": "Numeric types",
+          "title": "Floating-point operations execute",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-complex",
+          "section": "Numeric types",
+          "title": "complex64 and complex128 values execute through builtin helpers",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-strings",
+          "section": "String types",
+          "title": "Strings support indexing, slicing, concatenation, and conversion",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-arrays",
+          "section": "Array types",
+          "title": "Arrays have fixed length and support indexed mutation",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-slices",
+          "section": "Slice types",
+          "title": "Slices support len, cap, append, copy, and full-slice expressions",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-slice-backing-array",
+          "section": "Slice types",
+          "title": "Slice expressions share the original backing array",
+          "status": "unsupported",
+          "fixtures": [
+            "_unsupported/types_slice_alias_mutation"
+          ],
+          "reason": "Current lowering materializes Vec copies for ordinary slice expressions."
+        },
+        {
+          "id": "types-structs",
+          "section": "Struct types",
+          "title": "Struct fields, methods, and embedding execute",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-pointers",
+          "section": "Pointer types",
+          "title": "Pointers support nil checks, dereference, and assignment",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-functions",
+          "section": "Function types",
+          "title": "Function values and closures are callable",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-interfaces",
+          "section": "Interface types",
+          "title": "Interfaces dispatch methods and support assertions",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-interface-method-sets",
+          "section": "Method sets",
+          "title": "Interface method sets match pointer and value receiver rules",
+          "status": "unsupported",
+          "reason": "Needs method-set fixtures that distinguish pointer-only and value receiver assignability.",
+          "fixtures": []
+        },
+        {
+          "id": "types-maps",
+          "section": "Map types",
+          "title": "Maps support literal construction, indexing, mutation, and comma-ok",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-channels",
+          "section": "Channel types",
+          "title": "Channels support send, receive, buffering, close, and comma-ok",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-aliases",
+          "section": "Alias declarations",
+          "title": "Alias declarations preserve underlying behavior",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "types-recursive",
+          "section": "Type declarations",
+          "title": "Recursive named types compile and execute",
+          "status": "unsupported",
+          "reason": "Needs fixtures for self-referential structs, interfaces, and pointer cycles.",
+          "fixtures": []
+        }
+      ]
+    },
+    {
+      "name": "Properties of types and values",
+      "tests": [
+        {
+          "id": "properties-assignability",
+          "section": "Assignability",
+          "title": "Values assign to variables with compatible types",
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ]
+        },
+        {
+          "id": "properties-comparability",
+          "section": "Comparison operators",
+          "title": "Comparable values participate in equality and ordering",
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ]
+        },
+        {
+          "id": "properties-non-comparable",
+          "section": "Comparison operators",
+          "title": "Non-comparable values are rejected by comparison and map-key contexts",
+          "status": "unsupported",
+          "reason": "Needs negative semantic diagnostics for slices, maps, and functions.",
+          "fixtures": []
+        },
+        {
+          "id": "properties-method-sets",
+          "section": "Method sets",
+          "title": "Method expressions and method values preserve receiver semantics",
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Declarations and scope",
+      "tests": [
+        {
+          "id": "decl-package-clause",
+          "section": "Package clause",
+          "title": "Package clauses define package-level compilation units",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-imports",
+          "section": "Import declarations",
+          "title": "Imports resolve local, nested, multi-file, and recursive packages",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-const",
+          "section": "Constant declarations",
+          "title": "const declarations define package and local constants",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-type",
+          "section": "Type declarations",
+          "title": "type declarations define structs, aliases, interfaces, and generic types",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-var",
+          "section": "Variable declarations",
+          "title": "var declarations work at package and block scope",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-functions",
+          "section": "Function declarations",
+          "title": "Functions support parameters, returns, recursion, and shorthand parameter lists",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-methods",
+          "section": "Method declarations",
+          "title": "Methods attach to named receiver types",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-scope-shadowing",
+          "section": "Declarations and scope",
+          "title": "Nested scopes and shadowing follow Go name resolution",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "decl-init",
+          "section": "Program initialization and execution",
+          "title": "init functions run before main after package variable initialization",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Expressions",
+      "tests": [
+        {
+          "id": "expr-primary",
+          "section": "Primary expressions",
+          "title": "Operands, selectors, indexes, slices, calls, and assertions compile",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-selectors",
+          "section": "Selectors",
+          "title": "Selector expressions resolve package names, fields, and methods",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-index",
+          "section": "Index expressions",
+          "title": "Index expressions read and write arrays, slices, strings, and maps",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-slice",
+          "section": "Slice expressions",
+          "title": "Slice expressions support two-index and full-slice forms",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-type-assertions",
+          "section": "Type assertions",
+          "title": "Type assertions support single-value and comma-ok forms",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-calls",
+          "section": "Calls",
+          "title": "Calls handle ordinary, variadic, method, and function-value targets",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-conversions",
+          "section": "Conversions",
+          "title": "Conversions handle numeric, string, byte-slice, and rune-slice cases",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-operators",
+          "section": "Operators",
+          "title": "Arithmetic, logical, unary, and comparison operators execute",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-precedence",
+          "section": "Operator precedence",
+          "title": "Operator precedence and associativity preserve Go grouping",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-evaluation-order",
+          "section": "Order of evaluation",
+          "title": "Evaluation order is preserved for side-effecting expressions",
+          "status": "unsupported",
+          "reason": "Needs focused side-effect fixtures across calls, indexing, map updates, and multi-assignment.",
+          "fixtures": []
+        }
+      ]
+    },
+    {
+      "name": "Statements",
+      "tests": [
+        {
+          "id": "stmt-empty-expression",
+          "section": "Statements",
+          "title": "Empty and expression statements compile",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-send",
+          "section": "Send statements",
+          "title": "Send statements deliver values to channels",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-inc-dec",
+          "section": "IncDec statements",
+          "title": "Increment and decrement statements mutate variables and indexes",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-assignments",
+          "section": "Assignments",
+          "title": "Simple, compound, and multi-value assignments execute",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-if",
+          "section": "If statements",
+          "title": "if statements support init clauses and nested branches",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-switch",
+          "section": "Switch statements",
+          "title": "Expression switches support breaks, defaults, and fallthrough",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-type-switch",
+          "section": "Type switch statements",
+          "title": "Type switches bind matched dynamic values once",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-select",
+          "section": "Select statements",
+          "title": "select statements choose channel communication cases",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-for",
+          "section": "For statements",
+          "title": "for loops support clauses, while-style conditions, break, and continue",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-range",
+          "section": "For statements with range clause",
+          "title": "range supports arrays, slices, maps, strings, channels, integers, and functions",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-go",
+          "section": "Go statements",
+          "title": "go statements start concurrent function execution",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-defer",
+          "section": "Defer statements",
+          "title": "defer statements run in last-in-first-out order",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-return",
+          "section": "Return statements",
+          "title": "return statements support explicit and named return values",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-branch",
+          "section": "Break statements",
+          "title": "break and continue target innermost or labeled loops",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-goto",
+          "section": "Goto statements",
+          "title": "goto statements target labels without entering invalid scopes",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
+          "id": "stmt-arbitrary-forward-goto",
+          "section": "Goto statements",
+          "title": "Arbitrary forward goto lowers across complex statement graphs",
+          "status": "unsupported",
+          "reason": "Current support is limited to direct statement-list state-loop lowering.",
+          "fixtures": []
+        }
+      ]
+    },
+    {
+      "name": "Built-in functions",
+      "tests": [
+        {
+          "id": "builtin-append-copy",
+          "section": "Appending to and copying slices",
+          "title": "append and copy mutate and return slices correctly",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-len-cap",
+          "section": "Length and capacity",
+          "title": "len and cap report values for strings, arrays, slices, maps, and channels",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-make-new",
+          "section": "Making slices, maps and channels",
+          "title": "make and new allocate slices, maps, channels, and pointer values",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-delete-clear",
+          "section": "Deleting map elements",
+          "title": "delete and clear update maps and slices",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-complex-real-imag",
+          "section": "Manipulating complex numbers",
+          "title": "complex, real, and imag construct and decompose complex values",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-max-min",
+          "section": "Min and max",
+          "title": "max and min choose ordered values",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-panic-recover",
+          "section": "Handling panics",
+          "title": "panic and recover follow deferred recovery semantics",
+          "status": "unsupported",
+          "reason": "Generated programs still model only panic output paths, not full recover semantics.",
+          "fixtures": []
+        },
+        {
+          "id": "builtin-print-println",
+          "section": "Bootstrapping",
+          "title": "print and println emit values",
+          "status": "unsupported",
+          "fixtures": [],
+          "reason": "Needs stderr-aware generated-program comparison for Go predeclared print and println output."
+        },
+        {
+          "id": "builtin-close",
+          "section": "Channel types",
+          "title": "close marks a channel closed and receive observes closure",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Packages and program initialization",
+      "tests": [
+        {
+          "id": "packages-single-main",
+          "section": "Program execution",
+          "title": "A main package with main.main executes",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ]
+        },
+        {
+          "id": "packages-multiple-files",
+          "section": "Packages",
+          "title": "Multiple files in one package compile together",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ]
+        },
+        {
+          "id": "packages-import-paths",
+          "section": "Import declarations",
+          "title": "Import paths resolve local packages and nested packages",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ]
+        },
+        {
+          "id": "packages-stdlib-imports",
+          "section": "Import declarations",
+          "title": "Standard-library imports resolve through embedded Go source",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ]
+        },
+        {
+          "id": "packages-initialization-order",
+          "section": "Program initialization and execution",
+          "title": "Package initialization runs dependencies, variables, and init functions in order",
+          "status": "unsupported",
+          "reason": "Needs multi-package ordering fixtures with observable init side effects.",
+          "fixtures": []
+        }
+      ]
+    },
+    {
+      "name": "Generics",
+      "tests": [
+        {
+          "id": "generics-functions",
+          "section": "Function declarations",
+          "title": "Generic functions instantiate and execute",
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ]
+        },
+        {
+          "id": "generics-types",
+          "section": "Type declarations",
+          "title": "Generic named types instantiate and expose methods",
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ]
+        },
+        {
+          "id": "generics-receiver-methods",
+          "section": "Method declarations",
+          "title": "Generic receiver methods keep receiver type parameters",
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ]
+        },
+        {
+          "id": "generics-constraints",
+          "section": "Interface types",
+          "title": "Constraint interfaces and type sets restrict type arguments",
+          "status": "unsupported",
+          "reason": "Needs semantic validation and lowering for type-set operations beyond current generic fixtures.",
+          "fixtures": []
+        },
+        {
+          "id": "generics-type-inference",
+          "section": "Instantiations",
+          "title": "Type inference chooses type arguments for generic calls",
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ]
+        }
+      ]
+    }
+  ]
+}

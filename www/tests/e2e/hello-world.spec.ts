@@ -101,7 +101,7 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 	await expect(
 		page.getByText("Slice expressions share the original backing array"),
 	).toBeVisible();
-	await expect(page.getByText("Skipped").first()).toBeVisible();
+	await expect(page.getByText("Unsupported").first()).toBeVisible();
 	await expect(
 		page.getByText(
 			coverageMetric(
@@ -128,10 +128,10 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 	).toHaveClass(/(^|\s)partial(\s|$)/);
 	await expect(page.getByText("Println", { exact: true })).toBeVisible();
 	await expect(
-		page.getByRole("link", { name: "gostdlib_fmt" }).first(),
+		page.getByRole("link", { name: "fmt", exact: true }).first(),
 	).toHaveAttribute(
 		"href",
-		"https://github.com/aymericbeaumet/gors/tree/master/tests/fixtures/go_programs/gostdlib_fmt",
+		"https://github.com/aymericbeaumet/gors/tree/master/gors/tests/fixtures/go_stdlib/fmt",
 	);
 
 	await page.getByRole("searchbox").fill("archive/tar");
