@@ -1435,6 +1435,7 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
 
 fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclaration> {
     let package_names = package_block_declared_names(file);
+    let mut names = BTreeSet::new();
     for decl in &file.decls {
         let ast::Decl::GenDecl(gen_decl) = decl else {
             continue;
@@ -1442,7 +1443,6 @@ fn invalid_import_names_in_file(file: &ast::File<'_>) -> Option<InvalidDeclarati
         if gen_decl.tok != token::Token::IMPORT {
             continue;
         }
-        let mut names = BTreeSet::new();
         for spec in &gen_decl.specs {
             let ast::Spec::ImportSpec(import) = spec else {
                 continue;
@@ -13368,6 +13368,19 @@ mod tests {
                         f "fmt"
                         f "math"
                     )
+                "#,
+            ),
+            Some(super::InvalidDeclaration::DuplicateImportName {
+                name: "f".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    import f "fmt"
+                    import f "math"
                 "#,
             ),
             Some(super::InvalidDeclaration::DuplicateImportName {

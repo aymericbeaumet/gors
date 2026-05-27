@@ -689,9 +689,9 @@ IR declaration validation also rejects duplicate non-blank names within a
 single grouped or multi-name const, var, or type declaration, including local
 declaration statements.
 Explicit import aliases are file-block bindings: IR rejects duplicate explicit
-aliases in the same import declaration and aliases that conflict with package
-block declarations. Blank and dot imports are ignored by this conservative
-alias check.
+aliases across all import declarations in the file and aliases that conflict
+with package block declarations. Blank and dot imports are ignored by this
+conservative alias check.
 For package `main`, the same signature validation rejects `func main` when it
 declares type parameters, parameters, or results.
 Short variable declarations are also checked there for duplicate non-blank names
