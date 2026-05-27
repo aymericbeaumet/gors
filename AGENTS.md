@@ -887,6 +887,10 @@ Assignment and compound-assignment lowering should also construct `syn`
 assignment/binary expression nodes directly when either side is dynamic; do not
 round-trip generated assignment tokens back through `parse_quote!`.
 
+Compiler output should route Go panic-like runtime failures through
+`crate::builtin::panic_value(...)` rather than emitting raw Rust `panic!` or
+`std::panic::panic_any(...)` calls in generated code.
+
 IR validation treats `nil` as assignable/comparable only to nilable types
 (pointer, func, slice, map, channel, interface, `any`, `error`, or unresolved
 unknowns). Use `TypeEnv::resolve_alias()` and named interface metadata before

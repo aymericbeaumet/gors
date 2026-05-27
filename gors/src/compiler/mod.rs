@@ -7551,7 +7551,7 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
         } else if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({})
         } else {
-            syn::parse_quote!({ panic!("called no-op interface method") })
+            syn::parse_quote!({ crate::builtin::panic_value("called no-op interface method") })
         };
         impl_methods.push(syn::ImplItemFn {
             attrs: vec![],
@@ -9769,10 +9769,10 @@ fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -
 
 fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
     let Some(arg) = raw_args.into_iter().next() else {
-        return syn::parse_quote! { std::panic::panic_any(()) };
+        return syn::parse_quote! { crate::builtin::panic_value(()) };
     };
     let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
-    syn::parse_quote! { std::panic::panic_any(#arg) }
+    syn::parse_quote! { crate::builtin::panic_value(#arg) }
 }
 
 fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
@@ -11221,13 +11221,13 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
         call_expr.ellipsis.is_some(),
     );
     Some(syn::parse_quote! {{
-        let __gors_func = {
-            let __gors_func = crate::builtin::lock_func(&(#func));
-            match __gors_func.as_ref() {
-                Some(__gors_func) => __gors_func.clone(),
-                None => panic!("nil function"),
-            }
-        };
+            let __gors_func = {
+                let __gors_func = crate::builtin::lock_func(&(#func));
+                match __gors_func.as_ref() {
+                    Some(__gors_func) => __gors_func.clone(),
+                    None => crate::builtin::panic_value("nil function"),
+                }
+            };
         (&*__gors_func)(#args)
     }})
 }
@@ -11972,7 +11972,7 @@ fn compile_range_function_call_stmt(
                 let __gors_func = crate::builtin::lock_func(&(#fun_expr));
                 match __gors_func.as_ref() {
                     Some(__gors_func) => __gors_func.clone(),
-                    None => panic!("nil function"),
+                    None => crate::builtin::panic_value("nil function"),
                 }
             };
             (&*__gors_func)(#yield_value);
@@ -13761,7 +13761,7 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
                     let __gors_func = crate::builtin::lock_func(&(#fun_expr));
                     match __gors_func.as_ref() {
                         Some(__gors_func) => __gors_func.clone(),
-                        None => panic!("nil function"),
+                        None => crate::builtin::panic_value("nil function"),
                     }
                 };
             },
@@ -16223,7 +16223,7 @@ fn append_missing_return_panic(
         "gors: missing return"
     };
     let panic_expr: syn::Expr = syn::parse_quote! {
-        panic!(#message)
+        crate::builtin::panic_value(#message)
     };
     block.stmts.push(syn::Stmt::Expr(panic_expr, None));
 }
@@ -17948,7 +17948,7 @@ fn type_assert_concrete_expr(
     let body = syn::parse_quote! {
         match __gors_any_option.and_then(|__gors_any| __gors_any.downcast_ref::<#asserted_type>()) {
             Some(__v) => __v.clone(),
-            None => panic!("type assertion failed"),
+            None => crate::builtin::panic_value("type assertion failed"),
         }
     };
     type_assert_with_any_option(source, source_type, source_is_borrowable, body)
@@ -22073,7 +22073,7 @@ func main() {
             "#,
             rust! {
                 pub fn main() {
-                    std::panic::panic_any("oh no".to_string());
+                    crate::builtin::panic_value("oh no".to_string());
                 }
             },
         );
