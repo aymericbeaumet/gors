@@ -1297,6 +1297,9 @@ pub enum SignatureList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidDeclaration {
+    ConstInvalidInitializer {
+        reason: String,
+    },
     ConstNonConstantInitializer,
     ConstTypeMismatch {
         expected: String,
@@ -7656,8 +7659,39 @@ fn invalid_const_initializer(
         .values
         .as_ref()?
         .iter()
-        .any(|value| expr_is_known_non_constant(value, env))
-        .then_some(InvalidDeclaration::ConstNonConstantInitializer)
+        .find_map(|value| invalid_const_initializer_expr(value, env))
+}
+
+fn invalid_const_initializer_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidDeclaration> {
+    if expr_is_known_non_constant(expr, env) {
+        return Some(InvalidDeclaration::ConstNonConstantInitializer);
+    }
+    invalid_const_expression(expr, env).map(|reason| InvalidDeclaration::ConstInvalidInitializer {
+        reason: reason.to_string(),
+    })
+}
+
+fn invalid_const_expression<'a>(expr: &ast::Expr<'a>, env: &TypeEnv) -> Option<&'static str> {
+    match unparen_expr(expr) {
+        ast::Expr::ParenExpr(paren) => invalid_const_expression(&paren.x, env),
+        ast::Expr::UnaryExpr(unary)
+            if matches!(
+                unary.op,
+                token::Token::ADD | token::Token::SUB | token::Token::NOT | token::Token::XOR
+            ) =>
+        {
+            invalid_const_expression(&unary.x, env)
+        }
+        ast::Expr::BinaryExpr(binary) => invalid_const_expression(&binary.x, env)
+            .or_else(|| invalid_const_expression(&binary.y, env))
+            .or_else(|| {
+                binary_divisor_is_constant_zero(binary, env).then_some("division by zero constant")
+            }),
+        _ => None,
+    }
 }
 
 fn expr_is_known_non_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
@@ -16479,6 +16513,30 @@ mod tests {
                 "#,
             ),
             Some(super::InvalidDeclaration::ConstNonConstantInitializer)
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const X = 1 / 0
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstInvalidInitializer {
+                reason: "division by zero constant".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_value_declaration(
+                r#"
+                    package main
+
+                    const X = 1 % -0.0
+                "#,
+            ),
+            Some(super::InvalidDeclaration::ConstInvalidInitializer {
+                reason: "division by zero constant".to_string(),
+            })
         );
         assert_eq!(
             invalid_value_declaration(

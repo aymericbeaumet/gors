@@ -13304,6 +13304,9 @@ fn invalid_declaration_error(invalid: ir::InvalidDeclaration) -> CompilerError {
 
 fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
     match invalid {
+        ir::InvalidDeclaration::ConstInvalidInitializer { reason } => {
+            format!("invalid const initializer: {reason}")
+        }
         ir::InvalidDeclaration::ConstNonConstantInitializer => {
             "const initializer must be a constant expression".to_string()
         }
