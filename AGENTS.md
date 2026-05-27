@@ -830,6 +830,9 @@ underlying-type conversion support can continue to compile real packages.
 Untyped integer-valued literal assignability checks must enforce target integer
 bounds (`byte = 256`, `byte = 256.0`, and `uint = -1` are invalid) before
 falling back to broad constant-kind compatibility.
+Range over an untyped integer constant with a preexisting iteration variable
+uses the iteration variable's type, but the range expression itself must still
+be representable by that type (`byte` over `256` is invalid).
 Shift validation uses separate left-operand and count rules. The right operand
 may be an integer-valued untyped constant such as `1.0`, but the left operand
 only accepts an integer-valued float constant when the shift count is also

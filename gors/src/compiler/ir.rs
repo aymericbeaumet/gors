@@ -8017,6 +8017,8 @@ fn range_integer_constant_iteration_uses_target_type(
     idx == 0
         && expected.is_integer()
         && expr_is_untyped_integer_constant_for_comparison(&range.x, env)
+        && integer_constant_value_i128(&range.x)
+            .is_none_or(|value| integer_constant_fits_type(value, expected))
 }
 
 fn range_iteration_types(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
@@ -23114,6 +23116,32 @@ mod tests {
                     package main
 
                     func main() {
+                        var small uint8
+                        for small = range 256 {
+                        }
+                    }
+                "#,
+                "uint8",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        var small uint8
+                        for small = range -1 {
+                        }
+                    }
+                "#,
+                "uint8",
+                "int",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         var value string
                         for _, value = range []int{1} {
                         }
@@ -23218,6 +23246,13 @@ mod tests {
 
                     var small uint8
                     for small = range 10 {
+                    }
+
+                    for small = range 255 {
+                    }
+
+                    var signed int8
+                    for signed = range -1 {
                     }
 
                     for key, n = range pairs {
