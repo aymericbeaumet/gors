@@ -1085,6 +1085,9 @@ pub enum InvalidAssignmentReason {
         side: String,
         type_name: String,
     },
+    CompoundNegativeShiftCount {
+        op: String,
+    },
     CompoundOperandCount {
         lhs: usize,
         rhs: usize,
@@ -6329,6 +6332,9 @@ fn invalid_compound_assignment(
             None
         }
         token::Token::SHL_ASSIGN | token::Token::SHR_ASSIGN if lhs_ty.is_integer() => {
+            if shift_count_is_negative_constant(rhs, env) {
+                return Some(InvalidAssignmentReason::CompoundNegativeShiftCount { op });
+            }
             if binary_operand_is_integer(&rhs_ty, rhs) {
                 None
             } else {
@@ -9532,6 +9538,12 @@ fn binary_shift_operands(
     binary: &ast::BinaryExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    if shift_count_is_negative_constant(&binary.y, env) {
+        return Some(invalid_binary_reason(
+            op,
+            "shift count constant must be non-negative",
+        ));
+    }
     if binary_shift_left_operand_is_integer(left, &binary.x, &binary.y, env)
         && binary_operand_is_integer(right, &binary.y)
     {
@@ -9557,6 +9569,11 @@ fn binary_shift_left_operand_is_integer(
         || (ty.is_float()
             && expr_is_integer_constant(left_expr)
             && expr_is_untyped_constant_for_comparison(right_expr, env))
+}
+
+fn shift_count_is_negative_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    expr_is_untyped_numeric_constant_for_comparison(expr, env)
+        && integer_constant_value_i128(expr).is_some_and(|value| value < 0)
 }
 
 fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
@@ -20177,6 +20194,28 @@ mod tests {
                     package main
 
                     func main() {
+                        _ = 1 << -1
+                    }
+                "#,
+                "<<",
+                "shift count constant must be non-negative",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 >> -1.0
+                    }
+                "#,
+                ">>",
+                "shift count constant must be non-negative",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
                         s := uint(1)
                         _ = 1.0 << s
                     }
@@ -23096,6 +23135,32 @@ mod tests {
                     op: "<<=".to_string(),
                     side: "right".to_string(),
                     type_name: "float64".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x <<= -1
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundNegativeShiftCount {
+                    op: "<<=".to_string(),
+                },
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        x := 1
+                        x >>= -1.0
+                    }
+                "#,
+                super::InvalidAssignmentReason::CompoundNegativeShiftCount {
+                    op: ">>=".to_string(),
                 },
             ),
             (

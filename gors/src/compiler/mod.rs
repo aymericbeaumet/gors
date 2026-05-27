@@ -12991,6 +12991,9 @@ fn invalid_assignment_reason(reason: ir::InvalidAssignmentReason) -> String {
             side,
             type_name,
         } => format!("{side} operand of {op} has invalid type {type_name}"),
+        ir::InvalidAssignmentReason::CompoundNegativeShiftCount { op } => {
+            format!("right operand of {op} must be a non-negative constant")
+        }
         ir::InvalidAssignmentReason::CompoundOperandCount { lhs, rhs } => format!(
             "compound assignment requires exactly one left and right operand, got {lhs} left and {rhs} right"
         ),

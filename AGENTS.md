@@ -611,6 +611,9 @@ spread calls; zero-result builtins (`clear`, `close`, `delete`, `panic`,
 value is required; `recover`, `print`, and `println` enforce their fixed
 arity/spread rules. Unshadowed builtin function names are valid only as call
 expressions and are rejected when used as function values.
+IR binary/compound shift validation rejects negative untyped constant shift
+counts; typed integer shift-count variables remain valid, including signed
+integer variables.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose
