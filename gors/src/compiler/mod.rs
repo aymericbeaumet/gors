@@ -13102,6 +13102,9 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
             "main function must not declare type parameters, parameters, or results \
              (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
         ),
+        ir::InvalidSignature::MethodTypeParams { count } => {
+            format!("method declaration must not declare type parameters, got {count}")
+        }
         ir::InvalidSignature::MixedNamedUnnamed { list } => {
             format!(
                 "{} list mixes named and unnamed entries",

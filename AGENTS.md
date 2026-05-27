@@ -658,6 +658,8 @@ multi-name variadic parameters, and receivers that are variadic or declare other
 than one parameter before backend lowering.
 Receiver-type validation uses the package type environment and rejects method
 receiver bases that are undefined, unnamed, interfaces, or pointer types.
+Method signature validation rejects method declarations with their own type
+parameter list; receiver type parameters belong on the receiver type instead.
 Single-file and multi-package compile entrypoints run the same IR validation
 helper before Rust AST lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,

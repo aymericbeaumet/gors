@@ -1205,6 +1205,9 @@ pub enum InvalidSignature {
         params: usize,
         results: usize,
     },
+    MethodTypeParams {
+        count: usize,
+    },
     MixedNamedUnnamed {
         list: SignatureList,
     },
@@ -1630,6 +1633,12 @@ fn invalid_signature_in_func_decl(func: &ast::FuncDecl<'_>) -> Option<InvalidSig
         && let Some(invalid) = invalid_init_signature(func)
     {
         return Some(invalid);
+    }
+    if func.recv.is_some() {
+        let count = field_list_binding_count(func.type_.type_params.as_ref());
+        if count != 0 {
+            return Some(InvalidSignature::MethodTypeParams { count });
+        }
     }
     let mut names = BTreeSet::new();
     if let Some(recv) = &func.recv
@@ -11484,6 +11493,17 @@ mod tests {
                 "#,
             ),
             Some(super::InvalidSignature::ReceiverCount { count: 2 })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    type T int
+                    func (T) Generic[A any]() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::MethodTypeParams { count: 1 })
         );
         assert_eq!(
             invalid_signature(
