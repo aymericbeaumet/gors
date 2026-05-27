@@ -160,7 +160,8 @@ gors-builtin/
   explicit selected-case slot plus a fallthrough flag. Both paths preserve
   source-order case expression evaluation, let `default` appear anywhere while
   still running only when no case matches, and map unlabeled case-level `break`
-  to the generated Rust switch block label.
+  to the generated Rust switch block label. Empty expression switches are valid
+  no-ops, but the tag expression must still be evaluated once when present.
 - `for` loops with post statements wrap the body in a generated labeled block
   whenever a matching `continue` is present. This covers both unlabeled
   continues and `continue label` targeting the current loop so Go's post clause

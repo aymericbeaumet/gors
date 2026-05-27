@@ -17004,9 +17004,21 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             .collect();
 
         if clauses.is_empty() {
-            return Err(CompilerError::UnsupportedConstruct(
-                "empty switch statement".to_string(),
-            ));
+            let mut stmts = vec![];
+            if let Some(tag) = switch_stmt.tag {
+                let tag_expr: syn::Expr = tag.into();
+                stmts.push(syn::parse_quote! {
+                    let _ = #tag_expr;
+                });
+            }
+            return Ok(syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: None,
+                block: syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts,
+                },
+            }));
         }
 
         let switch_label = next_switch_label();
