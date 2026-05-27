@@ -13094,6 +13094,14 @@ fn invalid_signature_error(invalid: ir::InvalidSignature) -> CompilerError {
             "init function must not declare type parameters, parameters, or results \
              (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
         ),
+        ir::InvalidSignature::MainFunction {
+            type_params,
+            params,
+            results,
+        } => format!(
+            "main function must not declare type parameters, parameters, or results \
+             (got {type_params} type parameter(s), {params} parameter(s), {results} result(s))"
+        ),
         ir::InvalidSignature::MixedNamedUnnamed { list } => {
             format!(
                 "{} list mixes named and unnamed entries",
@@ -18405,7 +18413,7 @@ const X = 1
                     return 1, 2
                 }
 
-                func main() int {
+                func f() int {
                     return pair()
                 }
             "#,
@@ -18415,7 +18423,7 @@ const X = 1
             r#"
                 package main
 
-                func main() int {
+                func f() int {
                     return
                 }
             "#,
@@ -18425,7 +18433,7 @@ const X = 1
             r#"
                 package main
 
-                func main() int {
+                func f() int {
                     return "go"
                 }
             "#,
@@ -18435,7 +18443,7 @@ const X = 1
             r#"
                 package main
 
-                func main(x any) {
+                func f(x any) {
                     var v any
                     switch v = x.(type) {
                     default:
@@ -18524,7 +18532,7 @@ const X = 1
             r#"
                 package main
 
-                func main() int {
+                func f() int {
                     if true {
                         return 1
                     }

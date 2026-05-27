@@ -1200,6 +1200,11 @@ pub enum InvalidSignature {
         params: usize,
         results: usize,
     },
+    MainFunction {
+        type_params: usize,
+        params: usize,
+        results: usize,
+    },
     MixedNamedUnnamed {
         list: SignatureList,
     },
@@ -1364,7 +1369,7 @@ pub fn invalid_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignatur
             return Some(invalid);
         }
     }
-    None
+    invalid_main_signature_in_file(file)
 }
 
 pub fn invalid_receiver_type_in_file(
@@ -1589,6 +1594,30 @@ fn invalid_init_signature(func: &ast::FuncDecl<'_>) -> Option<InvalidSignature> 
         params,
         results,
     })
+}
+
+fn invalid_main_signature_in_file(file: &ast::File<'_>) -> Option<InvalidSignature> {
+    if file.name.name != "main" {
+        return None;
+    }
+    for decl in &file.decls {
+        let ast::Decl::FuncDecl(func) = decl else {
+            continue;
+        };
+        if func.recv.is_none() && func.name.name == "main" {
+            let type_params = field_list_binding_count(func.type_.type_params.as_ref());
+            let params = field_list_binding_count(Some(&func.type_.params));
+            let results = field_list_binding_count(func.type_.results.as_ref());
+            if type_params != 0 || params != 0 || results != 0 {
+                return Some(InvalidSignature::MainFunction {
+                    type_params,
+                    params,
+                    results,
+                });
+            }
+        }
+    }
+    None
 }
 
 fn invalid_receiver_signature(
@@ -11470,6 +11499,70 @@ mod tests {
 
                     func init() {}
                     func init() {}
+                "#,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_main_function_signatures() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func main(x int) {}
+                "#,
+            ),
+            Some(super::InvalidSignature::MainFunction {
+                type_params: 0,
+                params: 1,
+                results: 0,
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func main[T any]() {}
+                "#,
+            ),
+            Some(super::InvalidSignature::MainFunction {
+                type_params: 1,
+                params: 0,
+                results: 0,
+            })
+        );
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package main
+
+                    func main() int {
+                        return 0
+                    }
+                "#,
+            ),
+            Some(super::InvalidSignature::MainFunction {
+                type_params: 0,
+                params: 0,
+                results: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_main_named_function_in_non_main_package() {
+        assert_eq!(
+            invalid_signature(
+                r#"
+                    package helper
+
+                    func main(x int) int {
+                        return x
+                    }
                 "#,
             ),
             None
