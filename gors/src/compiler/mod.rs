@@ -18064,7 +18064,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     }}]);
                 }
                 let left = compile_assignment_lhs_checked(lhs_ast)?;
-                return Ok(vec![syn::parse_quote! { #left.push_str(&#right); }]);
+                return Ok(vec![syn::parse_quote! {{
+                    let __gors_string_rhs = #right;
+                    #left.push_str(&__gors_string_rhs);
+                }}]);
             }
             let right = if matches!(
                 assign_stmt.tok,
@@ -20829,7 +20832,33 @@ func main() {
                 pub fn main() {
                     let mut s = "".to_string();
                     let mut part = "go".to_string();
-                    s.push_str(&(part).clone());
+                    {
+                        let __gors_string_rhs = (part).clone();
+                        s.push_str(&__gors_string_rhs);
+                    }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_string_add_assign_literal_by_borrowing_rhs() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := ""
+                    s += "go"
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = "".to_string();
+                    {
+                        let __gors_string_rhs = "go".to_string();
+                        s.push_str(&__gors_string_rhs);
+                    }
                 }
             },
         );
