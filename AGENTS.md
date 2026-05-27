@@ -182,9 +182,10 @@ gors-builtin/
 - Direct method-expression calls lower through the generated Rust inherent
   method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`),
   and variadic method-expression arguments use the same packed/spread lowering
-  as ordinary variadic calls. Treat stored method-expression function values as
-  a separate function-value lowering gap; do not rely on the selector-expression
-  placeholder for that spec surface.
+  as ordinary variadic calls. Stored method-expression function values infer as
+  `GoType::Func` with the receiver inserted as the first parameter and lower to
+  shared function cells through expected-type expression lowering; keep that
+  receiver-aware inference distinct from imported package function selectors.
 - Method values (`v.M`) infer to generated function-value cells. The backend
   lowers them as closures that bind the receiver once; pointer receiver values
   capture the generated pointer cell and lock it per invocation.

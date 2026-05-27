@@ -56,8 +56,19 @@ func main() {
 		zero := len("")
 		_ = 1 / zero
 	}
+	getExpr := Counter.Get
+	if getExpr(value) != 7 {
+		zero := len("")
+		_ = 1 / zero
+	}
 	add := value.Add
 	if add(5).Count != 12 {
+		zero := len("")
+		_ = 1 / zero
+	}
+	addExpr := Counter.Add
+	value = addExpr(value, 2)
+	if getExpr(value) != 9 {
 		zero := len("")
 		_ = 1 / zero
 	}
@@ -69,7 +80,9 @@ func main() {
 	bump(5)
 	(*Counter).AddAll(ptr, 1, 2)
 	(*Counter).AddAll(ptr, values...)
-	if Counter.Get(target) != 25 {
+	bumpExpr := (*Counter).Bump
+	bumpExpr(ptr, 3)
+	if Counter.Get(target) != 28 {
 		zero := len("")
 		_ = 1 / zero
 	}

@@ -10809,6 +10809,21 @@ fn compile_expr_with_expected(
             }
         }
 
+        if let ast::Expr::SelectorExpr(selector) = &expr
+            && type_method_expression_info(selector).is_some()
+        {
+            let ast::Expr::SelectorExpr(selector) = expr else {
+                return compile_error_expr("invalid method expression");
+            };
+            let compiled = compile_type_method_expression_value(selector);
+            if let Some(expected) = expected
+                && let Some(func_value) = shared_func_value_expr(expected, compiled.clone())
+            {
+                return func_value;
+            }
+            return compiled;
+        }
+
         match expr {
             ast::Expr::FuncLit(func_lit) => {
                 let compiled = compile_func_lit_with_capture_mode(func_lit, true);
@@ -11043,6 +11058,21 @@ struct MethodValueInfo {
     results: Vec<typeinfer::GoType>,
 }
 
+fn typed_ident_pat(ident: syn::Ident, ty: syn::Type) -> syn::Pat {
+    syn::Pat::Type(syn::PatType {
+        attrs: vec![],
+        pat: Box::new(syn::Pat::Ident(syn::PatIdent {
+            attrs: vec![],
+            by_ref: None,
+            mutability: None,
+            ident,
+            subpat: None,
+        })),
+        colon_token: <Token![:]>::default(),
+        ty: Box::new(ty),
+    })
+}
+
 fn method_value_info(selector: &ast::SelectorExpr) -> Option<MethodValueInfo> {
     if selector_base_is_import(selector) {
         return None;
@@ -11089,20 +11119,7 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
     let param_pats = param_idents
         .iter()
         .zip(param_types)
-        .map(|(ident, ty)| {
-            syn::Pat::Type(syn::PatType {
-                attrs: vec![],
-                pat: Box::new(syn::Pat::Ident(syn::PatIdent {
-                    attrs: vec![],
-                    by_ref: None,
-                    mutability: None,
-                    ident: ident.clone(),
-                    subpat: None,
-                })),
-                colon_token: <Token![:]>::default(),
-                ty: Box::new(ty),
-            })
-        })
+        .map(|(ident, ty)| typed_ident_pat(ident.clone(), ty))
         .collect::<Vec<syn::Pat>>();
     let call_args = param_idents
         .iter()
@@ -13209,11 +13226,91 @@ fn type_method_expression_receiver_is_pointer(expr: &ast::Expr) -> bool {
     }
 }
 
+struct TypeMethodExpressionInfo {
+    receiver_path: syn::Path,
+    receiver_type: typeinfer::GoType,
+    pointer_receiver: bool,
+    params: Vec<typeinfer::GoType>,
+    results: Vec<typeinfer::GoType>,
+}
+
+fn type_method_expression_info(selector: &ast::SelectorExpr) -> Option<TypeMethodExpressionInfo> {
+    if !is_type_method_expression_receiver(&selector.x) {
+        return None;
+    }
+    let receiver_name = type_method_expression_receiver_name(&selector.x)?;
+    let receiver_path = type_method_expression_receiver_path(&selector.x)?;
+    let pointer_receiver = type_method_expression_receiver_is_pointer(&selector.x);
+    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        env.has_func(&method_key).then(|| {
+            let receiver_type = typeinfer::GoType::Named(receiver_name);
+            let receiver_type = if pointer_receiver {
+                typeinfer::GoType::Pointer(Box::new(receiver_type))
+            } else {
+                receiver_type
+            };
+            TypeMethodExpressionInfo {
+                receiver_path,
+                receiver_type,
+                pointer_receiver,
+                params: env.get_func_params(&method_key),
+                results: env.get_func_returns(&method_key),
+            }
+        })
+    })
+}
+
+fn compile_type_method_expression_value(selector: ast::SelectorExpr) -> syn::Expr {
+    let Some(info) = type_method_expression_info(&selector) else {
+        return compile_error_expr("invalid method expression");
+    };
+    let method_ident: syn::Ident = selector.sel.into();
+    let receiver_ident = syn::Ident::new("__gors_method_receiver", Span::mixed_site());
+    let method_arg_idents = (0..info.params.len())
+        .map(|idx| syn::Ident::new(&format!("__gors_method_arg_{idx}"), Span::mixed_site()))
+        .collect::<Vec<_>>();
+    let mut param_pats = vec![typed_ident_pat(
+        receiver_ident.clone(),
+        rust_type_from_inferred_go_type(&info.receiver_type),
+    )];
+    param_pats.extend(
+        method_arg_idents
+            .iter()
+            .zip(info.params.iter().map(rust_type_from_inferred_go_type))
+            .map(|(ident, ty)| typed_ident_pat(ident.clone(), ty)),
+    );
+    let method_args = method_arg_idents
+        .iter()
+        .map(|ident| syn::parse_quote! { #ident })
+        .collect::<Vec<syn::Expr>>();
+    let result_types = info
+        .results
+        .iter()
+        .map(rust_type_from_inferred_go_type)
+        .collect::<Vec<_>>();
+    let return_type: syn::Type = match result_types.as_slice() {
+        [] => syn::parse_quote! { () },
+        [ty] => ty.clone(),
+        _ => syn::parse_quote! { (#(#result_types),*) },
+    };
+    let receiver_path = info.receiver_path;
+    let body: syn::Expr = if info.pointer_receiver {
+        syn::parse_quote! {
+            #receiver_path::#method_ident(&mut *#receiver_ident.lock().unwrap(), #(#method_args),*)
+        }
+    } else {
+        syn::parse_quote! { #receiver_path::#method_ident(&#receiver_ident, #(#method_args),*) }
+    };
+    syn::parse_quote! { move |#(#param_pats),*| -> #return_type { #body } }
+}
+
 fn is_type_method_expression_call(call_expr: &ast::CallExpr) -> bool {
     matches!(
         call_expr.fun.as_ref(),
         ast::Expr::SelectorExpr(selector)
-            if is_type_method_expression_receiver(&selector.x)
+            if type_method_expression_info(selector).is_some()
     )
 }
 
@@ -14628,8 +14725,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 }
             }
             ast::Expr::SelectorExpr(selector_expr) => {
-                if is_type_method_expression_receiver(&selector_expr.x) {
-                    return syn::parse_quote! { |_| {} };
+                if type_method_expression_info(&selector_expr).is_some() {
+                    return compile_type_method_expression_value(selector_expr);
                 }
                 if method_value_info(&selector_expr).is_some() {
                     return compile_method_value_expr(selector_expr);

@@ -408,6 +408,9 @@ impl GoType {
                 }
             }
             ast::Expr::SelectorExpr(sel) => {
+                if let Some(func) = type_method_expression_func(sel, env) {
+                    return func;
+                }
                 if let ast::Expr::Ident(id) = &*sel.x {
                     let package_key = format!("{}.{}", id.name, sel.sel.name);
                     if let Some(ty) = env.get_var(&package_key) {
@@ -584,6 +587,60 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
         GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
         _ => GoType::Unknown,
     }
+}
+
+fn type_method_receiver_method_name(receiver_type: &GoType, env: &TypeEnv) -> Option<String> {
+    match env.resolve_alias(receiver_type) {
+        GoType::Named(name) => Some(name),
+        GoType::Pointer(inner) => type_method_receiver_method_name(&inner, env),
+        _ => None,
+    }
+}
+
+fn type_method_expression_receiver_type(
+    expr: &ast::Expr,
+    method: &str,
+    env: &TypeEnv,
+) -> Option<GoType> {
+    let receiver = match unparen_expr(expr) {
+        ast::Expr::Ident(ident) => env
+            .get_type_kind(ident.name)
+            .is_some()
+            .then_some(GoType::Named(ident.name.to_string()))?,
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+                return None;
+            };
+            let name = format!("{}.{}", pkg.name, selector.sel.name);
+            env.get_type_kind(&name)
+                .is_some()
+                .then_some(GoType::Named(name))?
+        }
+        ast::Expr::StarExpr(star) => {
+            let inner = type_method_expression_receiver_type(&star.x, method, env)?;
+            GoType::Pointer(Box::new(inner))
+        }
+        ast::Expr::IndexExpr(index) => type_method_expression_receiver_type(&index.x, method, env)?,
+        ast::Expr::IndexListExpr(index) => {
+            type_method_expression_receiver_type(&index.x, method, env)?
+        }
+        _ => return None,
+    };
+    let receiver_name = type_method_receiver_method_name(&receiver, env)?;
+    env.has_func(&format!("{receiver_name}.{method}"))
+        .then_some(receiver)
+}
+
+fn type_method_expression_func(sel: &ast::SelectorExpr, env: &TypeEnv) -> Option<GoType> {
+    let receiver = type_method_expression_receiver_type(&sel.x, sel.sel.name, env)?;
+    let receiver_name = type_method_receiver_method_name(&receiver, env)?;
+    let method_key = format!("{}.{}", receiver_name, sel.sel.name);
+    let mut params = vec![receiver];
+    params.extend(env.get_func_params(&method_key));
+    Some(GoType::Func {
+        params,
+        results: env.get_func_returns(&method_key),
+    })
 }
 
 /// Type environment for tracking Go types during compilation.
