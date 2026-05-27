@@ -843,6 +843,8 @@ invalid).
 Type conversions only remain compile-time constants when the conversion result
 is a scalar constant type; conversions such as `[]byte("go")` are runtime values
 and must not take the untyped-constant assignability path.
+Binary expression validation rejects `/` and `%` when the divisor is an untyped
+numeric constant zero, before falling through to ordinary operand-type checks.
 Range over an untyped integer constant with a preexisting iteration variable
 uses the iteration variable's type, but the range expression itself must still
 be representable by that type (`byte` over `256` is invalid).

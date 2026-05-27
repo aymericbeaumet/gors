@@ -9164,6 +9164,12 @@ fn invalid_binary_expr(
     if expr_is_nil(&binary.x) || expr_is_nil(&binary.y) {
         return binary_nil_operands(binary, &left, &right, env);
     }
+    if binary_divisor_is_constant_zero(binary, env) {
+        return Some(invalid_binary_reason(
+            binary.op,
+            "division by zero constant",
+        ));
+    }
     if binary_type_should_skip_validation(&left, binary.op)
         || binary_type_should_skip_validation(&right, binary.op)
     {
@@ -9190,6 +9196,30 @@ fn invalid_binary_expr(
             binary_ordered_operands(binary, &left, &right, env)
         }
         _ => None,
+    }
+}
+
+fn binary_divisor_is_constant_zero(binary: &ast::BinaryExpr<'_>, env: &TypeEnv) -> bool {
+    matches!(binary.op, token::Token::QUO | token::Token::REM)
+        && expr_is_untyped_numeric_constant_for_comparison(&binary.y, env)
+        && numeric_constant_expr_is_zero(&binary.y)
+}
+
+fn numeric_constant_expr_is_zero(expr: &ast::Expr<'_>) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => match lit.kind {
+            token::Token::INT => integer_literal_is_zero(lit.value),
+            token::Token::FLOAT => decimal_float_literal_is_zero(lit.value),
+            token::Token::IMAG => imaginary_literal_is_zero(lit.value),
+            token::Token::CHAR => rune_literal_value_i128(lit.value) == Some(0),
+            _ => false,
+        },
+        ast::Expr::UnaryExpr(unary)
+            if matches!(unary.op, token::Token::ADD | token::Token::SUB) =>
+        {
+            numeric_constant_expr_is_zero(&unary.x)
+        }
+        _ => false,
     }
 }
 
@@ -19644,6 +19674,39 @@ mod tests {
                 "#,
                 "%",
                 "operands must both be integer, got float64 and float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 / 0
+                    }
+                "#,
+                "/",
+                "division by zero constant",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1.0 / -0.0
+                    }
+                "#,
+                "/",
+                "division by zero constant",
+            ),
+            (
+                r#"
+                    package main
+
+                    func main() {
+                        _ = 1 % 0
+                    }
+                "#,
+                "%",
+                "division by zero constant",
             ),
             (
                 r#"
