@@ -626,7 +626,9 @@ length positions; constant builtin lengths such as `len([3]int{})` remain valid.
 IR expression validation distinguishes value and type contexts: bare type names
 used as values are rejected, while conversion targets, builtin `new`/`make` type
 arguments, declaration types, composite literal types, and type-switch cases stay
-in type context.
+in type context. Known function/type index expressions such as `f[int]` also
+validate their indices as type arguments, and `:=` range targets are treated as
+new bindings before their loop bodies are checked.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose

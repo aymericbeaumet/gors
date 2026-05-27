@@ -7504,6 +7504,10 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             invalid_return_in_func(&func_lit.type_, &func_lit.body, env)
                 .or_else(|| invalid_body_completion_in_func(&func_lit.type_, &func_lit.body, env))
         }
+        ast::Expr::IndexExpr(index) if index_expr_uses_type_args(&index.x, env) => {
+            invalid_return_in_expr(&index.x, env)
+                .or_else(|| invalid_return_in_type_expr(&index.index, env))
+        }
         ast::Expr::IndexExpr(index) => invalid_return_in_expr(&index.x, env)
             .or_else(|| invalid_return_in_expr(&index.index, env))
             .or_else(|| {
@@ -7513,9 +7517,17 @@ fn invalid_return_in_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<Invalid
             if let Some(invalid) = invalid_return_in_expr(&index.x, env) {
                 return Some(invalid);
             }
-            for index in &index.indices {
-                if let Some(invalid) = invalid_return_in_expr(index, env) {
-                    return Some(invalid);
+            if index_expr_uses_type_args(&index.x, env) {
+                for index in &index.indices {
+                    if let Some(invalid) = invalid_return_in_type_expr(index, env) {
+                        return Some(invalid);
+                    }
+                }
+            } else {
+                for index in &index.indices {
+                    if let Some(invalid) = invalid_return_in_expr(index, env) {
+                        return Some(invalid);
+                    }
                 }
             }
             None
@@ -9095,15 +9107,26 @@ fn invalid_expression_in_expr(
             .as_ref()
             .and_then(|elt| invalid_expression_in_expr(elt, env)),
         ast::Expr::FuncLit(func_lit) => invalid_expression_in_func_lit(func_lit, env),
+        ast::Expr::IndexExpr(index) if index_expr_uses_type_args(&index.x, env) => {
+            invalid_expression_in_expr(&index.x, env)
+                .or_else(|| invalid_expression_in_type_expr(&index.index, env))
+        }
         ast::Expr::IndexExpr(index) => invalid_expression_in_expr(&index.x, env)
             .or_else(|| invalid_expression_in_expr(&index.index, env))
             .or_else(|| invalid_index_expr(index, env)),
         ast::Expr::IndexListExpr(index) => {
             invalid_expression_in_expr(&index.x, env).or_else(|| {
-                index
-                    .indices
-                    .iter()
-                    .find_map(|index| invalid_expression_in_expr(index, env))
+                if index_expr_uses_type_args(&index.x, env) {
+                    index
+                        .indices
+                        .iter()
+                        .find_map(|index| invalid_expression_in_type_expr(index, env))
+                } else {
+                    index
+                        .indices
+                        .iter()
+                        .find_map(|index| invalid_expression_in_expr(index, env))
+                }
             })
         }
         ast::Expr::KeyValueExpr(kv) => invalid_expression_in_expr(&kv.key, env)
@@ -9240,6 +9263,25 @@ fn expr_denotes_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
         ast::Expr::IndexExpr(index) => expr_denotes_type(&index.x, env),
         ast::Expr::IndexListExpr(index) => expr_denotes_type(&index.x, env),
         ast::Expr::StarExpr(star) => expr_denotes_type(&star.x, env),
+        _ => false,
+    }
+}
+
+fn index_expr_uses_type_args(target: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(target) {
+        ast::Expr::Ident(ident) => {
+            env.has_func(ident.name) || ident_denotes_type_value(ident.name, env)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(base) = selector.x.as_ref() else {
+                return false;
+            };
+            let key = format!("{}.{}", base.name, selector.sel.name);
+            env.has_func(&key) || selector_type_value_name(selector, env).is_some()
+        }
+        ast::Expr::IndexExpr(index) => index_expr_uses_type_args(&index.x, env),
+        ast::Expr::IndexListExpr(index) => index_expr_uses_type_args(&index.x, env),
+        ast::Expr::ParenExpr(paren) => index_expr_uses_type_args(&paren.x, env),
         _ => false,
     }
 }
@@ -19801,6 +19843,7 @@ mod tests {
                 type Count int
                 type File struct {}
                 type Wrapper struct { File *File }
+                func generic[T any](v T) T { return v }
 
                 func main() {
                     var _ int
@@ -19816,6 +19859,7 @@ mod tests {
                     for _, rune := range "go" {
                         _ = rune
                     }
+                    _ = generic[int](1)
                     var int = 1
                     _ = int
                 }
