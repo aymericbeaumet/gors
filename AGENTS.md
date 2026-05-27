@@ -618,6 +618,9 @@ Compile-time constant handling treats `len` of string constants and `len`/`cap`
 of array or pointer-to-array composite literals as constants when their operands
 contain no channel receive or non-constant call; constant `complex`, `real`,
 `imag`, `min`, and `max` builtin calls are evaluated during const emission.
+IR type-conversion validation allows representable untyped numeric constants,
+including integer-valued floating constants produced by constant `real`, `imag`,
+`min`, and `max` calls, to convert to integer targets.
 Function literal bodies are included in IR expression validation with their
 parameter/result bindings seeded so shadowed predeclared names stay shadowed.
 The same IR expression pass validates ordinary function and method calls whose

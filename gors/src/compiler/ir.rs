@@ -10862,6 +10862,13 @@ fn imaginary_literal_is_zero(value: &str) -> bool {
     numeric_literal_mantissa_is_zero(value)
 }
 
+fn imaginary_literal_integer_value_i128(value: &str) -> Option<i128> {
+    let value = value.strip_suffix('i')?;
+    parse_integer_literal_i128(value).or_else(|| {
+        decimal_float_literal_is_integer(value).then(|| parse_decimal_float_integer_i128(value))?
+    })
+}
+
 fn numeric_literal_mantissa_is_zero(value: &str) -> bool {
     let value = value.replace('_', "").to_ascii_lowercase();
     let mantissa = value
@@ -11056,6 +11063,9 @@ fn conversion_is_valid_for_validation(
         if expr_is_assignable_for_validation(target, value, env) {
             return true;
         }
+        if constant_conversion_is_representable_by_type(value, target, env) {
+            return true;
+        }
         return matches!((target, actual), (GoType::String, actual) if actual.is_integer());
     }
     if actual == target || expr_is_assignable_for_validation(target, value, env) {
@@ -11074,6 +11084,112 @@ fn string_slice_conversion_is_valid(actual: &GoType, target: &GoType) -> bool {
         (GoType::String, GoType::Slice(elem)) | (GoType::Slice(elem), GoType::String)
             if matches!(elem.as_ref(), GoType::Uint8 | GoType::Int32)
     )
+}
+
+fn constant_conversion_is_representable_by_type(
+    expr: &ast::Expr<'_>,
+    target: &GoType,
+    env: &TypeEnv,
+) -> bool {
+    match target {
+        target if target.is_integer() => integer_constant_value_for_conversion_i128(expr, env)
+            .is_some_and(|value| integer_constant_fits_type(value, target)),
+        GoType::Float32 | GoType::Float64 => {
+            float_constant_is_representable_by_type(expr, target).unwrap_or(false)
+        }
+        GoType::Complex64 | GoType::Complex128 => {
+            go_type_is_numeric(&GoType::infer_expr(expr, env))
+        }
+        _ => false,
+    }
+}
+
+fn integer_constant_value_for_conversion_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::ParenExpr(paren) => integer_constant_value_for_conversion_i128(&paren.x, env),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            integer_constant_value_for_conversion_i128(&unary.x, env)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
+            integer_constant_value_for_conversion_i128(&unary.x, env).and_then(i128::checked_neg)
+        }
+        ast::Expr::CallExpr(call) => integer_constant_builtin_call_value_i128(call, env),
+        _ => integer_constant_value_i128(expr),
+    }
+}
+
+fn integer_constant_builtin_call_value_i128(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<i128> {
+    match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Real => {
+            let [arg] = call.args.as_deref()? else {
+                return None;
+            };
+            real_part_integer_constant_value_i128(arg, env)
+        }
+        BuiltinCallKind::Imag => {
+            let [arg] = call.args.as_deref()? else {
+                return None;
+            };
+            imag_part_integer_constant_value_i128(arg, env)
+        }
+        BuiltinCallKind::Min | BuiltinCallKind::Max => {
+            let args = call.args.as_deref()?;
+            let mut values = args
+                .iter()
+                .map(|arg| integer_constant_value_for_conversion_i128(arg, env));
+            let first = values.next()??;
+            values.try_fold(first, |best, value| {
+                let value = value?;
+                Some(match unshadowed_builtin_call_kind(call, env) {
+                    Some(BuiltinCallKind::Max) => best.max(value),
+                    Some(BuiltinCallKind::Min) => best.min(value),
+                    _ => best,
+                })
+            })
+        }
+        _ => None,
+    }
+}
+
+fn real_part_integer_constant_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => Some(0),
+        ast::Expr::CallExpr(call)
+            if matches!(
+                unshadowed_builtin_call_kind(call, env),
+                Some(BuiltinCallKind::Complex)
+            ) =>
+        {
+            let [real, _] = call.args.as_deref()? else {
+                return None;
+            };
+            integer_constant_value_for_conversion_i128(real, env)
+        }
+        _ => integer_constant_value_for_conversion_i128(expr, env),
+    }
+}
+
+fn imag_part_integer_constant_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => {
+            imaginary_literal_integer_value_i128(lit.value)
+        }
+        ast::Expr::CallExpr(call)
+            if matches!(
+                unshadowed_builtin_call_kind(call, env),
+                Some(BuiltinCallKind::Complex)
+            ) =>
+        {
+            let [_, imag] = call.args.as_deref()? else {
+                return None;
+            };
+            integer_constant_value_for_conversion_i128(imag, env)
+        }
+        _ => Some(0),
+    }
 }
 
 fn type_conversion_target_name(fun: &ast::Expr<'_>, env: &TypeEnv) -> String {
@@ -19694,6 +19810,9 @@ mod tests {
                     _ = byte(255.0)
                     _ = byte('\xff')
                     _ = byte(0i)
+                    _ = int(imag(2i))
+                    _ = int(real(complex(3, 4)))
+                    _ = byte(max(1, 255.0, 3))
                     _ = float64(0i)
                     _ = float64(-1e-1000)
                     _ = string(i)

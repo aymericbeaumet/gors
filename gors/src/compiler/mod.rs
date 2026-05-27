@@ -21199,8 +21199,8 @@ func main() {
                     ArrayCap = cap(&[4]string{})
                     InferredLen = len([...]int{2: 1})
                     ImagArrayLen = len([10]float64{imag(2i)})
-                    ImagPart = imag(2i)
-                    RealPart = real(complex(3, 4))
+                    ImagPart = int(imag(2i))
+                    RealPart = int(real(complex(3, 4)))
                     MaxPart = max(1, 4, 2)
                 )
 
@@ -21232,11 +21232,11 @@ func main() {
             "{output}"
         );
         assert!(
-            output.contains("pub const ImagPart: f64 = 2e0;"),
+            output.contains("pub const ImagPart: isize = 2;"),
             "{output}"
         );
         assert!(
-            output.contains("pub const RealPart: f64 = 3e0;"),
+            output.contains("pub const RealPart: isize = 3;"),
             "{output}"
         );
         assert!(output.contains("pub const MaxPart: isize = 4;"), "{output}");
