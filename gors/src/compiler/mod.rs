@@ -13180,6 +13180,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         ir::InvalidDeclaration::ConstValueCount { names, values } => {
             format!("const declaration has {names} name(s) but {values} value(s)")
         }
+        ir::InvalidDeclaration::AliasToOwnTypeParameter { name } => {
+            format!("alias declaration cannot alias its own type parameter {name}")
+        }
         ir::InvalidDeclaration::DuplicateMethod { base, method } => {
             format!("duplicate method {method} for receiver base type {base}")
         }
@@ -13213,6 +13216,9 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
         }
         ir::InvalidDeclaration::MissingConstInitializer => {
             "const declaration missing initializer".to_string()
+        }
+        ir::InvalidDeclaration::TypeDefinitionFromTypeParameter { name } => {
+            format!("type definition cannot use type parameter {name} as the defined type")
         }
         ir::InvalidDeclaration::VarMissingTypeOrInitializer => {
             "var declaration missing type or initializer".to_string()

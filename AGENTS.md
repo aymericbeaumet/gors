@@ -665,6 +665,10 @@ function and type declaration type-parameter lists must have explicit names and
 constraints, non-blank type parameter names must be unique, receiver generic
 argument lists must use identifiers, and receiver type-parameter names share the
 method signature uniqueness set.
+Type declarations involving type parameters are also checked in IR: type
+definitions cannot define directly from any in-scope type parameter, while a
+generic alias cannot alias a type parameter declared by that same alias
+declaration.
 Single-file and multi-package compile entrypoints run the same IR validation
 helper before Rust AST lowering.
 The same IR validation layer rejects duplicate non-blank struct field names,

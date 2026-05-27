@@ -1253,6 +1253,9 @@ pub enum InvalidDeclaration {
         names: usize,
         values: usize,
     },
+    AliasToOwnTypeParameter {
+        name: String,
+    },
     DuplicateMethod {
         base: String,
         method: String,
@@ -1282,6 +1285,9 @@ pub enum InvalidDeclaration {
         name: String,
     },
     MissingConstInitializer,
+    TypeDefinitionFromTypeParameter {
+        name: String,
+    },
     VarMissingTypeOrInitializer,
     VarMultiValueInSingleValueContext,
     VarTypeMismatch {
@@ -1414,6 +1420,7 @@ pub fn invalid_declaration_in_file(file: &ast::File<'_>) -> Option<InvalidDeclar
                     }
                 }
                 invalid_local_declaration_names_in_file(file)
+                    .or_else(|| invalid_type_parameter_type_declarations_in_file(file))
             })
         })
     })
@@ -3203,6 +3210,407 @@ fn invalid_local_declaration_names_in_func_lit(
         }
         invalid_local_declaration_names_in_stmt_list(&func_lit.body.list, scopes)
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct TypeParameterScopes {
+    scopes: Vec<BTreeSet<String>>,
+}
+
+impl TypeParameterScopes {
+    fn new() -> Self {
+        Self {
+            scopes: vec![BTreeSet::new()],
+        }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
+    }
+
+    fn declare(&mut self, name: &str) {
+        if name == "_" {
+            return;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string());
+        }
+    }
+
+    fn declare_all(&mut self, names: &BTreeSet<String>) {
+        for name in names {
+            self.declare(name);
+        }
+    }
+
+    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.scopes.push(BTreeSet::new());
+        let out = f(self);
+        self.scopes.pop();
+        out
+    }
+}
+
+fn invalid_type_parameter_type_declarations_in_file(
+    file: &ast::File<'_>,
+) -> Option<InvalidDeclaration> {
+    let mut scopes = TypeParameterScopes::new();
+    for decl in &file.decls {
+        if let Some(invalid) = invalid_type_parameter_type_declaration_in_decl(decl, &mut scopes) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_type_parameter_type_declaration_in_decl(
+    decl: &ast::Decl<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    match decl {
+        ast::Decl::FuncDecl(func) => {
+            let body = func.body.as_ref()?;
+            scopes.with_scope(|scopes| {
+                let names = type_parameter_names(func.type_.type_params.as_ref());
+                scopes.declare_all(&names);
+                if let Some(recv) = &func.recv {
+                    let names = receiver_type_parameter_names(recv);
+                    scopes.declare_all(&names);
+                }
+                invalid_type_parameter_type_declaration_in_stmt_list(&body.list, scopes)
+            })
+        }
+        ast::Decl::GenDecl(gen_decl) => {
+            invalid_type_parameter_type_declaration_in_gen_decl(gen_decl, scopes)
+        }
+    }
+}
+
+fn invalid_type_parameter_type_declaration_in_gen_decl(
+    gen_decl: &ast::GenDecl<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    for spec in &gen_decl.specs {
+        let ast::Spec::TypeSpec(type_spec) = spec else {
+            continue;
+        };
+        if let Some(invalid) =
+            invalid_type_parameter_type_declaration_in_type_spec(type_spec, scopes)
+        {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_type_parameter_type_declaration_in_type_spec(
+    type_spec: &ast::TypeSpec<'_>,
+    scopes: &TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    let rhs = single_ident_type_name(&type_spec.type_)?;
+    let own = type_parameter_names(type_spec.type_params.as_ref());
+    if type_spec.assign.is_some() {
+        own.contains(&rhs)
+            .then_some(InvalidDeclaration::AliasToOwnTypeParameter { name: rhs })
+    } else if own.contains(&rhs) || scopes.contains(&rhs) {
+        Some(InvalidDeclaration::TypeDefinitionFromTypeParameter { name: rhs })
+    } else {
+        None
+    }
+}
+
+fn invalid_type_parameter_type_declaration_in_stmt_list(
+    stmts: &[ast::Stmt<'_>],
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    for stmt in stmts {
+        if let Some(invalid) = invalid_type_parameter_type_declaration_in_stmt(stmt, scopes) {
+            return Some(invalid);
+        }
+    }
+    None
+}
+
+fn invalid_type_parameter_type_declaration_in_block(
+    block: &ast::BlockStmt<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    invalid_type_parameter_type_declaration_in_stmt_list(&block.list, scopes)
+}
+
+fn invalid_type_parameter_type_declaration_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => assign
+            .rhs
+            .iter()
+            .find_map(|expr| invalid_type_parameter_type_declaration_in_expr(expr, scopes)),
+        ast::Stmt::BlockStmt(block) => {
+            invalid_type_parameter_type_declaration_in_block(block, scopes)
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => None,
+        ast::Stmt::CaseClause(case) => {
+            invalid_type_parameter_type_declaration_in_stmt_list(&case.body, scopes)
+        }
+        ast::Stmt::CommClause(comm) => comm
+            .comm
+            .as_ref()
+            .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+            .or_else(|| invalid_type_parameter_type_declaration_in_stmt_list(&comm.body, scopes)),
+        ast::Stmt::DeclStmt(decl) => {
+            invalid_type_parameter_type_declaration_in_gen_decl(&decl.decl, scopes)
+        }
+        ast::Stmt::DeferStmt(defer) => {
+            invalid_type_parameter_type_declaration_in_call(&defer.call, scopes)
+        }
+        ast::Stmt::ExprStmt(expr) => {
+            invalid_type_parameter_type_declaration_in_expr(&expr.x, scopes)
+        }
+        ast::Stmt::ForStmt(for_stmt) => for_stmt
+            .init
+            .as_ref()
+            .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+            .or_else(|| {
+                for_stmt
+                    .cond
+                    .as_ref()
+                    .and_then(|expr| invalid_type_parameter_type_declaration_in_expr(expr, scopes))
+            })
+            .or_else(|| {
+                for_stmt
+                    .post
+                    .as_ref()
+                    .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+            })
+            .or_else(|| invalid_type_parameter_type_declaration_in_block(&for_stmt.body, scopes)),
+        ast::Stmt::GoStmt(go) => invalid_type_parameter_type_declaration_in_call(&go.call, scopes),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&if_stmt.cond, scopes))
+                .or_else(|| invalid_type_parameter_type_declaration_in_block(&if_stmt.body, scopes))
+                .or_else(|| {
+                    if_stmt.else_.as_ref().as_ref().and_then(|stmt| {
+                        invalid_type_parameter_type_declaration_in_stmt(stmt, scopes)
+                    })
+                })
+        }
+        ast::Stmt::IncDecStmt(_) => None,
+        ast::Stmt::LabeledStmt(labeled) => {
+            invalid_type_parameter_type_declaration_in_stmt(&labeled.stmt, scopes)
+        }
+        ast::Stmt::RangeStmt(range) => {
+            invalid_type_parameter_type_declaration_in_expr(&range.x, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_block(&range.body, scopes))
+        }
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .find_map(|expr| invalid_type_parameter_type_declaration_in_expr(expr, scopes)),
+        ast::Stmt::SelectStmt(select) => {
+            invalid_type_parameter_type_declaration_in_block(&select.body, scopes)
+        }
+        ast::Stmt::SendStmt(send) => {
+            invalid_type_parameter_type_declaration_in_expr(&send.chan, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&send.value, scopes))
+        }
+        ast::Stmt::SwitchStmt(switch) => switch
+            .init
+            .as_ref()
+            .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+            .or_else(|| {
+                switch
+                    .tag
+                    .as_ref()
+                    .and_then(|expr| invalid_type_parameter_type_declaration_in_expr(expr, scopes))
+            })
+            .or_else(|| invalid_type_parameter_type_declaration_in_block(&switch.body, scopes)),
+        ast::Stmt::TypeSwitchStmt(type_switch) => type_switch
+            .init
+            .as_ref()
+            .and_then(|stmt| invalid_type_parameter_type_declaration_in_stmt(stmt, scopes))
+            .or_else(|| {
+                invalid_type_parameter_type_declaration_in_stmt(&type_switch.assign, scopes)
+            })
+            .or_else(|| {
+                invalid_type_parameter_type_declaration_in_block(&type_switch.body, scopes)
+            }),
+    }
+}
+
+fn invalid_type_parameter_type_declaration_in_call(
+    call: &ast::CallExpr<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    invalid_type_parameter_type_declaration_in_expr(&call.fun, scopes).or_else(|| {
+        call.args.as_ref().and_then(|args| {
+            args.iter()
+                .find_map(|arg| invalid_type_parameter_type_declaration_in_expr(arg, scopes))
+        })
+    })
+}
+
+fn invalid_type_parameter_type_declaration_in_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut TypeParameterScopes,
+) -> Option<InvalidDeclaration> {
+    match expr {
+        ast::Expr::ArrayType(array) => array
+            .len
+            .as_ref()
+            .and_then(|len| invalid_type_parameter_type_declaration_in_expr(len, scopes))
+            .or_else(|| invalid_type_parameter_type_declaration_in_expr(&array.elt, scopes)),
+        ast::Expr::BinaryExpr(binary) => {
+            invalid_type_parameter_type_declaration_in_expr(&binary.x, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&binary.y, scopes))
+        }
+        ast::Expr::CallExpr(call) => invalid_type_parameter_type_declaration_in_call(call, scopes),
+        ast::Expr::ChanType(chan) => {
+            invalid_type_parameter_type_declaration_in_expr(&chan.value, scopes)
+        }
+        ast::Expr::CompositeLit(comp) => comp
+            .type_
+            .as_ref()
+            .and_then(|type_| invalid_type_parameter_type_declaration_in_expr(type_, scopes))
+            .or_else(|| {
+                comp.elts.as_ref().and_then(|elts| {
+                    elts.iter().find_map(|elt| {
+                        invalid_type_parameter_type_declaration_in_expr(elt, scopes)
+                    })
+                })
+            }),
+        ast::Expr::Ellipsis(ellipsis) => ellipsis
+            .elt
+            .as_ref()
+            .and_then(|elt| invalid_type_parameter_type_declaration_in_expr(elt, scopes)),
+        ast::Expr::FuncLit(func_lit) => {
+            invalid_type_parameter_type_declaration_in_block(&func_lit.body, scopes)
+        }
+        ast::Expr::FuncType(_) | ast::Expr::Ident(_) | ast::Expr::BasicLit(_) => None,
+        ast::Expr::IndexExpr(index) => {
+            invalid_type_parameter_type_declaration_in_expr(&index.x, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&index.index, scopes))
+        }
+        ast::Expr::IndexListExpr(index) => {
+            invalid_type_parameter_type_declaration_in_expr(&index.x, scopes).or_else(|| {
+                index.indices.iter().find_map(|index| {
+                    invalid_type_parameter_type_declaration_in_expr(index, scopes)
+                })
+            })
+        }
+        ast::Expr::InterfaceType(_) => None,
+        ast::Expr::KeyValueExpr(kv) => {
+            invalid_type_parameter_type_declaration_in_expr(&kv.key, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&kv.value, scopes))
+        }
+        ast::Expr::MapType(map) => {
+            invalid_type_parameter_type_declaration_in_expr(&map.key, scopes)
+                .or_else(|| invalid_type_parameter_type_declaration_in_expr(&map.value, scopes))
+        }
+        ast::Expr::ParenExpr(paren) => {
+            invalid_type_parameter_type_declaration_in_expr(&paren.x, scopes)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            invalid_type_parameter_type_declaration_in_expr(&selector.x, scopes)
+        }
+        ast::Expr::SliceExpr(slice) => {
+            invalid_type_parameter_type_declaration_in_expr(&slice.x, scopes)
+                .or_else(|| {
+                    slice.low.as_ref().and_then(|low| {
+                        invalid_type_parameter_type_declaration_in_expr(low, scopes)
+                    })
+                })
+                .or_else(|| {
+                    slice.high.as_ref().and_then(|high| {
+                        invalid_type_parameter_type_declaration_in_expr(high, scopes)
+                    })
+                })
+                .or_else(|| {
+                    slice.max.as_ref().and_then(|max| {
+                        invalid_type_parameter_type_declaration_in_expr(max, scopes)
+                    })
+                })
+        }
+        ast::Expr::StarExpr(star) => {
+            invalid_type_parameter_type_declaration_in_expr(&star.x, scopes)
+        }
+        ast::Expr::StructType(_) => None,
+        ast::Expr::TypeAssertExpr(assert) => {
+            invalid_type_parameter_type_declaration_in_expr(&assert.x, scopes).or_else(|| {
+                assert.type_.as_ref().and_then(|type_| {
+                    invalid_type_parameter_type_declaration_in_expr(type_, scopes)
+                })
+            })
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            invalid_type_parameter_type_declaration_in_expr(&unary.x, scopes)
+        }
+    }
+}
+
+fn type_parameter_names(type_params: Option<&ast::FieldList<'_>>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let Some(type_params) = type_params else {
+        return names;
+    };
+    for field in &type_params.list {
+        if let Some(field_names) = &field.names {
+            names.extend(
+                field_names
+                    .iter()
+                    .filter(|name| name.name != "_")
+                    .map(|name| name.name.to_string()),
+            );
+        }
+    }
+    names
+}
+
+fn receiver_type_parameter_names(recv: &ast::FieldList<'_>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for field in &recv.list {
+        if let Some(type_) = &field.type_ {
+            collect_receiver_type_parameter_names(type_, &mut names);
+        }
+    }
+    names
+}
+
+fn collect_receiver_type_parameter_names(expr: &ast::Expr<'_>, names: &mut BTreeSet<String>) {
+    match expr {
+        ast::Expr::IndexExpr(index) => {
+            if let ast::Expr::Ident(ident) = index.index.as_ref()
+                && ident.name != "_"
+            {
+                names.insert(ident.name.to_string());
+            }
+        }
+        ast::Expr::IndexListExpr(index) => {
+            for expr in &index.indices {
+                if let ast::Expr::Ident(ident) = expr
+                    && ident.name != "_"
+                {
+                    names.insert(ident.name.to_string());
+                }
+            }
+        }
+        ast::Expr::ParenExpr(paren) => collect_receiver_type_parameter_names(&paren.x, names),
+        ast::Expr::StarExpr(star) => collect_receiver_type_parameter_names(&star.x, names),
+        _ => {}
+    }
+}
+
+fn single_ident_type_name(expr: &ast::Expr<'_>) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::ParenExpr(paren) => single_ident_type_name(&paren.x),
+        _ => None,
+    }
 }
 
 fn invalid_short_var_redeclaration_in_decl(decl: &ast::Decl<'_>) -> Option<InvalidStatement> {
@@ -12714,6 +13122,87 @@ mod tests {
                         }
                         x, y := 1, 2
                         _, _ = x, y
+                    }
+                "#,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_type_declarations_defined_from_type_parameters() {
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type T[P any] P
+                "#,
+            ),
+            Some(super::InvalidDeclaration::TypeDefinitionFromTypeParameter {
+                name: "P".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type A[P any] = P
+                "#,
+            ),
+            Some(super::InvalidDeclaration::AliasToOwnTypeParameter {
+                name: "P".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f[P any]() {
+                        type L P
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::TypeDefinitionFromTypeParameter {
+                name: "P".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    type Pair[A, B any] struct{}
+                    func (p Pair[A, B]) M() {
+                        type L A
+                    }
+                "#,
+            ),
+            Some(super::InvalidDeclaration::TypeDefinitionFromTypeParameter {
+                name: "A".to_string(),
+            })
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f[P any]() {
+                        type A = P
+                    }
+                "#,
+            ),
+            None
+        );
+        assert_eq!(
+            invalid_declaration(
+                r#"
+                    package main
+
+                    func f[P any]() {
+                        type S struct{ value P }
                     }
                 "#,
             ),
