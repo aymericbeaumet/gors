@@ -445,6 +445,8 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
             }
             None
         }
+        ast::Expr::IndexExpr(index) => call_func_key(&index.x, env),
+        ast::Expr::IndexListExpr(index) => call_func_key(&index.x, env),
         _ => None,
     }
 }
@@ -6801,6 +6803,8 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
         ast::Expr::FuncLit(func_lit) => {
             Some(field_list_binding_count(func_lit.type_.results.as_ref()))
         }
+        ast::Expr::IndexExpr(index) => call_result_count_for_fun(&index.x, env),
+        ast::Expr::IndexListExpr(index) => call_result_count_for_fun(&index.x, env),
         ast::Expr::ParenExpr(paren) => call_result_count_for_fun(&paren.x, env),
         other => match GoType::infer_expr(other, env) {
             GoType::Func { results, .. } => Some(results.len()),
@@ -6842,6 +6846,8 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
             }
         }
         ast::Expr::FuncLit(func_lit) => Some(field_list_types(func_lit.type_.results.as_ref())),
+        ast::Expr::IndexExpr(index) => call_result_types_for_fun(&index.x, env),
+        ast::Expr::IndexListExpr(index) => call_result_types_for_fun(&index.x, env),
         ast::Expr::ParenExpr(paren) => call_result_types_for_fun(&paren.x, env),
         other => match GoType::infer_expr(other, env) {
             GoType::Func { results, .. } => Some(results),
@@ -11614,6 +11620,8 @@ fn call_signature_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<CallSign
             "function literal".to_string(),
             &func_lit.type_,
         )),
+        ast::Expr::IndexExpr(index) => call_signature_for_fun(&index.x, env),
+        ast::Expr::IndexListExpr(index) => call_signature_for_fun(&index.x, env),
         ast::Expr::ParenExpr(paren) => call_signature_for_fun(&paren.x, env),
         _ => call_signature_from_inferred_type(fun, "function value", env),
     }
@@ -19961,6 +19969,19 @@ mod tests {
                 "#,
                 "takes",
                 "argument 1 must be assignable to interface, got float64",
+            ),
+            (
+                r#"
+                    package main
+
+                    func generic[T any](a int) {}
+
+                    func main() {
+                        generic[string]("go")
+                    }
+                "#,
+                "generic",
+                "argument 1 must be assignable to int, got string",
             ),
             (
                 r#"
