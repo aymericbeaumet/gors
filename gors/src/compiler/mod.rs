@@ -8153,7 +8153,6 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
         let syn::TraitItem::Fn(trait_fn) = trait_item else {
             continue;
         };
-        let method = trait_fn.sig.ident.clone();
         let arg_names = trait_fn
             .sig
             .inputs
@@ -8168,10 +8167,24 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
             })
             .collect::<Vec<_>>();
         let sig = trait_fn.sig.clone();
-        let block: syn::Block = if matches!(sig.output, syn::ReturnType::Default) {
-            syn::parse_quote!({ (**self).#method(#(#arg_names),*); })
+        let method = sig.ident.clone();
+        let receiver: syn::Expr = if sig
+            .inputs
+            .first()
+            .and_then(|arg| match arg {
+                syn::FnArg::Receiver(receiver) => Some(receiver.mutability.is_some()),
+                syn::FnArg::Typed(_) => None,
+            })
+            .unwrap_or(false)
+        {
+            syn::parse_quote! { &mut **self }
         } else {
-            syn::parse_quote!({ (**self).#method(#(#arg_names),*) })
+            syn::parse_quote! { &**self }
+        };
+        let block: syn::Block = if matches!(sig.output, syn::ReturnType::Default) {
+            syn::parse_quote!({ #ident::#method(#receiver, #(#arg_names),*); })
+        } else {
+            syn::parse_quote!({ #ident::#method(#receiver, #(#arg_names),*) })
         };
         impl_methods.push(syn::ImplItemFn {
             attrs: vec![],
@@ -8226,6 +8239,106 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
             }
         },
     ]
+}
+
+fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
+    let trait_methods = collect_trait_method_fns(items);
+    let trait_supertraits: BTreeMap<String, Vec<syn::Path>> = items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let supertraits = item_trait
+                .supertraits
+                .iter()
+                .filter_map(|bound| match bound {
+                    syn::TypeParamBound::Trait(trait_bound) => Some(trait_bound.path.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            Some((item_trait.ident.to_string(), supertraits))
+        })
+        .collect();
+    let noop_names = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item_struct)
+                if item_struct.ident.to_string().starts_with("__GorsNoop") =>
+            {
+                Some(item_struct.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut out = Vec::new();
+
+    for item in items {
+        let syn::Item::Trait(item_trait) = item else {
+            continue;
+        };
+        let noop_ident = syn::Ident::new(
+            &format!("__GorsNoop{}", item_trait.ident),
+            Span::mixed_site(),
+        );
+        if !noop_names.contains(&noop_ident.to_string()) {
+            continue;
+        }
+        let mut pending = trait_supertraits
+            .get(&item_trait.ident.to_string())
+            .cloned()
+            .unwrap_or_default();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            let Some(name) = path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+            else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(next) = trait_supertraits.get(&name) {
+                pending.extend(next.iter().cloned());
+            }
+            if !trait_methods.contains_key(&name) && !trait_supertraits.contains_key(&name) {
+                continue;
+            }
+            let impl_items = trait_methods
+                .get(&name)
+                .into_iter()
+                .flat_map(|methods| methods.iter())
+                .map(|trait_fn| {
+                    let sig = trait_fn.sig.clone();
+                    let block = if sig.ident == "__gors_as_any" {
+                        syn::parse_quote!({ None })
+                    } else if matches!(sig.output, syn::ReturnType::Default) {
+                        syn::parse_quote!({})
+                    } else {
+                        syn::parse_quote!({
+                            crate::builtin::panic_value("called no-op interface method")
+                        })
+                    };
+                    syn::ImplItem::Fn(syn::ImplItemFn {
+                        attrs: vec![],
+                        vis: syn::Visibility::Inherited,
+                        defaultness: None,
+                        sig,
+                        block,
+                    })
+                })
+                .collect::<Vec<_>>();
+            out.push(syn::parse_quote! {
+                impl #path for #noop_ident {
+                    #(#impl_items)*
+                }
+            });
+        }
+    }
+
+    out
 }
 
 fn collect_trait_method_fns(items: &[syn::Item]) -> BTreeMap<String, Vec<syn::TraitItemFn>> {
@@ -16867,6 +16980,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }
         }
 
+        items.extend(noop_interface_supertrait_impls(&items));
         items.extend(embedded_interface_impls(&items, &methods));
 
         // Stringer pattern: generate `impl Display` for structs with String() string
@@ -24175,6 +24289,65 @@ func main() {
         let sort_refs = refs.get("sort").expect("sort refs");
         assert!(sort_refs.contains("Float64Slice"));
         assert!(sort_refs.contains("Float64Slice::Less"));
+    }
+
+    #[test]
+    fn it_should_qualify_boxed_interface_method_delegation() {
+        let trait_items = vec![
+            syn::parse_quote! {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+            },
+            syn::parse_quote! {
+                fn Sum32(&mut self) -> u32;
+            },
+        ];
+
+        let item = super::interface_box_impl(&syn::parse_quote!(Hash32), &trait_items)
+            .expect("expected box impl");
+        let tokens = quote::quote!(#item).to_string();
+
+        assert!(tokens.contains("Hash32 :: __gors_as_any"));
+        assert!(tokens.contains("Hash32 :: Sum32"));
+    }
+
+    #[test]
+    fn it_should_generate_noop_supertrait_impls() {
+        let items = vec![
+            rust! {
+                pub trait Writer {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn Write(&mut self, p: Vec<u8>) -> (isize, String);
+                }
+            },
+            rust! {
+                pub trait Hash: Writer {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn Sum(&mut self, b: Vec<u8>) -> Vec<u8>;
+                }
+            },
+            rust! {
+                pub trait Hash32: Hash {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn Sum32(&mut self) -> u32;
+                }
+            },
+            rust! {
+                #[derive(Clone, Default)]
+                pub struct __GorsNoopHash32;
+            },
+        ];
+
+        let generated = super::noop_interface_supertrait_impls(&items);
+        let tokens = generated
+            .iter()
+            .map(|item| quote::quote!(#item).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(tokens.contains("impl Hash for __GorsNoopHash32"));
+        assert!(tokens.contains("impl Writer for __GorsNoopHash32"));
+        assert!(tokens.contains("fn Sum"));
+        assert!(tokens.contains("fn Write"));
     }
 
     #[test]
