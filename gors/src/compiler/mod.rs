@@ -11428,6 +11428,41 @@ fn coerce_numeric_expr(
 ) -> syn::Expr {
     let expected_resolved = resolved_go_type(expected);
     let actual_resolved = resolved_go_type(actual);
+    if let typeinfer::GoType::Named(name) = expected
+        && expected_resolved.is_numeric()
+        && !matches!(actual, typeinfer::GoType::Named(actual_name) if actual_name == name)
+    {
+        let Some(inner_ty) = rust_type_from_go_type(&expected_resolved) else {
+            return expr;
+        };
+        if !actual_resolved.is_numeric() && !matches!(actual_resolved, typeinfer::GoType::Uintptr) {
+            return expr;
+        }
+        let named_ty = named_go_type_path(name);
+        let inner = if expected_resolved == actual_resolved {
+            expr
+        } else {
+            syn::parse_quote! { (#expr as #inner_ty) }
+        };
+        return syn::parse_quote! { #named_ty(#inner) };
+    }
+    if matches!(actual, typeinfer::GoType::Named(_))
+        && expected_resolved.is_numeric()
+        && actual_resolved.is_numeric()
+        && !matches!(expected, typeinfer::GoType::Named(_))
+    {
+        let Some(actual_inner_ty) = rust_type_from_go_type(&actual_resolved) else {
+            return expr;
+        };
+        let inner: syn::Expr = syn::parse_quote! { #actual_inner_ty::from(#expr) };
+        if expected_resolved == actual_resolved {
+            return inner;
+        }
+        let Some(target_ty) = rust_type_from_go_type(&expected_resolved) else {
+            return inner;
+        };
+        return syn::parse_quote! { (#inner as #target_ty) };
+    }
     if expected_resolved == actual_resolved {
         return expr;
     }
@@ -14096,13 +14131,26 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
             BinarySide::Left,
         )
     };
-    let right = compile_binary_side_for_parent(
-        *binary_expr.y,
-        &right_ty,
-        &left_ty,
-        original_op,
-        BinarySide::Right,
-    );
+    let right = if is_shift {
+        let right_child_op = match &*binary_expr.y {
+            ast::Expr::BinaryExpr(binary) => Some(binary.op),
+            _ => None,
+        };
+        parenthesize_binary_child_if_needed(
+            syn::Expr::from(*binary_expr.y),
+            right_child_op,
+            original_op,
+            BinarySide::Right,
+        )
+    } else {
+        compile_binary_side_for_parent(
+            *binary_expr.y,
+            &right_ty,
+            &left_ty,
+            original_op,
+            BinarySide::Right,
+        )
+    };
     if original_op == token::Token::AND_NOT {
         let not_right = syn::Expr::Unary(syn::ExprUnary {
             attrs: vec![],
@@ -20973,6 +21021,43 @@ var X int
         assert!(
             !output.contains("isize :: from (self)"),
             "expected borrowed receiver conversion not to call From<&Self>: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_coerce_named_numeric_function_args_and_shift_counts() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type digest uint32
+
+                func update(d digest) uint32 {
+                    return uint32(d&0xffff) + uint32(d>>16)
+                }
+
+                func main() {
+                    println(update(1))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("update (digest ((1 as u32)))"),
+            "expected untyped integer argument to wrap into named numeric type: {output}"
+        );
+        assert!(
+            output.contains("u32 :: from (d & digest ((65535 as u32)))"),
+            "expected bitwise rhs to wrap into named numeric type: {output}"
+        );
+        assert!(
+            output.contains("u32 :: from (d >> 16)"),
+            "expected shift count to stay primitive: {output}"
         );
     }
 

@@ -36657,13 +36657,15 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"hash/adler32"
 		],
 		"symbolCount": 3,
-		"testedSymbolCount": 1,
+		"testedSymbolCount": 2,
 		"symbols": [
 			{
 				"name": "Checksum",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/adler32"
+				]
 			},
 			{
 				"name": "New",
@@ -79843,6 +79845,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 393,
-	"untestedSymbolCount": 12206
+	"testedSymbolCount": 394,
+	"untestedSymbolCount": 12205
 } as const;
