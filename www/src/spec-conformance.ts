@@ -974,8 +974,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 30,
-		"passingTestCount": 30,
+		"testCount": 31,
+		"passingTestCount": 31,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1172,6 +1172,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "stmt-range-function",
 				"section": "For statements with range clause",
 				"title": "range supports iterator functions with one or two yielded values",
+				"status": "passing",
+				"fixtures": [
+					"range_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-range-function-zero-values",
+				"section": "For statements with range clause",
+				"title": "range supports iterator functions with zero yielded values",
 				"status": "passing",
 				"fixtures": [
 					"range_statements"
@@ -1599,7 +1609,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 146,
-	"passingTestCount": 146,
+	"testCount": 147,
+	"passingTestCount": 147,
 	"unsupportedTestCount": 0
 } as const;

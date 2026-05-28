@@ -1020,6 +1020,15 @@
           ]
         },
         {
+          "id": "stmt-range-function-zero-values",
+          "section": "For statements with range clause",
+          "title": "range supports iterator functions with zero yielded values",
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ]
+        },
+        {
           "id": "stmt-go",
           "section": "Go statements",
           "title": "go statements start concurrent function execution",

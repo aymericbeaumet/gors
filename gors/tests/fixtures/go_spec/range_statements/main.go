@@ -17,6 +17,14 @@ func pairs(yield func(string, int) bool) {
 	yield("right", 4)
 }
 
+func ticks(yield func() bool) {
+	for i := 0; i < 5; i++ {
+		if !yield() {
+			return
+		}
+	}
+}
+
 func main() {
 	array := [3]int{2, 4, 6}
 	arrayTotal := 0
@@ -74,5 +82,13 @@ func main() {
 		pairTotal += len(key) + value
 	}
 
-	fmt.Println(arrayTotal, sliceTotal, mapTotal, stringIndexTotal, stringRuneTotal, channelTotal, intTotal, intCount, funcTotal, pairTotal)
+	tickCount := 0
+	for range ticks {
+		tickCount++
+		if tickCount == 3 {
+			break
+		}
+	}
+
+	fmt.Println(arrayTotal, sliceTotal, mapTotal, stringIndexTotal, stringRuneTotal, channelTotal, intTotal, intCount, funcTotal, pairTotal, tickCount)
 }
