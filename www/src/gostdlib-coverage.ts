@@ -3871,7 +3871,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"fixtures": [
 			"crypto/hmac"
 		],
-		"symbolCount": 3,
+		"symbolCount": 2,
 		"testedSymbolCount": 1,
 		"symbols": [
 			{
@@ -3884,12 +3884,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			},
 			{
 				"name": "New",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "ValidMAC",
 				"kind": "func",
 				"tested": false,
 				"fixtures": []
@@ -28397,19 +28391,23 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"encoding/ascii85"
 		],
 		"symbolCount": 7,
-		"testedSymbolCount": 1,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "CorruptInputError",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/ascii85"
+				]
 			},
 			{
 				"name": "CorruptInputError.Error",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/ascii85"
+				]
 			},
 			{
 				"name": "Decode",
@@ -29232,7 +29230,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"packagePath": "encoding/gob",
 		"tested": false,
 		"fixtures": [],
-		"symbolCount": 14,
+		"symbolCount": 13,
 		"testedSymbolCount": 0,
 		"symbols": [
 			{
@@ -29298,12 +29296,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NewEncoder",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Point",
-				"kind": "type",
 				"tested": false,
 				"fixtures": []
 			},
@@ -30958,7 +30950,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"unicode/utf16",
 			"unicode/utf8"
 		],
-		"symbolCount": 31,
+		"symbolCount": 29,
 		"testedSymbolCount": 13,
 		"symbols": [
 			{
@@ -31222,18 +31214,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Stringer",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "X",
-				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "X.String",
-				"kind": "method",
 				"tested": false,
 				"fixtures": []
 			}
@@ -54765,75 +54745,9 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"packagePath": "iter",
 		"tested": false,
 		"fixtures": [],
-		"symbolCount": 20,
+		"symbolCount": 4,
 		"testedSymbolCount": 0,
 		"symbols": [
-			{
-				"name": "Country.Cities",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Country.Languages",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "List.All",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "List.Backward",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Pairs",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Pos",
-				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Pos.Delete",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Pos.Set",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Pos.Value",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Preorder",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "PrintAll",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
 			{
 				"name": "Pull",
 				"kind": "func",
@@ -54847,12 +54761,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 				"fixtures": []
 			},
 			{
-				"name": "Reader.Lines",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
 				"name": "Seq",
 				"kind": "type",
 				"tested": false,
@@ -54861,30 +54769,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Seq2",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Set.All",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Split",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Tree.Positions",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "V].Scan",
-				"kind": "method",
 				"tested": false,
 				"fixtures": []
 			}
@@ -55188,7 +55072,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"fixtures": [
 			"log/slog"
 		],
-		"symbolCount": 137,
+		"symbolCount": 136,
 		"testedSymbolCount": 4,
 		"symbols": [
 			{
@@ -55331,12 +55215,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			},
 			{
 				"name": "InfoContext",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Infof",
 				"kind": "func",
 				"tested": false,
 				"fixtures": []
@@ -57604,7 +57482,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"fixtures": [
 			"math/big"
 		],
-		"symbolCount": 182,
+		"symbolCount": 177,
 		"testedSymbolCount": 1,
 		"symbols": [
 			{
@@ -58420,12 +58298,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 				"fixtures": []
 			},
 			{
-				"name": "NewT",
-				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
 				"name": "ParseFloat",
 				"kind": "func",
 				"tested": false,
@@ -58637,30 +58509,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			},
 			{
 				"name": "RoundingMode.String",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "T.Binary",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "T.Pred",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "T.SetV",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "T.Unary",
 				"kind": "method",
 				"tested": false,
 				"fixtures": []
@@ -65411,36 +65259,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"packagePath": "net/rpc",
 		"tested": false,
 		"fixtures": [],
-		"symbolCount": 43,
+		"symbolCount": 37,
 		"testedSymbolCount": 0,
 		"symbols": [
 			{
 				"name": "Accept",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Args",
-				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Arith",
-				"kind": "type",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Arith.Divide",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Arith.Multiply",
-				"kind": "method",
 				"tested": false,
 				"fixtures": []
 			},
@@ -65543,12 +65367,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NewServer",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Quotient",
-				"kind": "type",
 				"tested": false,
 				"fixtures": []
 			},
@@ -65662,12 +65480,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			},
 			{
 				"name": "ServerError.Error",
-				"kind": "method",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "T.MethodName",
 				"kind": "method",
 				"tested": false,
 				"fixtures": []
@@ -71932,7 +71744,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"sort"
 		],
 		"symbolCount": 37,
-		"testedSymbolCount": 30,
+		"testedSymbolCount": 36,
 		"symbols": [
 			{
 				"name": "Find",
@@ -71993,14 +71805,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Float64Slice.Sort",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Float64Slice.Swap",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Interface",
@@ -72059,14 +71875,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "IntSlice.Sort",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "IntSlice.Swap",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "IsSorted",
@@ -72207,14 +72027,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "StringSlice.Sort",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "StringSlice.Swap",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			}
 		]
 	},
@@ -75914,7 +75738,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 		"packagePath": "text/template",
 		"tested": false,
 		"fixtures": [],
-		"symbolCount": 35,
+		"symbolCount": 34,
 		"testedSymbolCount": 0,
 		"symbols": [
 			{
@@ -75956,12 +75780,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "HTMLEscapeString",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
-			},
-			{
-				"name": "Inventory",
-				"kind": "type",
 				"tested": false,
 				"fixtures": []
 			},
@@ -79874,7 +79692,7 @@ export const gostdlibCoverageSummary = {
 	"packageCount": 353,
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
-	"symbolCount": 12599,
-	"testedSymbolCount": 409,
-	"untestedSymbolCount": 12190
+	"symbolCount": 12566,
+	"testedSymbolCount": 417,
+	"untestedSymbolCount": 12149
 } as const;

@@ -317,18 +317,30 @@ func case_sort_method_expressions() {
 	fmt.Println((*sort.IntSlice).Len(&intView))
 	fmt.Println((*sort.IntSlice).Less(&intView, 1, 0))
 	fmt.Println((*sort.IntSlice).Search(&intView, 2))
+	(*sort.IntSlice).Swap(&intView, 0, 2)
+	fmt.Println(intView[0], intView[1], intView[2])
+	(*sort.IntSlice).Sort(&intView)
+	fmt.Println(intView[0], intView[1], intView[2])
 
 	floats := []float64{3.5, -1.25, 0.5}
 	floatView := sort.Float64Slice(floats)
 	fmt.Println((*sort.Float64Slice).Len(&floatView))
 	fmt.Println((*sort.Float64Slice).Less(&floatView, 1, 0))
 	fmt.Println((*sort.Float64Slice).Search(&floatView, 0.25))
+	(*sort.Float64Slice).Swap(&floatView, 0, 2)
+	fmt.Println(floatView[0], floatView[1], floatView[2])
+	(*sort.Float64Slice).Sort(&floatView)
+	fmt.Println(floatView[0], floatView[1], floatView[2])
 
 	strings := []string{"gamma", "alpha", "beta"}
 	stringView := sort.StringSlice(strings)
 	fmt.Println((*sort.StringSlice).Len(&stringView))
 	fmt.Println((*sort.StringSlice).Less(&stringView, 1, 0))
 	fmt.Println((*sort.StringSlice).Search(&stringView, "delta"))
+	(*sort.StringSlice).Swap(&stringView, 0, 2)
+	fmt.Println(stringView[0], stringView[1], stringView[2])
+	(*sort.StringSlice).Sort(&stringView)
+	fmt.Println(stringView[0], stringView[1], stringView[2])
 }
 
 func case_sort_string_slice_len() {

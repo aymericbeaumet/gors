@@ -79,6 +79,121 @@ function escapeRegExp(value) {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function stripGoComments(source) {
+	let result = "";
+	let i = 0;
+	let state = "code";
+
+	while (i < source.length) {
+		const ch = source[i];
+		const next = source[i + 1];
+
+		if (state === "line_comment") {
+			if (ch === "\n") {
+				result += "\n";
+				state = "code";
+			} else {
+				result += " ";
+			}
+			i += 1;
+			continue;
+		}
+
+		if (state === "block_comment") {
+			if (ch === "*" && next === "/") {
+				result += "  ";
+				state = "code";
+				i += 2;
+				continue;
+			}
+			result += ch === "\n" ? "\n" : " ";
+			i += 1;
+			continue;
+		}
+
+		if (state === "double_quote") {
+			result += ch;
+			if (ch === "\\") {
+				if (i + 1 < source.length) {
+					result += source[i + 1];
+				}
+				i += 2;
+				continue;
+			}
+			if (ch === '"') {
+				state = "code";
+			}
+			i += 1;
+			continue;
+		}
+
+		if (state === "single_quote") {
+			result += ch;
+			if (ch === "\\") {
+				if (i + 1 < source.length) {
+					result += source[i + 1];
+				}
+				i += 2;
+				continue;
+			}
+			if (ch === "'") {
+				state = "code";
+			}
+			i += 1;
+			continue;
+		}
+
+		if (state === "raw_string") {
+			result += ch;
+			if (ch === "`") {
+				state = "code";
+			}
+			i += 1;
+			continue;
+		}
+
+		if (ch === "/" && next === "/") {
+			result += "  ";
+			state = "line_comment";
+			i += 2;
+			continue;
+		}
+
+		if (ch === "/" && next === "*") {
+			result += "  ";
+			state = "block_comment";
+			i += 2;
+			continue;
+		}
+
+		if (ch === '"') {
+			result += ch;
+			state = "double_quote";
+			i += 1;
+			continue;
+		}
+
+		if (ch === "'") {
+			result += ch;
+			state = "single_quote";
+			i += 1;
+			continue;
+		}
+
+		if (ch === "`") {
+			result += ch;
+			state = "raw_string";
+			i += 1;
+			continue;
+		}
+
+		result += ch;
+		i += 1;
+	}
+
+	return result;
+}
+
 async function pathExists(candidate) {
 	try {
 		await access(candidate);
@@ -173,6 +288,7 @@ async function findStdlibSourceRoot(goVersion) {
 }
 
 function parseImports(source) {
+	source = stripGoComments(source);
 	const imports = [];
 	const importBlockPattern = /import\s*\(([\s\S]*?)\)/g;
 	let sourceWithoutBlocks = source;
@@ -237,6 +353,7 @@ function addSymbol(symbolsByPackage, packagePath, name, kind) {
 }
 
 function parseExportedSymbols(source) {
+	source = stripGoComments(source);
 	const symbols = [];
 	let groupKind = null;
 
@@ -373,6 +490,7 @@ function addImportedPackageUsage(
 	fixtureName,
 	imports,
 ) {
+	source = stripGoComments(source);
 	for (const item of imports) {
 		const pointerMethodPattern = new RegExp(
 			`\\(\\s*\\*\\s*${escapeRegExp(item.name)}\\.([A-Z][A-Za-z0-9_]*)\\s*\\)\\.([A-Z][A-Za-z0-9_]*)\\s*\\(`,
@@ -411,6 +529,7 @@ function addImportedPackageUsage(
 }
 
 function addBuiltinUsage(symbolsByPackage, source, fixtureName) {
+	source = stripGoComments(source);
 	for (const builtin of builtinNames) {
 		const pattern =
 			builtin === "any"
