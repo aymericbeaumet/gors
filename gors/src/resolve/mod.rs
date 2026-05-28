@@ -1014,7 +1014,8 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             0,
             syn::parse_quote! {
                 impl Formatter for __GorsNoopInterface {
-                    fn Format(&mut self, _f: &mut dyn State, _verb: u32) {}
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
+                    fn Format(&mut self, _f: &mut dyn State, _verb: i32) {}
                 }
             },
         );
@@ -1025,6 +1026,7 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             0,
             syn::parse_quote! {
                 impl Stringer for __GorsNoopInterface {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
                     fn String(&mut self) -> String { String::new() }
                 }
             },
@@ -1036,6 +1038,7 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             0,
             syn::parse_quote! {
                 impl GoStringer for __GorsNoopInterface {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
                     fn GoString(&mut self) -> String { String::new() }
                 }
             },
@@ -1074,6 +1077,10 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             0,
             syn::parse_quote! {
                 impl<'a> State for &'a mut pp {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                        None
+                    }
+
                     fn Write(&mut self, b: Vec<u8>) -> (isize, String) {
                         <pp as State>::Write(&mut **self, b)
                     }

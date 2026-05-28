@@ -4891,7 +4891,9 @@ fn prune_items_to_roots(
         .enumerate()
         .filter_map(|(idx, item)| {
             keep.contains(&idx)
-                .then(|| reachable_item_for_names(item, &names, &item_names, &top_level_names))
+                .then(|| {
+                    reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
+                })
                 .flatten()
         })
         .collect();
@@ -5764,7 +5766,9 @@ fn prune_dependency_stdlib_modules(
             .enumerate()
             .filter_map(|(idx, item)| {
                 keep.contains(&idx)
-                    .then(|| reachable_item_for_names(item, &names, &item_names, &top_level_names))
+                    .then(|| {
+                        reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
+                    })
                     .flatten()
             })
             .collect();
@@ -5863,7 +5867,7 @@ fn reachable_stdlib_items(
         changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
         for (idx, item) in items.iter().enumerate() {
             let Some(mut reachable_item) =
-                reachable_item_for_names(item, &names, &item_names, &top_level_names)
+                reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
             else {
                 continue;
             };
@@ -6043,6 +6047,7 @@ fn reachable_item_for_names(
     names: &std::collections::HashSet<String>,
     item_names: &std::collections::HashSet<String>,
     top_level_names: &std::collections::HashSet<String>,
+    roots: &std::collections::HashSet<String>,
 ) -> Option<syn::Item> {
     if matches!(item, syn::Item::Use(_)) {
         return Some(item.clone());
@@ -6054,6 +6059,9 @@ fn reachable_item_for_names(
             return None;
         }
         if is_ambient_trait_name(&trait_name) {
+            return Some(item.clone());
+        }
+        if roots.contains(&trait_name) {
             return Some(item.clone());
         }
         let mut filtered = item_trait.clone();
@@ -6111,22 +6119,28 @@ fn reachable_item_for_names(
         });
 
     if trait_reachable {
-        if let Some(self_name) = named_self_type(&item_impl.self_ty)
-            && item_names.contains(&self_name)
-            && !names.contains(&self_name)
-        {
-            return None;
-        }
         let trait_name = item_impl
             .trait_
             .as_ref()
             .and_then(|(_, path, _)| path.segments.last())
             .map(|seg| seg.ident.to_string());
-        let mut filtered = item_impl.clone();
+        if let Some(self_name) = named_self_type(&item_impl.self_ty)
+            && trait_name
+                .as_ref()
+                .is_none_or(|trait_name| !roots.contains(trait_name))
+            && item_names.contains(&self_name)
+            && !names.contains(&self_name)
+        {
+            return None;
+        }
         if let Some(trait_name) = trait_name {
             if is_ambient_trait_name(&trait_name) {
                 return Some(item.clone());
             }
+            if roots.contains(&trait_name) {
+                return Some(item.clone());
+            }
+            let mut filtered = item_impl.clone();
             filtered.items.retain(|impl_item| match impl_item {
                 syn::ImplItem::Fn(func) => {
                     let name = func.sig.ident.to_string();
@@ -6147,8 +6161,9 @@ fn reachable_item_for_names(
                     .is_some_and(|seg| names.contains(&seg.ident.to_string())),
                 _ => false,
             });
+            return Some(syn::Item::Impl(filtered));
         }
-        return Some(syn::Item::Impl(filtered));
+        return Some(syn::Item::Impl(item_impl.clone()));
     }
     if !self_reachable {
         return None;
@@ -23949,7 +23964,7 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Trait(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names)
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
             })
             .and_then(|item| match item {
                 syn::Item::Trait(item_trait) => Some(item_trait),
@@ -23965,7 +23980,7 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Impl(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names)
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
             })
             .and_then(|item| match item {
                 syn::Item::Impl(item_impl) => Some(item_impl),
@@ -23975,6 +23990,84 @@ func main() {
         assert!(impl_item.items.iter().any(|item| {
             matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "__gors_as_any")
         }));
+    }
+
+    #[test]
+    fn it_should_preserve_full_trait_items_when_trait_type_is_rooted() {
+        let file: syn::File = rust! {
+            pub trait Interface {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Len(&mut self) -> isize;
+                fn Reset(&mut self);
+            }
+
+            pub struct Values;
+
+            impl Interface for Values {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn Len(&mut self) -> isize {
+                    0
+                }
+
+                fn Reset(&mut self) {}
+            }
+        };
+        let roots = std::collections::HashSet::from(["Interface".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+
+        let trait_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Trait(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .and_then(|item| match item {
+                syn::Item::Trait(item_trait) => Some(item_trait),
+                _ => None,
+            })
+            .expect("expected trait");
+        assert!(
+            trait_item.items.iter().any(|item| {
+                matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Len")
+            })
+        );
+        assert!(
+            trait_item.items.iter().any(|item| {
+                matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Reset")
+            })
+        );
+
+        let impl_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Impl(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .and_then(|item| match item {
+                syn::Item::Impl(item_impl) => Some(item_impl),
+                _ => None,
+            })
+            .expect("expected impl");
+        assert!(
+            impl_item
+                .items
+                .iter()
+                .any(|item| { matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Len") })
+        );
+        assert!(
+            impl_item.items.iter().any(|item| {
+                matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Reset")
+            })
+        );
     }
 
     #[test]
