@@ -521,6 +521,15 @@
           ]
         },
         {
+          "id": "types-pointer-receiver-interface-methods",
+          "section": "Method sets",
+          "title": "Pointer receiver methods satisfy interfaces through pointer values",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "types-interface-method-sets",
           "section": "Method sets",
           "title": "Interface method sets match pointer and value receiver rules",

@@ -432,8 +432,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 24,
-		"passingTestCount": 24,
+		"testCount": 25,
+		"passingTestCount": 25,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -610,6 +610,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-embedded-interfaces",
 				"section": "Interface types",
 				"title": "Embedded interfaces compose method sets",
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
+			},
+			{
+				"id": "types-pointer-receiver-interface-methods",
+				"section": "Method sets",
+				"title": "Pointer receiver methods satisfy interfaces through pointer values",
 				"status": "passing",
 				"fixtures": [
 					"types"
@@ -1649,7 +1659,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 151,
-	"passingTestCount": 151,
+	"testCount": 152,
+	"passingTestCount": 152,
 	"unsupportedTestCount": 0
 } as const;

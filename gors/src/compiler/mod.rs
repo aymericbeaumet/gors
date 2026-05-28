@@ -16305,6 +16305,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
         // Collect trait names and struct method signatures for interface satisfaction
         let mut trait_methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut struct_methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut struct_pointer_methods: BTreeMap<String, std::collections::BTreeSet<String>> =
+            BTreeMap::new();
         let mut struct_has_string_method: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut struct_has_pointer_string_method: std::collections::HashSet<String> =
@@ -16340,6 +16342,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 }
                                 _ => None,
                             });
+                        let is_pointer_receiver = func_decl
+                            .recv
+                            .as_ref()
+                            .and_then(|r| r.list.first())
+                            .and_then(|f| f.type_.as_ref())
+                            .is_some_and(|t| matches!(t, ast::Expr::StarExpr(_)));
                         if let Some(ref type_name) = recv_type_name {
                             let method_name = func_decl.name.name.to_string();
                             if method_name == "String" {
@@ -16358,16 +16366,16 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                     });
                                 if returns_string {
                                     struct_has_string_method.insert(type_name.clone());
-                                    let is_pointer_receiver = func_decl
-                                        .recv
-                                        .as_ref()
-                                        .and_then(|r| r.list.first())
-                                        .and_then(|f| f.type_.as_ref())
-                                        .is_some_and(|t| matches!(t, ast::Expr::StarExpr(_)));
                                     if is_pointer_receiver {
                                         struct_has_pointer_string_method.insert(type_name.clone());
                                     }
                                 }
+                            }
+                            if is_pointer_receiver {
+                                struct_pointer_methods
+                                    .entry(type_name.clone())
+                                    .or_default()
+                                    .insert(method_name.clone());
                             }
                             struct_methods
                                 .entry(type_name.clone())
@@ -16545,10 +16553,18 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 continue;
             }
             for (struct_name, struct_method_list) in &struct_methods {
-                let satisfies = required_methods
+                let pointer_methods = struct_pointer_methods.get(struct_name);
+                let pointer_satisfies = required_methods
                     .iter()
                     .all(|m| struct_method_list.contains(m));
-                if satisfies {
+                let value_satisfies = required_methods.iter().all(|method| {
+                    struct_method_list.contains(method)
+                        && pointer_methods.is_none_or(|methods| !methods.contains(method))
+                });
+                // The Arc<Mutex<T>> pointer shim delegates through this concrete impl;
+                // validation still enforces Go value-vs-pointer method-set rules.
+                let emit_concrete_trait_impl = value_satisfies || pointer_satisfies;
+                if emit_concrete_trait_impl {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
 
@@ -16614,6 +16630,71 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         brace_token: syn::token::Brace::default(),
                         items: impl_items,
                     }));
+                }
+                if pointer_satisfies
+                    && !BORROWED_INTERFACE_STRUCTS
+                        .with(|structs| structs.borrow().contains_key(struct_name))
+                    && method_generics
+                        .get(struct_name)
+                        .is_none_or(std::vec::Vec::is_empty)
+                {
+                    let trait_path = interface_trait_path_from_name(trait_name);
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
+                        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                            Some(self)
+                        }
+                    }];
+                    if let Some(method_list) = methods.get(struct_name) {
+                        for method in method_list {
+                            if !required_methods.contains(&method.sig.ident.to_string()) {
+                                continue;
+                            }
+                            let method_ident = method.sig.ident.clone();
+                            let arg_idents = method
+                                .sig
+                                .inputs
+                                .iter()
+                                .skip(1)
+                                .filter_map(|arg| match arg {
+                                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                                        _ => None,
+                                    },
+                                    syn::FnArg::Receiver(_) => None,
+                                })
+                                .collect::<Vec<_>>();
+                            let mut sig = method.sig.clone();
+                            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+                                receiver.mutability = Some(<Token![mut]>::default());
+                                *receiver.ty = syn::parse_quote! { &mut Self };
+                            }
+                            let block = if matches!(sig.output, syn::ReturnType::Default) {
+                                syn::parse_quote!({
+                                    let mut __gors_guard = self.lock().unwrap();
+                                    __gors_guard.#method_ident(#(#arg_idents),*);
+                                })
+                            } else {
+                                syn::parse_quote!({
+                                    let mut __gors_guard = self.lock().unwrap();
+                                    __gors_guard.#method_ident(#(#arg_idents),*)
+                                })
+                            };
+                            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
+                                attrs: vec![],
+                                vis: syn::Visibility::Inherited,
+                                defaultness: None,
+                                sig,
+                                block,
+                            }));
+                        }
+                    }
+
+                    items.push(syn::parse_quote! {
+                        impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
+                            #(#impl_items)*
+                        }
+                    });
                 }
             }
         }
