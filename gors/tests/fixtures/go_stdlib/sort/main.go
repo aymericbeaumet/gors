@@ -81,6 +81,8 @@ func main() {
 	case_sort_stable()
 	fmt.Println("== sort/stable_custom ==")
 	case_sort_stable_custom()
+	fmt.Println("== sort/method_expressions ==")
+	case_sort_method_expressions()
 	fmt.Println("== sort/string_slice_len ==")
 	case_sort_string_slice_len()
 	fmt.Println("== sort/string_slice_less ==")
@@ -307,6 +309,26 @@ func case_sort_stable_custom() {
 	records := byKey{{Key: 2, Name: "first"}, {Key: 1, Name: "middle"}, {Key: 2, Name: "second"}}
 	sort.Stable(records)
 	fmt.Println(records[0].Name, records[1].Name, records[2].Name)
+}
+
+func case_sort_method_expressions() {
+	ints := []int{3, 1, 2}
+	intView := sort.IntSlice(ints)
+	fmt.Println((*sort.IntSlice).Len(&intView))
+	fmt.Println((*sort.IntSlice).Less(&intView, 1, 0))
+	fmt.Println((*sort.IntSlice).Search(&intView, 2))
+
+	floats := []float64{3.5, -1.25, 0.5}
+	floatView := sort.Float64Slice(floats)
+	fmt.Println((*sort.Float64Slice).Len(&floatView))
+	fmt.Println((*sort.Float64Slice).Less(&floatView, 1, 0))
+	fmt.Println((*sort.Float64Slice).Search(&floatView, 0.25))
+
+	strings := []string{"gamma", "alpha", "beta"}
+	stringView := sort.StringSlice(strings)
+	fmt.Println((*sort.StringSlice).Len(&stringView))
+	fmt.Println((*sort.StringSlice).Less(&stringView, 1, 0))
+	fmt.Println((*sort.StringSlice).Search(&stringView, "delta"))
 }
 
 func case_sort_string_slice_len() {

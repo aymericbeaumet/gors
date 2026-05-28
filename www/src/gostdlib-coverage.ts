@@ -71932,7 +71932,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"sort"
 		],
 		"symbolCount": 37,
-		"testedSymbolCount": 21,
+		"testedSymbolCount": 30,
 		"symbols": [
 			{
 				"name": "Find",
@@ -71969,20 +71969,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Float64Slice.Len",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Float64Slice.Less",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Float64Slice.Search",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Float64Slice.Sort",
@@ -72029,20 +72035,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "IntSlice.Len",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "IntSlice.Less",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "IntSlice.Search",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "IntSlice.Sort",
@@ -72171,20 +72183,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "StringSlice.Len",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "StringSlice.Less",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "StringSlice.Search",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "StringSlice.Sort",
@@ -79857,6 +79875,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 400,
-	"untestedSymbolCount": 12199
+	"testedSymbolCount": 409,
+	"untestedSymbolCount": 12190
 } as const;
