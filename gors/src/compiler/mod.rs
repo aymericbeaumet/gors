@@ -296,10 +296,20 @@ fn go_type_is_interface_like(go_type: &typeinfer::GoType) -> bool {
     go_type.is_interface() || go_type_interface_name(go_type).is_some()
 }
 
+fn qualified_name_rust_segments(name: &str) -> Vec<String> {
+    let mut parts = name.split('.').map(str::to_string).collect::<Vec<_>>();
+    if parts.len() > 1
+        && let Some(first) = parts.first_mut()
+    {
+        *first = import_rust_name(first);
+    }
+    parts
+}
+
 fn interface_trait_path_from_name(name: &str) -> syn::Path {
     let mut segments = syn::punctuated::Punctuated::new();
-    for part in name.split('.') {
-        let ident = syn::Ident::new(&rust_safe_ident_name(part), Span::mixed_site());
+    for part in qualified_name_rust_segments(name) {
+        let ident = syn::Ident::new(&rust_safe_ident_name(&part), Span::mixed_site());
         segments.push(syn::PathSegment {
             ident,
             arguments: syn::PathArguments::None,
@@ -382,11 +392,11 @@ fn collect_decl_needed_imported_interface_method_sets(
         }
         ast::Decl::GenDecl(gen_decl) => {
             for spec in &gen_decl.specs {
-                if let ast::Spec::ValueSpec(value) = spec {
-                    if let Some(values) = &value.values {
-                        for expr in values {
-                            collect_expr_needed_imported_interface_method_sets(expr, env, out);
-                        }
+                if let ast::Spec::ValueSpec(value) = spec
+                    && let Some(values) = &value.values
+                {
+                    for expr in values {
+                        collect_expr_needed_imported_interface_method_sets(expr, env, out);
                     }
                 }
             }
@@ -572,20 +582,6 @@ fn collect_expr_needed_imported_interface_method_sets(
         ast::Expr::FuncLit(func) => {
             collect_block_needed_imported_interface_method_sets(&func.body, env, out);
         }
-        ast::Expr::FuncType(func) => {
-            for field in &func.params.list {
-                if let Some(type_) = &field.type_ {
-                    collect_expr_needed_imported_interface_method_sets(type_, env, out);
-                }
-            }
-            if let Some(results) = &func.results {
-                for field in &results.list {
-                    if let Some(type_) = &field.type_ {
-                        collect_expr_needed_imported_interface_method_sets(type_, env, out);
-                    }
-                }
-            }
-        }
         ast::Expr::IndexExpr(index) => {
             collect_expr_needed_imported_interface_method_sets(&index.x, env, out);
             collect_expr_needed_imported_interface_method_sets(&index.index, env, out);
@@ -652,7 +648,7 @@ fn collect_expr_needed_imported_interface_method_sets(
         ast::Expr::UnaryExpr(unary) => {
             collect_expr_needed_imported_interface_method_sets(&unary.x, env, out);
         }
-        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::BasicLit(_) | ast::Expr::FuncType(_) | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -6062,7 +6058,14 @@ fn reachable_item_for_names(
             return Some(item.clone());
         }
         if roots.contains(&trait_name) {
-            return Some(item.clone());
+            let mut preserved = item_trait.clone();
+            allow_dead_code_attr(&mut preserved.attrs);
+            return Some(syn::Item::Trait(preserved));
+        }
+        if names.contains(&trait_name) {
+            let mut preserved = item_trait.clone();
+            allow_dead_code_attr(&mut preserved.attrs);
+            return Some(syn::Item::Trait(preserved));
         }
         let mut filtered = item_trait.clone();
         filtered.items.retain(|trait_item| match trait_item {
@@ -6138,7 +6141,14 @@ fn reachable_item_for_names(
                 return Some(item.clone());
             }
             if roots.contains(&trait_name) {
-                return Some(item.clone());
+                let mut preserved = item_impl.clone();
+                allow_dead_code_attr(&mut preserved.attrs);
+                return Some(syn::Item::Impl(preserved));
+            }
+            if names.contains(&trait_name) {
+                let mut preserved = item_impl.clone();
+                allow_dead_code_attr(&mut preserved.attrs);
+                return Some(syn::Item::Impl(preserved));
             }
             let mut filtered = item_impl.clone();
             filtered.items.retain(|impl_item| match impl_item {
@@ -19351,13 +19361,12 @@ fn interface_assertion_fallback(
 }
 
 fn noop_interface_type_from_name(name: &str) -> syn::Type {
-    let mut parts = name.split('.').collect::<Vec<_>>();
+    let mut parts = qualified_name_rust_segments(name);
     let Some(last) = parts.pop() else {
         return syn::parse_quote! { __GorsNoopInterface };
     };
-    let noop_name = format!("__GorsNoop{}", rust_safe_ident_name(last));
-    parts.push(Box::leak(noop_name.into_boxed_str()));
-    rust_type_path_from_segments(parts, true)
+    parts.push(format!("__GorsNoop{}", rust_safe_ident_name(&last)));
+    rust_type_path_from_segments(parts.iter().map(String::as_str), true)
 }
 
 fn type_assert_interface_expr(
@@ -24044,6 +24053,61 @@ func main() {
                 matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Reset")
             })
         );
+
+        let impl_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Impl(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .and_then(|item| match item {
+                syn::Item::Impl(item_impl) => Some(item_impl),
+                _ => None,
+            })
+            .expect("expected impl");
+        assert!(
+            impl_item
+                .items
+                .iter()
+                .any(|item| { matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Len") })
+        );
+        assert!(
+            impl_item.items.iter().any(|item| {
+                matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Reset")
+            })
+        );
+    }
+
+    #[test]
+    fn it_should_preserve_full_trait_impl_items_when_trait_name_is_reachable() {
+        let file: syn::File = rust! {
+            pub trait Interface {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Len(&mut self) -> isize;
+                fn Reset(&mut self);
+            }
+
+            pub struct Values;
+
+            impl Interface for Values {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn Len(&mut self) -> isize {
+                    0
+                }
+
+                fn Reset(&mut self) {}
+            }
+        };
+        let roots =
+            std::collections::HashSet::from(["Values".to_string(), "Interface".to_string()]);
+        let names =
+            std::collections::HashSet::from(["Values".to_string(), "Interface".to_string()]);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
 
         let impl_item = file
             .items
