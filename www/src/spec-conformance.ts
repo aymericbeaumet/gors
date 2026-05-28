@@ -964,8 +964,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 28,
-		"passingTestCount": 28,
+		"testCount": 30,
+		"passingTestCount": 30,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1025,6 +1025,26 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-switch-init-expressionless",
+				"section": "Switch statements",
+				"title": "Expression switches support init clauses and omitted switch expressions",
+				"status": "passing",
+				"fixtures": [
+					"switch_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-switch-multiple-expressions",
+				"section": "Switch statements",
+				"title": "Switch cases accept multiple matching expressions",
+				"status": "passing",
+				"fixtures": [
+					"switch_statements"
 				],
 				"reason": ""
 			},
@@ -1559,7 +1579,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 142,
-	"passingTestCount": 142,
+	"testCount": 144,
+	"passingTestCount": 144,
 	"unsupportedTestCount": 0
 } as const;

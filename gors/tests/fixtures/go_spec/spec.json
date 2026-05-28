@@ -885,6 +885,24 @@
           ]
         },
         {
+          "id": "stmt-switch-init-expressionless",
+          "section": "Switch statements",
+          "title": "Expression switches support init clauses and omitted switch expressions",
+          "status": "passing",
+          "fixtures": [
+            "switch_statements"
+          ]
+        },
+        {
+          "id": "stmt-switch-multiple-expressions",
+          "section": "Switch statements",
+          "title": "Switch cases accept multiple matching expressions",
+          "status": "passing",
+          "fixtures": [
+            "switch_statements"
+          ]
+        },
+        {
           "id": "stmt-fallthrough",
           "section": "Fallthrough statements",
           "title": "fallthrough transfers control to the next expression switch case",
