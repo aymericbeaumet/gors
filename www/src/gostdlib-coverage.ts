@@ -71744,7 +71744,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"sort"
 		],
 		"symbolCount": 37,
-		"testedSymbolCount": 36,
+		"testedSymbolCount": 37,
 		"symbols": [
 			{
 				"name": "Find",
@@ -71821,8 +71821,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Interface",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"sort"
+				]
 			},
 			{
 				"name": "Ints",
@@ -79693,6 +79695,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12566,
-	"testedSymbolCount": 417,
-	"untestedSymbolCount": 12149
+	"testedSymbolCount": 418,
+	"untestedSymbolCount": 12148
 } as const;

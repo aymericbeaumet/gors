@@ -12,6 +12,8 @@ type pair struct {
 
 type byKey []pair
 
+var _ sort.Interface = sort.IntSlice([]int{1, 2, 3})
+
 func (p byKey) Len() int {
 	return len(p)
 }
