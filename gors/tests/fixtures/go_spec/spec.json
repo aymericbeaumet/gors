@@ -691,6 +691,15 @@
           ]
         },
         {
+          "id": "expr-method-expressions",
+          "section": "Method expressions",
+          "title": "Method expressions expose value and pointer receivers as functions",
+          "status": "passing",
+          "fixtures": [
+            "method_expressions"
+          ]
+        },
+        {
           "id": "expr-index",
           "section": "Index expressions",
           "title": "Index expressions read and write arrays, slices, strings, and maps",

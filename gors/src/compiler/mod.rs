@@ -15463,6 +15463,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
                     ) {
                         syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+                    } else if base_is_owning_pointer {
+                        syn::parse_quote! {{
+                            let __gors_pointer_field = (#field_expr).clone();
+                            __gors_pointer_field
+                        }}
                     } else if field_go_type
                         .as_ref()
                         .is_some_and(|field_ty| !go_type_is_copy(field_ty))

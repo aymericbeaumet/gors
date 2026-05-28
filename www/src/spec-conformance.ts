@@ -786,8 +786,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Expressions",
-		"testCount": 16,
-		"passingTestCount": 16,
+		"testCount": 17,
+		"passingTestCount": 17,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -807,6 +807,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"expressions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-method-expressions",
+				"section": "Method expressions",
+				"title": "Method expressions expose value and pointer receivers as functions",
+				"status": "passing",
+				"fixtures": [
+					"method_expressions"
 				],
 				"reason": ""
 			},
@@ -1409,7 +1419,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 127,
-	"passingTestCount": 127,
+	"testCount": 128,
+	"passingTestCount": 128,
 	"unsupportedTestCount": 0
 } as const;
