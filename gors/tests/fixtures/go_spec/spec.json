@@ -921,6 +921,33 @@
           ]
         },
         {
+          "id": "stmt-select-send-default",
+          "section": "Select statements",
+          "title": "select send cases and default clauses choose ready communications",
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ]
+        },
+        {
+          "id": "stmt-select-receive-assignment",
+          "section": "Select statements",
+          "title": "select receive cases assign values after communication is chosen",
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ]
+        },
+        {
+          "id": "stmt-select-receive-comma-ok",
+          "section": "Select statements",
+          "title": "select receive cases bind one or two values from open and closed channels",
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ]
+        },
+        {
           "id": "stmt-for",
           "section": "For statements",
           "title": "for loops support clauses, while-style conditions, break, and continue",

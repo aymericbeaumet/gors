@@ -964,8 +964,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 22,
-		"passingTestCount": 22,
+		"testCount": 25,
+		"passingTestCount": 25,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1065,6 +1065,36 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-select-send-default",
+				"section": "Select statements",
+				"title": "select send cases and default clauses choose ready communications",
+				"status": "passing",
+				"fixtures": [
+					"select_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-select-receive-assignment",
+				"section": "Select statements",
+				"title": "select receive cases assign values after communication is chosen",
+				"status": "passing",
+				"fixtures": [
+					"select_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-select-receive-comma-ok",
+				"section": "Select statements",
+				"title": "select receive cases bind one or two values from open and closed channels",
+				"status": "passing",
+				"fixtures": [
+					"select_statements"
 				],
 				"reason": ""
 			},
@@ -1449,7 +1479,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 131,
-	"passingTestCount": 131,
+	"testCount": 134,
+	"passingTestCount": 134,
 	"unsupportedTestCount": 0
 } as const;

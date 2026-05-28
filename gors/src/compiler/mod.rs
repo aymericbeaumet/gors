@@ -2731,16 +2731,6 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
     }
 
-    // Helper: extract channel expression from a comm statement by consuming it
-    fn extract_channel_recv(expr: ast::Expr) -> Option<syn::Expr> {
-        if let ast::Expr::UnaryExpr(unary) = expr {
-            if unary.op == token::Token::ARROW {
-                return Some((*unary.x).into());
-            }
-        }
-        None
-    }
-
     // Single case with optional default
     if cases.len() == 1 {
         let case = cases.remove(0);
@@ -2762,7 +2752,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                     if let Some(ch) = extract_channel_recv(expr_stmt.x) {
                         let stmt: syn::Stmt = syn::parse_quote! {
                             {
-                                if let Ok(_v) = #ch.try_recv() {
+                                if let Some((_, _)) = (#ch).try_recv_with_ok() {
                                     #(#case_body_stmts)*
                                 } else {
                                     #(#default_stmts)*
@@ -2772,25 +2762,22 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                         return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
                     }
                 }
-                ast::Stmt::AssignStmt(assign)
-                    if assign.rhs.len() == 1 && !assign.lhs.is_empty() =>
-                {
-                    if let (Some(lhs), Some(rhs_expr)) =
-                        (assign.lhs.first(), assign.rhs.into_iter().next())
+                ast::Stmt::AssignStmt(assign) => {
+                    let (value_ident, ok_ident) = next_select_recv_idents();
+                    if let Some((ch, binding_stmts)) =
+                        select_receive_assignment_parts(assign, &value_ident, &ok_ident)?
                     {
-                        let lhs_pat = expr_to_pat(lhs);
-                        if let Some(ch) = extract_channel_recv(rhs_expr) {
-                            let stmt: syn::Stmt = syn::parse_quote! {
-                                {
-                                    if let Ok(#lhs_pat) = #ch.try_recv() {
-                                        #(#case_body_stmts)*
-                                    } else {
-                                        #(#default_stmts)*
-                                    }
+                        let stmt: syn::Stmt = syn::parse_quote! {
+                            {
+                                if let Some((#value_ident, #ok_ident)) = (#ch).try_recv_with_ok() {
+                                    #(#binding_stmts)*
+                                    #(#case_body_stmts)*
+                                } else {
+                                    #(#default_stmts)*
                                 }
-                            };
-                            return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
-                        }
+                            }
+                        };
+                        return Ok(vec![select_labeled_block(select_label, vec![stmt])]);
                     }
                 }
                 ast::Stmt::SendStmt(send) => {
@@ -2830,7 +2817,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
             ast::Stmt::ExprStmt(expr_stmt) => {
                 if let Some(ch) = extract_channel_recv(expr_stmt.x) {
                     arms.push(quote::quote! {
-                        if let Ok(_v) = #ch.try_recv() {
+                        if let Some((_, _)) = (#ch).try_recv_with_ok() {
                             #(#body_stmts)*
                             break;
                         }
@@ -2838,17 +2825,14 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                     continue;
                 }
             }
-            ast::Stmt::AssignStmt(assign) if assign.rhs.len() == 1 && !assign.lhs.is_empty() => {
-                let Some(lhs) = assign.lhs.first() else {
-                    continue;
-                };
-                let pat = expr_to_pat(lhs);
-                let Some(rhs_expr) = assign.rhs.into_iter().next() else {
-                    continue;
-                };
-                if let Some(ch) = extract_channel_recv(rhs_expr) {
+            ast::Stmt::AssignStmt(assign) => {
+                let (value_ident, ok_ident) = next_select_recv_idents();
+                if let Some((ch, binding_stmts)) =
+                    select_receive_assignment_parts(assign, &value_ident, &ok_ident)?
+                {
                     arms.push(quote::quote! {
-                        if let Ok(#pat) = #ch.try_recv() {
+                        if let Some((#value_ident, #ok_ident)) = (#ch).try_recv_with_ok() {
+                            #(#binding_stmts)*
                             #(#body_stmts)*
                             break;
                         }
@@ -2892,6 +2876,79 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
         }
     })?;
     Ok(vec![select_labeled_block(select_label, vec![stmt])])
+}
+
+fn extract_channel_recv(expr: ast::Expr) -> Option<syn::Expr> {
+    if let ast::Expr::UnaryExpr(unary) = expr
+        && unary.op == token::Token::ARROW
+    {
+        return Some((*unary.x).into());
+    }
+    None
+}
+
+fn select_receive_assignment_parts(
+    assign: ast::AssignStmt,
+    value_ident: &syn::Ident,
+    ok_ident: &syn::Ident,
+) -> Result<Option<(syn::Expr, Vec<syn::Stmt>)>, CompilerError> {
+    let ast::AssignStmt { lhs, tok, rhs, .. } = assign;
+    if rhs.len() != 1 || lhs.is_empty() || lhs.len() > 2 {
+        return Ok(None);
+    }
+    let Some(rhs_expr) = rhs.into_iter().next() else {
+        return Ok(None);
+    };
+    let Some(ch) = extract_channel_recv(rhs_expr) else {
+        return Ok(None);
+    };
+    let binding_stmts = select_receive_binding_stmts(lhs, tok, value_ident, ok_ident)?;
+    Ok(Some((ch, binding_stmts)))
+}
+
+fn select_receive_binding_stmts(
+    lhs: Vec<ast::Expr>,
+    tok: token::Token,
+    value_ident: &syn::Ident,
+    ok_ident: &syn::Ident,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    match lhs.len() {
+        1 => {
+            let Some(lhs_expr) = lhs.into_iter().next() else {
+                return Ok(Vec::new());
+            };
+            if tok == token::Token::DEFINE {
+                let pat = expr_to_pat(&lhs_expr);
+                Ok(vec![syn::parse_quote! {
+                    let #pat = #value_ident;
+                }])
+            } else {
+                let Some(lhs_expr) = comma_ok_lhs_expr(lhs_expr)? else {
+                    return Ok(Vec::new());
+                };
+                Ok(vec![syn::parse_quote! {
+                    #lhs_expr = #value_ident;
+                }])
+            }
+        }
+        2 if tok == token::Token::DEFINE => {
+            let pats = lhs.iter().map(expr_to_pat).collect::<Vec<_>>();
+            Ok(vec![syn::parse_quote! {
+                let (#(#pats),*) = (#value_ident, #ok_ident);
+            }])
+        }
+        2 => {
+            let lhs_exprs = lhs
+                .into_iter()
+                .map(comma_ok_lhs_expr)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(comma_ok_assignment_stmts(
+                lhs_exprs,
+                syn::parse_quote! { (#value_ident, #ok_ident) },
+            ))
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn select_labeled_block(label: syn::Lifetime, stmts: Vec<syn::Stmt>) -> syn::Stmt {
@@ -4805,11 +4862,13 @@ fn expand_builtin_roots(
                 | "recv_with_ok"
                 | "try_send"
                 | "try_recv"
+                | "try_recv_with_ok"
                 | "Chan::send"
                 | "Chan::recv"
                 | "Chan::recv_with_ok"
                 | "Chan::try_send"
                 | "Chan::try_recv"
+                | "Chan::try_recv_with_ok"
                 | "Chan::len"
                 | "Chan::cap"
         )
@@ -4825,12 +4884,14 @@ fn expand_builtin_roots(
             "Chan::recv_with_ok",
             "Chan::try_send",
             "Chan::try_recv",
+            "Chan::try_recv_with_ok",
             "new",
             "send",
             "recv",
             "recv_with_ok",
             "try_send",
             "try_recv",
+            "try_recv_with_ok",
         ] {
             expanded.insert(root.to_string());
         }
@@ -18055,6 +18116,19 @@ fn next_select_label() -> syn::Lifetime {
         n
     });
     syn::Lifetime::new(&format!("'__gors_select_{n}"), Span::mixed_site())
+}
+
+fn next_select_recv_idents() -> (syn::Ident, syn::Ident) {
+    let n = SELECT_COUNTER.with(|c| {
+        let mut val = c.borrow_mut();
+        let n = *val;
+        *val += 1;
+        n
+    });
+    (
+        syn::Ident::new(&format!("__gors_select_value_{n}"), Span::mixed_site()),
+        syn::Ident::new(&format!("__gors_select_ok_{n}"), Span::mixed_site()),
+    )
 }
 
 fn next_loop_body_label() -> syn::Lifetime {

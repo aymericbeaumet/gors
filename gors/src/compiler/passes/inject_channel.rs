@@ -109,6 +109,19 @@ pub fn pass(file: &mut syn::File) {
                         }
                     }
 
+                    pub fn try_recv_with_ok(&self) -> Option<(T, bool)> where T: Default {
+                        let (ref mutex, _, ref send_cvar) = *self.inner;
+                        let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if let Some(val) = inner.buffer.pop_front() {
+                            send_cvar.notify_one();
+                            Some((val, true))
+                        } else if inner.closed {
+                            Some((T::default(), false))
+                        } else {
+                            None
+                        }
+                    }
+
                     pub fn try_send(&self, value: T) -> Result<(), T> {
                         let (ref mutex, ref recv_cvar, _) = *self.inner;
                         let mut inner = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

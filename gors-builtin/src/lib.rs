@@ -1037,6 +1037,23 @@ impl<T> Chan<T> {
         }
     }
 
+    pub fn try_recv_with_ok(&self) -> Option<(T, bool)>
+    where
+        T: Default,
+    {
+        let (lock, _, tx_cv) = &*self.inner;
+        let mut inner = lock_chan(lock);
+        if let Some(val) = inner.buf.pop_front() {
+            drop(inner);
+            tx_cv.notify_one();
+            Some((val, true))
+        } else if inner.closed {
+            Some((T::default(), false))
+        } else {
+            None
+        }
+    }
+
     pub fn recv_with_ok(&self) -> (T, bool)
     where
         T: Default,
@@ -1437,6 +1454,7 @@ mod tests {
         assert_eq!(ch.try_recv(), Ok(1));
         assert_eq!(ch.try_recv(), Err(TryRecvError::Empty));
         close(&ch);
+        assert_eq!(ch.try_recv_with_ok(), Some((0, false)));
         assert_eq!(ch.try_recv(), Ok(0));
 
         let unbuffered = make_chan(0);
