@@ -1044,8 +1044,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 32,
-		"passingTestCount": 32,
+		"testCount": 33,
+		"passingTestCount": 33,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1242,6 +1242,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "stmt-range-channel-integer",
 				"section": "For statements with range clause",
 				"title": "range supports receive-capable channels and integer values",
+				"status": "passing",
+				"fixtures": [
+					"range_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-range-typed-integers",
+				"section": "For statements with range clause",
+				"title": "integer range values use the integer range expression or preexisting iteration variable type",
 				"status": "passing",
 				"fixtures": [
 					"range_statements"
@@ -1689,7 +1699,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 155,
-	"passingTestCount": 155,
+	"testCount": 156,
+	"passingTestCount": 156,
 	"unsupportedTestCount": 0
 } as const;

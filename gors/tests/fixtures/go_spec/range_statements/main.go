@@ -68,6 +68,21 @@ func main() {
 	for range 3 {
 		intCount++
 	}
+	typedIntTotal := 0
+	var smallLimit uint8 = 4
+	var lastSmall uint8
+	for lastSmall = range smallLimit {
+		typedIntTotal += int(lastSmall)
+	}
+	typedUntypedTotal := 0
+	var fromUntyped uint8
+	for fromUntyped = range 4 {
+		typedUntypedTotal += int(fromUntyped)
+	}
+	negativeCount := 0
+	for range -2 {
+		negativeCount++
+	}
 
 	funcTotal := 0
 	for value := range ints {
@@ -90,5 +105,5 @@ func main() {
 		}
 	}
 
-	fmt.Println(arrayTotal, sliceTotal, mapTotal, stringIndexTotal, stringRuneTotal, channelTotal, intTotal, intCount, funcTotal, pairTotal, tickCount)
+	fmt.Println(arrayTotal, sliceTotal, mapTotal, stringIndexTotal, stringRuneTotal, channelTotal, intTotal, intCount, typedIntTotal, lastSmall, typedUntypedTotal, fromUntyped, negativeCount, funcTotal, pairTotal, tickCount)
 }

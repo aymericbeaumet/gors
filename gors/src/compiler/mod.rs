@@ -12488,7 +12488,7 @@ fn set_range_bindings(
     }
 
     if is_int {
-        set_range_binding(key, typeinfer::GoType::Int);
+        set_range_binding(key, range_integer_iteration_go_type(inferred_range_type));
         return;
     }
 
@@ -12514,6 +12514,20 @@ fn set_range_bindings(
         }
         _ => {}
     }
+}
+
+fn range_integer_iteration_go_type(inferred_range_type: &typeinfer::GoType) -> typeinfer::GoType {
+    let resolved = resolved_go_type(inferred_range_type);
+    if resolved.is_integer() {
+        resolved
+    } else {
+        typeinfer::GoType::Int
+    }
+}
+
+fn range_integer_iter_expr(x: &syn::Expr, iter_go_type: &typeinfer::GoType) -> syn::Expr {
+    let ty = rust_type_from_go_type(iter_go_type).unwrap_or_else(|| syn::parse_quote! { isize });
+    syn::parse_quote! { (0 as #ty)..((#x) as #ty) }
 }
 
 fn range_function_yield_params(range_type: &typeinfer::GoType) -> Option<Vec<typeinfer::GoType>> {
@@ -12589,6 +12603,8 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         range_function_yield_params.is_some() && is_function_item_expr(&range_stmt.x);
     let x: syn::Expr = range_stmt.x.into();
     let range_tok = range_stmt.tok;
+    let integer_iter_go_type =
+        is_int.then(|| range_integer_iteration_go_type(&inferred_range_type));
 
     if let Some(yield_params) = range_function_yield_params {
         return compile_range_function_stmt(
@@ -12651,13 +12667,17 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         }
         // for i := range x  OR  for v := range ch
         (Some(key_expr), None) => {
-            let (key_pat, body) = range_pat_and_body(vec![key_expr], range_tok, body)?;
+            let value_types = integer_iter_go_type
+                .clone()
+                .map_or_else(Vec::new, |ty| vec![Some(ty)]);
+            let (key_pat, body) =
+                range_pat_and_body_with_value_types(vec![key_expr], range_tok, body, &value_types)?;
             if is_int {
-                Ok(make_for_loop(
-                    key_pat,
-                    syn::parse_quote! { 0..((#x) as usize) },
-                    body,
-                ))
+                let iter_go_type = integer_iter_go_type
+                    .as_ref()
+                    .unwrap_or(&typeinfer::GoType::Int);
+                let iter_expr = range_integer_iter_expr(&x, iter_go_type);
+                Ok(make_for_loop(key_pat, iter_expr, body))
             } else {
                 // Use into_iter() which works for channels (via IntoIterator) and
                 // for slices/vecs (gives values). For index-only iteration over
@@ -12704,11 +12724,11 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         (None, None) => {
             let pat: syn::Pat = syn::parse_quote! { _ };
             if is_int {
-                Ok(make_for_loop(
-                    pat,
-                    syn::parse_quote! { 0..((#x) as usize) },
-                    body,
-                ))
+                let iter_go_type = integer_iter_go_type
+                    .as_ref()
+                    .unwrap_or(&typeinfer::GoType::Int);
+                let iter_expr = range_integer_iter_expr(&x, iter_go_type);
+                Ok(make_for_loop(pat, iter_expr, body))
             } else if is_string {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
             } else if is_pointer_array {
@@ -12737,7 +12757,16 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
 fn range_pat_and_body(
     targets: Vec<ast::Expr>,
     tok: Option<token::Token>,
+    body: syn::Block,
+) -> Result<(syn::Pat, syn::Block), CompilerError> {
+    range_pat_and_body_with_value_types(targets, tok, body, &[])
+}
+
+fn range_pat_and_body_with_value_types(
+    targets: Vec<ast::Expr>,
+    tok: Option<token::Token>,
     mut body: syn::Block,
+    value_types: &[Option<typeinfer::GoType>],
 ) -> Result<(syn::Pat, syn::Block), CompilerError> {
     if tok != Some(token::Token::ASSIGN) {
         let pats: Vec<syn::Pat> = targets.iter().map(expr_to_pat).collect();
@@ -12763,14 +12792,22 @@ fn range_pat_and_body(
     let assignments = targets
         .into_iter()
         .zip(temps)
-        .filter_map(|(target, tmp)| {
+        .enumerate()
+        .filter_map(|(idx, (target, tmp))| {
             if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
                 None
             } else {
-                Some(
-                    compile_assignment_lhs_checked(target)
-                        .map(|lhs| syn::parse_quote! { #lhs = #tmp; }),
-                )
+                let target_go_type =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&target, &env.borrow()));
+                let rhs: syn::Expr = syn::parse_quote! { #tmp };
+                let rhs = if let Some(actual) = value_types.get(idx).and_then(Option::as_ref) {
+                    coerce_numeric_expr(&target_go_type, actual, rhs)
+                } else {
+                    rhs
+                };
+                Some(compile_assignment_lhs_checked(target).map(|lhs| {
+                    syn::parse_quote! { #lhs = #rhs; }
+                }))
             }
         })
         .collect::<Result<Vec<syn::Stmt>, _>>()?;

@@ -1083,6 +1083,15 @@
           ]
         },
         {
+          "id": "stmt-range-typed-integers",
+          "section": "For statements with range clause",
+          "title": "integer range values use the integer range expression or preexisting iteration variable type",
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ]
+        },
+        {
           "id": "stmt-range-function",
           "section": "For statements with range clause",
           "title": "range supports iterator functions with one or two yielded values",
