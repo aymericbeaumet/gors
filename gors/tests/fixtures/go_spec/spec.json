@@ -932,10 +932,37 @@
         {
           "id": "stmt-range",
           "section": "For statements with range clause",
-          "title": "range supports arrays, slices, maps, strings, channels, integers, and functions",
+          "title": "range supports slice and channel iteration in statement bodies",
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "stmt-range-indexed-map-string",
+          "section": "For statements with range clause",
+          "title": "range supports arrays, slices, maps, and strings",
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ]
+        },
+        {
+          "id": "stmt-range-channel-integer",
+          "section": "For statements with range clause",
+          "title": "range supports receive-capable channels and integer values",
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ]
+        },
+        {
+          "id": "stmt-range-function",
+          "section": "For statements with range clause",
+          "title": "range supports iterator functions with one or two yielded values",
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
           ]
         },
         {

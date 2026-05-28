@@ -964,8 +964,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 19,
-		"passingTestCount": 19,
+		"testCount": 22,
+		"passingTestCount": 22,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1081,10 +1081,40 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 			{
 				"id": "stmt-range",
 				"section": "For statements with range clause",
-				"title": "range supports arrays, slices, maps, strings, channels, integers, and functions",
+				"title": "range supports slice and channel iteration in statement bodies",
 				"status": "passing",
 				"fixtures": [
 					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-range-indexed-map-string",
+				"section": "For statements with range clause",
+				"title": "range supports arrays, slices, maps, and strings",
+				"status": "passing",
+				"fixtures": [
+					"range_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-range-channel-integer",
+				"section": "For statements with range clause",
+				"title": "range supports receive-capable channels and integer values",
+				"status": "passing",
+				"fixtures": [
+					"range_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-range-function",
+				"section": "For statements with range clause",
+				"title": "range supports iterator functions with one or two yielded values",
+				"status": "passing",
+				"fixtures": [
+					"range_statements"
 				],
 				"reason": ""
 			},
@@ -1419,7 +1449,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 128,
-	"passingTestCount": 128,
+	"testCount": 131,
+	"passingTestCount": 131,
 	"unsupportedTestCount": 0
 } as const;
