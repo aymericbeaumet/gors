@@ -826,8 +826,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Expressions",
-		"testCount": 17,
-		"passingTestCount": 17,
+		"testCount": 18,
+		"passingTestCount": 18,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -977,6 +977,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"expressions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-string-concat-interface-methods",
+				"section": "Operators",
+				"title": "String concatenation accepts method-call operands",
+				"status": "passing",
+				"fixtures": [
+					"types"
 				],
 				"reason": ""
 			},
@@ -1639,7 +1649,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 150,
-	"passingTestCount": 150,
+	"testCount": 151,
+	"passingTestCount": 151,
 	"unsupportedTestCount": 0
 } as const;

@@ -60,7 +60,7 @@ func Name(n Namer) string {
 }
 
 func Describe(d Describer) string {
-	return d.Detail()
+	return d.Label() + ":" + d.Detail()
 }
 
 func SendOnly(ch chan<- int, value int) {

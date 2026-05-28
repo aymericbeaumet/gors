@@ -14605,20 +14605,33 @@ pub fn expr_addressability(expr: &ast::Expr<'_>, env: &TypeEnv) -> Addressabilit
 }
 
 pub fn is_string_concat_binary_expr(binary_expr: &ast::BinaryExpr<'_>, env: &TypeEnv) -> bool {
-    binary_expr.op == token::Token::ADD
-        && is_string_concat_operand(&binary_expr.x, env)
-        && is_string_concat_operand(&binary_expr.y, env)
+    if binary_expr.op != token::Token::ADD {
+        return false;
+    }
+    let mut has_string = false;
+    string_concat_operand_types_match(&binary_expr.x, env, &mut has_string)
+        && string_concat_operand_types_match(&binary_expr.y, env, &mut has_string)
+        && has_string
 }
 
-fn is_string_concat_operand(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+fn string_concat_operand_types_match(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    has_string: &mut bool,
+) -> bool {
     match expr {
         ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
-            is_string_concat_binary_expr(binary, env)
+            string_concat_operand_types_match(&binary.x, env, has_string)
+                && string_concat_operand_types_match(&binary.y, env, has_string)
         }
-        _ => matches!(
-            env.resolve_alias(&GoType::infer_expr(expr, env)),
-            GoType::String
-        ),
+        _ => match env.resolve_alias(&GoType::infer_expr(expr, env)) {
+            GoType::String => {
+                *has_string = true;
+                true
+            }
+            GoType::Unknown => true,
+            _ => false,
+        },
     }
 }
 
@@ -18463,8 +18476,14 @@ mod tests {
                 const prefix = "a"
                 const suffix = "b"
 
+                type text interface {
+                    Text() string
+                }
+
                 func main() {
                     _ = prefix + suffix
+                    var mystery text
+                    _ = mystery.Text() + suffix
                     _ = 1 + 2
                 }
             "#,
@@ -18488,8 +18507,23 @@ mod tests {
         };
         assert!(super::is_string_concat_binary_expr(string_binary, &env));
 
+        let Some(crate::ast::Stmt::AssignStmt(interface_string_assign)) =
+            func.body.as_ref().and_then(|body| body.list.get(2))
+        else {
+            panic!("expected interface string assignment");
+        };
+        let Some(crate::ast::Expr::BinaryExpr(interface_string_binary)) =
+            interface_string_assign.rhs.first()
+        else {
+            panic!("expected interface string binary expression");
+        };
+        assert!(super::is_string_concat_binary_expr(
+            interface_string_binary,
+            &env
+        ));
+
         let Some(crate::ast::Stmt::AssignStmt(numeric_assign)) =
-            func.body.as_ref().and_then(|body| body.list.get(1))
+            func.body.as_ref().and_then(|body| body.list.get(3))
         else {
             panic!("expected numeric assignment");
         };

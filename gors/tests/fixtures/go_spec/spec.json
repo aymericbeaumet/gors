@@ -844,6 +844,15 @@
           ]
         },
         {
+          "id": "expr-string-concat-interface-methods",
+          "section": "Operators",
+          "title": "String concatenation accepts method-call operands",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "expr-precedence",
           "section": "Operator precedence",
           "title": "Operator precedence and associativity preserve Go grouping",
