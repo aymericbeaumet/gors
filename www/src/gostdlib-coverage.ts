@@ -29328,7 +29328,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"encoding/hex"
 		],
 		"symbolCount": 15,
-		"testedSymbolCount": 3,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "AppendDecode",
@@ -29351,8 +29351,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "DecodedLen",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/hex"
+				]
 			},
 			{
 				"name": "DecodeString",
@@ -79855,6 +79857,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 399,
-	"untestedSymbolCount": 12200
+	"testedSymbolCount": 400,
+	"untestedSymbolCount": 12199
 } as const;

@@ -12,4 +12,5 @@ func main() {
 	dst := make([]byte, hex.EncodedLen(2))
 	hex.Encode(dst, []byte{0xab, 0xcd})
 	fmt.Println(string(dst))
+	fmt.Println(hex.DecodedLen(8))
 }
