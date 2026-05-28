@@ -13438,7 +13438,7 @@ fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoT
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
-        match env.resolve_alias(&base_ty) {
+        let direct = match env.resolve_alias(&base_ty) {
             typeinfer::GoType::Named(name) => Some(env.get_field_type(&name, selector.sel.name)),
             typeinfer::GoType::Pointer(inner) => match *inner {
                 typeinfer::GoType::Named(name) => {
@@ -13447,8 +13447,72 @@ fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoT
                 _ => None,
             },
             _ => None,
-        }
+        };
+        direct
+            .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+            .or_else(|| promoted_field_info(&base_ty, selector.sel.name, &env).map(|info| info.ty))
     })
+}
+
+#[derive(Clone)]
+struct PromotedFieldInfo {
+    embedded_field: String,
+    embedded_is_pointer: bool,
+    ty: typeinfer::GoType,
+}
+
+fn go_type_struct_name(ty: &typeinfer::GoType, env: &typeinfer::TypeEnv) -> Option<String> {
+    match env.resolve_alias(ty) {
+        typeinfer::GoType::Named(name) => Some(name),
+        typeinfer::GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+            typeinfer::GoType::Named(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn embedded_field_target(
+    ty: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> Option<(String, bool)> {
+    match env.resolve_alias(ty) {
+        typeinfer::GoType::Named(name) => Some((name, false)),
+        typeinfer::GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+            typeinfer::GoType::Named(name) => Some((name, true)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn promoted_field_info(
+    base_ty: &typeinfer::GoType,
+    field_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> Option<PromotedFieldInfo> {
+    let base_name = go_type_struct_name(base_ty, env)?;
+    if !matches!(
+        env.get_field_type(&base_name, field_name),
+        typeinfer::GoType::Unknown
+    ) {
+        return None;
+    }
+    for (embedded_field, embedded_ty) in env.get_struct_fields(&base_name) {
+        if !env.is_struct_embedded_field(&base_name, &embedded_field) {
+            continue;
+        }
+        let (target_name, embedded_is_pointer) = embedded_field_target(&embedded_ty, env)?;
+        let ty = env.get_field_type(&target_name, field_name);
+        if !matches!(ty, typeinfer::GoType::Unknown) {
+            return Some(PromotedFieldInfo {
+                embedded_field,
+                embedded_is_pointer,
+                ty,
+            });
+        }
+    }
+    None
 }
 
 fn should_coerce_numeric_binary_side(
@@ -15734,6 +15798,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     return compile_method_value_expr(selector_expr);
                 }
                 let field_go_type = selector_field_go_type(&selector_expr);
+                let promoted_field_info = TYPE_ENV.with(|env| {
+                    let env = env.borrow();
+                    let base_ty = typeinfer::GoType::infer_expr(&selector_expr.x, &env);
+                    promoted_field_info(&base_ty, selector_expr.sel.name, &env)
+                });
                 let is_package = match &*selector_expr.x {
                     ast::Expr::Ident(id) => {
                         IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
@@ -15766,29 +15835,63 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         base = syn::parse_quote! { #base.lock().unwrap() };
                     }
                     let field: syn::Ident = selector_expr.sel.into();
-                    let field_expr = syn::Expr::Field(syn::ExprField {
-                        attrs: vec![],
-                        base: Box::new(base),
-                        dot_token: <Token![.]>::default(),
-                        member: syn::Member::Named(field),
-                    });
-                    if matches!(
-                        field_go_type.as_ref().map(resolved_go_type),
-                        Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
-                    ) {
-                        syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
-                    } else if base_is_owning_pointer {
-                        syn::parse_quote! {{
-                            let __gors_pointer_field = (#field_expr).clone();
-                            __gors_pointer_field
-                        }}
-                    } else if field_go_type
-                        .as_ref()
-                        .is_some_and(|field_ty| !go_type_is_copy(field_ty))
-                    {
-                        syn::parse_quote! { (#field_expr).clone() }
+                    if let Some(promoted) = promoted_field_info {
+                        let embedded_field = syn::Ident::new(
+                            &rust_safe_ident_name(&promoted.embedded_field),
+                            Span::mixed_site(),
+                        );
+                        let embedded_expr = syn::Expr::Field(syn::ExprField {
+                            attrs: vec![],
+                            base: Box::new(base),
+                            dot_token: <Token![.]>::default(),
+                            member: syn::Member::Named(embedded_field),
+                        });
+                        let promoted_expr: syn::Expr = if promoted.embedded_is_pointer {
+                            syn::parse_quote! { (#embedded_expr).lock().unwrap().#field }
+                        } else {
+                            syn::Expr::Field(syn::ExprField {
+                                attrs: vec![],
+                                base: Box::new(embedded_expr),
+                                dot_token: <Token![.]>::default(),
+                                member: syn::Member::Named(field),
+                            })
+                        };
+                        if promoted.embedded_is_pointer
+                            || !go_type_is_copy(&promoted.ty)
+                            || base_is_owning_pointer
+                        {
+                            syn::parse_quote! {{
+                                let __gors_promoted_field = (#promoted_expr).clone();
+                                __gors_promoted_field
+                            }}
+                        } else {
+                            promoted_expr
+                        }
                     } else {
-                        field_expr
+                        let field_expr = syn::Expr::Field(syn::ExprField {
+                            attrs: vec![],
+                            base: Box::new(base),
+                            dot_token: <Token![.]>::default(),
+                            member: syn::Member::Named(field),
+                        });
+                        if matches!(
+                            field_go_type.as_ref().map(resolved_go_type),
+                            Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+                        ) {
+                            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+                        } else if base_is_owning_pointer {
+                            syn::parse_quote! {{
+                                let __gors_pointer_field = (#field_expr).clone();
+                                __gors_pointer_field
+                            }}
+                        } else if field_go_type
+                            .as_ref()
+                            .is_some_and(|field_ty| !go_type_is_copy(field_ty))
+                        {
+                            syn::parse_quote! { (#field_expr).clone() }
+                        } else {
+                            field_expr
+                        }
                     }
                 }
             }

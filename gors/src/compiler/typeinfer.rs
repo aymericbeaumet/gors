@@ -689,6 +689,8 @@ pub struct TypeEnv {
     interface_type_terms: HashMap<std::string::String, Vec<GoType>>,
     /// Struct name → field types
     struct_fields: HashMap<std::string::String, Vec<(std::string::String, GoType)>>,
+    /// Struct name → fields declared as embedded fields.
+    struct_embedded_fields: HashMap<std::string::String, HashSet<std::string::String>>,
     /// Struct name → array field lengths
     struct_field_array_lengths: HashMap<std::string::String, HashMap<std::string::String, i128>>,
     /// Package-level string constants emitted as owned-String functions.
@@ -1274,6 +1276,16 @@ impl TypeEnv {
         self.struct_fields.insert(name.to_string(), fields);
     }
 
+    pub fn set_struct_embedded_fields(&mut self, name: &str, fields: HashSet<std::string::String>) {
+        self.struct_embedded_fields.insert(name.to_string(), fields);
+    }
+
+    pub fn is_struct_embedded_field(&self, struct_name: &str, field_name: &str) -> bool {
+        self.struct_embedded_fields
+            .get(struct_name)
+            .is_some_and(|fields| fields.contains(field_name))
+    }
+
     pub fn set_struct_field_array_len(&mut self, struct_name: &str, field_name: &str, len: i128) {
         self.struct_field_array_lengths
             .entry(struct_name.to_string())
@@ -1403,6 +1415,9 @@ impl TypeEnv {
                 .collect();
             self.set_struct_fields(&format!("{package_name}.{name}"), qualified_fields);
         }
+        for (name, fields) in &package_env.struct_embedded_fields {
+            self.set_struct_embedded_fields(&format!("{package_name}.{name}"), fields.clone());
+        }
         for (name, fields) in &package_env.struct_field_array_lengths {
             let struct_name = format!("{package_name}.{name}");
             for (field_name, len) in fields {
@@ -1492,6 +1507,7 @@ impl TypeEnv {
                 self.set_type_kind(name.name, TypeKind::Struct);
                 if let Some(ref field_list) = st.fields {
                     let mut fields = vec![];
+                    let mut embedded_fields = HashSet::new();
                     for field in &field_list.list {
                         let array_len = field.type_.as_ref().and_then(array_type_len_value);
                         let ty = field
@@ -1513,10 +1529,12 @@ impl TypeEnv {
                         } else if let Some(type_expr) = &field.type_
                             && let Some(field_name) = embedded_field_name(type_expr)
                         {
+                            embedded_fields.insert(field_name.clone());
                             fields.push((field_name, ty.clone()));
                         }
                     }
                     self.set_struct_fields(name.name, fields);
+                    self.set_struct_embedded_fields(name.name, embedded_fields);
                 }
             }
             ast::Expr::InterfaceType(_) => {
