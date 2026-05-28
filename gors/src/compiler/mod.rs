@@ -1111,22 +1111,18 @@ fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInf
         }
     }
     for field in &type_params.list {
-        let Some(elem) = field.type_.as_ref().and_then(slice_alias_element_type) else {
+        let Some(type_expr) = field.type_.as_ref() else {
             continue;
         };
-        let go_type = field
-            .type_
-            .as_ref()
-            .and_then(slice_alias_element_go_type)
-            .map(|elem| typeinfer::GoType::Slice(Box::new(elem)));
+        let Some((elem, go_type)) = slice_alias_constraint_info(type_expr, &info.names) else {
+            continue;
+        };
         if let Some(names) = &field.names {
             for name in names {
                 info.slice_aliases
                     .insert(name.name.to_string(), elem.clone());
-                if let Some(go_type) = &go_type {
-                    info.slice_alias_go_types
-                        .insert(name.name.to_string(), go_type.clone());
-                }
+                info.slice_alias_go_types
+                    .insert(name.name.to_string(), go_type.clone());
             }
         }
     }
@@ -1171,12 +1167,33 @@ fn is_string_or_byte_slice_union(expr: &ast::Expr) -> bool {
     has_string && has_byte_slice
 }
 
+fn slice_alias_constraint_info(
+    expr: &ast::Expr,
+    type_param_names: &std::collections::HashSet<String>,
+) -> Option<(syn::Type, typeinfer::GoType)> {
+    let elem = slice_alias_element_type(expr).or_else(|| {
+        named_slice_constraint_element_go_type(expr, type_param_names)
+            .map(|elem| rust_type_from_inferred_go_type(&elem))
+    })?;
+    let elem_go_type = slice_alias_element_go_type(expr)
+        .or_else(|| named_slice_constraint_element_go_type(expr, type_param_names))?;
+    Some((elem, typeinfer::GoType::Slice(Box::new(elem_go_type))))
+}
+
 fn slice_alias_element_type(expr: &ast::Expr) -> Option<syn::Type> {
     match expr {
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
             slice_alias_element_type(&unary.x)
         }
         ast::Expr::ArrayType(array) if array.len.is_none() => rust_type_from_type_expr(&array.elt),
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()?
+            .list
+            .iter()
+            .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+            .filter_map(|field| field.type_.as_ref())
+            .find_map(slice_alias_element_type),
         _ => None,
     }
 }
@@ -1189,6 +1206,40 @@ fn slice_alias_element_go_type(expr: &ast::Expr) -> Option<typeinfer::GoType> {
         ast::Expr::ArrayType(array) if array.len.is_none() => {
             Some(typeinfer::GoType::from_expr(&array.elt))
         }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()?
+            .list
+            .iter()
+            .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+            .filter_map(|field| field.type_.as_ref())
+            .find_map(slice_alias_element_go_type),
+        _ => None,
+    }
+}
+
+fn named_slice_constraint_element_go_type(
+    expr: &ast::Expr,
+    type_param_names: &std::collections::HashSet<String>,
+) -> Option<typeinfer::GoType> {
+    let name = type_constraint_base_name(expr)?;
+    let terms = TYPE_ENV.with(|env| env.borrow().get_interface_type_terms(name));
+    terms.into_iter().find_map(|term| {
+        let typeinfer::GoType::Slice(elem) = term else {
+            return None;
+        };
+        match elem.as_ref() {
+            typeinfer::GoType::Named(name) if type_param_names.contains(name) => Some(*elem),
+            _ => None,
+        }
+    })
+}
+
+fn type_constraint_base_name<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::IndexExpr(index) => type_constraint_base_name(&index.x),
+        ast::Expr::IndexListExpr(index) => type_constraint_base_name(&index.x),
         _ => None,
     }
 }

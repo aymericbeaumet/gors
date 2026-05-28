@@ -1351,6 +1351,15 @@
           ]
         },
         {
+          "id": "generics-named-slice-constraint-range",
+          "section": "For statements with range clause",
+          "title": "Generic functions range over parameters constrained by named underlying slice constraints",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ]
+        },
+        {
           "id": "generics-comparable-constraint",
           "section": "Interface types",
           "title": "Generic functions accept comparable type parameters in equality expressions",

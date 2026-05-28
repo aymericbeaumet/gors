@@ -1488,8 +1488,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Generics",
-		"testCount": 8,
-		"passingTestCount": 8,
+		"testCount": 9,
+		"passingTestCount": 9,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1553,6 +1553,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "generics-named-slice-constraint-range",
+				"section": "For statements with range clause",
+				"title": "Generic functions range over parameters constrained by named underlying slice constraints",
+				"status": "passing",
+				"fixtures": [
+					"generics_type_sets"
+				],
+				"reason": ""
+			},
+			{
 				"id": "generics-comparable-constraint",
 				"section": "Interface types",
 				"title": "Generic functions accept comparable type parameters in equality expressions",
@@ -1579,7 +1589,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 144,
-	"passingTestCount": 144,
+	"testCount": 145,
+	"passingTestCount": 145,
 	"unsupportedTestCount": 0
 } as const;
