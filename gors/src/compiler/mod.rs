@@ -984,7 +984,7 @@ fn interpret_go_string_escapes(s: &str) -> String {
 ///
 /// Maps common Go constraints to appropriate Rust trait bounds:
 /// - `any` / `interface{}` → no bounds
-/// - `comparable` → `PartialEq`
+/// - `comparable` → `PartialEq + Clone + Default`
 /// - Union types like `int | float64` → `PartialOrd + Copy + Display`
 fn go_constraint_to_rust_bounds(
     constraint: &ast::Expr,
@@ -1000,6 +1000,7 @@ fn go_constraint_to_rust_bounds(
                 "comparable" => {
                     bounds.push(syn::parse_quote! { PartialEq });
                     bounds.push(syn::parse_quote! { Clone });
+                    bounds.push(syn::parse_quote! { Default });
                 }
                 "bool" | "string" | "int" | "int8" | "int16" | "int32" | "int64" | "uint"
                 | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr" | "float32" | "float64" => {
@@ -10156,7 +10157,10 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let src_ty =
                 TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
-            let dst = compile_expr_with_expected(dst_raw, None);
+            let dst = match compile_assignment_lhs_checked(dst_raw) {
+                Ok(dst) => dst,
+                Err(err) => return compile_error_expr(err.to_string()),
+            };
             let src = compile_expr_with_expected(src_raw, None);
             if matches!(resolved_go_type(&src_ty), typeinfer::GoType::String) {
                 syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, (#src).as_bytes()) }
@@ -23486,7 +23490,7 @@ func main() {
                 }
             "#,
             rust! {
-                pub fn Index<E: PartialEq + Clone>(mut s: &mut Vec<E>, mut v: E) -> isize {
+                pub fn Index<E: PartialEq + Clone + Default>(mut s: &mut Vec<E>, mut v: E) -> isize {
                     for mut i in 0..((crate::builtin::len(&s) as isize) as isize) {
                         if v == s[(i) as usize] {
                             return i

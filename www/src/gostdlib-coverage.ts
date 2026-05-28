@@ -1875,7 +1875,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"cmp"
 		],
 		"symbolCount": 4,
-		"testedSymbolCount": 2,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "Compare",
@@ -1896,14 +1896,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Or",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"cmp"
+				]
 			},
 			{
 				"name": "Ordered",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"cmp"
+				]
 			}
 		]
 	},
@@ -67805,7 +67809,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"path"
 		],
 		"symbolCount": 9,
-		"testedSymbolCount": 6,
+		"testedSymbolCount": 7,
 		"symbols": [
 			{
 				"name": "Base",
@@ -67818,8 +67822,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Clean",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"path"
+				]
 			},
 			{
 				"name": "Dir",
@@ -79837,6 +79843,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 390,
-	"untestedSymbolCount": 12209
+	"testedSymbolCount": 393,
+	"untestedSymbolCount": 12206
 } as const;
