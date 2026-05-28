@@ -7829,8 +7829,150 @@ fn shared_func_box_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
     syn::parse_quote! { std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync> }
 }
 
-fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
-    vec![
+fn numeric_newtype_impls(
+    ident: &syn::Ident,
+    underlying_go_type: &typeinfer::GoType,
+) -> Vec<syn::Item> {
+    let mut items = vec![
+        syn::parse_quote! {
+            impl std::ops::Add for #ident {
+                type Output = Self;
+                fn add(self, rhs: Self) -> Self {
+                    Self(self.0 + rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Sub for #ident {
+                type Output = Self;
+                fn sub(self, rhs: Self) -> Self {
+                    Self(self.0 - rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Mul for #ident {
+                type Output = Self;
+                fn mul(self, rhs: Self) -> Self {
+                    Self(self.0 * rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Div for #ident {
+                type Output = Self;
+                fn div(self, rhs: Self) -> Self {
+                    Self(self.0 / rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Rem for #ident {
+                type Output = Self;
+                fn rem(self, rhs: Self) -> Self {
+                    Self(self.0 % rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::AddAssign for #ident {
+                fn add_assign(&mut self, rhs: Self) {
+                    self.0 += rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::SubAssign for #ident {
+                fn sub_assign(&mut self, rhs: Self) {
+                    self.0 -= rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::MulAssign for #ident {
+                fn mul_assign(&mut self, rhs: Self) {
+                    self.0 *= rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::DivAssign for #ident {
+                fn div_assign(&mut self, rhs: Self) {
+                    self.0 /= rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::RemAssign for #ident {
+                fn rem_assign(&mut self, rhs: Self) {
+                    self.0 %= rhs.0;
+                }
+            }
+        },
+    ];
+
+    if underlying_go_type.is_float() || underlying_go_type.is_signed_int() {
+        items.push(syn::parse_quote! {
+            impl std::ops::Neg for #ident {
+                type Output = Self;
+                fn neg(self) -> Self {
+                    Self(-self.0)
+                }
+            }
+        });
+    }
+
+    if !underlying_go_type.is_integer() {
+        return items;
+    }
+
+    items.extend([
+        syn::parse_quote! {
+            impl std::ops::BitAnd for #ident {
+                type Output = Self;
+                fn bitand(self, rhs: Self) -> Self {
+                    Self(self.0 & rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::BitOr for #ident {
+                type Output = Self;
+                fn bitor(self, rhs: Self) -> Self {
+                    Self(self.0 | rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::BitXor for #ident {
+                type Output = Self;
+                fn bitxor(self, rhs: Self) -> Self {
+                    Self(self.0 ^ rhs.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::Not for #ident {
+                type Output = Self;
+                fn not(self) -> Self {
+                    Self(!self.0)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::BitAndAssign for #ident {
+                fn bitand_assign(&mut self, rhs: Self) {
+                    self.0 &= rhs.0;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl std::ops::BitOrAssign for #ident {
+                fn bitor_assign(&mut self, rhs: Self) {
+                    self.0 |= rhs.0;
+                }
+            }
+        },
         syn::parse_quote! {
             impl std::ops::BitXorAssign for #ident {
                 fn bitxor_assign(&mut self, rhs: Self) {
@@ -7854,7 +7996,8 @@ fn numeric_newtype_impls(ident: &syn::Ident) -> Vec<syn::Item> {
                 }
             }
         },
-    ]
+    ]);
+    items
 }
 
 fn newtype_into_inner_impl(ident: &syn::Ident, inner: &syn::Type) -> syn::Item {
@@ -8499,7 +8642,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 items.push(newtype_into_inner_impl(&ident, &rust_type));
             }
             if is_numeric_alias {
-                items.extend(numeric_newtype_impls(&ident));
+                items.extend(numeric_newtype_impls(
+                    &ident,
+                    &resolved_go_type(&underlying_go_type),
+                ));
             }
             if is_slice_alias && !is_byte_slice {
                 items.push(syn::parse_quote! {
@@ -22345,6 +22491,67 @@ func main() {
                 }
                 impl From<MyInt> for isize {
                     fn from(value: MyInt) -> isize { value.0 }
+                }
+                impl std::ops::Add for MyInt {
+                    type Output = Self;
+                    fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0) }
+                }
+                impl std::ops::Sub for MyInt {
+                    type Output = Self;
+                    fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0) }
+                }
+                impl std::ops::Mul for MyInt {
+                    type Output = Self;
+                    fn mul(self, rhs: Self) -> Self { Self(self.0 * rhs.0) }
+                }
+                impl std::ops::Div for MyInt {
+                    type Output = Self;
+                    fn div(self, rhs: Self) -> Self { Self(self.0 / rhs.0) }
+                }
+                impl std::ops::Rem for MyInt {
+                    type Output = Self;
+                    fn rem(self, rhs: Self) -> Self { Self(self.0 % rhs.0) }
+                }
+                impl std::ops::AddAssign for MyInt {
+                    fn add_assign(&mut self, rhs: Self) { self.0 += rhs.0; }
+                }
+                impl std::ops::SubAssign for MyInt {
+                    fn sub_assign(&mut self, rhs: Self) { self.0 -= rhs.0; }
+                }
+                impl std::ops::MulAssign for MyInt {
+                    fn mul_assign(&mut self, rhs: Self) { self.0 *= rhs.0; }
+                }
+                impl std::ops::DivAssign for MyInt {
+                    fn div_assign(&mut self, rhs: Self) { self.0 /= rhs.0; }
+                }
+                impl std::ops::RemAssign for MyInt {
+                    fn rem_assign(&mut self, rhs: Self) { self.0 %= rhs.0; }
+                }
+                impl std::ops::Neg for MyInt {
+                    type Output = Self;
+                    fn neg(self) -> Self { Self(-self.0) }
+                }
+                impl std::ops::BitAnd for MyInt {
+                    type Output = Self;
+                    fn bitand(self, rhs: Self) -> Self { Self(self.0 & rhs.0) }
+                }
+                impl std::ops::BitOr for MyInt {
+                    type Output = Self;
+                    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+                }
+                impl std::ops::BitXor for MyInt {
+                    type Output = Self;
+                    fn bitxor(self, rhs: Self) -> Self { Self(self.0 ^ rhs.0) }
+                }
+                impl std::ops::Not for MyInt {
+                    type Output = Self;
+                    fn not(self) -> Self { Self(!self.0) }
+                }
+                impl std::ops::BitAndAssign for MyInt {
+                    fn bitand_assign(&mut self, rhs: Self) { self.0 &= rhs.0; }
+                }
+                impl std::ops::BitOrAssign for MyInt {
+                    fn bitor_assign(&mut self, rhs: Self) { self.0 |= rhs.0; }
                 }
                 impl std::ops::BitXorAssign for MyInt {
                     fn bitxor_assign(&mut self, rhs: Self) { self.0 ^= rhs.0; }

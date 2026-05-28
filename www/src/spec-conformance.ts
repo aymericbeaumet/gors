@@ -432,8 +432,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 20,
-		"passingTestCount": 20,
+		"testCount": 21,
+		"passingTestCount": 21,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -463,6 +463,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"types"
+				],
+				"reason": ""
+			},
+			{
+				"id": "types-named-numeric-operators",
+				"section": "Numeric types",
+				"title": "Named numeric types support arithmetic, comparisons, and conversions",
+				"status": "passing",
+				"fixtures": [
+					"named_numeric_types"
 				],
 				"reason": ""
 			},
@@ -1589,7 +1599,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 145,
-	"passingTestCount": 145,
+	"testCount": 146,
+	"passingTestCount": 146,
 	"unsupportedTestCount": 0
 } as const;

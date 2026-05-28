@@ -386,6 +386,15 @@
           ]
         },
         {
+          "id": "types-named-numeric-operators",
+          "section": "Numeric types",
+          "title": "Named numeric types support arithmetic, comparisons, and conversions",
+          "status": "passing",
+          "fixtures": [
+            "named_numeric_types"
+          ]
+        },
+        {
           "id": "types-complex",
           "section": "Numeric types",
           "title": "complex64 and complex128 values execute through builtin helpers",
