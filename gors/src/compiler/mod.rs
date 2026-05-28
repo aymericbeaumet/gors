@@ -7831,6 +7831,7 @@ fn shared_func_box_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
 
 fn numeric_newtype_impls(
     ident: &syn::Ident,
+    inner: &syn::Type,
     underlying_go_type: &typeinfer::GoType,
 ) -> Vec<syn::Item> {
     let mut items = vec![
@@ -7981,18 +7982,44 @@ fn numeric_newtype_impls(
             }
         },
         syn::parse_quote! {
-            impl std::ops::Shl<i32> for #ident {
+            impl<Rhs> std::ops::Shl<Rhs> for #ident
+            where
+                #inner: std::ops::Shl<Rhs, Output = #inner>,
+            {
                 type Output = Self;
-                fn shl(self, rhs: i32) -> Self {
+                fn shl(self, rhs: Rhs) -> Self {
                     Self(self.0 << rhs)
                 }
             }
         },
         syn::parse_quote! {
-            impl std::ops::Shr<i32> for #ident {
+            impl<Rhs> std::ops::Shr<Rhs> for #ident
+            where
+                #inner: std::ops::Shr<Rhs, Output = #inner>,
+            {
                 type Output = Self;
-                fn shr(self, rhs: i32) -> Self {
+                fn shr(self, rhs: Rhs) -> Self {
                     Self(self.0 >> rhs)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl<Rhs> std::ops::ShlAssign<Rhs> for #ident
+            where
+                #inner: std::ops::ShlAssign<Rhs>,
+            {
+                fn shl_assign(&mut self, rhs: Rhs) {
+                    self.0 <<= rhs;
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl<Rhs> std::ops::ShrAssign<Rhs> for #ident
+            where
+                #inner: std::ops::ShrAssign<Rhs>,
+            {
+                fn shr_assign(&mut self, rhs: Rhs) {
+                    self.0 >>= rhs;
                 }
             }
         },
@@ -8644,6 +8671,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if is_numeric_alias {
                 items.extend(numeric_newtype_impls(
                     &ident,
+                    &rust_type,
                     &resolved_go_type(&underlying_go_type),
                 ));
             }
@@ -22556,13 +22584,19 @@ func main() {
                 impl std::ops::BitXorAssign for MyInt {
                     fn bitxor_assign(&mut self, rhs: Self) { self.0 ^= rhs.0; }
                 }
-                impl std::ops::Shl<i32> for MyInt {
+                impl<Rhs> std::ops::Shl<Rhs> for MyInt where isize: std::ops::Shl<Rhs, Output = isize>, {
                     type Output = Self;
-                    fn shl(self, rhs: i32) -> Self { Self(self.0 << rhs) }
+                    fn shl(self, rhs: Rhs) -> Self { Self(self.0 << rhs) }
                 }
-                impl std::ops::Shr<i32> for MyInt {
+                impl<Rhs> std::ops::Shr<Rhs> for MyInt where isize: std::ops::Shr<Rhs, Output = isize>, {
                     type Output = Self;
-                    fn shr(self, rhs: i32) -> Self { Self(self.0 >> rhs) }
+                    fn shr(self, rhs: Rhs) -> Self { Self(self.0 >> rhs) }
+                }
+                impl<Rhs> std::ops::ShlAssign<Rhs> for MyInt where isize: std::ops::ShlAssign<Rhs>, {
+                    fn shl_assign(&mut self, rhs: Rhs) { self.0 <<= rhs; }
+                }
+                impl<Rhs> std::ops::ShrAssign<Rhs> for MyInt where isize: std::ops::ShrAssign<Rhs>, {
+                    fn shr_assign(&mut self, rhs: Rhs) { self.0 >>= rhs; }
                 }
             },
         );
