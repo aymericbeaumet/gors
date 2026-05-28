@@ -1693,13 +1693,67 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			}
 		]
+	},
+	{
+		"name": "Errors",
+		"testCount": 1,
+		"passingTestCount": 0,
+		"unsupportedTestCount": 1,
+		"tests": [
+			{
+				"id": "errors-predeclared-interface",
+				"section": "Errors",
+				"title": "Predeclared error interface and its nil value",
+				"status": "unsupported",
+				"fixtures": [
+					"_unsupported/errors"
+				],
+				"reason": "The predeclared error interface is lowered as String instead of a trait; custom error types implementing Error() string are not supported"
+			}
+		]
+	},
+	{
+		"name": "Run-time panics",
+		"testCount": 1,
+		"passingTestCount": 0,
+		"unsupportedTestCount": 1,
+		"tests": [
+			{
+				"id": "runtime-panics-implicit",
+				"section": "Run-time panics",
+				"title": "Implicit run-time panics trigger recovery",
+				"status": "unsupported",
+				"fixtures": [
+					"_unsupported/run_time_panics"
+				],
+				"reason": "Implicit run-time panics (out-of-bounds, nil pointer, divide by zero) with recover() do not produce matching output"
+			}
+		]
+	},
+	{
+		"name": "System considerations",
+		"testCount": 1,
+		"passingTestCount": 0,
+		"unsupportedTestCount": 1,
+		"tests": [
+			{
+				"id": "system-unsafe",
+				"section": "Package unsafe",
+				"title": "unsafe.Pointer, Sizeof, Alignof, Offsetof, Add, Slice, and String operations",
+				"status": "unsupported",
+				"fixtures": [
+					"_unsupported/system_considerations"
+				],
+				"reason": "The unsafe package (Pointer, Sizeof, Alignof, Offsetof, Add, Slice, String) is not implemented"
+			}
+		]
 	}
 ];
 
 export const specConformanceSummary = {
-	"categoryCount": 12,
+	"categoryCount": 15,
 	"passingCategoryCount": 12,
-	"testCount": 156,
+	"testCount": 159,
 	"passingTestCount": 156,
-	"unsupportedTestCount": 0
+	"unsupportedTestCount": 3
 } as const;
