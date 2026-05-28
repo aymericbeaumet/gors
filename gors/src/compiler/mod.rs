@@ -12234,23 +12234,23 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
     let mut result: Option<syn::Expr> = else_block;
     for case in cases.into_iter().rev() {
-        let type_cases: Vec<(syn::Type, bool)> = case
+        let type_cases: Vec<(syn::Type, Option<String>)> = case
             .list
             .unwrap_or_default()
             .into_iter()
             .map(|expr| {
-                let is_interface = is_interface_type_expr(&expr);
-                (syn::Type::from(expr), is_interface)
+                let interface_name = interface_type_expr_name(&expr);
+                (syn::Type::from(expr), interface_name)
             })
             .collect();
 
-        let cond = if let Some((ty, is_interface)) =
+        let cond = if let Some((ty, interface_name)) =
             type_cases.first().filter(|_| type_cases.len() == 1)
         {
             let val = &value_expr;
             let any_ref = value_ref(val);
-            if *is_interface {
-                syn::parse_quote! { false }
+            if let Some(interface_name) = interface_name {
+                type_switch_interface_condition(interface_name, any_ref)
             } else if is_string_syn_type(ty) {
                 syn::parse_quote! {
                     (#any_ref).is::<String>() || (#any_ref).is::<&str>()
@@ -12264,8 +12264,8 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
                 .map(|(ty, is_interface)| {
                     let val = &value_expr;
                     let any_ref = value_ref(val);
-                    if *is_interface {
-                        syn::parse_quote! { false }
+                    if let Some(interface_name) = is_interface {
+                        type_switch_interface_condition(interface_name, any_ref)
                     } else if is_string_syn_type(ty) {
                         syn::parse_quote! {
                             (#any_ref).is::<String>() || (#any_ref).is::<&str>()
@@ -12280,13 +12280,15 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
         let mut body_stmts = vec![];
         if let Some(ref name) = binding_name {
-            if let Some((ty, is_interface)) = type_cases.first().filter(|_| type_cases.len() == 1) {
+            if let Some((ty, interface_name)) = type_cases.first().filter(|_| type_cases.len() == 1)
+            {
                 let val = &value_expr;
                 let any_ref = value_ref(val);
                 let bind_ident = syn::Ident::new(name, Span::mixed_site());
-                if *is_interface {
+                if let Some(interface_name) = interface_name {
+                    let binding = type_switch_interface_binding(interface_name, any_ref.clone());
                     body_stmts.push(syn::parse_quote! {
-                        let mut #bind_ident = __GorsNoopInterface::default();
+                        let mut #bind_ident = #binding;
                     });
                 } else if is_string_syn_type(ty) {
                     body_stmts.push(syn::parse_quote! {
@@ -12390,14 +12392,41 @@ fn is_string_syn_type(ty: &syn::Type) -> bool {
             && type_path.path.segments.first().is_some_and(|seg| seg.ident == "String"))
 }
 
-fn is_interface_type_expr(expr: &ast::Expr) -> bool {
+fn interface_type_expr_name(expr: &ast::Expr) -> Option<String> {
     match expr {
-        ast::Expr::Ident(id) => id.name == "error" || is_type_interface(id.name),
-        ast::Expr::SelectorExpr(selector) => {
-            selector.sel.name == "error" || is_type_interface(selector.sel.name)
+        ast::Expr::Ident(id) if id.name == "error" || is_type_interface(id.name) => {
+            Some(id.name.to_string())
         }
-        _ => false,
+        ast::Expr::SelectorExpr(selector) => (selector.sel.name == "error"
+            || is_type_interface(selector.sel.name))
+        .then(|| selector.sel.name.to_string()),
+        _ => None,
     }
+}
+
+fn type_switch_interface_condition(interface_name: &str, any_ref: syn::Expr) -> syn::Expr {
+    interface_assertion_implementors(interface_name)
+        .into_iter()
+        .map(|implementor| syn::parse_quote! { (#any_ref).is::<#implementor>() })
+        .reduce(|acc, expr| syn::parse_quote! { #acc || #expr })
+        .unwrap_or_else(|| syn::parse_quote! { false })
+}
+
+fn type_switch_interface_binding(interface_name: &str, any_ref: syn::Expr) -> syn::Expr {
+    let trait_path = interface_trait_path_from_name(interface_name);
+    let fallback = interface_assertion_fallback(&trait_path, interface_name, false);
+    interface_assertion_implementors(interface_name)
+        .into_iter()
+        .rev()
+        .fold(fallback, |result, implementor| {
+            syn::parse_quote! {
+                if let Some(__gors_value) = (#any_ref).downcast_ref::<#implementor>() {
+                    Box::new(__gors_value.clone()) as Box<dyn #trait_path>
+                } else {
+                    #result
+                }
+            }
+        })
 }
 
 fn is_string_literal(expr: &ast::Expr) -> bool {

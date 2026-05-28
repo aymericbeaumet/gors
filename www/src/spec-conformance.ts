@@ -432,8 +432,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 26,
-		"passingTestCount": 26,
+		"testCount": 27,
+		"passingTestCount": 27,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -630,6 +630,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-pointer-receiver-interface-assertions",
 				"section": "Method sets",
 				"title": "Type assertions recognize pointer receiver interface method sets",
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
+			},
+			{
+				"id": "types-pointer-receiver-interface-type-switch",
+				"section": "Method sets",
+				"title": "Type switches match pointer receiver interface method sets",
 				"status": "passing",
 				"fixtures": [
 					"types"
@@ -1669,7 +1679,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 153,
-	"passingTestCount": 153,
+	"testCount": 154,
+	"passingTestCount": 154,
 	"unsupportedTestCount": 0
 } as const;

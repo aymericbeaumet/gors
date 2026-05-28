@@ -118,6 +118,14 @@ func main() {
 	var dynamicAdder any = &accumulator
 	assertedAdder, assertedAdderOK := dynamicAdder.(Adder)
 	assertedAdder.Add(2)
+	typeSwitchTotal := 0
+	switch typedAdder := dynamicAdder.(type) {
+	case Adder:
+		typedAdder.Add(3)
+		typeSwitchTotal = typedAdder.Sum()
+	default:
+		typeSwitchTotal = -1
+	}
 	function := func(value int) int { return value + pointer.Value }
 	var nilPointer *int
 	var nilSlice []int
@@ -125,5 +133,5 @@ func main() {
 	var nilChan chan int
 	var nilFunc func() int
 	var nilInterface interface{}
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, assertedAdderOK, assertedAdder.Sum(), AddOne(&accumulator), accumulator.Total, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, assertedAdderOK, assertedAdder.Sum(), typeSwitchTotal, AddOne(&accumulator), accumulator.Total, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
 }
