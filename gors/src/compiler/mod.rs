@@ -10276,13 +10276,22 @@ fn compile_array_literal(array_type: &ast::ArrayType, raw_elts: Vec<ast::Expr>) 
         .as_ref()
         .map(|array_len| array_literal_len_expr(array_len, &raw_elts));
     let mut indexed_elts: Vec<(proc_macro2::TokenStream, syn::Expr)> = vec![];
-    for (default_index, elt) in raw_elts.into_iter().enumerate() {
+    let mut next_index = 0usize;
+    for elt in raw_elts {
         if let ast::Expr::KeyValueExpr(kv) = elt {
-            let key: syn::Expr = (*kv.key).into();
+            let key_ast = *kv.key;
+            let key_value = const_eval_expr_in_active_env(&key_ast, 0, &BTreeMap::new())
+                .and_then(|value| value.as_u128())
+                .and_then(|value| usize::try_from(value).ok());
+            let key: syn::Expr = key_ast.into();
             let value = compile_array_literal_element(*kv.value, &array_type.elt, &elem_go_type);
             indexed_elts.push((quote::quote! { (#key) as usize }, value));
+            if let Some(key_value) = key_value {
+                next_index = key_value.saturating_add(1);
+            }
         } else {
-            let index = syn::Index::from(default_index);
+            let index = syn::Index::from(next_index);
+            next_index = next_index.saturating_add(1);
             let value = compile_array_literal_element(elt, &array_type.elt, &elem_go_type);
             indexed_elts.push((quote::quote! { #index }, value));
         }
@@ -11325,16 +11334,20 @@ fn compile_expr_with_expected(
     }
 
     if let ast::Expr::CompositeLit(mut comp_lit) = expr {
-        if comp_lit.type_.is_none()
-            && let Some(typeinfer::GoType::Named(name)) = expected
-            && !name.contains('.')
-        {
-            let leaked_name: &'static str = Box::leak(name.clone().into_boxed_str());
-            comp_lit.type_ = Some(Box::new(ast::Expr::Ident(ast::Ident {
-                name_pos: token::Position::default(),
-                name: leaked_name,
-                obj: None,
-            })));
+        if comp_lit.type_.is_none() {
+            if let Some(typeinfer::GoType::Pointer(inner)) = expected
+                && let typeinfer::GoType::Named(name) = inner.as_ref()
+                && !name.contains('.')
+            {
+                comp_lit.type_ = Some(Box::new(ast_named_type_expr(name)));
+                let inner: syn::Expr = compile_composite_lit(comp_lit);
+                return syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#inner)) };
+            }
+            if let Some(typeinfer::GoType::Named(name)) = expected
+                && !name.contains('.')
+            {
+                comp_lit.type_ = Some(Box::new(ast_named_type_expr(name)));
+            }
         }
         return compile_composite_lit(comp_lit);
     }
@@ -11402,6 +11415,15 @@ fn compile_expr_with_expected(
     }
 
     expr.into()
+}
+
+fn ast_named_type_expr(name: &str) -> ast::Expr<'static> {
+    let leaked_name: &'static str = Box::leak(name.to_string().into_boxed_str());
+    ast::Expr::Ident(ast::Ident {
+        name_pos: token::Position::default(),
+        name: leaked_name,
+        obj: None,
+    })
 }
 
 fn is_function_item_expr(expr: &ast::Expr) -> bool {
@@ -13511,13 +13533,30 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         }
     }
 
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
+    let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
+
+    if matches!(op, token::Token::EQL | token::Token::NEQ)
+        && matches!(resolved_go_type(&left_ty), typeinfer::GoType::Pointer(_))
+        && matches!(resolved_go_type(&right_ty), typeinfer::GoType::Pointer(_))
+        && !is_borrowed_pointer_expr_ref(&binary_expr.x)
+        && !is_borrowed_pointer_expr_ref(&binary_expr.y)
+    {
+        let left: syn::Expr = (*binary_expr.x).into();
+        let right: syn::Expr = (*binary_expr.y).into();
+        let eq: syn::Expr = syn::parse_quote! { std::sync::Arc::ptr_eq(&#left, &#right) };
+        return if op == token::Token::EQL {
+            eq
+        } else {
+            syn::parse_quote! { !(#eq) }
+        };
+    }
+
     if is_string_concat_binary_expr(&binary_expr) {
         return compile_string_concat_binary_expr(binary_expr);
     }
 
-    let env = TYPE_ENV.with(|e| e.borrow().clone());
-    let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
-    let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
     let has_complex_side = is_complex_go_type(&left_ty) || is_complex_go_type(&right_ty);
     let binary_expr = if has_complex_side {
         binary_expr

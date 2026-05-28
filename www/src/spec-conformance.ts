@@ -786,8 +786,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Expressions",
-		"testCount": 13,
-		"passingTestCount": 13,
+		"testCount": 16,
+		"passingTestCount": 16,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -837,6 +837,36 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"expressions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-composite-literal-keyed-elements",
+				"section": "Composite literals",
+				"title": "Composite literals accept keyed array, struct, and map elements",
+				"status": "passing",
+				"fixtures": [
+					"composite_literals"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-composite-literal-elision",
+				"section": "Composite literals",
+				"title": "Nested composite literals elide repeated element and pointer types",
+				"status": "passing",
+				"fixtures": [
+					"composite_literals"
+				],
+				"reason": ""
+			},
+			{
+				"id": "expr-composite-literal-addresses",
+				"section": "Composite literals",
+				"title": "Taking the address of a composite literal allocates a distinct variable",
+				"status": "passing",
+				"fixtures": [
+					"composite_literals"
 				],
 				"reason": ""
 			},
@@ -1379,7 +1409,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 124,
-	"passingTestCount": 124,
+	"testCount": 127,
+	"passingTestCount": 127,
 	"unsupportedTestCount": 0
 } as const;

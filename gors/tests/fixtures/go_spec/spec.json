@@ -718,6 +718,33 @@
           ]
         },
         {
+          "id": "expr-composite-literal-keyed-elements",
+          "section": "Composite literals",
+          "title": "Composite literals accept keyed array, struct, and map elements",
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ]
+        },
+        {
+          "id": "expr-composite-literal-elision",
+          "section": "Composite literals",
+          "title": "Nested composite literals elide repeated element and pointer types",
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ]
+        },
+        {
+          "id": "expr-composite-literal-addresses",
+          "section": "Composite literals",
+          "title": "Taking the address of a composite literal allocates a distinct variable",
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ]
+        },
+        {
           "id": "expr-type-assertions",
           "section": "Type assertions",
           "title": "Type assertions support single-value and comma-ok forms",
