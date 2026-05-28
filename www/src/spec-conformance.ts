@@ -964,8 +964,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 25,
-		"passingTestCount": 25,
+		"testCount": 28,
+		"passingTestCount": 28,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1175,6 +1175,36 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-return-multivalue-call",
+				"section": "Return statements",
+				"title": "return statements may return the result of one multi-valued call",
+				"status": "passing",
+				"fixtures": [
+					"return_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-return-named-empty",
+				"section": "Return statements",
+				"title": "empty return statements return current named result parameters",
+				"status": "passing",
+				"fixtures": [
+					"return_statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-return-deferred-named-results",
+				"section": "Return statements",
+				"title": "deferred calls run after result parameters are set by return",
+				"status": "passing",
+				"fixtures": [
+					"return_statements"
 				],
 				"reason": ""
 			},
@@ -1479,7 +1509,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 134,
-	"passingTestCount": 134,
+	"testCount": 137,
+	"passingTestCount": 137,
 	"unsupportedTestCount": 0
 } as const;

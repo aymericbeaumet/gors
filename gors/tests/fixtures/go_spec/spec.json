@@ -1020,6 +1020,33 @@
           ]
         },
         {
+          "id": "stmt-return-multivalue-call",
+          "section": "Return statements",
+          "title": "return statements may return the result of one multi-valued call",
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ]
+        },
+        {
+          "id": "stmt-return-named-empty",
+          "section": "Return statements",
+          "title": "empty return statements return current named result parameters",
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ]
+        },
+        {
+          "id": "stmt-return-deferred-named-results",
+          "section": "Return statements",
+          "title": "deferred calls run after result parameters are set by return",
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ]
+        },
+        {
           "id": "stmt-branch",
           "section": "Break statements",
           "title": "break and continue target innermost or labeled loops",
