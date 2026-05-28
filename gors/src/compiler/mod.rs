@@ -19170,11 +19170,21 @@ fn comma_ok_type_assert_concrete_expr(
 
 fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
     TYPE_ENV.with(|env| {
-        env.borrow()
+        let env = env.borrow();
+        let mut implementors = env
             .interface_implementors(interface_name)
             .into_iter()
             .map(|name| named_go_type_path(&name))
-            .collect()
+            .collect::<Vec<_>>();
+        implementors.extend(
+            env.interface_pointer_implementors(interface_name)
+                .into_iter()
+                .map(|name| {
+                    let ty = named_go_type_path(&name);
+                    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#ty>> }
+                }),
+        );
+        implementors
     })
 }
 

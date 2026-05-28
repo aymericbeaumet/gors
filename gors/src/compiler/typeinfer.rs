@@ -1172,6 +1172,27 @@ impl TypeEnv {
         implementors
     }
 
+    pub fn interface_pointer_implementors(&self, name: &str) -> Vec<std::string::String> {
+        let Some(required_methods) = self.interface_methods.get(name) else {
+            return Vec::new();
+        };
+        if required_methods.is_empty() {
+            return Vec::new();
+        }
+        let mut implementors: Vec<_> = self
+            .type_kinds
+            .iter()
+            .filter_map(|(type_name, kind)| {
+                matches!(kind, TypeKind::Struct)
+                    .then_some(type_name)
+                    .filter(|type_name| self.named_type_implements_interface(type_name, name, true))
+                    .cloned()
+            })
+            .collect();
+        implementors.sort();
+        implementors
+    }
+
     pub fn named_type_implements_interface(
         &self,
         type_name: &str,

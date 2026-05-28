@@ -530,6 +530,15 @@
           ]
         },
         {
+          "id": "types-pointer-receiver-interface-assertions",
+          "section": "Method sets",
+          "title": "Type assertions recognize pointer receiver interface method sets",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "types-interface-method-sets",
           "section": "Method sets",
           "title": "Interface method sets match pointer and value receiver rules",

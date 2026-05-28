@@ -115,6 +115,9 @@ func main() {
 	wrapper := TaggedWrapper{TaggedEmbedded: &TaggedEmbedded{Code: 9}, Label: "tagged"}
 	shadow := ShadowWrapper{ShadowEmbedded: &ShadowEmbedded{Value: 1}, Value: 2}
 	accumulator := Accumulator{Total: 4}
+	var dynamicAdder any = &accumulator
+	assertedAdder, assertedAdderOK := dynamicAdder.(Adder)
+	assertedAdder.Add(2)
 	function := func(value int) int { return value + pointer.Value }
 	var nilPointer *int
 	var nilSlice []int
@@ -122,5 +125,5 @@ func main() {
 	var nilChan chan int
 	var nilFunc func() int
 	var nilInterface interface{}
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, AddOne(&accumulator), accumulator.Total, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, assertedAdderOK, assertedAdder.Sum(), AddOne(&accumulator), accumulator.Total, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
 }
