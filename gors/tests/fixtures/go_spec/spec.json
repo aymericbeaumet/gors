@@ -467,6 +467,15 @@
           ]
         },
         {
+          "id": "types-promoted-field-shadowing",
+          "section": "Struct types",
+          "title": "Direct fields shadow promoted embedded fields with the same name",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "types-pointers",
           "section": "Pointer types",
           "title": "Pointers support nil checks, dereference, and assignment",

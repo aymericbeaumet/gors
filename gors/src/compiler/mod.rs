@@ -8295,7 +8295,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     let field_cannot_default = interface_trait_path.is_some();
                     let field_can_derive_copy = !field_contains_func
                         && interface_trait_path.is_none()
-                        && go_type_is_copy(&typeinfer::GoType::from_expr(&field_type));
+                        && (self_referential_pointer_type(&field_type, &ident).is_some()
+                            || go_type_is_copy(&typeinfer::GoType::from_expr(&field_type)));
                     let field_default = default_expr_for_type(&field_type);
                     can_derive_copy &= field_can_derive_copy;
 
@@ -11207,8 +11208,7 @@ fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
         | typeinfer::GoType::Float64
         | typeinfer::GoType::Complex64
         | typeinfer::GoType::Complex128
-        | typeinfer::GoType::Func { .. }
-        | typeinfer::GoType::Pointer(_) => true,
+        | typeinfer::GoType::Func { .. } => true,
         typeinfer::GoType::Array(elem) => go_type_is_copy(elem),
         typeinfer::GoType::Named(name) => TYPE_ENV.with(|env| {
             let resolved = env.borrow().resolve_alias(go_type);

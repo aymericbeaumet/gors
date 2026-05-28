@@ -432,8 +432,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 22,
-		"passingTestCount": 22,
+		"testCount": 23,
+		"passingTestCount": 23,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -550,6 +550,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-struct-tags-pointer-embedding",
 				"section": "Struct types",
 				"title": "Struct field tags and pointer embedded fields are accepted",
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
+			},
+			{
+				"id": "types-promoted-field-shadowing",
+				"section": "Struct types",
+				"title": "Direct fields shadow promoted embedded fields with the same name",
 				"status": "passing",
 				"fixtures": [
 					"types"
@@ -1619,7 +1629,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 148,
-	"passingTestCount": 148,
+	"testCount": 149,
+	"passingTestCount": 149,
 	"unsupportedTestCount": 0
 } as const;

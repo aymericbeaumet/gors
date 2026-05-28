@@ -24,6 +24,15 @@ type TaggedWrapper struct {
 	Label string `json:"label"`
 }
 
+type ShadowEmbedded struct {
+	Value int
+}
+
+type ShadowWrapper struct {
+	*ShadowEmbedded
+	Value int
+}
+
 type Namer interface {
 	Label() string
 }
@@ -65,6 +74,7 @@ func main() {
 	receiveDirectional <- 8
 	node := Node{Value: 1, Children: []Node{{Value: 2}}}
 	wrapper := TaggedWrapper{TaggedEmbedded: &TaggedEmbedded{Code: 9}, Label: "tagged"}
+	shadow := ShadowWrapper{ShadowEmbedded: &ShadowEmbedded{Value: 1}, Value: 2}
 	function := func(value int) int { return value + pointer.Value }
 	var nilPointer *int
 	var nilSlice []int
@@ -72,5 +82,5 @@ func main() {
 	var nilChan chan int
 	var nilFunc func() int
 	var nilInterface interface{}
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
 }
