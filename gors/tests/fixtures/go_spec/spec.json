@@ -1002,6 +1002,15 @@
           ]
         },
         {
+          "id": "stmt-type-switch-nil-case",
+          "section": "Type switch statements",
+          "title": "Type switches match nil interface values with nil cases",
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ]
+        },
+        {
           "id": "stmt-select",
           "section": "Select statements",
           "title": "select statements choose channel communication cases",

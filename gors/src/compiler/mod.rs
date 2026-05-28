@@ -12234,22 +12234,25 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
     let mut result: Option<syn::Expr> = else_block;
     for case in cases.into_iter().rev() {
-        let type_cases: Vec<(syn::Type, Option<String>)> = case
+        let type_cases: Vec<(syn::Type, Option<String>, bool)> = case
             .list
             .unwrap_or_default()
             .into_iter()
             .map(|expr| {
                 let interface_name = interface_type_expr_name(&expr);
-                (syn::Type::from(expr), interface_name)
+                let is_nil = is_nil_type_case_expr(&expr);
+                (syn::Type::from(expr), interface_name, is_nil)
             })
             .collect();
 
-        let cond = if let Some((ty, interface_name)) =
+        let cond = if let Some((ty, interface_name, is_nil)) =
             type_cases.first().filter(|_| type_cases.len() == 1)
         {
             let val = &value_expr;
             let any_ref = value_ref(val);
-            if let Some(interface_name) = interface_name {
+            if *is_nil {
+                syn::parse_quote! { crate::builtin::interface_is_nil(#any_ref) }
+            } else if let Some(interface_name) = interface_name {
                 type_switch_interface_condition(interface_name, any_ref)
             } else if is_string_syn_type(ty) {
                 syn::parse_quote! {
@@ -12261,10 +12264,12 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         } else {
             type_cases
                 .iter()
-                .map(|(ty, is_interface)| {
+                .map(|(ty, is_interface, is_nil)| {
                     let val = &value_expr;
                     let any_ref = value_ref(val);
-                    if let Some(interface_name) = is_interface {
+                    if *is_nil {
+                        syn::parse_quote! { crate::builtin::interface_is_nil(#any_ref) }
+                    } else if let Some(interface_name) = is_interface {
                         type_switch_interface_condition(interface_name, any_ref)
                     } else if is_string_syn_type(ty) {
                         syn::parse_quote! {
@@ -12280,12 +12285,17 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
         let mut body_stmts = vec![];
         if let Some(ref name) = binding_name {
-            if let Some((ty, interface_name)) = type_cases.first().filter(|_| type_cases.len() == 1)
+            if let Some((ty, interface_name, is_nil)) =
+                type_cases.first().filter(|_| type_cases.len() == 1)
             {
                 let val = &value_expr;
                 let any_ref = value_ref(val);
                 let bind_ident = syn::Ident::new(name, Span::mixed_site());
-                if let Some(interface_name) = interface_name {
+                if *is_nil {
+                    body_stmts.push(syn::parse_quote! {
+                        let #bind_ident = #val;
+                    });
+                } else if let Some(interface_name) = interface_name {
                     let binding = type_switch_interface_binding(interface_name, any_ref.clone());
                     body_stmts.push(syn::parse_quote! {
                         let mut #bind_ident = #binding;
@@ -12402,6 +12412,10 @@ fn interface_type_expr_name(expr: &ast::Expr) -> Option<String> {
         .then(|| selector.sel.name.to_string()),
         _ => None,
     }
+}
+
+fn is_nil_type_case_expr(expr: &ast::Expr) -> bool {
+    matches!(expr, ast::Expr::Ident(id) if id.name == "nil")
 }
 
 fn type_switch_interface_condition(interface_name: &str, any_ref: syn::Expr) -> syn::Expr {

@@ -37,6 +37,14 @@ Outer:
 	default:
 		total = -1
 	}
+	nilMatched := 0
+	var nilDynamic any
+	switch nilDynamic.(type) {
+	case nil:
+		nilMatched = 1
+	default:
+		nilMatched = -1
+	}
 	values := []int{1, 2, 3}
 	for _, value := range values {
 		total += value
@@ -55,5 +63,5 @@ Label:
 		goto Label
 	}
 	go func() {}()
-	fmt.Println(total, labeled)
+	fmt.Println(total, labeled, nilMatched)
 }

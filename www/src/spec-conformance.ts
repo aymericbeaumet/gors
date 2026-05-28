@@ -1044,8 +1044,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Statements",
-		"testCount": 31,
-		"passingTestCount": 31,
+		"testCount": 32,
+		"passingTestCount": 32,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1152,6 +1152,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "stmt-type-switch-binding",
 				"section": "Type switch statements",
 				"title": "Type switch guards expose the matched dynamic value in case clauses",
+				"status": "passing",
+				"fixtures": [
+					"statements"
+				],
+				"reason": ""
+			},
+			{
+				"id": "stmt-type-switch-nil-case",
+				"section": "Type switch statements",
+				"title": "Type switches match nil interface values with nil cases",
 				"status": "passing",
 				"fixtures": [
 					"statements"
@@ -1679,7 +1689,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 154,
-	"passingTestCount": 154,
+	"testCount": 155,
+	"passingTestCount": 155,
 	"unsupportedTestCount": 0
 } as const;
