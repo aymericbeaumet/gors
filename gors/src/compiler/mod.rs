@@ -671,6 +671,17 @@ fn collect_call_needed_imported_interface_method_sets(
                     }
                 }
             }
+            for result in env.get_func_returns(&function_name) {
+                if let Some(interface_name) =
+                    qualify_interface_param_name(package.name, &result, env)
+                {
+                    if let Some(methods) = env.get_interface_methods(&interface_name) {
+                        if !methods.is_empty() {
+                            out.entry(interface_name).or_insert(methods);
+                        }
+                    }
+                }
+            }
         }
     }
     collect_expr_needed_imported_interface_method_sets(&call.fun, env, out);

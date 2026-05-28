@@ -685,6 +685,8 @@ pub struct TypeEnv {
     type_alias_targets: HashMap<std::string::String, std::string::String>,
     /// Interface name → required method names
     interface_methods: HashMap<std::string::String, Vec<std::string::String>>,
+    /// Interface name → embedded interface names that contribute promoted methods.
+    interface_embedded: HashMap<std::string::String, Vec<std::string::String>>,
     /// Interface name → type-set terms used when the interface is a constraint.
     interface_type_terms: HashMap<std::string::String, Vec<GoType>>,
     /// Struct name → field types
@@ -721,6 +723,39 @@ fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
                 .iter()
                 .filter_map(|field| field.names.as_ref())
                 .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn embedded_interface_name(expr: &ast::Expr) -> Option<std::string::String> {
+    match expr {
+        ast::Expr::Ident(id) => Some(id.name.to_string()),
+        ast::Expr::SelectorExpr(sel) => match &*sel.x {
+            ast::Expr::Ident(pkg) => Some(format!("{}.{}", pkg.name, sel.sel.name)),
+            _ => None,
+        },
+        ast::Expr::ParenExpr(paren) => embedded_interface_name(&paren.x),
+        ast::Expr::IndexExpr(index) => embedded_interface_name(&index.x),
+        ast::Expr::IndexListExpr(index) => embedded_interface_name(&index.x),
+        _ => None,
+    }
+}
+
+fn interface_embedded_names(expr: &ast::Expr) -> Vec<std::string::String> {
+    let ast::Expr::InterfaceType(interface) = expr else {
+        return Vec::new();
+    };
+    interface
+        .methods
+        .as_ref()
+        .map(|methods| {
+            methods
+                .list
+                .iter()
+                .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+                .filter_map(|field| field.type_.as_ref())
+                .filter_map(embedded_interface_name)
                 .collect()
         })
         .unwrap_or_default()
@@ -922,6 +957,17 @@ fn qualify_package_type(package_name: &str, ty: &GoType, package_env: &TypeEnv) 
     }
 }
 
+fn qualify_package_interface_name(
+    package_name: &str,
+    name: &str,
+    package_env: &TypeEnv,
+) -> std::string::String {
+    match qualify_package_type(package_name, &GoType::Named(name.to_string()), package_env) {
+        GoType::Named(qualified) | GoType::Interface(qualified) => qualified,
+        _ => name.to_string(),
+    }
+}
+
 fn qualify_package_types(
     package_name: &str,
     types: &[GoType],
@@ -1102,8 +1148,19 @@ impl TypeEnv {
         self.interface_methods.insert(name.to_string(), methods);
     }
 
+    pub fn set_interface_embedded(&mut self, name: &str, embedded: Vec<std::string::String>) {
+        if embedded.is_empty() {
+            self.interface_embedded.remove(name);
+        } else {
+            self.interface_embedded.insert(name.to_string(), embedded);
+        }
+    }
+
     pub fn get_interface_methods(&self, name: &str) -> Option<Vec<std::string::String>> {
-        self.interface_methods.get(name).cloned()
+        self.interface_methods.get(name)?;
+        let mut methods = Vec::new();
+        self.collect_interface_methods(name, &mut HashSet::new(), &mut methods);
+        Some(methods)
     }
 
     pub fn set_interface_type_terms(&mut self, name: &str, terms: Vec<GoType>) {
@@ -1121,8 +1178,13 @@ impl TypeEnv {
 
     pub fn interface_method_sets(&self) -> Vec<(std::string::String, Vec<std::string::String>)> {
         self.interface_methods
-            .iter()
-            .map(|(name, methods)| (name.clone(), methods.clone()))
+            .keys()
+            .map(|name| {
+                (
+                    name.clone(),
+                    self.get_interface_methods(name).unwrap_or_default(),
+                )
+            })
             .collect()
     }
 
@@ -1150,7 +1212,7 @@ impl TypeEnv {
     }
 
     pub fn interface_implementors(&self, name: &str) -> Vec<std::string::String> {
-        let Some(required_methods) = self.interface_methods.get(name) else {
+        let Some(required_methods) = self.get_interface_methods(name) else {
             return Vec::new();
         };
         if required_methods.is_empty() {
@@ -1173,7 +1235,7 @@ impl TypeEnv {
     }
 
     pub fn interface_pointer_implementors(&self, name: &str) -> Vec<std::string::String> {
-        let Some(required_methods) = self.interface_methods.get(name) else {
+        let Some(required_methods) = self.get_interface_methods(name) else {
             return Vec::new();
         };
         if required_methods.is_empty() {
@@ -1199,8 +1261,7 @@ impl TypeEnv {
         interface_name: &str,
         include_pointer_receiver_methods: bool,
     ) -> bool {
-        self.interface_methods
-            .get(interface_name)
+        self.get_interface_methods(interface_name)
             .is_none_or(|methods| {
                 methods.iter().all(|method| {
                     self.named_type_has_method(
@@ -1255,8 +1316,7 @@ impl TypeEnv {
     ) -> bool {
         match self.resolve_alias(field_ty) {
             GoType::Named(name) if self.is_interface(&name) => self
-                .interface_methods
-                .get(&name)
+                .get_interface_methods(&name)
                 .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
             GoType::Named(name) => self.named_type_has_method(
                 &name,
@@ -1295,6 +1355,49 @@ impl TypeEnv {
 
     pub fn set_struct_fields(&mut self, name: &str, fields: Vec<(std::string::String, GoType)>) {
         self.struct_fields.insert(name.to_string(), fields);
+    }
+
+    fn collect_interface_methods(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<std::string::String>,
+        methods: &mut Vec<std::string::String>,
+    ) {
+        if !visiting.insert(name.to_string()) {
+            return;
+        }
+        if let Some(explicit) = self.interface_methods.get(name) {
+            for method in explicit {
+                if !methods.contains(method) {
+                    methods.push(method.clone());
+                }
+            }
+        }
+        if let Some(embedded) = self.interface_embedded.get(name) {
+            for embedded_name in embedded {
+                let Some(resolved_name) = self.resolve_embedded_interface_name(embedded_name)
+                else {
+                    continue;
+                };
+                self.collect_interface_methods(&resolved_name, visiting, methods);
+            }
+        }
+        visiting.remove(name);
+    }
+
+    fn resolve_embedded_interface_name(&self, name: &str) -> Option<std::string::String> {
+        if self.is_interface(name) {
+            return Some(name.to_string());
+        }
+        match self.type_kinds.get(name) {
+            Some(TypeKind::Alias(GoType::Named(target))) if self.is_interface(target) => {
+                Some(target.clone())
+            }
+            Some(TypeKind::Alias(GoType::Interface(target))) if self.is_interface(target) => {
+                Some(target.clone())
+            }
+            _ => None,
+        }
     }
 
     pub fn set_struct_embedded_fields(&mut self, name: &str, fields: HashSet<std::string::String>) {
@@ -1414,6 +1517,15 @@ impl TypeEnv {
         }
         for (name, methods) in &package_env.interface_methods {
             self.set_interface_methods(&format!("{package_name}.{name}"), methods.clone());
+        }
+        for (name, embedded) in &package_env.interface_embedded {
+            let qualified = embedded
+                .iter()
+                .map(|embedded_name| {
+                    qualify_package_interface_name(package_name, embedded_name, package_env)
+                })
+                .collect();
+            self.set_interface_embedded(&format!("{package_name}.{name}"), qualified);
         }
         for (name, terms) in &package_env.interface_type_terms {
             self.set_interface_type_terms(
@@ -1561,6 +1673,7 @@ impl TypeEnv {
             ast::Expr::InterfaceType(_) => {
                 self.set_type_kind(name.name, TypeKind::Interface);
                 self.set_interface_methods(name.name, interface_method_names(&ts.type_));
+                self.set_interface_embedded(name.name, interface_embedded_names(&ts.type_));
                 self.set_interface_type_terms(name.name, interface_constraint_terms(&ts.type_));
             }
             other => {
@@ -1827,6 +1940,57 @@ mod tests {
             GoType::Pointer(Box::new(GoType::Named("bytes.Reader".to_string())))
         );
         assert!(env.named_type_implements_interface("bytes.Reader", "io.Reader", true));
+    }
+
+    #[test]
+    fn scan_file_expands_embedded_interface_methods() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Reader interface {
+                    Read([]byte) (int, error)
+                }
+
+                type ReadWriter interface {
+                    Reader
+                    Write([]byte) (int, error)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(
+            env.get_interface_methods("ReadWriter"),
+            Some(vec!["Write".to_string(), "Read".to_string()])
+        );
+    }
+
+    #[test]
+    fn merge_package_qualifies_embedded_interface_methods() {
+        let mut io_env = TypeEnv::new();
+        io_env.set_type_kind("Reader", TypeKind::Interface);
+        io_env.set_interface_methods("Reader", vec!["Read".to_string()]);
+        io_env.set_type_kind("Writer", TypeKind::Interface);
+        io_env.set_interface_methods("Writer", vec!["Write".to_string()]);
+        io_env.set_type_kind("ReadWriter", TypeKind::Interface);
+        io_env.set_interface_methods("ReadWriter", vec![]);
+        io_env.set_interface_embedded(
+            "ReadWriter",
+            vec!["Reader".to_string(), "Writer".to_string()],
+        );
+
+        let mut env = TypeEnv::new();
+        env.merge_package("io", &io_env);
+
+        assert_eq!(
+            env.get_interface_methods("io.ReadWriter"),
+            Some(vec!["Read".to_string(), "Write".to_string()])
+        );
     }
 
     #[test]
