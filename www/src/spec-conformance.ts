@@ -1468,8 +1468,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Generics",
-		"testCount": 6,
-		"passingTestCount": 6,
+		"testCount": 8,
+		"passingTestCount": 8,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1523,6 +1523,26 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"reason": ""
 			},
 			{
+				"id": "generics-underlying-type-constraints",
+				"section": "Interface types",
+				"title": "Constraint interfaces accept underlying type terms with tilde",
+				"status": "passing",
+				"fixtures": [
+					"generics_type_sets"
+				],
+				"reason": ""
+			},
+			{
+				"id": "generics-comparable-constraint",
+				"section": "Interface types",
+				"title": "Generic functions accept comparable type parameters in equality expressions",
+				"status": "passing",
+				"fixtures": [
+					"generics_type_sets"
+				],
+				"reason": ""
+			},
+			{
 				"id": "generics-type-inference",
 				"section": "Instantiations",
 				"title": "Type inference chooses type arguments for generic calls",
@@ -1539,7 +1559,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 140,
-	"passingTestCount": 140,
+	"testCount": 142,
+	"passingTestCount": 142,
 	"unsupportedTestCount": 0
 } as const;

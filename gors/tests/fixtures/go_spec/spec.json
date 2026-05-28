@@ -1324,6 +1324,24 @@
           "expect": "compile_error"
         },
         {
+          "id": "generics-underlying-type-constraints",
+          "section": "Interface types",
+          "title": "Constraint interfaces accept underlying type terms with tilde",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ]
+        },
+        {
+          "id": "generics-comparable-constraint",
+          "section": "Interface types",
+          "title": "Generic functions accept comparable type parameters in equality expressions",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ]
+        },
+        {
           "id": "generics-type-inference",
           "section": "Instantiations",
           "title": "Type inference chooses type arguments for generic calls",
