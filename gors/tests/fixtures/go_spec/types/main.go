@@ -11,6 +11,10 @@ func (c Counter) Label() string {
 	return "counter"
 }
 
+func (c Counter) Detail() string {
+	return c.Name
+}
+
 type Embedded struct {
 	Name string
 }
@@ -37,6 +41,15 @@ type Namer interface {
 	Label() string
 }
 
+type Detailer interface {
+	Detail() string
+}
+
+type Describer interface {
+	Namer
+	Detailer
+}
+
 type Node struct {
 	Value    int
 	Children []Node
@@ -44,6 +57,10 @@ type Node struct {
 
 func Name(n Namer) string {
 	return n.Label()
+}
+
+func Describe(d Describer) string {
+	return d.Detail()
 }
 
 func SendOnly(ch chan<- int, value int) {
@@ -82,5 +99,5 @@ func main() {
 	var nilChan chan int
 	var nilFunc func() int
 	var nilInterface interface{}
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
+	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
 }

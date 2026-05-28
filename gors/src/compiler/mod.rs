@@ -5855,9 +5855,11 @@ fn reachable_stdlib_items(
     let top_level_field_types = top_level_item_field_types(items, module_names);
     let top_level_return_types = top_level_item_return_types(items, module_names);
     let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
+    let trait_supertraits = trait_supertrait_names(items);
 
     loop {
         let mut changed = false;
+        changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
         for (idx, item) in items.iter().enumerate() {
             let Some(mut reachable_item) =
                 reachable_item_for_names(item, &names, &item_names, &top_level_names)
@@ -5981,6 +5983,58 @@ fn item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<Str
 
 fn top_level_item_names(items: &[syn::Item]) -> std::collections::HashSet<String> {
     items.iter().filter_map(item_name).collect()
+}
+
+fn trait_supertrait_names(items: &[syn::Item]) -> BTreeMap<String, Vec<String>> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let supertraits = item_trait
+                .supertraits
+                .iter()
+                .filter_map(|bound| match bound {
+                    syn::TypeParamBound::Trait(trait_bound) => trait_bound
+                        .path
+                        .segments
+                        .last()
+                        .map(|segment| segment.ident.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            Some((item_trait.ident.to_string(), supertraits))
+        })
+        .collect()
+}
+
+fn expand_supertrait_method_names(
+    names: &mut std::collections::HashSet<String>,
+    supertraits: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    let mut changed = false;
+    let roots = names
+        .iter()
+        .filter_map(|name| {
+            name.split_once("::")
+                .map(|(trait_name, method_name)| (trait_name.to_string(), method_name.to_string()))
+        })
+        .collect::<Vec<_>>();
+    for (trait_name, method_name) in roots {
+        let mut stack = supertraits.get(&trait_name).cloned().unwrap_or_default();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(supertrait) = stack.pop() {
+            if !seen.insert(supertrait.clone()) {
+                continue;
+            }
+            changed |= names.insert(impl_method_reachability_name(&supertrait, &method_name));
+            if let Some(next) = supertraits.get(&supertrait) {
+                stack.extend(next.iter().cloned());
+            }
+        }
+    }
+    changed
 }
 
 fn reachable_item_for_names(

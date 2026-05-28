@@ -512,6 +512,15 @@
           ]
         },
         {
+          "id": "types-embedded-interfaces",
+          "section": "Interface types",
+          "title": "Embedded interfaces compose method sets",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
           "id": "types-interface-method-sets",
           "section": "Method sets",
           "title": "Interface method sets match pointer and value receiver rules",

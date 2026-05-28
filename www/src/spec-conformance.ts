@@ -432,8 +432,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Types",
-		"testCount": 23,
-		"passingTestCount": 23,
+		"testCount": 24,
+		"passingTestCount": 24,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -600,6 +600,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"id": "types-interfaces",
 				"section": "Interface types",
 				"title": "Interfaces dispatch methods and support assertions",
+				"status": "passing",
+				"fixtures": [
+					"types"
+				],
+				"reason": ""
+			},
+			{
+				"id": "types-embedded-interfaces",
+				"section": "Interface types",
+				"title": "Embedded interfaces compose method sets",
 				"status": "passing",
 				"fixtures": [
 					"types"
@@ -1629,7 +1639,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 149,
-	"passingTestCount": 149,
+	"testCount": 150,
+	"passingTestCount": 150,
 	"unsupportedTestCount": 0
 } as const;
