@@ -1252,8 +1252,8 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 	},
 	{
 		"name": "Built-in functions",
-		"testCount": 11,
-		"passingTestCount": 11,
+		"testCount": 14,
+		"passingTestCount": 14,
 		"unsupportedTestCount": 0,
 		"tests": [
 			{
@@ -1263,6 +1263,26 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"built_in_functions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "builtin-append-spread",
+				"section": "Appending to and copying slices",
+				"title": "append accepts variadic slice and string expansion",
+				"status": "passing",
+				"fixtures": [
+					"append_copy_clear_builtins"
+				],
+				"reason": ""
+			},
+			{
+				"id": "builtin-copy-string-source",
+				"section": "Appending to and copying slices",
+				"title": "copy copies bytes from string sources into byte slices",
+				"status": "passing",
+				"fixtures": [
+					"append_copy_clear_builtins"
 				],
 				"reason": ""
 			},
@@ -1303,6 +1323,16 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 				"status": "passing",
 				"fixtures": [
 					"built_in_functions"
+				],
+				"reason": ""
+			},
+			{
+				"id": "builtin-clear-slice",
+				"section": "Clear",
+				"title": "clear assigns zero values to slice elements",
+				"status": "passing",
+				"fixtures": [
+					"append_copy_clear_builtins"
 				],
 				"reason": ""
 			},
@@ -1509,7 +1539,7 @@ export const specConformanceCategories: readonly SpecConformanceCategory[] = [
 export const specConformanceSummary = {
 	"categoryCount": 12,
 	"passingCategoryCount": 12,
-	"testCount": 137,
-	"passingTestCount": 137,
+	"testCount": 140,
+	"passingTestCount": 140,
 	"unsupportedTestCount": 0
 } as const;

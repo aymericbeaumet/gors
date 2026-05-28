@@ -1097,6 +1097,24 @@
           ]
         },
         {
+          "id": "builtin-append-spread",
+          "section": "Appending to and copying slices",
+          "title": "append accepts variadic slice and string expansion",
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
+          ]
+        },
+        {
+          "id": "builtin-copy-string-source",
+          "section": "Appending to and copying slices",
+          "title": "copy copies bytes from string sources into byte slices",
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
+          ]
+        },
+        {
           "id": "builtin-len-cap",
           "section": "Length and capacity",
           "title": "len and cap report values for strings, arrays, slices, maps, and channels",
@@ -1130,6 +1148,15 @@
           "status": "passing",
           "fixtures": [
             "built_in_functions"
+          ]
+        },
+        {
+          "id": "builtin-clear-slice",
+          "section": "Clear",
+          "title": "clear assigns zero values to slice elements",
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
           ]
         },
         {

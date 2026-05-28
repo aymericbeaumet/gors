@@ -9865,6 +9865,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
         ir::BuiltinCallKind::New => compile_new_builtin(raw_args),
         ir::BuiltinCallKind::Append => compile_append_builtin(raw_args, has_variadic_spread),
         ir::BuiltinCallKind::Panic => compile_panic_builtin(raw_args),
+        ir::BuiltinCallKind::Clear => compile_clear_builtin(raw_args),
         ir::BuiltinCallKind::Copy if raw_args.len() == 2 => {
             let mut raw_args = raw_args.into_iter();
             let Some(dst_raw) = raw_args.next() else {
@@ -9923,9 +9924,6 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
                 ir::BuiltinCallKind::Cap if let [x] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::cap(&#x) }
-                }
-                ir::BuiltinCallKind::Clear if let [x] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::clear(&mut #x) }
                 }
                 ir::BuiltinCallKind::Close if let [ch] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::close(&#ch) }
@@ -10156,6 +10154,36 @@ fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -
         out = syn::parse_quote! { crate::builtin::append(#out, #elem) };
     }
     out
+}
+
+fn compile_clear_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
+    let Some(arg) = raw_args.into_iter().next() else {
+        return compile_error_expr("clear requires an argument");
+    };
+    if let ast::Expr::SliceExpr(slice_expr) = arg {
+        return compile_clear_slice_expr(slice_expr);
+    }
+    let target = compile_expr_with_expected(arg, None);
+    syn::parse_quote! { crate::builtin::clear(&mut #target) }
+}
+
+fn compile_clear_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
+    let x: syn::Expr = (*slice_expr.x).into();
+    let low: Option<syn::Expr> = slice_expr.low.map(|l| {
+        let e = syn::Expr::from(*l);
+        syn::parse_quote! { (#e) as usize }
+    });
+    let high: Option<syn::Expr> = slice_expr.high.map(|h| {
+        let e = syn::Expr::from(*h);
+        syn::parse_quote! { (#e) as usize }
+    });
+    let target: syn::Expr = match (low, high) {
+        (None, None) => syn::parse_quote! { #x[..] },
+        (Some(lo), None) => syn::parse_quote! { #x[#lo..] },
+        (None, Some(hi)) => syn::parse_quote! { #x[..#hi] },
+        (Some(lo), Some(hi)) => syn::parse_quote! { #x[#lo..#hi] },
+    };
+    syn::parse_quote! { crate::builtin::clear(&mut #target) }
 }
 
 fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {

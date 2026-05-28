@@ -584,6 +584,14 @@ impl<T: Default> Clear for Vec<T> {
     }
 }
 
+impl<T: Default> Clear for [T] {
+    fn clear_value(&mut self) {
+        for elem in self.iter_mut() {
+            *elem = T::default();
+        }
+    }
+}
+
 impl<K, V> Clear for HashMap<K, V> {
     fn clear_value(&mut self) {
         self.clear();
@@ -591,7 +599,7 @@ impl<K, V> Clear for HashMap<K, V> {
 }
 
 #[inline]
-pub fn clear<T: Clear>(v: &mut T) {
+pub fn clear<T: Clear + ?Sized>(v: &mut T) {
     v.clear_value();
 }
 
@@ -1352,6 +1360,13 @@ mod tests {
         let mut cleared = vec![1, 2, 3];
         clear(&mut cleared);
         assert_eq!(cleared, vec![0, 0, 0]);
+        let mut subrange = vec![1, 2, 3, 4];
+        let subrange_slice = subrange.get_mut(1..3);
+        assert!(subrange_slice.is_some());
+        if let Some(slice) = subrange_slice {
+            clear(slice);
+        }
+        assert_eq!(subrange, vec![1, 0, 0, 4]);
     }
 
     #[test]
