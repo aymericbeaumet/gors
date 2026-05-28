@@ -9,5 +9,5 @@ func main() {
 	fmt.Println("== rc4/basic ==")
 	var cipher *rc4.Cipher
 	fmt.Println(cipher == nil)
-	fmt.Println(rc4.KeySizeError(2).Error())
+	fmt.Println(rc4.KeySizeError.Error(rc4.KeySizeError(2)))
 }

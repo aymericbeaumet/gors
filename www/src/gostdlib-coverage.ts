@@ -3042,7 +3042,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/aes"
 		],
 		"symbolCount": 4,
-		"testedSymbolCount": 1,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "BlockSize",
@@ -3055,14 +3055,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "KeySizeError",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/aes"
+				]
 			},
 			{
 				"name": "KeySizeError.Error",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/aes"
+				]
 			},
 			{
 				"name": "NewCipher",
@@ -3208,7 +3212,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/des"
 		],
 		"symbolCount": 5,
-		"testedSymbolCount": 1,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "BlockSize",
@@ -3221,14 +3225,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "KeySizeError",
 				"kind": "type",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/des"
+				]
 			},
 			{
 				"name": "KeySizeError.Error",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/des"
+				]
 			},
 			{
 				"name": "NewCipher",
@@ -9387,7 +9395,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"crypto/rc4"
 		],
 		"symbolCount": 6,
-		"testedSymbolCount": 2,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Cipher",
@@ -9420,8 +9428,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "KeySizeError.Error",
 				"kind": "method",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"crypto/rc4"
+				]
 			},
 			{
 				"name": "NewCipher",
@@ -79845,6 +79855,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 65,
 	"untestedPackageCount": 288,
 	"symbolCount": 12599,
-	"testedSymbolCount": 394,
-	"untestedSymbolCount": 12205
+	"testedSymbolCount": 399,
+	"untestedSymbolCount": 12200
 } as const;
