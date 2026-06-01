@@ -154,7 +154,7 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
     let report = ConformanceReport {
         schema_version: REPORT_SCHEMA_VERSION,
         kind: "go-spec".to_string(),
-        title: "Go specification conformance".to_string(),
+        title: "Go Language Specification Conformance".to_string(),
         source: ReportSource {
             title: manifest.source.title,
             url: manifest.source.url,
@@ -213,10 +213,10 @@ pub fn write_go_stdlib_conformance() -> Result<(), String> {
     let report = ConformanceReport {
         schema_version: REPORT_SCHEMA_VERSION,
         kind: "go-stdlib".to_string(),
-        title: "Go standard library conformance".to_string(),
+        title: "Go Standard Library Conformance".to_string(),
         source: ReportSource {
             title: "The Go Standard Library".to_string(),
-            url: "https://pkg.go.dev/std".to_string(),
+            url: format!("https://pkg.go.dev/std@go{}", gors::GO_VERSION),
             language_version: format!("go{}", gors::GO_VERSION),
             published: String::new(),
             retrieved: String::new(),

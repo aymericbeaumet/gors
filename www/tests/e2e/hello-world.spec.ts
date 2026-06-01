@@ -87,9 +87,11 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 	await page.goto("/conformance");
 
 	await expect(
-		page.getByRole("heading", { name: "Go standard library conformance" }),
+		page.getByRole("heading", { name: "Go Standard Library Conformance" }),
 	).toBeVisible();
-	await expect(page.getByText("Go specification conformance")).toBeVisible();
+	await expect(
+		page.getByText("Go Language Specification Conformance"),
+	).toBeVisible();
 	await expect(
 		page.getByText(
 			coverageMetric(

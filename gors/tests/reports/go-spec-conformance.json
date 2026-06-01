@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "go-spec",
-  "title": "Go specification conformance",
+  "title": "Go Language Specification Conformance",
   "source": {
     "title": "The Go Programming Language Specification",
     "url": "https://go.dev/ref/spec",

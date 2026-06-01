@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "kind": "go-stdlib",
-  "title": "Go standard library conformance",
+  "title": "Go Standard Library Conformance",
   "source": {
     "title": "The Go Standard Library",
-    "url": "https://pkg.go.dev/std",
+    "url": "https://pkg.go.dev/std@go1.26.3",
     "languageVersion": "go1.26.3",
     "published": "",
     "retrieved": ""

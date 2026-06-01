@@ -116,24 +116,30 @@ function coveragePercent(tested: number, total: number): string {
 function coverageMetric(tested: number, total: number): string {
 	return `${tested}/${total} (${coveragePercent(tested, total)})`;
 }
+
+function languageVersionLabel(languageVersion: string): string {
+	return languageVersion.replace(/^go/, "");
+}
 </script>
 
 <section class="coverage-page">
   {#each reportViews as view}
     <div class="conformance-section">
-      <div class="coverage-intro">
-        <div>
-          <h1>{view.report.title}</h1>
-          <p>
-            Generated from the <a href={view.report.source.url} target="_blank" rel="noopener">{view.sourceLabel}</a>
-          </p>
+      <div class="coverage-sticky-header">
+        <div class="coverage-intro">
+          <div>
+            <h1>{view.report.title}</h1>
+            <p>
+              Generated from the <a href={view.report.source.url} target="_blank" rel="noopener">{view.sourceLabel} ({languageVersionLabel(view.report.source.languageVersion)})</a>
+            </p>
+          </div>
         </div>
-      </div>
 
-      <div class="report-summary">
-        <div class="report-metric">
-          <strong>{coverageMetric(view.report.summary.passingCaseCount, view.report.summary.caseCount)}</strong>
-          <span>{view.caseMetricLabel}</span>
+        <div class="report-summary">
+          <div class="report-metric">
+            <strong>{coverageMetric(view.report.summary.passingCaseCount, view.report.summary.caseCount)}</strong>
+            <span>{view.caseMetricLabel}</span>
+          </div>
         </div>
       </div>
 
@@ -190,21 +196,33 @@ function coverageMetric(tested: number, total: number): string {
     max-width: 100%;
     height: 100%;
     min-height: 0;
-    gap: 12px;
-    overflow: hidden;
-    padding: 16px;
+    gap: 16px;
+    overflow: auto;
+    padding: 0 16px 16px;
     background: #f5f7fb;
     color: #1f2328;
   }
 
   .conformance-section {
-    display: flex;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
-    flex-direction: column;
     gap: 10px;
-    overflow-y: auto;
+    overflow: hidden;
     padding-right: 4px;
+  }
+
+  .coverage-sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding-top: 16px;
+    padding-bottom: 10px;
+    background: #f5f7fb;
   }
 
   .coverage-intro {
@@ -427,6 +445,7 @@ function coverageMetric(tested: number, total: number): string {
     --section-border: 2px solid #aeb8c4;
     display: flex;
     max-width: 100%;
+    min-height: 0;
     min-width: 0;
     flex-direction: column;
     overflow: hidden;
@@ -444,6 +463,7 @@ function coverageMetric(tested: number, total: number): string {
   }
 
   .spec-list-head {
+    flex-shrink: 0;
     padding: 7px 10px;
     border-bottom: var(--section-border);
     background: #f6f8fa;
@@ -455,13 +475,18 @@ function coverageMetric(tested: number, total: number): string {
   .spec-list-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
     min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: #f6f8fa;
   }
 
   .spec-category-row {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(104px, 164px) minmax(0, 1fr);
-    align-items: stretch;
+    align-items: start;
     min-width: 0;
     border-top: var(--section-border);
   }
@@ -476,15 +501,20 @@ function coverageMetric(tested: number, total: number): string {
     align-items: stretch;
     align-content: start;
     min-width: 0;
+    gap: 4px;
+    padding: 4px;
+    border-left: var(--section-border);
   }
 
   .spec-category-card {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     min-width: 0;
     flex-direction: column;
     gap: 4px;
     padding: 8px 10px;
-    border-right: var(--section-border);
     border-bottom: 1px solid #d8dee4;
     background: #ffffff;
   }
@@ -510,10 +540,8 @@ function coverageMetric(tested: number, total: number): string {
     min-width: 0;
     padding: 7px 7px 7px 11px;
     overflow: hidden;
-    border: 0;
-    border-right: 1px solid #d8dee4;
-    border-bottom: 1px solid #d8dee4;
-    border-radius: 0;
+    border: 1px solid #d8dee4;
+    border-radius: 4px;
     background: #ffffff;
   }
 
@@ -614,12 +642,18 @@ function coverageMetric(tested: number, total: number): string {
       height: auto;
       min-height: 100%;
       overflow: visible;
-      padding: 16px;
+      padding: 0 16px 16px;
     }
 
     .conformance-section {
       overflow: visible;
       padding-right: 0;
+    }
+
+    .coverage-sticky-header {
+      position: sticky;
+      padding-top: 16px;
+      padding-bottom: 10px;
     }
 
     .conformance-section + .conformance-section {
@@ -650,7 +684,11 @@ function coverageMetric(tested: number, total: number): string {
     }
 
     .spec-category-card {
-      border-right: 0;
+      position: static;
+    }
+
+    .spec-group-cases {
+      border-left: 0;
     }
 
     .stdlib-symbols-cell {
