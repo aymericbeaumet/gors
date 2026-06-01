@@ -36,7 +36,8 @@ gors/
     test_integration_go_stdlib.rs       # Go stdlib generated-program acceptance
     test_integration_go_programs.rs     # Arbitrary generated-program acceptance
     common.rs                           # Shared integration test infrastructure
-    support/generated_programs.rs       # Shared generated-program runner
+    common/runner.rs                    # Shared generated-program runner
+    common/reporter.rs                  # Shared conformance report writer
     fixtures/
       go_repositories/ # Lexer/parser corpus: submodules plus go_files/
       go_spec/         # Go spec acceptance fixtures grouped by spec category
@@ -452,18 +453,19 @@ fixture output unless the fixture is explicitly testing the predeclared
 `print`/`println` builtins, because Go's predeclared `print` and `println`
 write to stderr under the pinned SDK.
 After adding or changing `gors/tests/fixtures/go_stdlib` fixtures, run
-`npm --prefix www run generate:gostdlib-report` from the repository root to
-refresh the Svelte app's stdlib coverage report. The generator marks fixture-used
-selectors as tested and derives untested package/symbol rows from the embedded
-Go stdlib source copied to `go_stdlib_src` by the `gors` build.
+`npm --prefix www run generate:go-stdlib-conformance` from the repository root to
+run the stdlib generated-program integration test and refresh
+`gors/tests/reports/go-stdlib-conformance.json`. The Rust reporter marks
+fixture-used selectors as tested and derives untested package/symbol rows from
+the embedded Go SDK source.
 The Go specification conformance matrix lives in
-`gors/tests/fixtures/go_spec/spec.json` and is rendered from
-`www/src/spec-conformance.ts`. Mark implemented entries as `passing` only when
-they point at runnable generated-program fixtures under `gors/tests/fixtures/go_spec`;
-known gaps stay `unsupported` with an explicit reason and may keep reduced
-repros under `gors/tests/fixtures/go_spec/_unsupported/`. After editing the
-matrix, run
-`npm --prefix www run generate:conformance-report` from the repository root.
+`gors/tests/fixtures/go_spec/spec.json` and is emitted by the Rust reporter as
+`gors/tests/reports/go-spec-conformance.json`. Mark implemented entries as
+`passing` only when they point at runnable generated-program fixtures under
+`gors/tests/fixtures/go_spec`; known gaps stay `unsupported` with an explicit
+reason and may keep reduced repros under
+`gors/tests/fixtures/go_spec/_unsupported/`. After editing the matrix, run
+`npm --prefix www run generate:go-spec-conformance` from the repository root.
 The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
@@ -589,8 +591,10 @@ bundle source maps. The playground also caps client-side source-map indexing for
 very large compiler outputs; when the cap is exceeded, Rust output remains
 visible but hover/cursor mapping is disabled for that result.
 Coverage-page tests should derive package and symbol totals from
-`www/src/gostdlib-coverage.ts`, not hardcode rendered summary strings, because
-adding a `go_stdlib` fixture intentionally changes those generated totals.
+`gors/tests/reports/go-spec-conformance.json` and
+`gors/tests/reports/go-stdlib-conformance.json`, not hardcode rendered summary
+strings, because adding a `go_stdlib` fixture intentionally changes those
+generated totals.
 
 CI deploys `www/dist` with native GitHub Pages artifacts
 (`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by

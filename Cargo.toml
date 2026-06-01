@@ -50,6 +50,7 @@ too_many_lines = "allow"           # Large compiler functions and tests are spli
 
 [profile.dev]
 opt-level = 0
+split-debuginfo = "unpacked"
 
 [profile.release]
 codegen-units = 1
@@ -59,6 +60,7 @@ opt-level = 3
 [profile.ci]
 inherits = "release"
 codegen-units = 16
+debug = 1
 lto = "off"
 opt-level = 1
-debug = 0
+split-debuginfo = "unpacked"

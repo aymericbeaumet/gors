@@ -2,8 +2,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "support/generated_programs.rs"]
-mod generated_programs;
 
 use common::fixtures_dir;
 use std::collections::HashSet;
@@ -218,5 +216,7 @@ fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
 
 #[test]
 fn run_go_spec_generated_rust() {
-    generated_programs::run_generated_program_fixture_set("go_spec");
+    common::runner::run_generated_program_fixture_set("go_spec");
+    common::reporter::write_go_spec_conformance()
+        .expect("failed to write go-spec-conformance report");
 }

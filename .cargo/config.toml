@@ -1,2 +1,8 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+reference-types"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-ld_prime"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-ld_prime"]

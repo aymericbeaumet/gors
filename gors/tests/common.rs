@@ -27,6 +27,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+pub mod reporter;
+pub mod runner;
+
 /// Test configuration from environment variables.
 #[derive(Debug, Clone)]
 pub struct TestConfig {
@@ -166,7 +169,7 @@ pub fn fixtures_dir() -> PathBuf {
     crate_root().join("tests/fixtures")
 }
 
-fn workspace_root() -> PathBuf {
+pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("gors crate should live under workspace root")

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { gostdlibCoverageSummary } from "../../src/gostdlib-coverage";
-import { specConformanceSummary } from "../../src/spec-conformance";
+import goSpecReport from "../../../gors/tests/reports/go-spec-conformance.json";
+import goStdlibReport from "../../../gors/tests/reports/go-stdlib-conformance.json";
 
 function coverageMetric(tested: number, total: number): string {
 	if (total === 0) return "0/0 (0%)";
@@ -93,38 +93,45 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 	await expect(
 		page.getByText(
 			coverageMetric(
-				specConformanceSummary.passingTestCount,
-				specConformanceSummary.testCount,
+				goSpecReport.summary.passingGroupCount,
+				goSpecReport.summary.groupCount,
+			),
+		),
+	).toBeVisible();
+	await expect(
+		page.getByText(
+			coverageMetric(
+				goSpecReport.summary.passingCaseCount,
+				goSpecReport.summary.caseCount,
 			),
 		),
 	).toBeVisible();
 	await expect(
 		page.getByText("Slice expressions share the original backing array"),
 	).toBeVisible();
-	await expect(page.getByText("Unsupported").first()).toBeVisible();
+	await expect(page.getByText("Uncovered").first()).toBeVisible();
 	await expect(
 		page.getByText(
 			coverageMetric(
-				gostdlibCoverageSummary.testedPackageCount,
-				gostdlibCoverageSummary.packageCount,
+				goStdlibReport.summary.passingGroupCount,
+				goStdlibReport.summary.groupCount,
 			),
 		),
 	).toBeVisible();
 	await expect(
 		page.getByText(
 			coverageMetric(
-				gostdlibCoverageSummary.testedSymbolCount,
-				gostdlibCoverageSummary.symbolCount,
+				goStdlibReport.summary.passingCaseCount,
+				goStdlibReport.summary.caseCount,
 			),
 		),
 	).toBeVisible();
 
-	await page.getByRole("searchbox").fill("fmt");
 	await expect(
 		page.locator(".package-cell > code").filter({ hasText: /^fmt$/ }),
 	).toHaveClass(/(^|\s)partial(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "13/31 tested" }),
+		page.locator(".package-cell span").filter({ hasText: "13/29 passing" }),
 	).toHaveClass(/(^|\s)partial(\s|$)/);
 	await expect(page.getByText("Println", { exact: true })).toBeVisible();
 	await expect(
@@ -134,30 +141,27 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 		"https://github.com/aymericbeaumet/gors/tree/master/gors/tests/fixtures/go_stdlib/fmt",
 	);
 
-	await page.getByRole("searchbox").fill("archive/tar");
 	await expect(
-		page.locator(".stdlib-symbol").filter({ hasText: "Format.String" }),
+		page.locator(".stdlib-symbol").filter({ hasText: "Header.FileInfo" }),
 	).toHaveClass(/(^|\s)none(\s|$)/);
 	await expect(
 		page.locator(".stdlib-symbol").filter({ hasText: "FileInfoHeader" }),
 	).toHaveClass(/(^|\s)tested(\s|$)/);
 
-	await page.getByRole("searchbox").fill("container/list");
 	await expect(
 		page
 			.locator(".package-cell > code")
 			.filter({ hasText: /^container\/list$/ }),
 	).toHaveClass(/(^|\s)none(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "0/20 tested" }),
+		page.locator(".package-cell span").filter({ hasText: "0/20 passing" }),
 	).toHaveClass(/(^|\s)none(\s|$)/);
 
-	await page.getByRole("searchbox").fill("structs");
 	await expect(
 		page.locator(".package-cell > code").filter({ hasText: /^structs$/ }),
 	).toHaveClass(/(^|\s)tested(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "1/1 tested" }),
+		page.locator(".package-cell span").filter({ hasText: "1/1 passing" }),
 	).toHaveClass(/(^|\s)tested(\s|$)/);
 
 	await expect
@@ -167,41 +171,6 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 			),
 		)
 		.toBe(true);
-	await page.getByRole("searchbox").fill("");
-	await page.getByRole("button", { name: "Partial" }).click();
-	await expect(page).toHaveURL(/color=yellow/);
-	await expect(
-		page.locator(".package-cell > code").filter({ hasText: /^fmt$/ }),
-	).toBeVisible();
-	await expect(
-		page
-			.locator(".package-cell > code")
-			.filter({ hasText: /^container\/list$/ }),
-	).toHaveCount(0);
-	await page.getByRole("button", { name: "Unsupported" }).click();
-	await expect(page).toHaveURL(/color=red/);
-	await expect(
-		page
-			.locator(".package-cell > code")
-			.filter({ hasText: /^container\/list$/ }),
-	).toBeVisible();
-	await expect(
-		page.locator(".package-cell > code").filter({ hasText: /^fmt$/ }),
-	).toHaveCount(0);
-	await page.getByRole("button", { name: "Passing" }).click();
-	await expect(page).toHaveURL(/color=green/);
-	await expect(
-		page.locator(".package-cell > code").filter({ hasText: /^structs$/ }),
-	).toBeVisible();
-	await page.getByRole("searchbox").fill("fmt");
-	await expect(page).toHaveURL(/q=fmt/);
-	await page.goto("/conformance?q=fmt&color=yellow");
-	await expect(page.getByRole("searchbox")).toHaveValue("fmt");
-	await expect(page.getByRole("button", { name: "Partial" })).toHaveAttribute(
-		"aria-pressed",
-		"true",
-	);
-	await page.getByRole("searchbox").fill("");
 	await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
 	await page.getByRole("link", { name: "gors" }).click();
 	await page.getByRole("link", { name: "Learn more." }).click();

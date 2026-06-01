@@ -7,8 +7,6 @@
 			"!playwright-report/**",
 			"!test-results/**",
 			"!v86/**",
-			"!src/gostdlib-coverage.ts",
-			"!src/spec-conformance.ts",
 			"!wasm/pkg/**",
 			"!wasm/target/**"
 		]
