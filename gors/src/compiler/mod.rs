@@ -17840,6 +17840,7 @@ fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
 }
 
 fn concrete_interface_impl_items_for_methods(
+    trait_name: &str,
     struct_name: &str,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
@@ -17865,9 +17866,75 @@ fn concrete_interface_impl_items_for_methods(
             if method_names.contains(&method.sig.ident.to_string()) {
                 let mut m = method.clone();
                 m.vis = syn::Visibility::Inherited;
+                let method_ident = m.sig.ident.clone();
+                let immutable_error_method = trait_name == "error" && method_ident == "Error";
+                let original_receiver = method
+                    .sig
+                    .inputs
+                    .first()
+                    .and_then(|arg| match arg {
+                        syn::FnArg::Receiver(receiver) => {
+                            Some((receiver.reference.is_some(), receiver.mutability.is_some()))
+                        }
+                        syn::FnArg::Typed(_) => None,
+                    })
+                    .unwrap_or((true, false));
                 if let Some(syn::FnArg::Receiver(receiver)) = m.sig.inputs.first_mut() {
-                    receiver.mutability = Some(<Token![mut]>::default());
-                    *receiver.ty = syn::parse_quote! { &mut Self };
+                    if immutable_error_method {
+                        receiver.mutability = None;
+                        *receiver.ty = syn::parse_quote! { &Self };
+                    } else {
+                        receiver.mutability = Some(<Token![mut]>::default());
+                        *receiver.ty = syn::parse_quote! { &mut Self };
+                    }
+                }
+                if immutable_error_method {
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let arg_idents = method
+                        .sig
+                        .inputs
+                        .iter()
+                        .skip(1)
+                        .filter_map(|arg| match arg {
+                            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                                _ => None,
+                            },
+                            syn::FnArg::Receiver(_) => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
+                    m.block = if original_receiver_is_mut {
+                        if matches!(m.sig.output, syn::ReturnType::Default) {
+                            let receiver: syn::Expr = if original_receiver_is_ref {
+                                syn::parse_quote! { &mut __gors_receiver }
+                            } else {
+                                syn::parse_quote! { __gors_receiver }
+                            };
+                            syn::parse_quote!({
+                                let mut __gors_receiver = (*self).clone();
+                                #struct_ident::#method_ident(#receiver, #(#arg_idents),*);
+                            })
+                        } else {
+                            let receiver: syn::Expr = if original_receiver_is_ref {
+                                syn::parse_quote! { &mut __gors_receiver }
+                            } else {
+                                syn::parse_quote! { __gors_receiver }
+                            };
+                            syn::parse_quote!({
+                                let mut __gors_receiver = (*self).clone();
+                                #struct_ident::#method_ident(#receiver, #(#arg_idents),*)
+                            })
+                        }
+                    } else if matches!(m.sig.output, syn::ReturnType::Default) {
+                        syn::parse_quote!({
+                            #struct_ident::#method_ident(self, #(#arg_idents),*);
+                        })
+                    } else {
+                        syn::parse_quote!({
+                            #struct_ident::#method_ident(self, #(#arg_idents),*)
+                        })
+                    };
                 }
                 impl_items.push(syn::ImplItem::Fn(m));
             }
@@ -17877,6 +17944,7 @@ fn concrete_interface_impl_items_for_methods(
 }
 
 fn pointer_interface_impl_items_for_methods(
+    trait_name: &str,
     struct_name: &str,
     _trait_path: &syn::Path,
     method_names: &[String],
@@ -17908,9 +17976,15 @@ fn pointer_interface_impl_items_for_methods(
                 })
                 .collect::<Vec<_>>();
             let mut sig = method.sig.clone();
+            let immutable_error_method = trait_name == "error" && method_ident == "Error";
             if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                receiver.mutability = Some(<Token![mut]>::default());
-                *receiver.ty = syn::parse_quote! { &mut Self };
+                if immutable_error_method {
+                    receiver.mutability = None;
+                    *receiver.ty = syn::parse_quote! { &Self };
+                } else {
+                    receiver.mutability = Some(<Token![mut]>::default());
+                    *receiver.ty = syn::parse_quote! { &mut Self };
+                }
             }
             let block = if matches!(sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
@@ -18229,9 +18303,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     struct_method_list.contains(method)
                         && pointer_methods.is_none_or(|methods| !methods.contains(method))
                 });
-                // The Arc<Mutex<T>> pointer shim delegates through this concrete impl;
-                // validation still enforces Go value-vs-pointer method-set rules.
-                let emit_concrete_trait_impl = value_satisfies || pointer_satisfies;
+                // Most pointer shims also keep the concrete impl for existing interface-object
+                // paths. The predeclared error interface has an immutable trait method, so
+                // pointer-only error types must not gain a concrete value impl.
+                let emit_concrete_trait_impl =
+                    value_satisfies || (pointer_satisfies && trait_name != "error");
                 if emit_concrete_trait_impl {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
@@ -18247,6 +18323,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         false,
                     )) {
                         let impl_items = concrete_interface_impl_items_for_methods(
+                            trait_name,
                             struct_name,
                             &direct_required_methods,
                             &methods,
@@ -18295,6 +18372,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         });
                         let trait_path = interface_trait_path_from_name(embedded_name);
                         let impl_items = concrete_interface_impl_items_for_methods(
+                            embedded_name,
                             struct_name,
                             &embedded_methods,
                             &methods,
@@ -18342,6 +18420,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         true,
                     )) {
                         let impl_items = pointer_interface_impl_items_for_methods(
+                            trait_name,
                             struct_name,
                             &trait_path,
                             &direct_required_methods,
@@ -18370,6 +18449,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         });
                         let trait_path = interface_trait_path_from_name(embedded_name);
                         let impl_items = pointer_interface_impl_items_for_methods(
+                            embedded_name,
                             struct_name,
                             &trait_path,
                             &embedded_methods,
@@ -24424,6 +24504,65 @@ func main() {
             "{main_rs}"
         );
         assert!(!main_rs.contains("(err).clone()"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_imported_error_vars_static_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/errpkg"
+
+func main() {
+	_ = errpkg.ErrValue.Error()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("errpkg/errpkg.go").as_path(),
+            r#"
+package errpkg
+
+type wrapError struct {
+	msg string
+	err error
+}
+
+func (e *wrapError) Error() string {
+	return e.msg
+}
+
+var ErrValue error = &wrapError{msg: "boom"}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let builtin_rs = output.files.get("builtin.rs").unwrap();
+        let errpkg_rs = output.files.get("example__errpkg.rs").unwrap();
+        assert!(
+            builtin_rs.contains("pub trait error: Send + Sync"),
+            "{builtin_rs}"
+        );
+        assert!(
+            errpkg_rs.contains(
+                "pub static ErrValue: std::sync::LazyLock<Box<dyn crate::builtin::error>>"
+            ),
+            "{errpkg_rs}"
+        );
+        assert!(
+            errpkg_rs.contains(
+                "impl crate::builtin::error for std::sync::Arc<std::sync::Mutex<wrapError>>"
+            ),
+            "{errpkg_rs}"
+        );
+        assert!(
+            !errpkg_rs.contains("impl crate::builtin::error for wrapError"),
+            "{errpkg_rs}"
+        );
     }
 
     #[test]

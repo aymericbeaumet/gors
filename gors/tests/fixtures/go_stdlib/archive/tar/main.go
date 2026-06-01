@@ -6,10 +6,21 @@ import (
 )
 
 func main() {
+	fmt.Println("== archive/tar/errors ==")
+	caseErrors()
 	fmt.Println("== archive/tar/typeflags ==")
 	caseTypeflags()
 	fmt.Println("== archive/tar/formats ==")
 	caseFormats()
+}
+
+func caseErrors() {
+	// gors:stdlib-cover archive/tar::ErrHeader archive/tar::ErrWriteTooLong archive/tar::ErrFieldTooLong archive/tar::ErrWriteAfterClose archive/tar::ErrInsecurePath
+	fmt.Println(tar.ErrHeader.Error())
+	fmt.Println(tar.ErrWriteTooLong.Error())
+	fmt.Println(tar.ErrFieldTooLong.Error())
+	fmt.Println(tar.ErrWriteAfterClose.Error())
+	fmt.Println(tar.ErrInsecurePath.Error())
 }
 
 func caseTypeflags() {

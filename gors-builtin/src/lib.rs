@@ -35,9 +35,9 @@ pub trait comparable {}
 
 impl<T: Eq> comparable for T {}
 
-pub trait error {
+pub trait error: Send + Sync {
     fn __gors_as_any(&self) -> Option<&dyn Any>;
-    fn Error(&mut self) -> std::string::String;
+    fn Error(&self) -> std::string::String;
 }
 
 #[derive(Clone, Default)]
@@ -48,7 +48,7 @@ impl error for __GorsNooperror {
         None
     }
 
-    fn Error(&mut self) -> std::string::String {
+    fn Error(&self) -> std::string::String {
         std::string::String::new()
     }
 }
@@ -61,7 +61,7 @@ impl error for __GorsStringError {
         Some(self)
     }
 
-    fn Error(&mut self) -> std::string::String {
+    fn Error(&self) -> std::string::String {
         self.0.clone()
     }
 }
@@ -77,7 +77,7 @@ impl error for Box<dyn error> {
         (**self).__gors_as_any()
     }
 
-    fn Error(&mut self) -> std::string::String {
+    fn Error(&self) -> std::string::String {
         (**self).Error()
     }
 }
