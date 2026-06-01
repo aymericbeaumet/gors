@@ -13012,6 +13012,10 @@ fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
                         return env.get_func_returns(&format!("{}.{}", name, sel.sel.name));
                     }
                 }
+                let receiver_type = typeinfer::GoType::infer_expr(&sel.x, &env);
+                if let Some(name) = receiver_method_type_name_for_call(receiver_type, &env) {
+                    return env.get_func_returns(&format!("{}.{}", name, sel.sel.name));
+                }
                 Vec::new()
             }
             _ => Vec::new(),

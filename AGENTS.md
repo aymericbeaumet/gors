@@ -586,6 +586,10 @@ Package-level function signatures and method signatures live in separate
 such as `StringSlice.Search`, never as plain `Search`, because Go permits package
 functions and methods to share the same simple name and call-site lowering needs
 the package function signature for `func(...)` argument coercions.
+Multi-result assignment type registration must also resolve method calls through
+selector receivers such as `pkg.Value.Method()`, not only direct package
+functions or local receiver identifiers, so later uses like `err == nil` see the
+correct result type.
 
 `gors/src/compiler/ir.rs` is the typed Go IR layer being introduced between the
 parser AST and Rust `syn` backend. Current compile entrypoints build this IR as
