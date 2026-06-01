@@ -9134,6 +9134,24 @@ fn add_elided_lifetime_to_boxed_trait_object(ty: &mut syn::Type) {
     else {
         return;
     };
+    if trait_object.bounds.iter().any(|bound| {
+        let syn::TypeParamBound::Trait(trait_bound) = bound else {
+            return false;
+        };
+        trait_bound
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            == [
+                "crate".to_string(),
+                "builtin".to_string(),
+                "error".to_string(),
+            ]
+    }) {
+        return;
+    }
     if trait_object
         .bounds
         .iter()
@@ -11853,19 +11871,27 @@ fn compile_return_expr_with_expected(
     expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
 ) -> syn::Expr {
+    if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
+        return compile_expr_with_expected(expr, expected);
+    }
     if let Some(expected) = expected
         && let Some(interface_name) = go_type_interface_name(expected)
     {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
         let trait_path = interface_trait_path_from_name(&interface_name);
         let compiled: syn::Expr = expr.into();
+        if matches!(expected, typeinfer::GoType::Error) {
+            return if is_box_new_call(&compiled) {
+                syn::parse_quote! { #compiled as Box<dyn #trait_path> }
+            } else {
+                syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
+            };
+        }
         if go_type_is_interface_like(&actual) {
             return compiled;
         }
         return if is_box_new_call(&compiled) {
             syn::parse_quote! { #compiled as Box<dyn #trait_path + '_> }
-        } else if matches!(expected, typeinfer::GoType::Error) {
-            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path + '_> }
         } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
             syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path + '_> }
         } else {
@@ -11924,12 +11950,7 @@ fn compile_expr_with_expected(
                     Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
                 }
             }
-            Some(typeinfer::GoType::Pointer(_)) => {
-                syn::parse_quote! {{
-                    crate::builtin::panic_value("nil pointer dereference");
-                    Default::default()
-                }}
-            }
+            Some(typeinfer::GoType::Pointer(_)) => syn::parse_quote! { Default::default() },
             _ => syn::parse_quote! { Default::default() },
         };
     }
@@ -16172,14 +16193,20 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                 let borrow_pointer_by_shape =
                     should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape {
+                let should_borrow_pointer =
+                    borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
+                if should_borrow_pointer && is_nil_expr(&arg) {
+                    args.push(nil_borrowed_pointer_arg_expr());
+                    continue;
+                }
+                if should_borrow_pointer {
                     if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
                         args.push(arg);
                         continue;
                     }
                 }
                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
-                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape {
+                if should_borrow_pointer {
                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                 }
                 args.push(arg)
@@ -16270,16 +16297,20 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                     .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                                 let borrow_pointer_by_shape =
                                     should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-                                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape
-                                {
+                                let should_borrow_pointer =
+                                    borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
+                                if should_borrow_pointer && is_nil_expr(&arg) {
+                                    args.push(nil_borrowed_pointer_arg_expr());
+                                    continue;
+                                }
+                                if should_borrow_pointer {
                                     if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
                                         args.push(arg);
                                         continue;
                                     }
                                 }
                                 let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
-                                if borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape
-                                {
+                                if should_borrow_pointer {
                                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                                 }
                                 args.push(arg);
@@ -17435,6 +17466,15 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
         }
     } else {
         *expr = syn::parse_quote! { &mut #inner };
+    }
+}
+
+fn nil_borrowed_pointer_arg_expr() -> syn::Expr {
+    syn::parse_quote! {
+        &mut {
+            crate::builtin::panic_value("nil pointer dereference");
+            Default::default()
+        }
     }
 }
 
@@ -22897,6 +22937,111 @@ var Value = "qualified"
             "{lib_rs}"
         );
         assert!(lib_rs.contains("\"qualified\".to_string()"), "{lib_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_error_returns_owned_for_pointer_methods() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Builder struct{}
+
+func (b *Builder) WriteByte(c byte) error {
+	return nil
+}
+
+func (b *Builder) WriteRune(r rune) (int, error) {
+	return 1, nil
+}
+
+func main() {
+	var builder Builder
+	var err error
+	err = builder.WriteByte(':')
+	_, err = builder.WriteRune('r')
+	_ = err
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("-> Box<dyn crate::builtin::error>"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("Box<dyn crate::builtin::error + '_>"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("None"), "{main_rs}");
+        assert!(main_rs.contains("__GorsNooperror"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_allows_nil_pointer_assignment() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Node struct {
+	next *Node
+}
+
+func (n *Node) Reset() {
+	n.next = nil
+}
+
+func main() {
+	var n Node
+	n.Reset()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("self.next = Default::default();"), "{main_rs}");
+        assert!(
+            !main_rs.contains("panic_value(\"nil pointer dereference\")"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_panics_for_nil_borrowed_pointer_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func usePointer(p *int) {
+	_ = *p
+}
+
+func main() {
+	usePointer(nil)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("panic_value(\"nil pointer dereference\")"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("usePointer("), "{main_rs}");
+        assert!(main_rs.contains("&mut {"), "{main_rs}");
     }
 
     #[test]

@@ -129,6 +129,12 @@ gors-builtin/
   representation, so `p := &x`, `*p = v`, and later reads of `x` observe the
   shared storage. Borrowed pointer parameters may still lower to `&mut T` when
   the existing escape analysis proves the pointer does not escape.
+- Nil pointer values must lower to the pointer zero value for assignments,
+  fields, returns, and other value construction. Do not emit an immediate panic
+  for `nil` itself; the panic belongs to dereference/use. The current borrowed
+  pointer-parameter representation cannot carry nil through `&mut T`, so a nil
+  argument coerced into a borrowed pointer parameter should emit the
+  nil-pointer panic at that call boundary.
 - Generated Go structs use `#[repr(C)]` so Rust preserves declaration-order
   layout for codegen that depends on Go field offsets, such as
   `unsafe.Offsetof`. Keep unsafe support simple and codegen-first while
