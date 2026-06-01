@@ -65,6 +65,7 @@ thread_local! {
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
     static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
+    static LOCAL_CONST_VALUES: RefCell<Vec<BTreeMap<String, ConstValue>>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone)]
@@ -130,6 +131,8 @@ struct SliceAliasTargetsGuard {
 struct PanicReturnsThroughDeferGuard {
     previous: bool,
 }
+
+struct LocalConstScopeGuard;
 
 impl MainPackageVarModeGuard {
     fn set(current: bool) -> Self {
@@ -290,6 +293,21 @@ impl Drop for PanicReturnsThroughDeferGuard {
     fn drop(&mut self) {
         PANIC_RETURNS_THROUGH_DEFER.with(|mode| {
             *mode.borrow_mut() = self.previous;
+        });
+    }
+}
+
+impl LocalConstScopeGuard {
+    fn push() -> Self {
+        LOCAL_CONST_VALUES.with(|values| values.borrow_mut().push(BTreeMap::new()));
+        Self
+    }
+}
+
+impl Drop for LocalConstScopeGuard {
+    fn drop(&mut self) {
+        LOCAL_CONST_VALUES.with(|values| {
+            values.borrow_mut().pop();
         });
     }
 }
@@ -2469,7 +2487,76 @@ fn const_eval_expr_in_active_env(
     iota_value: i64,
     values: &BTreeMap<String, ConstValue>,
 ) -> Option<ConstValue> {
-    TYPE_ENV.with(|env| const_eval_expr(expr, iota_value, values, &env.borrow()))
+    let scoped_values = LOCAL_CONST_VALUES.with(|local_values| {
+        let local_values = local_values.borrow();
+        if local_values.is_empty() && values.is_empty() {
+            return None;
+        }
+
+        let mut merged = BTreeMap::new();
+        for scope in local_values.iter() {
+            merged.extend(
+                scope
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+        }
+        merged.extend(
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        Some(merged)
+    });
+    TYPE_ENV.with(|env| {
+        if let Some(scoped_values) = scoped_values.as_ref() {
+            const_eval_expr(expr, iota_value, scoped_values, &env.borrow())
+        } else {
+            const_eval_expr(expr, iota_value, values, &env.borrow())
+        }
+    })
+}
+
+fn set_local_const_value(name: &str, value: ConstValue) {
+    LOCAL_CONST_VALUES.with(|values| {
+        if let Some(scope) = values.borrow_mut().last_mut() {
+            scope.insert(name.to_string(), value);
+        }
+    });
+}
+
+fn is_local_const_name(name: &str) -> bool {
+    LOCAL_CONST_VALUES.with(|values| {
+        values
+            .borrow()
+            .iter()
+            .rev()
+            .any(|scope| scope.contains_key(name))
+    })
+}
+
+fn local_const_value(name: &str) -> Option<ConstValue> {
+    LOCAL_CONST_VALUES.with(|values| {
+        values
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+    })
+}
+
+fn local_const_go_type_for_expr(expr: &ast::Expr) -> Option<typeinfer::GoType> {
+    let ast::Expr::Ident(ident) = expr else {
+        return None;
+    };
+    match local_const_value(ident.name)? {
+        ConstValue::Bool(_) => Some(typeinfer::GoType::Bool),
+        ConstValue::Complex(_, _) => Some(typeinfer::GoType::Complex128),
+        ConstValue::Float(_) => Some(typeinfer::GoType::Float64),
+        ConstValue::Int(_) => Some(typeinfer::GoType::Int),
+        ConstValue::Str(_) => Some(typeinfer::GoType::String),
+        ConstValue::Uint(_, _) => Some(typeinfer::GoType::Uint),
+    }
 }
 
 fn const_eval_builtin_name<'a>(
@@ -2750,8 +2837,17 @@ fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Opti
             ))
         }
         ast::Expr::BinaryExpr(binary) => {
-            let left = const_expr_to_rust_expr(&binary.x, target)?;
-            let right = const_expr_to_rust_expr(&binary.y, target)?;
+            let wide_shift_left = binary.op == token::Token::SHL
+                && shift_left_needs_wide_untyped_left(&binary.x, &binary.y);
+            let wide_shift_type: syn::Type = syn::parse_quote! { i128 };
+            let left_target = if wide_shift_left {
+                Some(&wide_shift_type)
+            } else {
+                target
+            };
+            let right_target = if wide_shift_left { None } else { target };
+            let left = const_expr_to_rust_expr(&binary.x, left_target)?;
+            let right = const_expr_to_rust_expr(&binary.y, right_target)?;
             let op: syn::BinOp = binary.op.into();
             Some(syn::Expr::Binary(syn::ExprBinary {
                 attrs: vec![],
@@ -14608,11 +14704,18 @@ fn set_range_function_bindings(
 }
 
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
-    let inferred_range_type =
+    let mut inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
+    if matches!(inferred_range_type, typeinfer::GoType::Unknown)
+        && let Some(local_const_type) = local_const_go_type_for_expr(&range_stmt.x)
+    {
+        inferred_range_type = local_const_type;
+    }
     let range_kind = TYPE_ENV.with(|env| ir::range_kind(&range_stmt.x, &env.borrow()));
-    let is_string = matches!(range_kind, ir::RangeKind::String);
-    let is_int = matches!(range_kind, ir::RangeKind::Integer);
+    let resolved_range_type = resolved_go_type(&inferred_range_type);
+    let is_string = matches!(range_kind, ir::RangeKind::String)
+        || matches!(&resolved_range_type, typeinfer::GoType::String);
+    let is_int = matches!(range_kind, ir::RangeKind::Integer) || resolved_range_type.is_integer();
     let is_pointer_array = is_pointer_array_range_type(&inferred_range_type);
     let range_function_yield_params = range_function_yield_params(&inferred_range_type);
     let range_function_capture_names = if range_function_yield_params.is_some() {
@@ -15749,11 +15852,28 @@ fn is_shift_expr_with_const_left(expr: &ast::Expr) -> bool {
     }
 }
 
+fn contains_wide_untyped_shift_left(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => contains_wide_untyped_shift_left(&paren.x),
+        ast::Expr::UnaryExpr(unary) => contains_wide_untyped_shift_left(&unary.x),
+        ast::Expr::BinaryExpr(binary) => {
+            (binary.op == token::Token::SHL
+                && shift_left_needs_wide_untyped_left(&binary.x, &binary.y))
+                || contains_wide_untyped_shift_left(&binary.x)
+                || contains_wide_untyped_shift_left(&binary.y)
+        }
+        _ => false,
+    }
+}
+
 fn is_const_like_expr(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::BasicLit(_) => true,
         ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
-        ast::Expr::Ident(ident) => TYPE_ENV.with(|env| env.borrow().is_const(ident.name)),
+        ast::Expr::Ident(ident) => {
+            is_local_const_name(ident.name)
+                || TYPE_ENV.with(|env| env.borrow().is_const(ident.name))
+        }
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(base) = &*selector.x {
                 let key = format!("{}.{}", base.name, selector.sel.name);
@@ -17626,6 +17746,7 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     type Error = CompilerError;
 
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
+        let _local_const_scope = LocalConstScopeGuard::push();
         let shared_capture_names = TYPE_ENV
             .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
         let range_function_capture_names = TYPE_ENV.with(|env| {
@@ -21501,9 +21622,111 @@ fn inferred_function_type_for_name(name: &str) -> Option<typeinfer::GoType> {
     })
 }
 
+fn compile_local_const_decl(gen_decl: ast::GenDecl) -> Vec<syn::Stmt> {
+    let mut stmts = vec![];
+
+    for spec in gen_decl.specs {
+        let ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        let type_expr = value_spec.type_;
+        let explicit_go_type = type_expr.as_ref().map(typeinfer::GoType::from_expr);
+        let explicit_type_name = match type_expr.as_ref() {
+            Some(ast::Expr::Ident(ident)) => Some(ident.name),
+            _ => None,
+        };
+        let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
+
+        for name in value_spec.names {
+            if name.name == "_" {
+                continue;
+            }
+
+            let go_name = name.name;
+            let ident: syn::Ident = name.into();
+            let init_ast = values_iter.next();
+            let evaluated = init_ast
+                .as_ref()
+                .and_then(|expr| const_eval_expr_in_active_env(expr, 0, &BTreeMap::new()));
+            let inferred_go_type = explicit_go_type.clone().or_else(|| {
+                init_ast.as_ref().and_then(|expr| {
+                    TYPE_ENV.with(|env| {
+                        let ty = typeinfer::GoType::infer_expr(expr, &env.borrow());
+                        (!matches!(ty, typeinfer::GoType::Unknown)).then_some(ty)
+                    })
+                })
+            });
+            let rust_type = if let Some(type_expr) = type_expr.as_ref() {
+                type_from_expr_ref(type_expr)
+            } else if init_ast
+                .as_ref()
+                .is_some_and(contains_wide_untyped_shift_left)
+            {
+                syn::parse_quote! { i128 }
+            } else if let Some(evaluated) = &evaluated {
+                inferred_go_type
+                    .as_ref()
+                    .and_then(|ty| const_rust_type_from_inferred(ty, evaluated))
+                    .unwrap_or_else(|| evaluated.rust_type())
+            } else if let Some(expr) = init_ast.as_ref() {
+                infer_static_type_from_init(expr)
+                    .or_else(|| {
+                        inferred_go_type
+                            .as_ref()
+                            .map(rust_type_from_inferred_go_type)
+                    })
+                    .unwrap_or_else(|| syn::parse_quote! { isize })
+            } else {
+                syn::parse_quote! { isize }
+            };
+            let value = if let Some(expr) = init_ast {
+                let target = type_expr
+                    .as_ref()
+                    .and_then(|_| const_numeric_cast_type_from_rust_type(&rust_type));
+                if is_const_like_expr(&expr) {
+                    const_expr_to_rust_expr(&expr, target.as_ref()).unwrap_or_else(|| {
+                        evaluated
+                            .as_ref()
+                            .map(|value| const_value_to_expr_for_type(value, explicit_type_name))
+                            .unwrap_or_else(|| expr.into())
+                    })
+                } else if let Some(evaluated) = &evaluated {
+                    const_value_to_expr_for_type(evaluated, explicit_type_name)
+                } else {
+                    expr.into()
+                }
+            } else {
+                syn::parse_quote! { 0 }
+            };
+
+            let is_str_type = matches!(&rust_type, syn::Type::Reference(r)
+                if matches!(&*r.elem, syn::Type::Path(tp) if tp.path.is_ident("str")));
+            if is_str_type {
+                stmts.push(syn::parse_quote! {
+                    let #ident: String = (#value).to_string();
+                });
+            } else {
+                stmts.push(syn::parse_quote! {
+                    #[allow(dead_code)]
+                    const #ident: #rust_type = #value;
+                });
+            }
+            if let Some(evaluated) = evaluated {
+                set_local_const_value(go_name, evaluated);
+            }
+        }
+    }
+
+    stmts
+}
+
 impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     fn from(decl_stmt: ast::DeclStmt) -> Self {
         let gen_decl = decl_stmt.decl;
+        if gen_decl.tok == token::Token::CONST {
+            return compile_local_const_decl(gen_decl);
+        }
+
         let mut stmts = vec![];
 
         for spec in gen_decl.specs {
@@ -23729,6 +23952,36 @@ var X int
         assert!(
             output.contains("let __gors_switch_tag = (k) . clone ()"),
             "expected non-Copy switch tag to be cloned before comparisons: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_emit_local_consts_for_array_lengths() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func use() byte {
+                    const n = 9
+                    a := [n]byte{'0', '1', '2', '3', '4', '5', '6', '7', '8'}
+                    return a[n-1]
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("const n : isize = 9")
+                || output.contains("const n : isize = (9 as isize)"),
+            "expected local const to lower to a Rust const item: {output}"
+        );
+        assert!(
+            !output.contains("let mut n = 9"),
+            "expected local const not to lower to a mutable local: {output}"
         );
     }
 
@@ -26929,6 +27182,43 @@ func main() {
                 }
             },
         );
+    }
+
+    #[test]
+    fn it_should_compile_range_over_local_string_const() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    const s = "a¢"
+                    for i, r := range s {
+                        _ = i
+                        _ = r
+                    }
+                    for i := range s {
+                        _ = i
+                    }
+                    for range s {
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("(s).char_indices().map(|(i, ch)| (i as isize, ch as i32))"),
+            "{output}"
+        );
+        assert!(
+            output.contains("(s).char_indices().map(|(i, _)| i as isize)"),
+            "{output}"
+        );
+        assert!(output.contains("(s).chars()"), "{output}");
+        assert!(!output.contains("(s).into_iter()"), "{output}");
     }
 
     #[test]

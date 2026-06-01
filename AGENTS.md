@@ -308,26 +308,26 @@ from `gors/tests/reports/go-stdlib-conformance.json`. Before moving past a
 package, inspect every exported package-level function, method, type, constant,
 and variable reported for that package and add or fix integration coverage until
 each supported row is backed by an e2e generated-program check that compares Go
-output with gors output. Treat existing package rows as an audit queue, not as
-proof: check all package integration checks one by one, including rows already
+output with gors output. Treat all package integration checks as an explicit
+audit queue, not as proof: check every row one by one, including rows already
 marked `passing`, open the fixture that claims each row, and confirm that the
 referenced symbol is exercised by a behavioral check. Do not mark a package
 complete until every reported exported function, method, type, constant, and
-variable for that package has been audited against an actual e2e check. If a
-passing row cannot be tied to such a check, fix the fixture/reporter or downgrade
-the row before moving on. A symbol is not covered just because a fixture
-compiles with `var _ = pkg.Symbol`, `var _ Type`, a method expression,
-assignment of a method/function value that is never called, or another
-selector-only reference; those references may exercise reachability, type
-checking, or symbol resolution, but they do not prove behavior. Mark a stdlib
-method as covered only when the fixture calls that method on representative
-receiver state and observes enough return values, receiver mutations, errors, or
-side effects through stdout to prove that Go and gors behave the same under the
-integration harness. Mark a stdlib function as covered under the same rule: the
-fixture must call it and compare deterministic observable behavior against the
-pinned Go SDK. If the conformance reporter marks selector-only references as
-passing, fix the reporter or the fixture semantics before claiming package
-completion.
+variable for that package has been audited against an actual e2e check that
+proves Go and gors agree. If a passing row cannot be tied to such a check, fix
+the fixture/reporter or downgrade the row before moving on. A symbol is not
+covered just because a fixture compiles with `var _ = pkg.Symbol`, `var _ Type`,
+a method expression, assignment of a method/function value that is never called,
+or another selector-only reference; those references may exercise reachability,
+type checking, or symbol resolution, but they do not prove behavior. Mark a
+stdlib method as covered only when an integration fixture calls that method on
+representative receiver state and observes enough return values, receiver
+mutations, errors, or side effects through stdout to prove that Go and gors
+behave the same under the integration harness. Mark a stdlib function as covered
+under the same rule: the fixture must call it and compare deterministic
+observable behavior against the pinned Go SDK. If the conformance reporter marks
+selector-only references as passing, fix the reporter or the fixture semantics
+before claiming package completion.
 
 The `ParsedProgram.stdlib_imports` field tracks which stdlib packages a program
 uses directly. `compile_program_multi()` scans those packages for type
@@ -478,8 +478,11 @@ or method under test, print deterministic results or state transitions, and let
 the generated-program harness compare stdout against the pinned Go SDK. Do not
 use compile-only references such as `var _ = strings.Clone`, `var _ T`, or
 `var _ = (*T).M` as evidence that a package, function, method, or type is done;
-for method rows specifically, a method expression or stored method value only
-counts after the fixture invokes it and checks observable behavior.
+for method rows specifically, coverage requires an e2e integration check that
+invokes the method and proves Go and gors produce the same observable behavior.
+A method expression, stored method value, interface assertion, or blank
+identifier assignment only counts after the fixture invokes it and checks the
+observable result.
 Mark covered stdlib rows with explicit `// gors:stdlib-cover package::Symbol`
 comments only after the fixture contains that behavioral check. Before adding or
 keeping a coverage marker, verify the exact check one by one; remove or leave
