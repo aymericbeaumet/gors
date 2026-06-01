@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 3,
-    "unsupportedCaseCount": 12581,
+    "passingCaseCount": 20,
+    "unsupportedCaseCount": 12564,
     "fixtureCount": 76
   },
   "groups": [
@@ -29,8 +29,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 37,
+        "passingCaseCount": 20,
+        "unsupportedCaseCount": 20,
         "fixtureCount": 0
       },
       "cases": [
@@ -102,8 +102,10 @@
           "title": "Format",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -111,8 +113,10 @@
           "title": "Format.String",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -120,8 +124,10 @@
           "title": "FormatGNU",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -129,8 +135,10 @@
           "title": "FormatPAX",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -138,8 +146,10 @@
           "title": "FormatUSTAR",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -147,8 +157,10 @@
           "title": "FormatUnknown",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -219,8 +231,10 @@
           "title": "TypeBlock",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -228,8 +242,10 @@
           "title": "TypeChar",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -237,8 +253,10 @@
           "title": "TypeCont",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -257,8 +275,10 @@
           "title": "TypeFifo",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -266,8 +286,10 @@
           "title": "TypeGNULongLink",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -275,8 +297,10 @@
           "title": "TypeGNULongName",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -284,8 +308,10 @@
           "title": "TypeGNUSparse",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -293,8 +319,10 @@
           "title": "TypeLink",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -313,8 +341,10 @@
           "title": "TypeRegA",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -333,8 +363,10 @@
           "title": "TypeXGlobalHeader",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -342,8 +374,10 @@
           "title": "TypeXHeader",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {

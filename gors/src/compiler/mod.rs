@@ -8505,6 +8505,13 @@ fn numeric_newtype_impls(
 
     items.extend([
         syn::parse_quote! {
+            impl PartialEq<#inner> for #ident {
+                fn eq(&self, other: &#inner) -> bool {
+                    self.0 == *other
+                }
+            }
+        },
+        syn::parse_quote! {
             impl std::ops::BitAnd for #ident {
                 type Output = Self;
                 fn bitand(self, rhs: Self) -> Self {
@@ -9480,12 +9487,22 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let is_slice_alias = matches!(underlying_go_type, typeinfer::GoType::Slice(_));
             let is_copy_alias = go_type_is_copy(&underlying_go_type);
             let is_numeric_alias = resolved_go_type(&underlying_go_type).is_numeric();
+            let is_integer_alias = resolved_go_type(&underlying_go_type).is_integer()
+                || matches!(
+                    resolved_go_type(&underlying_go_type),
+                    typeinfer::GoType::Uintptr
+                );
             let is_string_alias = matches!(
                 resolved_go_type(&underlying_go_type),
                 typeinfer::GoType::String
             );
             let rust_type: syn::Type = other.into();
-            let struct_item: syn::Item = if is_copy_alias {
+            let struct_item: syn::Item = if is_integer_alias {
+                syn::parse_quote! {
+                    #[derive(Clone, Copy, Default, Eq, Hash, PartialEq, PartialOrd)]
+                    #vis struct #ident #generics(pub #rust_type);
+                }
+            } else if is_copy_alias {
                 syn::parse_quote! {
                     #[derive(Clone, Copy, Default, PartialEq, PartialOrd)]
                     #vis struct #ident #generics(pub #rust_type);
@@ -9971,14 +9988,28 @@ fn receiver_type_args(expr: &ast::Expr) -> Vec<syn::Ident> {
     }
 }
 
-fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
+fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: bool) {
     use syn::visit_mut::VisitMut;
 
     struct RewriteReceiver<'a> {
         recv_name: &'a str,
+        borrowed_receiver: bool,
     }
 
     impl VisitMut for RewriteReceiver<'_> {
+        fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
+            syn::visit_mut::visit_expr_binary_mut(self, binary);
+            if !self.borrowed_receiver {
+                return;
+            }
+            if matches!(&*binary.left, syn::Expr::Path(path) if path.path.is_ident("self")) {
+                *binary.left = syn::parse_quote! { (*self).clone() };
+            }
+            if matches!(&*binary.right, syn::Expr::Path(path) if path.path.is_ident("self")) {
+                *binary.right = syn::parse_quote! { (*self).clone() };
+            }
+        }
+
         fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
             // First recurse into children
             syn::visit_mut::visit_expr_mut(self, expr);
@@ -10052,7 +10083,11 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
         }
     }
 
-    RewriteReceiver { recv_name }.visit_block_mut(block);
+    RewriteReceiver {
+        recv_name,
+        borrowed_receiver,
+    }
+    .visit_block_mut(block);
 }
 
 fn value_receiver_body_mutates_receiver(body: &ast::BlockStmt, recv_name: &str) -> bool {
@@ -10209,17 +10244,18 @@ fn compile_method(
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
     let type_args = receiver_type_args(&recv_type);
 
-    let self_arg: syn::FnArg = if is_pointer || is_slice_receiver || has_borrowed_interface_field {
-        syn::parse_quote! { &mut self }
-    } else if func_decl
-        .body
-        .as_ref()
-        .is_some_and(|body| value_receiver_body_mutates_receiver(body, &recv_name))
-    {
-        syn::parse_quote! { mut self }
-    } else {
-        syn::parse_quote! { &self }
-    };
+    let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) =
+        if is_pointer || is_slice_receiver || has_borrowed_interface_field {
+            (syn::parse_quote! { &mut self }, false)
+        } else if func_decl
+            .body
+            .as_ref()
+            .is_some_and(|body| value_receiver_body_mutates_receiver(body, &recv_name))
+        {
+            (syn::parse_quote! { mut self }, false)
+        } else {
+            (syn::parse_quote! { &self }, true)
+        };
 
     if !recv_name.is_empty() {
         let recv_go_type = if is_pointer {
@@ -10345,7 +10381,7 @@ fn compile_method(
     drop(borrowed_pointer_param_names);
 
     if !recv_name.is_empty() {
-        rewrite_receiver(&mut block, &recv_name);
+        rewrite_receiver(&mut block, &recv_name, borrowed_value_receiver);
     }
     if body_has_defer {
         prepend_defer_stack(&mut block);
@@ -11262,12 +11298,8 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let key_ty = TYPE_ENV.with(|env| {
                 let env = env.borrow();
-                match env.resolve_alias_or_type_param_constraint(&typeinfer::GoType::infer_expr(
-                    &map_raw, &env,
-                )) {
-                    typeinfer::GoType::Map(key, _) => Some(*key),
-                    _ => None,
-                }
+                map_type_preserving_key_alias(&env, &typeinfer::GoType::infer_expr(&map_raw, &env))
+                    .map(|(key, _)| key)
             });
             let map = compile_expr_with_expected(map_raw, None);
             let key = compile_expr_with_expected(key_raw, key_ty.as_ref());
@@ -12215,6 +12247,19 @@ fn is_go_byte_slice_type(ty: &typeinfer::GoType) -> bool {
         let env = env.borrow();
         matches!(env.resolve_alias(ty), typeinfer::GoType::Slice(elem) if *elem == typeinfer::GoType::Uint8)
     })
+}
+
+fn map_type_preserving_key_alias(
+    env: &typeinfer::TypeEnv,
+    ty: &typeinfer::GoType,
+) -> Option<(typeinfer::GoType, typeinfer::GoType)> {
+    match env.resolve_alias_outer(ty) {
+        typeinfer::GoType::Map(key, value) => Some((*key, *value)),
+        _ => match env.resolve_alias_or_type_param_constraint(ty) {
+            typeinfer::GoType::Map(key, value) => Some((*key, *value)),
+            _ => None,
+        },
+    }
 }
 
 fn infer_assignment_types(
@@ -17501,9 +17546,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 let container_type = typeinfer::GoType::infer_expr(&index_expr.x, &env);
                 let base: syn::Expr = (*index_expr.x).into();
 
-                if let typeinfer::GoType::Map(key_ty, _) =
-                    env.resolve_alias_or_type_param_constraint(&container_type)
-                {
+                if let Some((key_ty, _)) = map_type_preserving_key_alias(&env, &container_type) {
                     let key = compile_expr_with_expected(*index_expr.index, Some(&key_ty));
                     return syn::parse_quote! {{
                         let __gors_map_key = #key;
@@ -21177,12 +21220,7 @@ fn map_index_types(expr: &ast::Expr) -> Option<(typeinfer::GoType, typeinfer::Go
     };
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        match env
-            .resolve_alias_or_type_param_constraint(&typeinfer::GoType::infer_expr(&index.x, &env))
-        {
-            typeinfer::GoType::Map(key, value) => Some((*key, *value)),
-            _ => None,
-        }
+        map_type_preserving_key_alias(&env, &typeinfer::GoType::infer_expr(&index.x, &env))
     })
 }
 
@@ -22600,6 +22638,49 @@ var X int
         assert!(
             !output.contains("isize :: from (self)"),
             "expected borrowed receiver conversion not to call From<&Self>: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_preserve_named_integer_map_keys_and_receiver_bitwise_methods() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Flag int
+
+                const A Flag = 1
+
+                var names = map[Flag]string{A: "A"}
+
+                func (f Flag) has(g Flag) bool {
+                    return f&g != 0
+                }
+
+                func lookup(f Flag) string {
+                    return names[f]
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "# [derive (Clone , Copy , Default , Eq , Hash , PartialEq , PartialOrd)]"
+            ),
+            "expected named integer newtypes to be usable as HashMap keys: {output}"
+        );
+        assert!(
+            output.contains("(* self) . clone () & g"),
+            "expected borrowed value receiver binary ops to use the receiver value: {output}"
+        );
+        assert!(
+            !output.contains("isize :: from (f)"),
+            "expected map lookup to preserve the named key type: {output}"
         );
     }
 
@@ -24952,7 +25033,7 @@ func main() {
                 type MyInt int
             "#,
             rust! {
-                #[derive(Clone, Copy, Default, PartialEq, PartialOrd)]
+                #[derive(Clone, Copy, Default, Eq, Hash, PartialEq, PartialOrd)]
                 pub struct MyInt(pub isize);
                 impl std::ops::Deref for MyInt {
                     type Target = isize;
@@ -25002,6 +25083,9 @@ func main() {
                 impl std::ops::Neg for MyInt {
                     type Output = Self;
                     fn neg(self) -> Self { Self(-self.0) }
+                }
+                impl PartialEq<isize> for MyInt {
+                    fn eq(&self, other: &isize) -> bool { self.0 == *other }
                 }
                 impl std::ops::BitAnd for MyInt {
                     type Output = Self;
