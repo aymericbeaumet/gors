@@ -1860,38 +1860,58 @@ fn mask_for_bits(bits: u32) -> u128 {
     }
 }
 
-fn convert_const_value(value: ConstValue, target: &ast::Expr) -> Option<ConstValue> {
-    let target_name = extract_type_name(target)?;
-    match target_name.as_str() {
-        "bool" => match value {
+fn convert_const_value_to_type(
+    value: ConstValue,
+    target: &typeinfer::GoType,
+) -> Option<ConstValue> {
+    match target {
+        typeinfer::GoType::Bool => match value {
             ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
             _ => None,
         },
-        "float32" | "float64" => Some(ConstValue::Float(value.as_f64()?)),
-        "complex64" | "complex128" => {
+        typeinfer::GoType::Float32 | typeinfer::GoType::Float64 => {
+            Some(ConstValue::Float(value.as_f64()?))
+        }
+        typeinfer::GoType::Complex64 | typeinfer::GoType::Complex128 => {
             let (re, im) = value.as_complex128()?;
             Some(ConstValue::Complex(re, im))
         }
-        "int" => Some(ConstValue::Int(value.as_i128()? as isize as i128)),
-        "int8" => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
-        "int16" => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
-        "int32" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
-        "rune" => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
-        "int64" => Some(ConstValue::Int(value.as_i128()? as i64 as i128)),
-        "uint" | "uintptr" => Some(ConstValue::Uint(
+        typeinfer::GoType::Int => Some(ConstValue::Int(value.as_i128()? as isize as i128)),
+        typeinfer::GoType::Int8 => Some(ConstValue::Int(value.as_i128()? as i8 as i128)),
+        typeinfer::GoType::Int16 => Some(ConstValue::Int(value.as_i128()? as i16 as i128)),
+        typeinfer::GoType::Int32 => Some(ConstValue::Int(value.as_i128()? as i32 as i128)),
+        typeinfer::GoType::Int64 => Some(ConstValue::Int(value.as_i128()? as i64 as i128)),
+        typeinfer::GoType::Uint | typeinfer::GoType::Uintptr => Some(ConstValue::Uint(
             value.as_u128()? & mask_for_bits(usize::BITS),
             usize::BITS,
         )),
-        "uint8" | "byte" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(8), 8)),
-        "uint16" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(16), 16)),
-        "uint32" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(32), 32)),
-        "uint64" => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(64), 64)),
-        "string" => match value {
+        typeinfer::GoType::Uint8 => Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(8), 8)),
+        typeinfer::GoType::Uint16 => {
+            Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(16), 16))
+        }
+        typeinfer::GoType::Uint32 => {
+            Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(32), 32))
+        }
+        typeinfer::GoType::Uint64 => {
+            Some(ConstValue::Uint(value.as_u128()? & mask_for_bits(64), 64))
+        }
+        typeinfer::GoType::String => match value {
             ConstValue::Str(value) => Some(ConstValue::Str(value)),
             _ => None,
         },
         _ => None,
     }
+}
+
+fn convert_const_value(
+    value: ConstValue,
+    target: &ast::Expr,
+    env: &typeinfer::TypeEnv,
+) -> Option<ConstValue> {
+    let target_name = extract_type_name(target)?;
+    let target_type = typeinfer::GoType::from_name(&target_name);
+    let resolved = env.resolve_alias(&target_type);
+    convert_const_value_to_type(value, &resolved)
 }
 
 fn const_binary_expr(lhs: ConstValue, op: token::Token, rhs: ConstValue) -> Option<ConstValue> {
@@ -2157,7 +2177,7 @@ fn const_eval_expr(
                 return None;
             }
             let value = const_eval_expr(args.first()?, iota_value, values, env)?;
-            convert_const_value(value, &call.fun)
+            convert_const_value(value, &call.fun, env)
         }
         _ => None,
     }
@@ -2650,12 +2670,13 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                     names.borrow_mut().insert(ident.to_string());
                 });
                 let bytes_ident = string_const_bytes_fn_ident(name.name);
-                let bytes = evaluated_string_bytes
-                    .as_ref()
-                    .map_or_else(|| {
+                let bytes = evaluated_string_bytes.as_ref().map_or_else(
+                    || {
                         let value = value.clone();
                         syn::parse_quote! { (#value).as_bytes().to_vec() }
-                    }, |bytes| byte_vec_expr(bytes));
+                    },
+                    |bytes| byte_vec_expr(bytes),
+                );
                 let string_value = value.clone();
                 items.push(syn::parse_quote! {
                     #[inline]
@@ -6586,13 +6607,14 @@ fn type_mentions_name(ty: &syn::Type, names: &std::collections::HashSet<String>)
         syn::Type::Reference(reference) => type_mentions_name(&reference.elem, names),
         syn::Type::Ptr(ptr) => type_mentions_name(&ptr.elem, names),
         syn::Type::Slice(slice) => type_mentions_name(&slice.elem, names),
-        syn::Type::TraitObject(trait_object) => trait_object.bounds.iter().any(|bound| match bound
-        {
-            syn::TypeParamBound::Trait(trait_bound) => {
-                path_mentions_name(&trait_bound.path, names)
-            }
-            _ => false,
-        }),
+        syn::Type::TraitObject(trait_object) => {
+            trait_object.bounds.iter().any(|bound| match bound {
+                syn::TypeParamBound::Trait(trait_bound) => {
+                    path_mentions_name(&trait_bound.path, names)
+                }
+                _ => false,
+            })
+        }
         syn::Type::Tuple(tuple) => tuple.elems.iter().any(|ty| type_mentions_name(ty, names)),
         _ => false,
     }
@@ -8802,13 +8824,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     can_derive_copy &= field_can_derive_copy;
 
                     if let Some(names) = field.names {
-                        let rust_type: syn::Type = if let Some(trait_path) =
-                            &borrowed_interface_trait_path
-                        {
-                            syn::parse_quote! { &'__gors mut dyn #trait_path }
-                        } else {
-                            type_from_struct_field_expr(&field_type, &ident)
-                        };
+                        let rust_type: syn::Type =
+                            if let Some(trait_path) = &borrowed_interface_trait_path {
+                                syn::parse_quote! { &'__gors mut dyn #trait_path }
+                            } else {
+                                type_from_struct_field_expr(&field_type, &ident)
+                            };
                         for field_name in names {
                             let field_vis: syn::Visibility = (&field_name).into();
                             let field_ident: syn::Ident = if field_name.name == "_" {
@@ -8838,13 +8859,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     } else {
                         // Embedded field: type name becomes the field name
                         let embedded_name = extract_type_name(&field_type);
-                        let rust_type: syn::Type = if let Some(trait_path) =
-                            &borrowed_interface_trait_path
-                        {
-                            syn::parse_quote! { &'__gors mut dyn #trait_path }
-                        } else {
-                            type_from_struct_field_expr(&field_type, &ident)
-                        };
+                        let rust_type: syn::Type =
+                            if let Some(trait_path) = &borrowed_interface_trait_path {
+                                syn::parse_quote! { &'__gors mut dyn #trait_path }
+                            } else {
+                                type_from_struct_field_expr(&field_type, &ident)
+                            };
                         if let Some(name) = embedded_name {
                             let field_ident =
                                 syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
@@ -10269,23 +10289,31 @@ fn compile_unsafe_intrinsic_call(call_expr: ast::CallExpr) -> syn::Expr {
     let args = call_expr.args.unwrap_or_default();
     match name {
         Some("Sizeof") if args.len() == 1 => {
-            let arg: syn::Expr = args.into_iter().next().unwrap_or_else(|| {
-                ast::Expr::Ident(ast::Ident {
-                    name_pos: token::Position::default(),
-                    name: "__gors_missing_arg",
-                    obj: None,
+            let arg: syn::Expr = args
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| {
+                    ast::Expr::Ident(ast::Ident {
+                        name_pos: token::Position::default(),
+                        name: "__gors_missing_arg",
+                        obj: None,
+                    })
                 })
-            }).into();
+                .into();
             return syn::parse_quote! { std::mem::size_of_val(&#arg) };
         }
         Some("Alignof") if args.len() == 1 => {
-            let arg: syn::Expr = args.into_iter().next().unwrap_or_else(|| {
-                ast::Expr::Ident(ast::Ident {
-                    name_pos: token::Position::default(),
-                    name: "__gors_missing_arg",
-                    obj: None,
+            let arg: syn::Expr = args
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| {
+                    ast::Expr::Ident(ast::Ident {
+                        name_pos: token::Position::default(),
+                        name: "__gors_missing_arg",
+                        obj: None,
+                    })
                 })
-            }).into();
+                .into();
             return syn::parse_quote! { std::mem::align_of_val(&#arg) };
         }
         Some("Offsetof") if args.len() == 1 => {
@@ -10830,9 +10858,9 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let src_ty =
                 TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
-            let dst = match lvalue_expr_from_ref(&dst_raw)
-                .ok_or_else(|| CompilerError::InvalidAssignment("copy destination is not addressable".to_string()))
-            {
+            let dst = match lvalue_expr_from_ref(&dst_raw).ok_or_else(|| {
+                CompilerError::InvalidAssignment("copy destination is not addressable".to_string())
+            }) {
                 Ok(dst) => dst,
                 Err(err) => return compile_error_expr(err.to_string()),
             };
@@ -12510,11 +12538,12 @@ fn compile_expr_with_expected(
         if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
             return expr.into();
         }
-        let numeric_const_target = if is_const_like_expr(&expr) {
-            numeric_cast_type(&actual)
-        } else {
-            None
-        };
+        let numeric_const_target =
+            if is_const_like_expr(&expr) && !matches!(actual, typeinfer::GoType::Named(_)) {
+                numeric_cast_type(&actual)
+            } else {
+                None
+            };
         let expr = if matches!(actual, typeinfer::GoType::Unknown) {
             expr.into()
         } else {
@@ -12528,7 +12557,10 @@ fn compile_expr_with_expected(
         return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
     }
 
-    if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Error)) {
+    if matches!(
+        expected.map(resolved_go_type),
+        Some(typeinfer::GoType::Error)
+    ) {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
         if go_type_is_interface_like(&actual) {
             return expr.into();
@@ -12624,7 +12656,9 @@ fn compile_expr_with_expected(
             }
             return compile_error_expr("unsupported complex constant conversion");
         }
-        let numeric_const_like = numeric_cast_type(expected).is_some() && is_const_like_expr(&expr);
+        let numeric_const_like = numeric_cast_type(expected).is_some()
+            && is_const_like_expr(&expr)
+            && !matches!(actual, typeinfer::GoType::Named(_));
         let compiled = if numeric_const_like {
             const_eval_expr_in_active_env(&expr, 0, &BTreeMap::new())
                 .map_or_else(|| expr.into(), |value| value.to_expr())
@@ -14213,7 +14247,11 @@ fn compile_top_level_value_spec(
             .as_ref()
             .map(static_value_type_from_expr)
             .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init))
-            .or_else(|| inferred_go_type.as_ref().map(rust_type_from_inferred_go_type));
+            .or_else(|| {
+                inferred_go_type
+                    .as_ref()
+                    .map(rust_type_from_inferred_go_type)
+            });
 
         if tok == token::Token::CONST {
             let mut value = init_ast
@@ -14223,39 +14261,34 @@ fn compile_top_level_value_spec(
                 Some(ast::Expr::Ident(id)) => Some(id.name),
                 _ => None,
             };
-            let ty: syn::Type = if matches!(
-                explicit_go_type.as_ref(),
-                Some(typeinfer::GoType::String)
-            ) {
-                syn::parse_quote! { &str }
-            } else if let Some(type_expr) = vs.type_.as_ref() {
-                type_from_expr_ref(type_expr)
-            } else if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(_),
-                ..
-            }) = &value
-            {
-                syn::parse_quote! { &str }
-            } else if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Float(_),
-                ..
-            }) = &value
-            {
-                syn::parse_quote! { f64 }
-            } else if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Bool(_),
-                ..
-            }) = &value
-            {
-                syn::parse_quote! { bool }
-            } else {
-                syn::parse_quote! { isize }
-            };
+            let ty: syn::Type =
+                if matches!(explicit_go_type.as_ref(), Some(typeinfer::GoType::String)) {
+                    syn::parse_quote! { &str }
+                } else if let Some(type_expr) = vs.type_.as_ref() {
+                    type_from_expr_ref(type_expr)
+                } else if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(_),
+                    ..
+                }) = &value
+                {
+                    syn::parse_quote! { &str }
+                } else if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Float(_),
+                    ..
+                }) = &value
+                {
+                    syn::parse_quote! { f64 }
+                } else if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Bool(_),
+                    ..
+                }) = &value
+                {
+                    syn::parse_quote! { bool }
+                } else {
+                    syn::parse_quote! { isize }
+                };
 
-            if matches!(
-                explicit_go_type.as_ref(),
-                Some(typeinfer::GoType::String)
-            )
+            if matches!(explicit_go_type.as_ref(), Some(typeinfer::GoType::String))
                 && !matches!(
                     &value,
                     syn::Expr::Lit(syn::ExprLit {
@@ -16794,8 +16827,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                     .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
                                 let borrow_pointer_by_shape =
                                     should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-                                let should_borrow_pointer =
-                                    borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
+                                let should_borrow_pointer = borrow_pointer_indices.contains(&idx)
+                                    || borrow_pointer_by_shape;
                                 if should_borrow_pointer && is_nil_expr(&arg) {
                                     args.push(nil_borrowed_pointer_arg_expr());
                                     continue;
@@ -23456,10 +23489,7 @@ var Value = "qualified"
         assert!(main_rs.contains("lib::__gors_init();"), "{main_rs}");
         assert!(main_rs.contains("lib::Value"), "{main_rs}");
         let lib_rs = output.files.get("example__lib.rs").unwrap();
-        assert!(
-            lib_rs.contains("std::sync::LazyLock<String>"),
-            "{lib_rs}"
-        );
+        assert!(lib_rs.contains("std::sync::LazyLock<String>"), "{lib_rs}");
         assert!(lib_rs.contains("\"qualified\".to_string()"), "{lib_rs}");
     }
 
@@ -23532,7 +23562,10 @@ func main() {
 
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
-        assert!(main_rs.contains("self.next = Default::default();"), "{main_rs}");
+        assert!(
+            main_rs.contains("self.next = Default::default();"),
+            "{main_rs}"
+        );
         assert!(
             !main_rs.contains("panic_value(\"nil pointer dereference\")"),
             "{main_rs}"
@@ -23697,7 +23730,10 @@ func main() {
 
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
-        assert!(main_rs.contains("crate::builtin::error_string(&mut err)"), "{main_rs}");
+        assert!(
+            main_rs.contains("crate::builtin::error_string(&mut err)"),
+            "{main_rs}"
+        );
         assert!(!main_rs.contains("(err).clone()"), "{main_rs}");
     }
 
@@ -23773,8 +23809,14 @@ func First() byte {
 
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("example__data.rs").unwrap();
-        assert!(main_rs.contains("std::sync::LazyLock<[u8; 3]>"), "{main_rs}");
-        assert!(!main_rs.contains("std::sync::LazyLock<Vec<u8>>"), "{main_rs}");
+        assert!(
+            main_rs.contains("std::sync::LazyLock<[u8; 3]>"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("std::sync::LazyLock<Vec<u8>>"),
+            "{main_rs}"
+        );
     }
 
     #[test]
@@ -23817,7 +23859,10 @@ func (enc Encoding) WithPadding(padding int) *Encoding {
         assert!(main_rs.contains("pub fn WithPadding"), "{main_rs}");
         assert!(main_rs.contains("mut self"), "{main_rs}");
         assert!(main_rs.contains("std::sync::Mutex::new(self)"), "{main_rs}");
-        assert!(!main_rs.contains("std::sync::Mutex::new(&self)"), "{main_rs}");
+        assert!(
+            !main_rs.contains("std::sync::Mutex::new(&self)"),
+            "{main_rs}"
+        );
     }
 
     #[test]
@@ -24256,6 +24301,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
@@ -24277,7 +24323,8 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
-                struct point {
+                #[repr(C)]
+                pub struct point {
                     x: isize,
                     pub Y: isize,
                 }
@@ -24398,7 +24445,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Default)]
-                struct buffer(pub Vec<u8>);
+                pub struct buffer(pub Vec<u8>);
                 impl std::ops::Deref for buffer {
                     type Target = Vec<u8>;
                     fn deref(&self) -> &Vec<u8> { &self.0 }
@@ -24493,6 +24540,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Node {
                     pub Value: isize,
                     pub Next: *mut Node,
@@ -24672,6 +24720,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Counter {
                     pub Value: isize,
                 }
@@ -24701,6 +24750,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
@@ -24753,6 +24803,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Pair {
                     pub A: isize,
                     pub B: isize,
@@ -24787,6 +24838,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Point {
                     pub X: isize,
                     pub Y: isize,
@@ -24946,7 +24998,14 @@ func main() {
             rust! {
                 pub fn Index<E: PartialEq + Clone + Default>(mut s: &mut Vec<E>, mut v: E) -> isize {
                     for mut i in 0..((crate::builtin::len(&s) as isize) as isize) {
-                        if v == s[(i) as usize] {
+                        if v == {
+                            let __gors_index_base = &s;
+                            let __gors_index = (i) as usize;
+                            if __gors_index >= __gors_index_base.len() {
+                                crate::builtin::panic_value("index out of range");
+                            }
+                            (__gors_index_base[(__gors_index) as usize]).clone()
+                        } {
                             return i
                         }
                     }
@@ -25704,8 +25763,13 @@ func main() {
                         }
                         __GorsDeferStack(Vec::new())
                     };
-                    {
-                        __gors_defer_stack.0.push(Box::new(move || { cleanup(); }));
+                    let __gors_panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        {
+                            __gors_defer_stack.0.push(Box::new(move || { cleanup(); }));
+                        }
+                    }));
+                    if let Err(__gors_panic_payload) = __gors_panic_result {
+                        crate::builtin::set_recover_payload_box(__gors_panic_payload);
                     }
                 }
             },
@@ -25743,6 +25807,7 @@ func main() {
             "#,
             rust! {
                 #[derive(Clone, Copy, Default, PartialEq)]
+                #[repr(C)]
                 pub struct Flags {
                     pub X: bool,
                 }

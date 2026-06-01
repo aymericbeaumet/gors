@@ -451,7 +451,7 @@ static MULTI_CODEGEN_CACHE: OnceLock<Mutex<std::collections::BTreeMap<String, Ge
 
 fn main_wrapper_module_name(dependency_mods: &[&str]) -> String {
     let mut name = "__gors_lib".to_string();
-    while dependency_mods.iter().any(|dep| *dep == name.as_str()) {
+    while dependency_mods.contains(&name.as_str()) {
         name.push('_');
     }
     name

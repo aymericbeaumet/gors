@@ -28706,10 +28706,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "encoding/base32",
-		"tested": false,
-		"fixtures": [],
-		"symbolCount": 19,
-		"testedSymbolCount": 0,
+		"tested": true,
+		"fixtures": [
+			"encoding/base32"
+		],
+		"symbolCount": 24,
+		"testedSymbolCount": 9,
 		"symbols": [
 			{
 				"name": "CorruptInputError",
@@ -28786,8 +28788,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "HexEncoding",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
+			},
+			{
+				"name": "HexEncoding.DecodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
+			},
+			{
+				"name": "HexEncoding.EncodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
 			},
 			{
 				"name": "NewDecoder",
@@ -28810,29 +28830,61 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NoPadding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
 			},
 			{
 				"name": "StdEncoding",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
+			},
+			{
+				"name": "StdEncoding.DecodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
+			},
+			{
+				"name": "StdEncoding.EncodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
+			},
+			{
+				"name": "StdEncoding.WithPadding",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
 			},
 			{
 				"name": "StdPadding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base32"
+				]
 			}
 		]
 	},
 	{
 		"packagePath": "encoding/base64",
-		"tested": false,
-		"fixtures": [],
-		"symbolCount": 22,
-		"testedSymbolCount": 0,
+		"tested": true,
+		"fixtures": [
+			"encoding/base64"
+		],
+		"symbolCount": 26,
+		"testedSymbolCount": 8,
 		"symbols": [
 			{
 				"name": "CorruptInputError",
@@ -28933,14 +28985,34 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "NoPadding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
 			},
 			{
 				"name": "RawStdEncoding",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
+			},
+			{
+				"name": "RawStdEncoding.DecodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
+			},
+			{
+				"name": "RawStdEncoding.EncodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
 			},
 			{
 				"name": "RawURLEncoding",
@@ -28951,14 +29023,34 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "StdEncoding",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
+			},
+			{
+				"name": "StdEncoding.DecodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
+			},
+			{
+				"name": "StdEncoding.EncodedLen",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
 			},
 			{
 				"name": "StdPadding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/base64"
+				]
 			},
 			{
 				"name": "URLEncoding",
@@ -28970,10 +29062,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "encoding/binary",
-		"tested": false,
-		"fixtures": [],
-		"symbolCount": 21,
-		"testedSymbolCount": 0,
+		"tested": true,
+		"fixtures": [
+			"encoding/binary"
+		],
+		"symbolCount": 23,
+		"testedSymbolCount": 7,
 		"symbols": [
 			{
 				"name": "Append",
@@ -29002,8 +29096,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "BigEndian",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
+			},
+			{
+				"name": "BigEndian.Uint16",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
 			},
 			{
 				"name": "ByteOrder",
@@ -29026,8 +29130,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "LittleEndian",
 				"kind": "var",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
+			},
+			{
+				"name": "LittleEndian.Uint32",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
 			},
 			{
 				"name": "MaxVarintLen16",
@@ -29044,14 +29158,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "MaxVarintLen64",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
 			},
 			{
 				"name": "PutUvarint",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
 			},
 			{
 				"name": "PutVarint",
@@ -29086,8 +29204,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Uvarint",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"encoding/binary"
+				]
 			},
 			{
 				"name": "Varint",
@@ -30908,6 +31028,9 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"debug/elf",
 			"debug/plan9obj",
 			"encoding/ascii85",
+			"encoding/base32",
+			"encoding/base64",
+			"encoding/binary",
 			"encoding/hex",
 			"encoding/pem",
 			"encoding/xml",
@@ -30921,6 +31044,8 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/token",
 			"go/version",
 			"hash/adler32",
+			"hash/crc32",
+			"hash/crc64",
 			"html/template",
 			"image/gif",
 			"image/jpeg",
@@ -30932,6 +31057,8 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"math",
 			"math/big",
 			"math/bits",
+			"math/cmplx",
+			"mime",
 			"net",
 			"net/http",
 			"os",
@@ -31090,6 +31217,9 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"debug/elf",
 					"debug/plan9obj",
 					"encoding/ascii85",
+					"encoding/base32",
+					"encoding/base64",
+					"encoding/binary",
 					"encoding/hex",
 					"encoding/pem",
 					"encoding/xml",
@@ -31103,6 +31233,8 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/token",
 					"go/version",
 					"hash/adler32",
+					"hash/crc32",
+					"hash/crc64",
 					"html/template",
 					"image/gif",
 					"image/jpeg",
@@ -31114,6 +31246,8 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"math",
 					"math/big",
 					"math/bits",
+					"math/cmplx",
+					"mime",
 					"net",
 					"net/http",
 					"os",
@@ -36677,16 +36811,20 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "hash/crc32",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"hash/crc32"
+		],
 		"symbolCount": 12,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "Castagnoli",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc32"
+				]
 			},
 			{
 				"name": "Checksum",
@@ -36703,8 +36841,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "IEEE",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc32"
+				]
 			},
 			{
 				"name": "IEEETable",
@@ -36715,8 +36855,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Koopman",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc32"
+				]
 			},
 			{
 				"name": "MakeTable",
@@ -36739,8 +36881,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Size",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc32"
+				]
 			},
 			{
 				"name": "Table",
@@ -36758,10 +36902,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "hash/crc64",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"hash/crc64"
+		],
 		"symbolCount": 8,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Checksum",
@@ -36772,14 +36918,18 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "ECMA",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc64"
+				]
 			},
 			{
 				"name": "ISO",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc64"
+				]
 			},
 			{
 				"name": "MakeTable",
@@ -36796,8 +36946,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Size",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/crc64"
+				]
 			},
 			{
 				"name": "Table",
@@ -59489,10 +59641,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "math/cmplx",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"math/cmplx"
+		],
 		"symbolCount": 31,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Abs",
@@ -59539,8 +59693,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Conj",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"math/cmplx"
+				]
 			},
 			{
 				"name": "Cos",
@@ -60308,10 +60464,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "mime",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"mime"
+		],
 		"symbolCount": 13,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 2,
 		"symbols": [
 			{
 				"name": "AddExtensionType",
@@ -60322,8 +60480,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "BEncoding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"mime"
+				]
 			},
 			{
 				"name": "ErrInvalidMediaParameter",
@@ -60352,8 +60512,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "QEncoding",
 				"kind": "const",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"mime"
+				]
 			},
 			{
 				"name": "TypeByExtension",
@@ -79690,11 +79852,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 65,
+	"fixtureCount": 72,
 	"packageCount": 353,
-	"testedPackageCount": 65,
-	"untestedPackageCount": 288,
-	"symbolCount": 12566,
-	"testedSymbolCount": 418,
-	"untestedSymbolCount": 12148
+	"testedPackageCount": 72,
+	"untestedPackageCount": 281,
+	"symbolCount": 12577,
+	"testedSymbolCount": 452,
+	"untestedSymbolCount": 12125
 } as const;

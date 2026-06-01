@@ -68,7 +68,7 @@ impl error for __GorsStringError {
 
 impl Default for Box<dyn error> {
     fn default() -> Self {
-        Box::new(__GorsNooperror::default())
+        Box::new(__GorsNooperror)
     }
 }
 

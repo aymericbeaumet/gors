@@ -581,6 +581,10 @@ interface detection).
 Struct field scanning also records fixed array field lengths so compile-time
 `len`/`cap` evaluation can fold selectors such as `len(Dirent{}.Name)` without
 hardcoding package-specific stdlib behavior.
+Const evaluation for conversion calls must resolve defined named types to their
+underlying scalar type before evaluating the value; stdlib declarations such as
+`mime.BEncoding = WordEncoder('b')` depend on preserving the converted constant
+instead of falling back to a zero placeholder.
 Package-level function signatures and method signatures live in separate
 `TypeEnv` namespaces. Methods must be registered only as receiver-qualified keys
 such as `StringSlice.Search`, never as plain `Search`, because Go permits package
