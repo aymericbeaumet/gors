@@ -466,6 +466,9 @@ or method under test, print deterministic results or state transitions, and let
 the generated-program harness compare stdout against the pinned Go SDK. Do not
 use compile-only references such as `var _ = strings.Clone`, `var _ T`, or
 `var _ = (*T).M` as evidence that a package, function, method, or type is done.
+Mark covered stdlib rows with explicit `// gors:stdlib-cover package::Symbol`
+comments only after the fixture contains that behavioral check; the reporter
+must ignore ordinary selector references.
 Generated-program fixtures compare stdout only. Use `fmt.Print*` for observable
 fixture output unless the fixture is explicitly testing the predeclared
 `print`/`println` builtins, because Go's predeclared `print` and `println`

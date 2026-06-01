@@ -354,12 +354,7 @@ fn add_fixture_usage(
         let source_path = fixture_root.join(fixture).join("main.go");
         let source = fs::read_to_string(&source_path)
             .map_err(|e| format!("cannot read {}: {e}", source_path.display()))?;
-        for import in parse_imports(&source) {
-            add_imported_package_usage(symbols_by_package, &source, fixture, &import);
-        }
-        if fixture == "builtin" {
-            add_builtin_usage(symbols_by_package, &source, fixture);
-        }
+        add_behavioral_fixture_usage(symbols_by_package, &source, fixture)?;
     }
     Ok(fixtures)
 }
@@ -425,133 +420,41 @@ fn mark_tested(
     package_path: &str,
     symbol_name: &str,
     fixture: &str,
-) {
-    add_symbol(symbols_by_package, package_path, symbol_name, "usage");
+) -> Result<(), String> {
     if let Some(symbol) = symbols_by_package
         .get_mut(package_path)
         .and_then(|symbols| symbols.get_mut(symbol_name))
     {
         symbol.fixtures.insert(fixture.to_string());
-    }
-}
-
-#[derive(Debug)]
-struct Import {
-    name: String,
-    path: String,
-}
-
-fn parse_imports(source: &str) -> Vec<Import> {
-    let source = strip_go_comments(source);
-    let mut imports = Vec::new();
-    let mut in_block = false;
-    for raw_line in source.lines() {
-        let line = raw_line.trim();
-        if in_block {
-            if line.starts_with(')') {
-                in_block = false;
-                continue;
-            }
-            if let Some(import) = parse_import_line(line) {
-                imports.push(import);
-            }
-            continue;
-        }
-        if line.starts_with("import (") {
-            in_block = true;
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("import ")
-            && let Some(import) = parse_import_line(rest)
-        {
-            imports.push(import);
-        }
-    }
-    imports
-        .into_iter()
-        .filter(|import| import.name != "_" && import.name != ".")
-        .collect()
-}
-
-fn parse_import_line(line: &str) -> Option<Import> {
-    let quote_start = line.find('"')?;
-    let quote_end = line[quote_start + 1..].find('"')? + quote_start + 1;
-    let import_path = &line[quote_start + 1..quote_end];
-    let alias = line[..quote_start].trim();
-    let name = if alias.is_empty() {
-        import_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(import_path)
-            .to_string()
+        Ok(())
     } else {
-        alias.to_string()
-    };
-    Some(Import {
-        name,
-        path: import_path.to_string(),
-    })
-}
-
-fn add_imported_package_usage(
-    symbols_by_package: &mut BTreeMap<String, BTreeMap<String, StdlibSymbol>>,
-    source: &str,
-    fixture: &str,
-    import: &Import,
-) {
-    let source = strip_go_comments(source);
-    let needle = format!("{}.", import.name);
-    let mut rest = source.as_str();
-    while let Some(index) = rest.find(&needle) {
-        let before = &rest[..index];
-        let after = &rest[index + needle.len()..];
-        if let Some((first, first_len)) = read_identifier(after) {
-            mark_tested(symbols_by_package, &import.path, &first, fixture);
-            let after_first = &after[first_len..];
-            if let Some(after_dot) = after_first.strip_prefix('.')
-                && let Some((second, _)) = read_identifier(after_dot)
-                && is_exported(&first)
-                && is_exported(&second)
-            {
-                mark_tested(
-                    symbols_by_package,
-                    &import.path,
-                    &format!("{first}.{second}"),
-                    fixture,
-                );
-            }
-            if (before.ends_with("(*") || before.ends_with('('))
-                && let Some(after_dot) = after_first.strip_prefix(").")
-                && let Some((second, _)) = read_identifier(after_dot)
-                && is_exported(&first)
-                && is_exported(&second)
-            {
-                mark_tested(
-                    symbols_by_package,
-                    &import.path,
-                    &format!("{first}.{second}"),
-                    fixture,
-                );
-            }
-        }
-        rest = &after[1.min(after.len())..];
+        Err(format!(
+            "{fixture}: behavioral coverage marker references unknown stdlib symbol {package_path}::{symbol_name}"
+        ))
     }
 }
 
-fn add_builtin_usage(
+fn add_behavioral_fixture_usage(
     symbols_by_package: &mut BTreeMap<String, BTreeMap<String, StdlibSymbol>>,
     source: &str,
     fixture: &str,
-) {
-    let source = strip_go_comments(source);
-    for builtin in [
-        "any", "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len",
-        "make", "max", "min", "new", "panic", "print", "println", "real", "recover",
-    ] {
-        if source.contains(builtin) {
-            mark_tested(symbols_by_package, "builtin", builtin, fixture);
+) -> Result<(), String> {
+    for (line_index, line) in source.lines().enumerate() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("// gors:stdlib-cover ") else {
+            continue;
+        };
+        for id in rest.split_whitespace() {
+            let Some((package_path, symbol_name)) = id.split_once("::") else {
+                return Err(format!(
+                    "{fixture}: malformed stdlib coverage marker on line {}: {id}",
+                    line_index + 1
+                ));
+            };
+            mark_tested(symbols_by_package, package_path, symbol_name, fixture)?;
         }
     }
+    Ok(())
 }
 
 fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
@@ -903,25 +806,20 @@ mod tests {
     }
 
     #[test]
-    fn fixture_usage_marks_imported_pointer_method_expressions() {
+    fn fixture_usage_marks_behavioral_coverage_markers() {
         let mut symbols = symbol_map(&["Header.FileInfo", "Reader.Next", "Writer.WriteHeader"]);
-        let import = Import {
-            name: "tar".to_string(),
-            path: "archive/tar".to_string(),
-        };
         let source = r#"
 package main
 
 import "archive/tar"
 
-func coverArchiveTarAPI() {
-	var _ = (*tar.Header).FileInfo
-	var _ = (*tar.Reader).Next
-	var _ = (*tar.Writer).WriteHeader
+func main() {
+	// gors:stdlib-cover archive/tar::Header.FileInfo archive/tar::Reader.Next
+	// gors:stdlib-cover archive/tar::Writer.WriteHeader
 }
 "#;
 
-        add_imported_package_usage(&mut symbols, source, "archive/tar", &import);
+        add_behavioral_fixture_usage(&mut symbols, source, "archive/tar").unwrap();
 
         assert_eq!(
             fixtures_for(&symbols, "Header.FileInfo"),
@@ -938,12 +836,8 @@ func coverArchiveTarAPI() {
     }
 
     #[test]
-    fn fixture_usage_still_marks_imported_value_method_expressions() {
-        let mut symbols = symbol_map(&["Format.String"]);
-        let import = Import {
-            name: "tar".to_string(),
-            path: "archive/tar".to_string(),
-        };
+    fn fixture_usage_ignores_selector_only_references() {
+        let mut symbols = symbol_map(&["Format.String", "Writer.WriteHeader"]);
         let source = r#"
 package main
 
@@ -951,14 +845,31 @@ import "archive/tar"
 
 func coverArchiveTarAPI() {
 	var _ = tar.Format.String
+	var _ = (*tar.Writer).WriteHeader
 }
 "#;
 
-        add_imported_package_usage(&mut symbols, source, "archive/tar", &import);
+        add_behavioral_fixture_usage(&mut symbols, source, "archive/tar").unwrap();
 
+        assert!(fixtures_for(&symbols, "Format.String").is_empty());
+        assert!(fixtures_for(&symbols, "Writer.WriteHeader").is_empty());
+    }
+
+    #[test]
+    fn fixture_usage_rejects_unknown_behavioral_coverage_markers() {
+        let mut symbols = symbol_map(&["Format.String"]);
+        let source = r#"
+package main
+
+func main() {
+	// gors:stdlib-cover archive/tar::Missing
+}
+"#;
+
+        let err = add_behavioral_fixture_usage(&mut symbols, source, "archive/tar").unwrap_err();
         assert_eq!(
-            fixtures_for(&symbols, "Format.String"),
-            BTreeSet::from(["archive/tar".to_string()])
+            err,
+            "archive/tar: behavioral coverage marker references unknown stdlib symbol archive/tar::Missing"
         );
     }
 }
