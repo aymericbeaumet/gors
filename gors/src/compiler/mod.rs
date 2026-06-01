@@ -6916,11 +6916,6 @@ fn reachable_item_for_names(
             allow_dead_code_attr(&mut preserved.attrs);
             return Some(syn::Item::Trait(preserved));
         }
-        if names.contains(&trait_name) {
-            let mut preserved = item_trait.clone();
-            allow_dead_code_attr(&mut preserved.attrs);
-            return Some(syn::Item::Trait(preserved));
-        }
         let mut filtered = item_trait.clone();
         filtered.items.retain(|trait_item| match trait_item {
             syn::TraitItem::Fn(func) => {
@@ -6995,11 +6990,6 @@ fn reachable_item_for_names(
                 return Some(item.clone());
             }
             if roots.contains(&trait_name) {
-                let mut preserved = item_impl.clone();
-                allow_dead_code_attr(&mut preserved.attrs);
-                return Some(syn::Item::Impl(preserved));
-            }
-            if names.contains(&trait_name) {
                 let mut preserved = item_impl.clone();
                 allow_dead_code_attr(&mut preserved.attrs);
                 return Some(syn::Item::Impl(preserved));
@@ -8617,6 +8607,9 @@ fn array_len_const_expr(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { (#left #op #right) })
         }
         ast::Expr::CallExpr(call) => {
+            if let Some(expr) = unsafe_array_len_const_expr(call) {
+                return Some(expr);
+            }
             let args = call.args.as_deref()?;
             let [arg] = args else {
                 return None;
@@ -8624,6 +8617,40 @@ fn array_len_const_expr(expr: &ast::Expr) -> Option<syn::Expr> {
             array_len_const_expr(arg)
         }
         _ => None,
+    }
+}
+
+fn unsafe_array_len_const_expr(call: &ast::CallExpr) -> Option<syn::Expr> {
+    let name = unsafe_intrinsic_name(call)?;
+    let args = call.args.as_deref()?;
+    let [arg] = args else {
+        return None;
+    };
+    let ty = unsafe_intrinsic_arg_type(arg)?;
+    match name {
+        "Sizeof" => Some(syn::parse_quote! { std::mem::size_of::<#ty>() }),
+        "Alignof" => Some(syn::parse_quote! { std::mem::align_of::<#ty>() }),
+        _ => None,
+    }
+}
+
+fn unsafe_intrinsic_arg_type(arg: &ast::Expr) -> Option<syn::Type> {
+    match arg {
+        ast::Expr::CompositeLit(lit) => lit.type_.as_deref().map(type_from_expr_ref),
+        ast::Expr::ParenExpr(paren) => unsafe_intrinsic_arg_type(&paren.x),
+        ast::Expr::ArrayType(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::SelectorExpr(_)
+        | ast::Expr::StarExpr(_)
+        | ast::Expr::StructType(_) => Some(type_from_expr_ref(arg)),
+        other => {
+            let go_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(other, &env.borrow()));
+            rust_type_from_go_type(&go_type)
+        }
     }
 }
 
@@ -10885,10 +10912,10 @@ fn compile_method(
         .recv
         .ok_or_else(|| CompilerError::UnsupportedConstruct("method has no receiver".to_string()))?;
 
-    let recv_field =
-        recv.list.into_iter().next().ok_or_else(|| {
-            CompilerError::UnsupportedConstruct("empty receiver list".to_string())
-        })?;
+    let recv_field = recv
+        .list
+        .first()
+        .ok_or_else(|| CompilerError::UnsupportedConstruct("empty receiver list".to_string()))?;
 
     let recv_name = recv_field
         .names
@@ -10899,9 +10926,10 @@ fn compile_method(
 
     let recv_type = recv_field
         .type_
+        .as_ref()
         .ok_or_else(|| CompilerError::UnsupportedConstruct("receiver has no type".to_string()))?;
 
-    let (type_name, is_pointer) = extract_receiver_type(&recv_type)?;
+    let (type_name, is_pointer) = extract_receiver_type(recv_type)?;
     let is_slice_receiver = TYPE_ENV.with(|env| {
         matches!(
             env.borrow()
@@ -10911,7 +10939,7 @@ fn compile_method(
     });
     let has_borrowed_interface_field =
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
-    let type_args = receiver_type_args(&recv_type);
+    let type_args = receiver_type_args(recv_type);
     let mut active_local_names = func_type_local_binding_names(&func_decl.type_);
     if !recv_name.is_empty() {
         active_local_names.insert(recv_name.clone());
@@ -10961,7 +10989,7 @@ fn compile_method(
     let mut borrow_pointer_params =
         pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
     if let Some(body) = func_decl.body.as_ref() {
-        validate_function_semantics(&func_decl.type_, body)?;
+        validate_function_semantics(Some(&recv), &func_decl.type_, body)?;
     }
     if is_pointer && !recv_name.is_empty() {
         borrow_pointer_params.insert(recv_name.clone());
@@ -17909,6 +17937,7 @@ fn invalid_declaration_reason(invalid: ir::InvalidDeclaration) -> String {
 }
 
 fn validate_function_semantics(
+    recv: Option<&ast::FieldList<'_>>,
     func_type: &ast::FuncType<'_>,
     body: &ast::BlockStmt,
 ) -> Result<(), CompilerError> {
@@ -17921,14 +17950,14 @@ fn validate_function_semantics(
     if let Some(invalid) = ir::invalid_branch_in_func(body) {
         return Err(invalid_branch_error(invalid));
     }
-    if let Some(invalid) =
-        TYPE_ENV.with(|env| ir::invalid_statement_in_func_with_type(func_type, body, &env.borrow()))
-    {
+    if let Some(invalid) = TYPE_ENV.with(|env| {
+        ir::invalid_statement_in_func_with_recv_and_type(recv, func_type, body, &env.borrow())
+    }) {
         return Err(invalid_statement_error(invalid));
     }
-    if let Some(invalid) =
-        TYPE_ENV.with(|env| ir::invalid_return_in_func(func_type, body, &env.borrow()))
-    {
+    if let Some(invalid) = TYPE_ENV.with(|env| {
+        ir::invalid_return_in_func_with_recv_and_type(recv, func_type, body, &env.borrow())
+    }) {
         return Err(invalid_statement_error(invalid));
     }
     if let Some(invalid) =
@@ -20312,7 +20341,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let borrow_pointer_params =
             pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
         if let Some(body) = func_decl.body.as_ref() {
-            validate_function_semantics(&func_decl.type_, body)?;
+            validate_function_semantics(None, &func_decl.type_, body)?;
         }
         let borrowed_pointer_param_names =
             BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
@@ -20750,6 +20779,7 @@ fn is_catch_panic_defer(call: &ast::CallExpr) -> bool {
 }
 
 fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let shape = expr_shape_key(&inc_dec_stmt.x);
     if let Some((key_ty, _)) = map_index_types(&inc_dec_stmt.x) {
         return compile_map_index_inc_dec(inc_dec_stmt, key_ty);
     }
@@ -20769,12 +20799,33 @@ fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>,
     let base_alias_sync_stmts = slice_base_alias_sync_stmts(&inc_dec_stmt.x);
     let x = compile_assignment_lhs_checked(inc_dec_stmt.x)?;
     let mut out = match inc_dec_stmt.tok {
-        token::Token::INC => vec![syn::parse_quote! { #x += 1; }],
-        token::Token::DEC => vec![syn::parse_quote! { #x -= 1; }],
+        token::Token::INC => vec![compound_inc_dec_stmt(x, true, shape.as_deref())?],
+        token::Token::DEC => vec![compound_inc_dec_stmt(x, false, shape.as_deref())?],
         _ => vec![],
     };
     out.extend(base_alias_sync_stmts);
     Ok(out)
+}
+
+fn compound_inc_dec_stmt(
+    lhs: syn::Expr,
+    increment: bool,
+    shape: Option<&str>,
+) -> Result<syn::Stmt, CompilerError> {
+    let tokens = if increment {
+        quote::quote! { #lhs += 1; }
+    } else {
+        quote::quote! { #lhs -= 1; }
+    };
+    syn::parse2::<syn::Stmt>(tokens.clone()).map_err(|err| {
+        CompilerError::InvalidAssignment(format!(
+            "invalid increment/decrement lhs{}: {} ({err})",
+            shape
+                .map(|shape| format!(" {shape}"))
+                .unwrap_or_else(String::new),
+            tokens
+        ))
+    })
 }
 
 impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
@@ -28168,6 +28219,55 @@ func main() {
         assert!(
             impl_item.items.iter().any(|item| {
                 matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Reset")
+            })
+        );
+    }
+
+    #[test]
+    fn it_should_prune_trait_methods_reachable_only_through_type_fields() {
+        let file: syn::File = rust! {
+            pub trait Interface {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Len(&mut self) -> isize;
+                fn Reset(&mut self);
+            }
+
+            pub struct Holder {
+                item: Box<dyn Interface>,
+            }
+        };
+        let roots = std::collections::HashSet::from(["Holder".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+
+        let trait_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Trait(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .and_then(|item| match item {
+                syn::Item::Trait(item_trait) => Some(item_trait),
+                _ => None,
+            })
+            .expect("expected trait");
+
+        assert!(trait_item.items.iter().any(|item| {
+            matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "__gors_as_any")
+        }));
+        assert!(
+            !trait_item
+                .items
+                .iter()
+                .any(|item| matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Len"))
+        );
+        assert!(
+            !trait_item.items.iter().any(|item| {
+                matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Reset")
             })
         );
     }

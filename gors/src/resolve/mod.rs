@@ -1262,3 +1262,42 @@ fn is_rust_keyword(value: &str) -> bool {
             | "dyn"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reachable_names_include_instantiated_field_type_arguments() {
+        let file = crate::parser::parse_file(
+            "fixture.go",
+            r#"
+                package fixture
+
+                import "sync/atomic"
+
+                type Matcher struct {
+                    dedup atomic.Pointer[dedup]
+                }
+
+                type dedup struct {
+                    recent [128][4]uint64
+                }
+
+                func (d *dedup) seenLossy(h uint64) bool {
+                    cache := &d.recent[uint(h)%uint(len(d.recent))]
+                    for i := 0; i < len(cache); i++ {
+                    }
+                    return false
+                }
+            "#,
+        )
+        .expect("parse fixture");
+        let parsed_files = vec![("fixture.go", file)];
+        let roots = HashSet::from(["Matcher".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        assert!(reachable.contains("Matcher"));
+        assert!(reachable.contains("dedup"));
+    }
+}

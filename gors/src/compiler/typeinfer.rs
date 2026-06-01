@@ -401,6 +401,12 @@ impl GoType {
                         }
                     }
                     ast::Expr::SelectorExpr(sel) => {
+                        if let ast::Expr::Ident(pkg) = &*sel.x
+                            && pkg.name == "unsafe"
+                            && matches!(sel.sel.name, "Alignof" | "Offsetof" | "Sizeof")
+                        {
+                            return GoType::Uintptr;
+                        }
                         if let ast::Expr::Ident(pkg) = &*sel.x {
                             let key = format!("{}.{}", pkg.name, sel.sel.name);
                             if env.get_type_kind(&key).is_some() {

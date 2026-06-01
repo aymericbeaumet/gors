@@ -1561,10 +1561,22 @@ pub fn invalid_statement_in_func_with_type(
     block: &ast::BlockStmt<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
+    invalid_statement_in_func_with_recv_and_type(None, func_type, block, env)
+}
+
+pub fn invalid_statement_in_func_with_recv_and_type(
+    recv: Option<&ast::FieldList<'_>>,
+    func_type: &ast::FuncType<'_>,
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
     let mut env = env.clone();
     env.retain_package_value_bindings();
     let mut scopes = ShortVarScopes::new();
-    record_func_type_bindings(func_type, &mut env);
+    seed_func_bindings(recv, func_type, &mut env);
+    if let Some(recv) = recv {
+        seed_field_names_in_short_var_scope(recv, &mut scopes);
+    }
     seed_field_names_in_short_var_scope(&func_type.params, &mut scopes);
     if let Some(results) = &func_type.results {
         seed_field_names_in_short_var_scope(results, &mut scopes);
@@ -1577,9 +1589,18 @@ pub fn invalid_return_in_func(
     body: &ast::BlockStmt<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
+    invalid_return_in_func_with_recv_and_type(None, func_type, body, env)
+}
+
+pub fn invalid_return_in_func_with_recv_and_type(
+    recv: Option<&ast::FieldList<'_>>,
+    func_type: &ast::FuncType<'_>,
+    body: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> Option<InvalidStatement> {
     let mut env = env.clone();
     env.retain_package_value_bindings();
-    record_func_type_bindings(func_type, &mut env);
+    seed_func_bindings(recv, func_type, &mut env);
     invalid_return_in_block(body, &return_signature(func_type), &mut env)
 }
 
@@ -8045,6 +8066,9 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
     if call.ellipsis.is_some() {
         return true;
     }
+    if unsafe_constant_call_name(call).is_some() {
+        return false;
+    }
     if call_is_type_conversion(call, env) {
         let target = env.resolve_alias(&GoType::from_expr(&call.fun));
         if !type_conversion_result_can_be_constant(&target) {
@@ -8097,6 +8121,17 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
     }
 
     call_fun_is_known_runtime_value(&call.fun, env)
+}
+
+fn unsafe_constant_call_name<'a>(call: &'a ast::CallExpr<'a>) -> Option<&'a str> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+        return None;
+    };
+    (pkg.name == "unsafe" && matches!(selector.sel.name, "Alignof" | "Offsetof" | "Sizeof"))
+        .then_some(selector.sel.name)
 }
 
 fn len_cap_call_is_compile_time_constant(
@@ -21602,10 +21637,13 @@ mod tests {
             r#"
                 package main
 
+                import "unsafe"
+
                 const n = 2
                 type dirent struct {
                     name [256]byte
                 }
+                type poolLocalInternal struct {}
 
                 var _ [0]int
                 var _ [-0]int
@@ -21614,6 +21652,7 @@ mod tests {
                 var _ [2*n]int
                 var _ [len([3]int{})]int
                 var _ [len(dirent{}.name)]int
+                var _ [128 - unsafe.Sizeof(poolLocalInternal{})%128]byte
             "#,
         )
         .unwrap();
@@ -22293,6 +22332,46 @@ mod tests {
                 func.name.name
             );
         }
+    }
+
+    #[test]
+    fn accepts_method_receiver_bindings_in_typed_validation() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type dedup struct {
+                    recent [128][4]uint64
+                }
+
+                func (d *dedup) seenLossy(h uint64) bool {
+                    cache := &d.recent[uint(h)%uint(len(d.recent))]
+                    for i := 0; i < len(cache); i++ {
+                        _ = cache[i]
+                    }
+                    return false
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "seenLossy" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected method");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func_with_recv_and_type(
+                func.recv.as_ref(),
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env
+            ),
+            None
+        );
     }
 
     #[test]
