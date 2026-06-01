@@ -13068,6 +13068,19 @@ fn go_type_is_copy(go_type: &typeinfer::GoType) -> bool {
     }
 }
 
+fn clone_expr_for_non_copy_go_type(
+    expr: syn::Expr,
+    go_type: Option<&typeinfer::GoType>,
+) -> syn::Expr {
+    if go_type.is_some_and(|go_type| {
+        !matches!(go_type, typeinfer::GoType::Unknown) && !go_type_is_copy(go_type)
+    }) {
+        syn::parse_quote! { (#expr).clone() }
+    } else {
+        expr
+    }
+}
+
 fn is_shared_capture_name(name: &str) -> bool {
     SHARED_CAPTURE_NAMES.with(|shared| shared.borrow().contains(name))
 }
@@ -20761,6 +20774,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             .map(|tag| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(tag, &env.borrow())));
         let tag_syn: Option<syn::Expr> = if let Some(tag) = switch_stmt.tag {
             let tag_expr: syn::Expr = tag.into();
+            let tag_expr = clone_expr_for_non_copy_go_type(tag_expr, tag_type.as_ref());
             stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
             Some(syn::parse_quote! { #tag_ident })
         } else {
@@ -20837,6 +20851,7 @@ fn compile_non_fallthrough_switch(
         .map(|tag| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(tag, &env.borrow())));
     let tag_syn: Option<syn::Expr> = if let Some(tag) = tag {
         let tag_expr: syn::Expr = tag.into();
+        let tag_expr = clone_expr_for_non_copy_go_type(tag_expr, tag_type.as_ref());
         prefix_stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
         Some(syn::parse_quote! { #tag_ident })
     } else {
@@ -23686,6 +23701,34 @@ var X int
         assert!(
             output.contains("__gors_switch_tag == FileMode ((cISDIR as u32))"),
             "expected switch cases to coerce constants to the switch tag type: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_not_move_non_copy_expression_switch_tags() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func use(k string) bool {
+                    switch k {
+                    case "x":
+                        return true
+                    default:
+                        return len(k) > 0
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let __gors_switch_tag = (k) . clone ()"),
+            "expected non-Copy switch tag to be cloned before comparisons: {output}"
         );
     }
 
