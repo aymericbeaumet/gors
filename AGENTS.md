@@ -585,6 +585,12 @@ Const evaluation for conversion calls must resolve defined named types to their
 underlying scalar type before evaluating the value; stdlib declarations such as
 `mime.BEncoding = WordEncoder('b')` depend on preserving the converted constant
 instead of falling back to a zero placeholder.
+Generic type parameters with structural map constraints such as `M ~map[K]V`
+must retain their map shape during IR validation and backend lowering. Range
+clauses, comma-ok indexes, and map-index assignment over those parameters should
+use the underlying map key/value shape, while generated Rust signatures can
+lower the map-shaped parameter to a concrete `HashMap<K, V>` until full named-map
+identity preservation is implemented.
 Package-level function signatures and method signatures live in separate
 `TypeEnv` namespaces. Methods must be registered only as receiver-qualified keys
 such as `StringSlice.Search`, never as plain `Search`, because Go permits package

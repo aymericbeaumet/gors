@@ -815,7 +815,8 @@ fn type_param_constraints(
             .map(constraint_type_terms)
             .unwrap_or_default()
             .into_iter()
-            .filter(|term| !go_type_mentions_names(term, &type_param_names))
+            .map(|term| erase_type_param_mentions(term, &type_param_names))
+            .filter(|term| !matches!(term, GoType::Unknown | GoType::Any))
             .collect();
         if terms.is_empty() {
             continue;
@@ -827,23 +828,36 @@ fn type_param_constraints(
     constraints
 }
 
-fn go_type_mentions_names(ty: &GoType, names: &HashSet<std::string::String>) -> bool {
+fn erase_type_param_mentions(ty: GoType, names: &HashSet<std::string::String>) -> GoType {
     match ty {
-        GoType::Named(name) => names.contains(name),
-        GoType::Slice(elem) | GoType::Pointer(elem) | GoType::Array(elem) => {
-            go_type_mentions_names(elem, names)
-        }
-        GoType::Map(key, value) => {
-            go_type_mentions_names(key, names) || go_type_mentions_names(value, names)
-        }
-        GoType::Chan { elem, .. } => go_type_mentions_names(elem, names),
+        GoType::Named(name) if names.contains(&name) => GoType::Unknown,
+        GoType::Slice(elem) => GoType::Slice(Box::new(erase_type_param_mentions(*elem, names))),
+        GoType::Pointer(elem) => GoType::Pointer(Box::new(erase_type_param_mentions(*elem, names))),
+        GoType::Array(elem) => GoType::Array(Box::new(erase_type_param_mentions(*elem, names))),
+        GoType::Map(key, value) => GoType::Map(
+            Box::new(erase_type_param_mentions(*key, names)),
+            Box::new(erase_type_param_mentions(*value, names)),
+        ),
+        GoType::Chan { elem, direction } => GoType::Chan {
+            elem: Box::new(erase_type_param_mentions(*elem, names)),
+            direction,
+        },
         GoType::Func {
-            params, results, ..
-        } => params
-            .iter()
-            .chain(results.iter())
-            .any(|ty| go_type_mentions_names(ty, names)),
-        _ => false,
+            params,
+            results,
+            variadic_start,
+        } => GoType::Func {
+            params: params
+                .into_iter()
+                .map(|ty| erase_type_param_mentions(ty, names))
+                .collect(),
+            results: results
+                .into_iter()
+                .map(|ty| erase_type_param_mentions(ty, names))
+                .collect(),
+            variadic_start,
+        },
+        other => other,
     }
 }
 
@@ -1350,6 +1364,29 @@ impl TypeEnv {
                 direction: *direction,
             },
             _ => ty.clone(),
+        }
+    }
+
+    pub fn resolve_type_param_constraint(&self, ty: &GoType) -> Option<GoType> {
+        let GoType::Named(name) = ty else {
+            return None;
+        };
+        self.func_type_param_constraints
+            .values()
+            .find_map(|constraints| {
+                constraints
+                    .get(name)
+                    .and_then(|terms| terms.first().cloned())
+            })
+    }
+
+    pub fn resolve_alias_or_type_param_constraint(&self, ty: &GoType) -> GoType {
+        let resolved = self.resolve_alias(ty);
+        if matches!(resolved, GoType::Named(_)) {
+            self.resolve_type_param_constraint(&resolved)
+                .unwrap_or(resolved)
+        } else {
+            resolved
         }
     }
 

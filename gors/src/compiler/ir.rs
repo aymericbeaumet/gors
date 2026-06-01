@@ -460,7 +460,7 @@ pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Opti
 }
 
 pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
-    match env.resolve_alias(&GoType::infer_expr(expr, env)) {
+    match env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(expr, env)) {
         GoType::String => RangeKind::String,
         GoType::Int
         | GoType::Int8
@@ -877,7 +877,7 @@ fn record_range_bindings(range: &ast::RangeStmt<'_>, env: &mut TypeEnv) {
     if range.tok != Some(token::Token::DEFINE) {
         return;
     }
-    let range_type = env.resolve_alias(&GoType::infer_expr(&range.x, env));
+    let range_type = env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&range.x, env));
     let (key_type, value_type) = match range_type {
         GoType::String => (GoType::Int, Some(GoType::Int32)),
         GoType::Slice(elem) | GoType::Array(elem) => (GoType::Int, Some(*elem)),
@@ -6447,7 +6447,7 @@ fn is_map_index_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
         return false;
     };
     matches!(
-        env.resolve_alias(&GoType::infer_expr(&index.x, env)),
+        env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&index.x, env)),
         GoType::Map(_, _)
     )
 }
@@ -6826,7 +6826,7 @@ fn expression_value_count(
     match expr {
         ast::Expr::CallExpr(call) => call_result_count(call, env),
         ast::Expr::IndexExpr(index) => {
-            match env.resolve_alias(&GoType::infer_expr(&index.x, env)) {
+            match env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&index.x, env)) {
                 GoType::Map(_, _) if matches!(mode, TupleAssignmentMode::AllowTupleOperations) => {
                     Some(2)
                 }
@@ -8339,7 +8339,7 @@ fn is_type_switch_guard_expr(expr: &ast::Expr<'_>) -> bool {
 
 fn invalid_range_clause(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<InvalidRangeReason> {
     let got = effective_range_binding_count(range);
-    let ty = env.resolve_alias(&GoType::infer_expr(&range.x, env));
+    let ty = env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&range.x, env));
     let Some((kind, max)) = max_range_binding_count_for_type(&ty) else {
         if matches!(ty, GoType::Unknown | GoType::Named(_)) {
             return None;
@@ -8421,7 +8421,7 @@ fn range_integer_constant_iteration_uses_target_type(
 }
 
 fn range_iteration_types(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
-    match env.resolve_alias(&GoType::infer_expr(&range.x, env)) {
+    match env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&range.x, env)) {
         GoType::String => Some(vec![GoType::Int, GoType::Int32]),
         GoType::Slice(elem) | GoType::Array(elem) => Some(vec![GoType::Int, *elem]),
         GoType::Pointer(inner) => match *inner {
@@ -9766,7 +9766,7 @@ fn invalid_ordinary_call(
 }
 
 fn invalid_index_expr(index: &ast::IndexExpr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
-    let target = env.resolve_alias(&GoType::infer_expr(&index.x, env));
+    let target = env.resolve_alias_or_type_param_constraint(&GoType::infer_expr(&index.x, env));
     match target {
         GoType::String | GoType::Slice(_) | GoType::Array(_) => {
             invalid_integer_index(&index.index, env)
@@ -12224,9 +12224,39 @@ fn type_param_constraint_allows_arg(
     if matches!(actual, GoType::Named(name) if env.get_type_kind(name).is_none()) {
         return true;
     }
-    actual == &constraint
+    type_param_constraint_shape_allows_arg(&constraint, actual)
+        || actual == &constraint
         || (expr_is_untyped_constant_for_comparison(arg, env)
             && comparison_constant_is_assignable_to(arg, actual, &constraint, env))
+}
+
+fn type_param_constraint_shape_allows_arg(constraint: &GoType, actual: &GoType) -> bool {
+    match (constraint, actual) {
+        (GoType::Unknown, _) => true,
+        (GoType::Slice(expected), GoType::Slice(actual))
+        | (GoType::Array(expected), GoType::Array(actual))
+        | (GoType::Pointer(expected), GoType::Pointer(actual)) => {
+            type_param_constraint_shape_allows_arg(expected, actual)
+        }
+        (
+            GoType::Chan {
+                elem: expected,
+                direction: expected_direction,
+            },
+            GoType::Chan {
+                elem: actual,
+                direction: actual_direction,
+            },
+        ) => {
+            expected_direction == actual_direction
+                && type_param_constraint_shape_allows_arg(expected, actual)
+        }
+        (GoType::Map(expected_key, expected_value), GoType::Map(actual_key, actual_value)) => {
+            type_param_constraint_shape_allows_arg(expected_key, actual_key)
+                && type_param_constraint_shape_allows_arg(expected_value, actual_value)
+        }
+        _ => false,
+    }
 }
 
 fn invalid_call_arg_types<'a>(
@@ -25726,6 +25756,35 @@ mod tests {
         env.scan_file(&file);
         let Some(func) = file.decls.iter().find_map(|decl| match decl {
             crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn accepts_range_over_generic_map_type_parameter() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package maps
+
+                func Copy[M ~map[K]V, K comparable, V any](dst M, src M) {
+                    for k, v := range src {
+                        dst[k] = v
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "Copy" => Some(func),
             crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
         }) else {
             panic!("expected function");

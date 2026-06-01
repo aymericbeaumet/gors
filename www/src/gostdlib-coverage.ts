@@ -31054,6 +31054,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"io/fs",
 			"log",
 			"log/slog",
+			"maps",
 			"math",
 			"math/big",
 			"math/bits",
@@ -31243,6 +31244,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"io/fs",
 					"log",
 					"log/slog",
+					"maps",
 					"math",
 					"math/big",
 					"math/bits",
@@ -56414,16 +56416,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "maps",
-		"tested": false,
-		"fixtures": [],
-		"symbolCount": 1,
-		"testedSymbolCount": 0,
+		"tested": true,
+		"fixtures": [
+			"maps"
+		],
+		"symbolCount": 2,
+		"testedSymbolCount": 1,
 		"symbols": [
 			{
 				"name": "Collect",
 				"kind": "func",
 				"tested": false,
 				"fixtures": []
+			},
+			{
+				"name": "Equal",
+				"kind": "usage",
+				"tested": true,
+				"fixtures": [
+					"maps"
+				]
 			}
 		]
 	},
@@ -79852,11 +79864,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 72,
+	"fixtureCount": 73,
 	"packageCount": 353,
-	"testedPackageCount": 72,
-	"untestedPackageCount": 281,
-	"symbolCount": 12577,
-	"testedSymbolCount": 452,
+	"testedPackageCount": 73,
+	"untestedPackageCount": 280,
+	"symbolCount": 12578,
+	"testedSymbolCount": 453,
 	"untestedSymbolCount": 12125
 } as const;

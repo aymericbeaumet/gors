@@ -1290,12 +1290,19 @@ struct TypeParamInfo {
     names: std::collections::HashSet<String>,
     slice_aliases: BTreeMap<String, syn::Type>,
     slice_alias_go_types: BTreeMap<String, typeinfer::GoType>,
+    map_aliases: BTreeMap<String, (syn::Type, syn::Type)>,
+    map_alias_go_types: BTreeMap<String, typeinfer::GoType>,
+    map_key_names: std::collections::HashSet<String>,
     byte_seq_names: std::collections::HashSet<String>,
 }
 
 impl TypeParamInfo {
     fn skipped_names(&self) -> std::collections::HashSet<&str> {
-        self.slice_aliases.keys().map(String::as_str).collect()
+        self.slice_aliases
+            .keys()
+            .chain(self.map_aliases.keys())
+            .map(String::as_str)
+            .collect()
     }
 }
 
@@ -1324,6 +1331,27 @@ fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInf
                 info.slice_aliases
                     .insert(name.name.to_string(), elem.clone());
                 info.slice_alias_go_types
+                    .insert(name.name.to_string(), go_type.clone());
+            }
+        }
+    }
+    for field in &type_params.list {
+        let Some(type_expr) = field.type_.as_ref() else {
+            continue;
+        };
+        let Some((key, value, go_type, key_name)) =
+            map_alias_constraint_info(type_expr, &info.names)
+        else {
+            continue;
+        };
+        if let Some(key_name) = key_name {
+            info.map_key_names.insert(key_name);
+        }
+        if let Some(names) = &field.names {
+            for name in names {
+                info.map_aliases
+                    .insert(name.name.to_string(), (key.clone(), value.clone()));
+                info.map_alias_go_types
                     .insert(name.name.to_string(), go_type.clone());
             }
         }
@@ -1380,6 +1408,51 @@ fn slice_alias_constraint_info(
     let elem_go_type = slice_alias_element_go_type(expr)
         .or_else(|| named_slice_constraint_element_go_type(expr, type_param_names))?;
     Some((elem, typeinfer::GoType::Slice(Box::new(elem_go_type))))
+}
+
+fn map_alias_constraint_info(
+    expr: &ast::Expr,
+    type_param_names: &std::collections::HashSet<String>,
+) -> Option<(syn::Type, syn::Type, typeinfer::GoType, Option<String>)> {
+    match expr {
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
+            map_alias_constraint_info(&unary.x, type_param_names)
+        }
+        ast::Expr::MapType(map) => {
+            let key = type_from_expr_ref(&map.key);
+            let value = type_from_expr_ref(&map.value);
+            let key_go_type = typeinfer::GoType::from_expr(&map.key);
+            let value_go_type = typeinfer::GoType::from_expr(&map.value);
+            let key_name = type_param_name_expr(&map.key, type_param_names);
+            Some((
+                key,
+                value,
+                typeinfer::GoType::Map(Box::new(key_go_type), Box::new(value_go_type)),
+                key_name,
+            ))
+        }
+        ast::Expr::InterfaceType(interface) => interface
+            .methods
+            .as_ref()?
+            .list
+            .iter()
+            .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+            .filter_map(|field| field.type_.as_ref())
+            .find_map(|expr| map_alias_constraint_info(expr, type_param_names)),
+        _ => None,
+    }
+}
+
+fn type_param_name_expr(
+    expr: &ast::Expr,
+    type_param_names: &std::collections::HashSet<String>,
+) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(ident) if type_param_names.contains(ident.name) => {
+            Some(ident.name.to_string())
+        }
+        _ => None,
+    }
 }
 
 fn slice_alias_element_type(expr: &ast::Expr) -> Option<syn::Type> {
@@ -1475,10 +1548,30 @@ fn generic_slice_param_go_type(
     }
 }
 
+fn generic_map_param_type(expr: &ast::Expr, info: &TypeParamInfo) -> Option<syn::Type> {
+    match expr {
+        ast::Expr::Ident(ident) => info.map_aliases.get(ident.name).map(|(key, value)| {
+            syn::parse_quote! { std::collections::HashMap<#key, #value> }
+        }),
+        _ => None,
+    }
+}
+
+fn generic_map_param_go_type(expr: &ast::Expr, info: &TypeParamInfo) -> Option<typeinfer::GoType> {
+    match expr {
+        ast::Expr::Ident(ident) => info.map_alias_go_types.get(ident.name).cloned(),
+        _ => None,
+    }
+}
+
 fn type_expr_mentions_type_param(expr: &ast::Expr, info: &TypeParamInfo) -> bool {
     match expr {
         ast::Expr::Ident(ident) => info.names.contains(ident.name),
         ast::Expr::ArrayType(array) => type_expr_mentions_type_param(&array.elt, info),
+        ast::Expr::MapType(map) => {
+            type_expr_mentions_type_param(&map.key, info)
+                || type_expr_mentions_type_param(&map.value, info)
+        }
         ast::Expr::StarExpr(star) => type_expr_mentions_type_param(&star.x, info),
         ast::Expr::UnaryExpr(unary) => type_expr_mentions_type_param(&unary.x, info),
         ast::Expr::SelectorExpr(_) => false,
@@ -1534,6 +1627,12 @@ fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics 
                     continue;
                 }
                 let ident: syn::Ident = name.into();
+                let mut bounds = bounds.clone();
+                if info.map_key_names.contains(&ident.to_string()) {
+                    bounds.push(syn::parse_quote! { Eq });
+                    bounds.push(syn::parse_quote! { std::hash::Hash });
+                    bounds = dedupe_type_param_bounds(bounds);
+                }
                 params.push(syn::GenericParam::Type(syn::TypeParam {
                     attrs: vec![],
                     ident,
@@ -10890,7 +10989,9 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let key_ty = TYPE_ENV.with(|env| {
                 let env = env.borrow();
-                match env.resolve_alias(&typeinfer::GoType::infer_expr(&map_raw, &env)) {
+                match env.resolve_alias_or_type_param_constraint(&typeinfer::GoType::infer_expr(
+                    &map_raw, &env,
+                )) {
                     typeinfer::GoType::Map(key, _) => Some(*key),
                     _ => None,
                 }
@@ -12224,6 +12325,10 @@ fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
     TYPE_ENV.with(|env| env.borrow().resolve_alias(ty))
 }
 
+fn underlying_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
+    TYPE_ENV.with(|env| env.borrow().resolve_alias_or_type_param_constraint(ty))
+}
+
 fn numeric_cast_type(ty: &typeinfer::GoType) -> Option<syn::Type> {
     let resolved = resolved_go_type(ty);
     if !resolved.is_numeric() && !matches!(resolved, typeinfer::GoType::Uintptr) {
@@ -13388,7 +13493,7 @@ fn set_range_bindings(
         return;
     }
 
-    let resolved = resolved_go_type(inferred_range_type);
+    let resolved = underlying_go_type(inferred_range_type);
     match (key, value, resolved) {
         (Some(key), Some(value), typeinfer::GoType::Slice(elem))
         | (Some(key), Some(value), typeinfer::GoType::Array(elem)) => {
@@ -13413,7 +13518,7 @@ fn set_range_bindings(
 }
 
 fn range_integer_iteration_go_type(inferred_range_type: &typeinfer::GoType) -> typeinfer::GoType {
-    let resolved = resolved_go_type(inferred_range_type);
+    let resolved = underlying_go_type(inferred_range_type);
     if resolved.is_integer() {
         resolved
     } else {
@@ -14130,7 +14235,7 @@ fn is_indexed_range_type(ty: &typeinfer::GoType) -> bool {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         matches!(
-            env.resolve_alias(ty),
+            env.resolve_alias_or_type_param_constraint(ty),
             typeinfer::GoType::Slice(_) | typeinfer::GoType::Array(_)
         )
     })
@@ -14140,7 +14245,7 @@ fn is_pointer_array_range_type(ty: &typeinfer::GoType) -> bool {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         matches!(
-            env.resolve_alias(ty),
+            env.resolve_alias_or_type_param_constraint(ty),
             typeinfer::GoType::Pointer(inner) if matches!(inner.as_ref(), typeinfer::GoType::Array(_))
         )
     })
@@ -14149,7 +14254,7 @@ fn is_pointer_array_range_type(ty: &typeinfer::GoType) -> bool {
 fn is_any_slice_range_type(ty: &typeinfer::GoType) -> bool {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        matches!(env.resolve_alias(ty), typeinfer::GoType::Slice(elem) if elem.is_interface())
+        matches!(env.resolve_alias_or_type_param_constraint(ty), typeinfer::GoType::Slice(elem) if elem.is_interface())
     })
 }
 
@@ -17067,7 +17172,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 let container_type = typeinfer::GoType::infer_expr(&index_expr.x, &env);
                 let base: syn::Expr = (*index_expr.x).into();
 
-                if let typeinfer::GoType::Map(key_ty, _) = env.resolve_alias(&container_type) {
+                if let typeinfer::GoType::Map(key_ty, _) =
+                    env.resolve_alias_or_type_param_constraint(&container_type)
+                {
                     let key = compile_expr_with_expected(*index_expr.index, Some(&key_ty));
                     return syn::parse_quote! {{
                         let __gors_map_key = #key;
@@ -18318,6 +18425,8 @@ fn compile_field_to_fn_args_with_type_params(
         let mut rust_type: syn::Type =
             if let Some(elem) = generic_slice_param_element_type(&type_expr, type_param_info) {
                 syn::parse_quote! { &mut Vec<#elem> }
+            } else if let Some(map_type) = generic_map_param_type(&type_expr, type_param_info) {
+                map_type
             } else {
                 type_from_param_expr(&type_expr, name_str, borrow_pointer_params)
             };
@@ -18480,6 +18589,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                     .as_ref()
                     .map(|expr| {
                         generic_slice_param_go_type(expr, &type_param_info)
+                            .or_else(|| generic_map_param_go_type(expr, &type_param_info))
                             .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
                     })
                     .unwrap_or(typeinfer::GoType::Unknown);
@@ -20571,7 +20681,9 @@ fn map_index_types(expr: &ast::Expr) -> Option<(typeinfer::GoType, typeinfer::Go
     };
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        match env.resolve_alias(&typeinfer::GoType::infer_expr(&index.x, &env)) {
+        match env
+            .resolve_alias_or_type_param_constraint(&typeinfer::GoType::infer_expr(&index.x, &env))
+        {
             typeinfer::GoType::Map(key, value) => Some((*key, *value)),
             _ => None,
         }
