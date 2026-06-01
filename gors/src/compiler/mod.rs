@@ -12216,11 +12216,11 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             .and_then(|expr| lvalue_index_component_expr(expr));
         return match (low, high) {
             (Some(low), Some(high)) => {
-                Some(syn::parse_quote! { #base[(#low) as usize..(#high) as usize] })
+                Some(syn::parse_quote! { (#base)[(#low) as usize..(#high) as usize] })
             }
-            (Some(low), None) => Some(syn::parse_quote! { #base[(#low) as usize..] }),
-            (None, Some(high)) => Some(syn::parse_quote! { #base[..(#high) as usize] }),
-            (None, None) => Some(syn::parse_quote! { #base[..] }),
+            (Some(low), None) => Some(syn::parse_quote! { (#base)[(#low) as usize..] }),
+            (None, Some(high)) => Some(syn::parse_quote! { (#base)[..(#high) as usize] }),
+            (None, None) => Some(syn::parse_quote! { (#base)[..] }),
         };
     }
     if !is_ir_addressable_expr(expr) {
@@ -12253,7 +12253,7 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
         ast::Expr::IndexExpr(index) => {
             let base = lvalue_expr_from_ref(&index.x)?;
             let index = lvalue_index_component_expr(&index.index)?;
-            Some(syn::parse_quote! { #base[(#index) as usize] })
+            Some(syn::parse_quote! { (#base)[(#index) as usize] })
         }
         ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
         ast::Expr::StarExpr(star) => {
@@ -12291,7 +12291,7 @@ fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
                     (__gors_index_base.as_bytes()[__gors_index]).clone()
                 }})
             } else {
-                Some(syn::parse_quote! { #base[(#idx) as usize] })
+                Some(syn::parse_quote! { (#base)[(#idx) as usize] })
             }
         }
         ast::Expr::ParenExpr(paren) => lvalue_index_component_expr(&paren.x),
@@ -24407,7 +24407,10 @@ func main() {
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("crate::builtin::copy_slice"), "{main_rs}");
         assert!(!main_rs.contains("compile_error!"), "{main_rs}");
-        assert!(main_rs.contains("encode[(1 + 1) as usize]"), "{main_rs}");
+        assert!(
+            main_rs.contains("(e.encode)[(1 + 1) as usize]"),
+            "{main_rs}"
+        );
     }
 
     #[test]
@@ -25569,10 +25572,10 @@ func main() {
                     let mut t = (s[(1) as usize..]).to_vec();
                     {
                         let __gors_slice_alias_value = 9;
-                        t[(0) as usize] = __gors_slice_alias_value;
+                        (t)[(0) as usize] = __gors_slice_alias_value;
                         s[((0) as usize + (1) as usize) as usize] = __gors_slice_alias_value;
                     }
-                    s[(1) as usize] = 7;
+                    (s)[(1) as usize] = 7;
                     {
                         let __gors_slice_base_index = (1) as usize;
                         let __gors_slice_alias_offset = (1) as usize;

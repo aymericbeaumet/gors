@@ -33,4 +33,13 @@ func main() {
 	assert(n == 4, "write64a")
 	assert(h64a.Sum64() != h64.Sum64(), "sum64a")
 
+	h128 := fnv.New128()
+	n, _ = h128.Write(data)
+	assert(n == 4, "write128")
+	assert(len(h128.Sum(nil)) == 16, "sum128 bytes")
+
+	h128a := fnv.New128a()
+	n, _ = h128a.Write(data)
+	assert(n == 4, "write128a")
+	assert(len(h128a.Sum(nil)) == 16, "sum128a bytes")
 }

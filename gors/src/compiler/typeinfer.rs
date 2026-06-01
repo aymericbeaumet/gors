@@ -409,7 +409,14 @@ impl GoType {
             }
             ast::Expr::IndexExpr(index) => {
                 let container = GoType::infer_expr(&index.x, env);
-                match env.resolve_alias_outer(&container) {
+                let resolved = match env.resolve_alias_outer(&container) {
+                    GoType::Pointer(inner) => match env.resolve_alias_outer(&inner) {
+                        GoType::Array(elem) => GoType::Array(elem),
+                        _ => GoType::Pointer(inner),
+                    },
+                    other => other,
+                };
+                match resolved {
                     GoType::String => GoType::Uint8,
                     GoType::Slice(elem) | GoType::Array(elem) => *elem,
                     GoType::Map(_, value) => *value,

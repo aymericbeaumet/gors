@@ -36989,19 +36989,23 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"hash/fnv"
 		],
 		"symbolCount": 6,
-		"testedSymbolCount": 4,
+		"testedSymbolCount": 6,
 		"symbols": [
 			{
 				"name": "New128",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			},
 			{
 				"name": "New128a",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			},
 			{
 				"name": "New32",
@@ -79904,6 +79908,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 76,
 	"untestedPackageCount": 277,
 	"symbolCount": 12578,
-	"testedSymbolCount": 466,
-	"untestedSymbolCount": 12112
+	"testedSymbolCount": 468,
+	"untestedSymbolCount": 12110
 } as const;

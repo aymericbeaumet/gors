@@ -343,10 +343,12 @@ that cache path and key source aligned.
 Manual fixture debugging must follow the same rule: prefer filtered integration
 targets such as
 `rtk env GORS_TEST_FILTER=container/heap make rust-test-integration-go-stdlib`
-over ad hoc `go run`, and if a direct Go reference run is unavoidable, invoke
-the cached SDK through `gors/tests/common.rs::go_command()` or the exact
-`gors::GO_SDK_PATH/bin/go` binary it resolves. Do not run bare system `go`
-commands against fixture paths from the workspace.
+over ad hoc `go run`. Do not run commands such as
+`rtk go run ./gors/tests/fixtures/go_stdlib/container/heap`; that uses the
+system Go tool instead of the pinned SDK. If a direct Go reference run is
+unavoidable, invoke the cached SDK through `gors/tests/common.rs::go_command()`
+or the exact `gors::GO_SDK_PATH/bin/go` binary it resolves. Do not run bare
+system `go` commands against fixture paths from the workspace.
 
 ## Testing
 
@@ -354,7 +356,9 @@ The Rust toolchain is pinned to `1.96.0` in `rust-toolchain.toml`. Keep all
 workspace crates on Rust edition 2024, keep each package `rust-version` aligned
 to `1.96.0`, and do not switch CI back to floating `stable`. Any direct rustc
 path used by tests or the CLI must invoke `rustup run 1.96.0 rustc` and pass
-edition 2024.
+edition 2024. Do not use `rtk rustc --edition=2021`; manual reproductions must
+use `rtk rustup run 1.96.0 rustc --edition=2024 ...`, and Rust tests that assert
+compiler invocations must expect the same pinned toolchain and edition.
 
 ### Unit tests
 
