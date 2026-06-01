@@ -6462,6 +6462,19 @@ fn resolve_required_stdlib_modules(
     }
 }
 
+pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
+    let existing = file
+        .items
+        .iter()
+        .map(|item| item.to_token_stream().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    let additions = noop_interface_supertrait_impls(&file.items)
+        .into_iter()
+        .filter(|item| !existing.contains(&item.to_token_stream().to_string()))
+        .collect::<Vec<_>>();
+    file.items.extend(additions);
+}
+
 fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
     if std::env::var("GORS_STDLIB_TRACE").is_ok_and(|value| value == "1" || value == "true") {
         eprintln!("{args}");
@@ -6679,9 +6692,11 @@ fn reachable_stdlib_items(
     let top_level_return_types = top_level_item_return_types(items, module_names);
     let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
     let trait_supertraits = trait_supertrait_names(items);
+    let trait_methods = trait_method_names(items);
 
     loop {
         let mut changed = false;
+        changed |= expand_supertrait_names(&mut names, &trait_supertraits, &trait_methods);
         changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
         changed |=
             expand_top_level_receiver_method_names(&mut names, &top_level_types, &item_names);
@@ -6832,6 +6847,52 @@ fn trait_supertrait_names(items: &[syn::Item]) -> BTreeMap<String, Vec<String>> 
             Some((item_trait.ident.to_string(), supertraits))
         })
         .collect()
+}
+
+fn trait_method_names(items: &[syn::Item]) -> BTreeMap<String, Vec<String>> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let methods = item_trait
+                .items
+                .iter()
+                .filter_map(|trait_item| match trait_item {
+                    syn::TraitItem::Fn(func) => Some(func.sig.ident.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            Some((item_trait.ident.to_string(), methods))
+        })
+        .collect()
+}
+
+fn expand_supertrait_names(
+    names: &mut std::collections::HashSet<String>,
+    supertraits: &BTreeMap<String, Vec<String>>,
+    trait_methods: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    let roots = names.iter().cloned().collect::<Vec<_>>();
+    let mut changed = false;
+    for trait_name in roots {
+        let mut stack = supertraits.get(&trait_name).cloned().unwrap_or_default();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(supertrait) = stack.pop() {
+            if !seen.insert(supertrait.clone()) {
+                continue;
+            }
+            changed |= names.insert(supertrait.clone());
+            for method in trait_methods.get(&supertrait).into_iter().flatten() {
+                changed |= names.insert(impl_method_reachability_name(&supertrait, method));
+            }
+            if let Some(next) = supertraits.get(&supertrait) {
+                stack.extend(next.iter().cloned());
+            }
+        }
+    }
+    changed
 }
 
 fn expand_supertrait_method_names(
@@ -6989,6 +7050,13 @@ fn reachable_item_for_names(
             if is_ambient_trait_name(&trait_name) {
                 return Some(item.clone());
             }
+            if item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+                qualified_external_trait_path(path, &trait_name, top_level_names)
+            }) {
+                let mut preserved = item_impl.clone();
+                allow_dead_code_attr(&mut preserved.attrs);
+                return Some(syn::Item::Impl(preserved));
+            }
             if roots.contains(&trait_name) {
                 let mut preserved = item_impl.clone();
                 allow_dead_code_attr(&mut preserved.attrs);
@@ -7023,6 +7091,12 @@ fn reachable_item_for_names(
         return None;
     }
     if item_impl.trait_.is_some() {
+        if self_name
+            .as_deref()
+            .is_some_and(is_noop_interface_type_name)
+        {
+            return Some(item.clone());
+        }
         if let Some((_, path, _)) = &item_impl.trait_
             && let Some(trait_name) = path.segments.last().map(|seg| seg.ident.to_string())
             && top_level_names.contains(&trait_name)
@@ -7074,6 +7148,19 @@ fn trait_item_name_reachable(
 ) -> bool {
     names.contains(item_name)
         || names.contains(&impl_method_reachability_name(trait_name, item_name))
+}
+
+fn qualified_external_trait_path(
+    path: &syn::Path,
+    trait_name: &str,
+    top_level_names: &std::collections::HashSet<String>,
+) -> bool {
+    !top_level_names.contains(trait_name)
+        && (path.leading_colon.is_some() || path.segments.len() > 1)
+}
+
+fn is_noop_interface_type_name(name: &str) -> bool {
+    name.starts_with("__GorsNoop")
 }
 
 fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
@@ -28301,6 +28388,59 @@ func main() {
     }
 
     #[test]
+    fn it_should_preserve_full_external_trait_impl_items() {
+        let file: syn::File = rust! {
+            pub struct Values;
+
+            impl crate::io__fs::FileInfo for Values {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn Name(&mut self) -> String {
+                    String::new()
+                }
+
+                fn Size(&mut self) -> i64 {
+                    0
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from(["Values".to_string()]);
+        let names = std::collections::HashSet::from([
+            "Values".to_string(),
+            "FileInfo".to_string(),
+            "FileInfo::Name".to_string(),
+        ]);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+
+        let impl_item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Impl(_)))
+            .and_then(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .and_then(|item| match item {
+                syn::Item::Impl(item_impl) => Some(item_impl),
+                _ => None,
+            })
+            .expect("expected impl");
+
+        assert!(
+            impl_item.items.iter().any(|item| {
+                matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Name")
+            })
+        );
+        assert!(
+            impl_item.items.iter().any(|item| {
+                matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "Size")
+            })
+        );
+    }
+
+    #[test]
     fn it_should_prune_trait_methods_reachable_only_through_type_fields() {
         let file: syn::File = rust! {
             pub trait Interface {
@@ -28535,6 +28675,131 @@ func main() {
         assert!(tokens.contains("impl Writer for __GorsNoopHash32"));
         assert!(tokens.contains("fn Sum"));
         assert!(tokens.contains("fn Write"));
+    }
+
+    #[test]
+    fn it_should_add_noop_supertrait_impls_after_package_merge() {
+        let mut file: syn::File = rust! {
+            pub trait State {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Remaining(&mut self) -> isize;
+            }
+
+            pub trait Reader: State {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+            }
+
+            #[derive(Clone, Default)]
+            pub struct __GorsNoopReader;
+
+            impl Reader for __GorsNoopReader {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    None
+                }
+            }
+        };
+
+        super::add_post_merge_interface_helpers(&mut file);
+        let tokens = quote::quote!(#file).to_string();
+
+        assert!(tokens.contains("impl State for __GorsNoopReader"));
+        assert!(tokens.contains("fn Remaining"));
+    }
+
+    #[test]
+    fn it_should_preserve_reachable_noop_supertrait_impls() {
+        let file: syn::File = rust! {
+            pub trait State {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn Remaining(&mut self) -> isize;
+            }
+
+            pub trait Reader: State {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+            }
+
+            #[derive(Clone, Default)]
+            pub struct __GorsNoopReader;
+
+            impl Reader for __GorsNoopReader {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    None
+                }
+            }
+
+            impl State for __GorsNoopReader {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    None
+                }
+
+                fn Remaining(&mut self) -> isize {
+                    crate::builtin::panic_value("called no-op interface method")
+                }
+            }
+
+            pub fn root() -> Box<dyn Reader> {
+                Box::new(__GorsNoopReader::default()) as Box<dyn Reader>
+            }
+        };
+        let roots = std::collections::HashSet::from(["root".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (keep, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+        let kept = file
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                keep.contains(&idx).then(|| {
+                    super::reachable_item_for_names(
+                        item,
+                        &names,
+                        &item_names,
+                        &top_level_names,
+                        &roots,
+                    )
+                })?
+            })
+            .map(|item| quote::quote!(#item).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(names.contains("State"));
+        assert!(kept.contains("impl State for __GorsNoopReader"));
+        assert!(kept.contains("fn Remaining"));
+
+        let self_only_names = std::collections::HashSet::from(["__GorsNoopReader".to_string()]);
+        let state_impl = file
+            .items
+            .iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    syn::Item::Impl(item_impl)
+                        if item_impl
+                            .trait_
+                            .as_ref()
+                            .and_then(|(_, path, _)| path.segments.last())
+                            .is_some_and(|segment| segment.ident == "State")
+                )
+            })
+            .and_then(|item| {
+                super::reachable_item_for_names(
+                    item,
+                    &self_only_names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
+            })
+            .expect("expected no-op state impl");
+        assert!(
+            quote::quote!(#state_impl)
+                .to_string()
+                .contains("fn Remaining")
+        );
     }
 
     #[test]

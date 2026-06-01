@@ -272,6 +272,11 @@ fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> Stri
 }
 
 fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
+    if let Some(module) = runtime_primitive_module(import_path, roots) {
+        cache_resolved_imports(import_path, roots, Vec::new());
+        return Some(module);
+    }
+
     let files = package_files(import_path)?;
 
     let mut parsed_files = Vec::new();
@@ -371,6 +376,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         items: all_items,
     };
     crate::compiler::passes::pass_after_package_merge(&mut merged_file);
+    crate::compiler::add_post_merge_interface_helpers(&mut merged_file);
     let mut all_items = merged_file.items;
 
     dedupe_use_items(&mut all_items);
@@ -381,6 +387,51 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     prefix_crate_paths(&mut all_items, &module_refs);
 
     Some(item_mod_for(import_path, all_items))
+}
+
+fn runtime_primitive_module(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+) -> Option<syn::ItemMod> {
+    if import_path != "runtime" {
+        return None;
+    }
+    let roots = roots?;
+    if roots.is_empty() {
+        return None;
+    }
+
+    let mut items = Vec::new();
+    if roots.contains("GOMAXPROCS") {
+        items.push(syn::parse_quote! {
+            pub fn GOMAXPROCS(mut n: isize) -> isize {
+                let current = std::thread::available_parallelism()
+                    .map(|parallelism| parallelism.get() as isize)
+                    .unwrap_or(1)
+                    .max(1);
+                if n < 1 {
+                    return current;
+                }
+                current
+            }
+        });
+    }
+    if roots.contains("GOARCH") {
+        items.push(syn::parse_quote! {
+            pub fn GOARCH() -> String {
+                std::env::consts::ARCH.to_string()
+            }
+        });
+    }
+    if roots.contains("GOOS") {
+        items.push(syn::parse_quote! {
+            pub fn GOOS() -> String {
+                std::env::consts::OS.to_string()
+            }
+        });
+    }
+
+    (!items.is_empty()).then(|| item_mod_for(import_path, items))
 }
 
 fn item_mod_for(import_path: &str, items: Vec<syn::Item>) -> syn::ItemMod {
@@ -1299,5 +1350,16 @@ mod tests {
 
         assert!(reachable.contains("Matcher"));
         assert!(reachable.contains("dedup"));
+    }
+
+    #[test]
+    fn runtime_gomaxprocs_resolves_as_runtime_primitive() {
+        let roots = HashSet::from(["GOMAXPROCS".to_string()]);
+        let module = resolve_with_roots("runtime", &roots).expect("resolve runtime");
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("pub fn GOMAXPROCS"));
+        assert!(!tokens.contains("sched"));
+        assert!(collect_resolved_imports("runtime", &roots).is_empty());
     }
 }
