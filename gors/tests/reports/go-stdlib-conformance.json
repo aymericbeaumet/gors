@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 27,
-    "unsupportedCaseCount": 12557,
+    "passingCaseCount": 28,
+    "unsupportedCaseCount": 12556,
     "fixtureCount": 76
   },
   "groups": [
@@ -29,8 +29,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 27,
-        "unsupportedCaseCount": 13,
+        "passingCaseCount": 28,
+        "unsupportedCaseCount": 12,
         "fixtureCount": 0
       },
       "cases": [
@@ -94,8 +94,10 @@
           "title": "FileInfoHeader",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {

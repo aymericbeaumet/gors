@@ -72,6 +72,16 @@ impl Default for Box<dyn error> {
     }
 }
 
+impl Clone for Box<dyn error> {
+    fn clone(&self) -> Self {
+        if self.__gors_as_any().is_none() {
+            Box::new(__GorsNooperror)
+        } else {
+            Box::new(__GorsStringError(self.Error()))
+        }
+    }
+}
+
 impl error for Box<dyn error> {
     fn __gors_as_any(&self) -> Option<&dyn Any> {
         (**self).__gors_as_any()

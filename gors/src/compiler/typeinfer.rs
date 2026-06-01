@@ -629,28 +629,67 @@ fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeE
 }
 
 fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
-    match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) | GoType::Interface(name) => env.get_method_return(&name, method),
+    match receiver_type {
+        GoType::Named(name) | GoType::Interface(name) => {
+            let direct = env.get_method_return(&name, method);
+            if !matches!(direct, GoType::Unknown) {
+                return direct;
+            }
+            match env.resolve_alias(&GoType::Named(name)) {
+                GoType::Named(alias_name) | GoType::Interface(alias_name) => {
+                    env.get_method_return(&alias_name, method)
+                }
+                _ => GoType::Unknown,
+            }
+        }
         GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
-        _ => GoType::Unknown,
+        other => match env.resolve_alias(&other) {
+            GoType::Named(name) | GoType::Interface(name) => env.get_method_return(&name, method),
+            GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
+            _ => GoType::Unknown,
+        },
     }
 }
 
 fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
-    match env.resolve_alias(&receiver_type) {
+    match receiver_type {
         GoType::Named(name) | GoType::Interface(name) => {
             if env.has_method_func(&name, method) {
-                GoType::Func {
+                return GoType::Func {
                     params: env.get_method_params(&name, method),
                     results: env.get_method_returns(&name, method),
                     variadic_start: env.get_method_variadic_start(&name, method),
+                };
+            }
+            match env.resolve_alias(&GoType::Named(name)) {
+                GoType::Named(alias_name) | GoType::Interface(alias_name)
+                    if env.has_method_func(&alias_name, method) =>
+                {
+                    GoType::Func {
+                        params: env.get_method_params(&alias_name, method),
+                        results: env.get_method_returns(&alias_name, method),
+                        variadic_start: env.get_method_variadic_start(&alias_name, method),
+                    }
                 }
-            } else {
-                GoType::Unknown
+                _ => GoType::Unknown,
             }
         }
         GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
-        _ => GoType::Unknown,
+        other => match env.resolve_alias(&other) {
+            GoType::Named(name) | GoType::Interface(name) => {
+                if env.has_method_func(&name, method) {
+                    GoType::Func {
+                        params: env.get_method_params(&name, method),
+                        results: env.get_method_returns(&name, method),
+                        variadic_start: env.get_method_variadic_start(&name, method),
+                    }
+                } else {
+                    GoType::Unknown
+                }
+            }
+            GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
+            _ => GoType::Unknown,
+        },
     }
 }
 

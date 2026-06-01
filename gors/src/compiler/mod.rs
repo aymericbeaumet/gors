@@ -298,12 +298,20 @@ fn go_type_is_interface_like(go_type: &typeinfer::GoType) -> bool {
     go_type.is_interface() || go_type_interface_name(go_type).is_some()
 }
 
+fn go_package_rust_module_name(name: &str) -> String {
+    if name.contains('/') {
+        crate::resolve::module_name(name)
+    } else {
+        import_rust_name(name)
+    }
+}
+
 fn qualified_name_rust_segments(name: &str) -> Vec<String> {
     let mut parts = name.split('.').map(str::to_string).collect::<Vec<_>>();
     if parts.len() > 1
         && let Some(first) = parts.first_mut()
     {
-        *first = import_rust_name(first);
+        *first = go_package_rust_module_name(first);
     }
     parts
 }
@@ -1290,11 +1298,30 @@ fn go_constraint_to_rust_bounds(
             // interface{} → no bounds (same as `any`)
         }
         ast::Expr::SelectorExpr(selector) => {
-            if let ast::Expr::Ident(base) = &*selector.x {
-                let base = syn::Ident::new(&rust_safe_ident_name(base.name), Span::mixed_site());
-                let sel =
-                    syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
-                bounds.push(syn::parse_quote! { #base::#sel });
+            let path = selector_type_env_name(selector)
+                .map(|name| {
+                    let parts = qualified_name_rust_segments(&name);
+                    let ty = rust_type_path_from_segments(parts.iter().map(String::as_str), true);
+                    match ty {
+                        syn::Type::Path(type_path) => type_path.path,
+                        _ => syn::parse_quote! { () },
+                    }
+                })
+                .or_else(|| {
+                    if let ast::Expr::Ident(base) = &*selector.x {
+                        let base =
+                            syn::Ident::new(&rust_safe_ident_name(base.name), Span::mixed_site());
+                        let sel = syn::Ident::new(
+                            &rust_safe_ident_name(selector.sel.name),
+                            Span::mixed_site(),
+                        );
+                        Some(syn::parse_quote! { #base::#sel })
+                    } else {
+                        None
+                    }
+                });
+            if let Some(path) = path {
+                bounds.push(syn::parse_quote! { #path });
             }
         }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
@@ -1362,6 +1389,7 @@ struct TypeParamInfo {
     map_aliases: BTreeMap<String, (syn::Type, syn::Type)>,
     map_alias_go_types: BTreeMap<String, typeinfer::GoType>,
     map_key_names: std::collections::HashSet<String>,
+    map_value_names: std::collections::HashSet<String>,
     byte_seq_names: std::collections::HashSet<String>,
 }
 
@@ -1408,13 +1436,16 @@ fn collect_type_param_info(type_params: Option<&ast::FieldList>) -> TypeParamInf
         let Some(type_expr) = field.type_.as_ref() else {
             continue;
         };
-        let Some((key, value, go_type, key_name)) =
+        let Some((key, value, go_type, key_name, value_name)) =
             map_alias_constraint_info(type_expr, &info.names)
         else {
             continue;
         };
         if let Some(key_name) = key_name {
             info.map_key_names.insert(key_name);
+        }
+        if let Some(value_name) = value_name {
+            info.map_value_names.insert(value_name);
         }
         if let Some(names) = &field.names {
             for name in names {
@@ -1479,10 +1510,18 @@ fn slice_alias_constraint_info(
     Some((elem, typeinfer::GoType::Slice(Box::new(elem_go_type))))
 }
 
+type MapAliasConstraintInfo = (
+    syn::Type,
+    syn::Type,
+    typeinfer::GoType,
+    Option<String>,
+    Option<String>,
+);
+
 fn map_alias_constraint_info(
     expr: &ast::Expr,
     type_param_names: &std::collections::HashSet<String>,
-) -> Option<(syn::Type, syn::Type, typeinfer::GoType, Option<String>)> {
+) -> Option<MapAliasConstraintInfo> {
     match expr {
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::TILDE => {
             map_alias_constraint_info(&unary.x, type_param_names)
@@ -1493,11 +1532,13 @@ fn map_alias_constraint_info(
             let key_go_type = typeinfer::GoType::from_expr(&map.key);
             let value_go_type = typeinfer::GoType::from_expr(&map.value);
             let key_name = type_param_name_expr(&map.key, type_param_names);
+            let value_name = type_param_name_expr(&map.value, type_param_names);
             Some((
                 key,
                 value,
                 typeinfer::GoType::Map(Box::new(key_go_type), Box::new(value_go_type)),
                 key_name,
+                value_name,
             ))
         }
         ast::Expr::InterfaceType(interface) => interface
@@ -1702,6 +1743,10 @@ fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics 
                     bounds.push(syn::parse_quote! { std::hash::Hash });
                     bounds = dedupe_type_param_bounds(bounds);
                 }
+                if info.map_value_names.contains(&ident.to_string()) {
+                    bounds.push(syn::parse_quote! { Clone });
+                    bounds = dedupe_type_param_bounds(bounds);
+                }
                 params.push(syn::GenericParam::Type(syn::TypeParam {
                     attrs: vec![],
                     ident,
@@ -1893,6 +1938,9 @@ fn const_value_to_expr_for_type(value: &ConstValue, type_name: Option<&str>) -> 
 fn const_rust_type_from_inferred(ty: &typeinfer::GoType, value: &ConstValue) -> Option<syn::Type> {
     if matches!(ty, typeinfer::GoType::String) {
         return Some(syn::parse_quote! { &str });
+    }
+    if let typeinfer::GoType::Named(name) = ty {
+        return Some(named_go_type_path(name));
     }
     if matches!(ty, typeinfer::GoType::Int) {
         match value {
@@ -2743,16 +2791,17 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
             let evaluated_string_bytes =
                 value_expr.and_then(|expr| const_eval_string_bytes(expr, &const_string_bytes));
+            let inferred_go_type = value_expr.map(|expr| {
+                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()))
+            });
 
             let rust_type: syn::Type = if let Some(name) = type_name_str {
                 const_rust_type_from_type_name(name)
             } else if let Some(value) = &evaluated {
-                TYPE_ENV.with(|env| {
-                    env.borrow()
-                        .get_var(name.name)
-                        .and_then(|ty| const_rust_type_from_inferred(&ty, value))
-                        .unwrap_or_else(|| value.rust_type())
-                })
+                inferred_go_type
+                    .as_ref()
+                    .and_then(|ty| const_rust_type_from_inferred(ty, value))
+                    .unwrap_or_else(|| value.rust_type())
             } else if let Some(expr) = value_expr {
                 TYPE_ENV.with(|env| {
                     let go_type = typeinfer::GoType::infer_expr(expr, &env.borrow());
@@ -2822,11 +2871,18 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             } else {
                 syn::parse_quote! { 0 }
             };
-            if let Some(type_name) = type_name_str
-                && is_named_numeric_alias(type_name)
-            {
-                let type_ident = syn::Ident::new(&import_rust_name(type_name), Span::mixed_site());
-                value = syn::parse_quote! { #type_ident(#value) };
+            let named_numeric_type = type_name_str
+                .filter(|type_name| is_named_numeric_alias(type_name))
+                .map(str::to_string)
+                .or_else(|| match inferred_go_type.as_ref() {
+                    Some(typeinfer::GoType::Named(name)) if is_named_numeric_alias(name) => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                });
+            if let Some(type_name) = named_numeric_type {
+                let type_path = named_go_type_path(&type_name);
+                value = syn::parse_quote! { #type_path(#value) };
             }
 
             // String constants: emit as inline functions returning String
@@ -7015,6 +7071,70 @@ fn receiver_type_from_type(
     }
 }
 
+fn receiver_type_ref_from_go_type(go_type: typeinfer::GoType) -> Option<ReceiverTypeRef> {
+    receiver_type_ref_from_go_type_with_default_module(go_type, None)
+}
+
+fn receiver_type_ref_from_go_type_with_default_module(
+    go_type: typeinfer::GoType,
+    default_module: Option<&str>,
+) -> Option<ReceiverTypeRef> {
+    match resolved_go_type(&go_type) {
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
+            if let Some((package, ty)) = name.rsplit_once('.') {
+                Some(ReceiverTypeRef {
+                    module: Some(go_package_rust_module_name(package)),
+                    name: ty.to_string(),
+                })
+            } else if let Some(module) = default_module {
+                Some(ReceiverTypeRef {
+                    module: Some(module.to_string()),
+                    name,
+                })
+            } else {
+                Some(ReceiverTypeRef { module: None, name })
+            }
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            receiver_type_ref_from_go_type_with_default_module(*inner, default_module)
+        }
+        _ => None,
+    }
+}
+
+fn external_receiver_method_return_type(
+    receiver_type: &ReceiverTypeRef,
+    method: &str,
+) -> Option<ReceiverTypeRef> {
+    let module = receiver_type.module.as_ref()?;
+    TYPE_ENV
+        .with(|env| {
+            let env = env.borrow();
+            let receiver_names = type_env_name_candidates_for_rust_path_name(&format!(
+                "{module}.{}",
+                receiver_type.name
+            ));
+            receiver_names.into_iter().find_map(|receiver_name| {
+                let ret = env.get_method_return(&receiver_name, method);
+                if matches!(ret, typeinfer::GoType::Unknown) {
+                    None
+                } else {
+                    receiver_type_ref_from_go_type(ret)
+                }
+            })
+        })
+        .or_else(|| {
+            let import_path = module.replace("__", "/");
+            let (_, package_env) = crate::resolve::scan_type_env(&import_path)?;
+            let ret = package_env.get_method_return(&receiver_type.name, method);
+            if matches!(ret, typeinfer::GoType::Unknown) {
+                None
+            } else {
+                receiver_type_ref_from_go_type_with_default_module(ret, Some(module))
+            }
+        })
+}
+
 fn receiver_type_from_init_expr(
     expr: &syn::Expr,
     module_names: &std::collections::HashSet<String>,
@@ -7269,6 +7389,10 @@ fn collect_refs_from_item(
                     )
                     .or_else(|| self.bound_receiver_type_from_expr(&method.receiver))
                 }
+                syn::Expr::MethodCall(method) => {
+                    let receiver_type = self.bound_receiver_type_from_expr(&method.receiver)?;
+                    external_receiver_method_return_type(&receiver_type, &method.method.to_string())
+                }
                 syn::Expr::Paren(paren) => self.bound_receiver_type_from_expr(&paren.expr),
                 syn::Expr::Path(path)
                     if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
@@ -7325,13 +7449,14 @@ fn collect_refs_from_item(
                 self.types.insert(name, ty);
             } else if let Some(init) = &local.init
                 && let Some(name) = pat_ident_name(&local.pat)
-                && let Some(ty) = receiver_type_from_init_expr(
-                    &init.expr,
-                    self.module_names,
-                    self.item_names,
-                    self.top_level_return_types,
-                )
-                .or_else(|| self.bound_receiver_type_from_expr(&init.expr))
+                && let Some(ty) = self.bound_receiver_type_from_expr(&init.expr).or_else(|| {
+                    receiver_type_from_init_expr(
+                        &init.expr,
+                        self.module_names,
+                        self.item_names,
+                        self.top_level_return_types,
+                    )
+                })
             {
                 self.types.insert(name, ty);
             }
@@ -7526,7 +7651,15 @@ fn collect_refs_from_item(
                         &receiver_type.name,
                         &method.method.to_string(),
                     );
-                    self.top_level_return_types.get(&method_key).cloned()
+                    self.top_level_return_types
+                        .get(&method_key)
+                        .cloned()
+                        .or_else(|| {
+                            external_receiver_method_return_type(
+                                &receiver_type,
+                                &method.method.to_string(),
+                            )
+                        })
                 }
                 syn::Expr::Cast(cast) => self.receiver_type_from_expr(&cast.expr),
                 syn::Expr::Field(field) => {
@@ -8411,12 +8544,21 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
             let ty = field
                 .type_
                 .as_ref()
-                .map(type_from_expr_ref)
+                .map(func_param_type_from_ast_expr)
                 .unwrap_or_else(|| syn::parse_quote! { () });
             let count = field.names.as_ref().map_or(1, Vec::len);
             std::iter::repeat_n(ty, count)
         })
         .collect()
+}
+
+fn func_param_type_from_ast_expr(expr: &ast::Expr) -> syn::Type {
+    let ty = type_from_expr_ref(expr);
+    if is_interface_expr(expr) {
+        syn::parse_quote! { &mut dyn #ty }
+    } else {
+        ty
+    }
 }
 
 fn shared_func_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
@@ -8777,6 +8919,31 @@ fn trait_path_interface_name(path: &syn::Path) -> Option<String> {
     }
 }
 
+fn type_env_name_candidates_for_rust_path_name(name: &str) -> Vec<String> {
+    let mut candidates = vec![name.to_string()];
+    if let Some((module, symbol)) = name.rsplit_once('.') {
+        IMPORT_RENAMES.with(|renames| {
+            for (local_name, rust_name) in renames.borrow().iter() {
+                if rust_name == module {
+                    candidates.push(format!("{local_name}.{symbol}"));
+                }
+            }
+        });
+        if let Some(package_name) = module.rsplit("__").next() {
+            candidates.push(format!("{package_name}.{symbol}"));
+        }
+        candidates.push(format!("{}.{symbol}", module.replace("__", "/")));
+    }
+    candidates.dedup();
+    candidates
+}
+
+fn resolve_interface_env_name(name: &str, env: &typeinfer::TypeEnv) -> Option<String> {
+    type_env_name_candidates_for_rust_path_name(name)
+        .into_iter()
+        .find(|candidate| env.is_interface(candidate))
+}
+
 fn noop_impl_item_for_signature(sig: syn::Signature) -> syn::ImplItem {
     let block = if sig.ident == "__gors_as_any" {
         syn::parse_quote!({ None })
@@ -8807,13 +8974,13 @@ fn return_type_from_go_results(results: &[typeinfer::GoType]) -> syn::ReturnType
     match results {
         [] => syn::ReturnType::Default,
         [single] => {
-            let ty = rust_type_from_inferred_go_type(single);
+            let ty = rust_type_preserving_named_go_type(single);
             syn::parse_quote! { -> #ty }
         }
         many => {
             let tys = many
                 .iter()
-                .map(rust_type_from_inferred_go_type)
+                .map(rust_type_preserving_named_go_type)
                 .collect::<Vec<_>>();
             syn::parse_quote! { -> (#(#tys),*) }
         }
@@ -8841,7 +9008,7 @@ fn interface_method_signature_from_type_env(
         .enumerate()
     {
         let ident = syn::Ident::new(&format!("__gors_arg_{idx}"), Span::mixed_site());
-        let ty = rust_type_from_inferred_go_type(&param);
+        let ty = rust_type_preserving_named_go_type(&param);
         inputs.push(syn::FnArg::Typed(syn::PatType {
             attrs: vec![],
             pat: Box::new(syn::Pat::Ident(syn::PatIdent {
@@ -8873,7 +9040,10 @@ fn interface_method_signature_from_type_env(
 fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<syn::ImplItem> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        let Some(method_names) = env.get_interface_direct_methods(interface_name) else {
+        let Some(interface_env_name) = resolve_interface_env_name(interface_name, &env) else {
+            return Vec::new();
+        };
+        let Some(method_names) = env.get_interface_direct_methods(&interface_env_name) else {
             return Vec::new();
         };
         let mut items = vec![noop_impl_item_for_signature(syn::parse_quote! {
@@ -8881,7 +9051,7 @@ fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<syn::ImplItem
         })];
         items.extend(method_names.iter().map(|method_name| {
             noop_impl_item_for_signature(interface_method_signature_from_type_env(
-                interface_name,
+                &interface_env_name,
                 method_name,
                 &env,
             ))
@@ -9464,10 +9634,6 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let has_supertraits = !supertraits.is_empty();
             let has_go_methods = !trait_items.is_empty();
-            let has_external_supertraits = supertraits.iter().any(|bound| match bound {
-                syn::TypeParamBound::Trait(trait_bound) => !trait_path_is_local(&trait_bound.path),
-                _ => false,
-            });
             if has_go_methods {
                 trait_items.insert(
                     0,
@@ -9496,7 +9662,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if let Some(Some(box_impl)) = box_impl {
                 items.push(box_impl);
             }
-            if has_methods && !has_external_supertraits {
+            if has_methods {
                 items.extend(noop_interface_items(&ident, &trait_items));
             }
             if has_supertraits && !has_methods {
@@ -9726,6 +9892,13 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 }
 
 fn compile_return_type(results: Option<ast::FieldList>) -> Result<syn::ReturnType, CompilerError> {
+    compile_return_type_with_type_params(results, None)
+}
+
+fn compile_return_type_with_type_params(
+    results: Option<ast::FieldList>,
+    type_param_info: Option<&TypeParamInfo>,
+) -> Result<syn::ReturnType, CompilerError> {
     let Some(results) = results else {
         return Ok(syn::ReturnType::Default);
     };
@@ -9735,7 +9908,7 @@ fn compile_return_type(results: Option<ast::FieldList>) -> Result<syn::ReturnTyp
         .flat_map(|f| {
             let count = f.names.as_ref().map_or(1, |names| names.len());
             f.type_
-                .map(return_type_from_expr)
+                .map(|expr| return_type_from_expr_with_type_params(expr, type_param_info))
                 .map(|ty| std::iter::repeat_n(ty, count).collect::<Vec<_>>())
                 .unwrap_or_default()
         })
@@ -9840,6 +10013,13 @@ fn add_elided_lifetime_to_boxed_trait_object(ty: &mut syn::Type) {
 }
 
 fn collect_return_go_types(results: Option<&ast::FieldList>) -> Vec<typeinfer::GoType> {
+    collect_return_go_types_with_type_params(results, None)
+}
+
+fn collect_return_go_types_with_type_params(
+    results: Option<&ast::FieldList>,
+    type_param_info: Option<&TypeParamInfo>,
+) -> Vec<typeinfer::GoType> {
     let Some(results) = results else {
         return Vec::new();
     };
@@ -9851,14 +10031,34 @@ fn collect_return_go_types(results: Option<&ast::FieldList>) -> Vec<typeinfer::G
             field
                 .type_
                 .as_ref()
-                .map(typeinfer::GoType::from_expr)
+                .map(|expr| {
+                    type_param_info
+                        .and_then(|info| generic_map_param_go_type(expr, info))
+                        .or_else(|| {
+                            type_param_info.and_then(|info| generic_slice_param_go_type(expr, info))
+                        })
+                        .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+                })
                 .map(|ty| std::iter::repeat_n(ty, count).collect::<Vec<_>>())
                 .unwrap_or_default()
         })
         .collect()
 }
 
-fn return_type_from_expr(expr: ast::Expr) -> syn::Type {
+fn return_type_from_expr_with_type_params(
+    expr: ast::Expr,
+    type_param_info: Option<&TypeParamInfo>,
+) -> syn::Type {
+    if let Some(info) = type_param_info
+        && let Some(map_type) = generic_map_param_type(&expr, info)
+    {
+        return map_type;
+    }
+    if let Some(info) = type_param_info
+        && let Some(elem) = generic_slice_param_element_type(&expr, info)
+    {
+        return syn::parse_quote! { Vec<#elem> };
+    }
     let is_interface = is_interface_expr(&expr);
     let ty: syn::Type = expr.into();
     if is_interface {
@@ -10994,6 +11194,28 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
     }
 }
 
+fn rust_type_preserving_named_go_type(go_type: &typeinfer::GoType) -> syn::Type {
+    match go_type {
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
+            named_go_type_path(name)
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            let inner = rust_type_preserving_named_go_type(inner);
+            syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
+        }
+        typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem) => {
+            let elem = rust_type_preserving_named_go_type(elem);
+            syn::parse_quote! { Vec<#elem> }
+        }
+        typeinfer::GoType::Map(key, value) => {
+            let key = rust_type_preserving_named_go_type(key);
+            let value = rust_type_preserving_named_go_type(value);
+            syn::parse_quote! { std::collections::HashMap<#key, #value> }
+        }
+        _ => rust_type_from_inferred_go_type(go_type),
+    }
+}
+
 fn shared_func_type_from_go_parts(
     params: &[typeinfer::GoType],
     results: &[typeinfer::GoType],
@@ -11006,7 +11228,7 @@ fn shared_func_box_type_from_go_parts(
     params: &[typeinfer::GoType],
     results: &[typeinfer::GoType],
 ) -> syn::Type {
-    let params = params.iter().map(rust_type_from_inferred_go_type);
+    let params = params.iter().map(rust_func_param_type_from_go_type);
     let result_types: Vec<syn::Type> = results
         .iter()
         .map(rust_type_from_inferred_go_type)
@@ -11017,6 +11239,14 @@ fn shared_func_box_type_from_go_parts(
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
     syn::parse_quote! { std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync> }
+}
+
+fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
+    if let Some(interface_name) = go_type_interface_name(go_type) {
+        let trait_path = named_go_type_path(&interface_name);
+        return syn::parse_quote! { &mut dyn #trait_path };
+    }
+    rust_type_from_inferred_go_type(go_type)
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -11174,10 +11404,20 @@ fn compile_variadic_any_arg(
 ) -> syn::Expr {
     let inferred_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
     if let typeinfer::GoType::Named(name) = &inferred_type {
-        let returns = get_func_returns(&format!("{name}.String"));
-        if matches!(returns.first(), Some(typeinfer::GoType::String)) {
+        if named_type_has_string_method(name) {
             let expr: syn::Expr = arg.into();
             return syn::parse_quote! { (#expr).String() };
+        }
+        if named_type_has_error_or_format_method(name) {
+            return compile_expr_with_expected(arg, None);
+        }
+        if let Some(inner) = TYPE_ENV.with(|env| {
+            let env = env.borrow();
+            named_numeric_newtype_inner(&inferred_type, &env)
+        }) && let Some(inner_ty) = rust_type_from_go_type(&inner)
+        {
+            let expr = compile_expr_with_expected(arg, Some(&inferred_type));
+            return syn::parse_quote! { #inner_ty::from(#expr) };
         }
     }
     if matches!(
@@ -11219,6 +11459,23 @@ fn compile_variadic_any_arg(
         }
         _ => compile_expr_with_expected(arg, variadic_elem),
     }
+}
+
+fn named_type_has_string_method(name: &str) -> bool {
+    matches!(
+        get_func_returns(&format!("{name}.String")).first(),
+        Some(typeinfer::GoType::String)
+    )
+}
+
+fn named_type_has_error_or_format_method(name: &str) -> bool {
+    if matches!(
+        get_func_returns(&format!("{name}.Error")).first(),
+        Some(typeinfer::GoType::String)
+    ) {
+        return true;
+    }
+    TYPE_ENV.with(|env| env.borrow().has_method_func(name, "Format"))
 }
 
 fn compile_new_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
@@ -12928,6 +13185,97 @@ fn compile_return_expr_with_expected(
     compile_expr_with_expected(expr, expected)
 }
 
+fn return_result_should_clone_for_later_use(
+    expr: &ast::Expr,
+    later: &[ast::Expr],
+    expected: Option<&typeinfer::GoType>,
+) -> bool {
+    let Some(name) = return_result_ident_name(expr) else {
+        return false;
+    };
+    let is_non_copy = expected.map(|ty| !go_type_is_copy(ty)).unwrap_or_else(|| {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()));
+        !go_type_is_copy(&actual)
+    });
+    is_non_copy
+        && later
+            .iter()
+            .any(|later| ast_expr_mentions_ident(later, name))
+}
+
+fn return_result_ident_name<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::ParenExpr(paren) => return_result_ident_name(&paren.x),
+        _ => None,
+    }
+}
+
+fn ast_expr_mentions_ident(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name == name,
+        ast::Expr::BinaryExpr(binary) => {
+            ast_expr_mentions_ident(&binary.x, name) || ast_expr_mentions_ident(&binary.y, name)
+        }
+        ast::Expr::CallExpr(call) => {
+            ast_expr_mentions_ident(&call.fun, name)
+                || call
+                    .args
+                    .as_ref()
+                    .is_some_and(|args| args.iter().any(|arg| ast_expr_mentions_ident(arg, name)))
+        }
+        ast::Expr::CompositeLit(lit) => {
+            lit.type_
+                .as_ref()
+                .is_some_and(|ty| ast_expr_mentions_ident(ty, name))
+                || lit
+                    .elts
+                    .as_ref()
+                    .is_some_and(|elts| elts.iter().any(|elt| ast_expr_mentions_ident(elt, name)))
+        }
+        ast::Expr::IndexExpr(index) => {
+            ast_expr_mentions_ident(&index.x, name) || ast_expr_mentions_ident(&index.index, name)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            ast_expr_mentions_ident(&index.x, name)
+                || index
+                    .indices
+                    .iter()
+                    .any(|index| ast_expr_mentions_ident(index, name))
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            ast_expr_mentions_ident(&kv.key, name) || ast_expr_mentions_ident(&kv.value, name)
+        }
+        ast::Expr::ParenExpr(paren) => ast_expr_mentions_ident(&paren.x, name),
+        ast::Expr::SelectorExpr(selector) => ast_expr_mentions_ident(&selector.x, name),
+        ast::Expr::SliceExpr(slice) => {
+            ast_expr_mentions_ident(&slice.x, name)
+                || slice
+                    .low
+                    .as_ref()
+                    .is_some_and(|expr| ast_expr_mentions_ident(expr, name))
+                || slice
+                    .high
+                    .as_ref()
+                    .is_some_and(|expr| ast_expr_mentions_ident(expr, name))
+                || slice
+                    .max
+                    .as_ref()
+                    .is_some_and(|expr| ast_expr_mentions_ident(expr, name))
+        }
+        ast::Expr::StarExpr(star) => ast_expr_mentions_ident(&star.x, name),
+        ast::Expr::TypeAssertExpr(assert) => {
+            ast_expr_mentions_ident(&assert.x, name)
+                || assert
+                    .type_
+                    .as_ref()
+                    .is_some_and(|ty| ast_expr_mentions_ident(ty, name))
+        }
+        ast::Expr::UnaryExpr(unary) => ast_expr_mentions_ident(&unary.x, name),
+        _ => false,
+    }
+}
+
 fn is_box_new_call(expr: &syn::Expr) -> bool {
     let syn::Expr::Call(call) = expr else {
         return false;
@@ -13289,10 +13637,25 @@ fn receiver_method_type_name_for_call(
     ty: typeinfer::GoType,
     env: &typeinfer::TypeEnv,
 ) -> Option<String> {
-    match env.resolve_alias(&ty) {
-        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+    match ty {
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
+            if env.has_func(&format!("{name}.__gors_as_any")) || env.get_type_kind(&name).is_some()
+            {
+                return Some(name);
+            }
+            match env.resolve_alias(&typeinfer::GoType::Named(name)) {
+                typeinfer::GoType::Named(alias_name) | typeinfer::GoType::Interface(alias_name) => {
+                    Some(alias_name)
+                }
+                _ => None,
+            }
+        }
         typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
-        _ => None,
+        other => match env.resolve_alias(&other) {
+            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
+            _ => None,
+        },
     }
 }
 
@@ -15101,18 +15464,33 @@ fn should_coerce_numeric_binary_side(
     expr_ty: &typeinfer::GoType,
     other_ty: &typeinfer::GoType,
 ) -> bool {
+    let other_is_named_numeric =
+        matches!(other_ty, typeinfer::GoType::Named(name) if is_named_numeric_alias(name));
     let expr_ty = resolved_go_type(expr_ty);
     let other_ty = resolved_go_type(other_ty);
     if expr_ty == other_ty || numeric_cast_type(&other_ty).is_none() {
         return false;
     }
     if matches!(expr_ty, typeinfer::GoType::Unknown) {
-        return is_const_like_expr(expr);
+        return is_const_like_expr(expr)
+            || (other_is_named_numeric && is_shift_expr_with_const_left(expr));
     }
     if !expr_ty.is_numeric() && !matches!(expr_ty, typeinfer::GoType::Uintptr) {
         return false;
     }
-    is_const_like_expr(expr)
+    is_const_like_expr(expr) || (other_is_named_numeric && is_shift_expr_with_const_left(expr))
+}
+
+fn is_shift_expr_with_const_left(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => is_shift_expr_with_const_left(&paren.x),
+        ast::Expr::BinaryExpr(binary)
+            if matches!(binary.op, token::Token::SHL | token::Token::SHR) =>
+        {
+            is_const_like_expr(&binary.x)
+        }
+        _ => false,
+    }
 }
 
 fn is_const_like_expr(expr: &ast::Expr) -> bool {
@@ -15458,6 +15836,19 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
             };
         }
 
+        if go_type_interface_name(&other_ty).is_some() {
+            let other_expr = if left_nil {
+                syn::Expr::from(*binary_expr.y)
+            } else {
+                syn::Expr::from(*binary_expr.x)
+            };
+            return if is_eq {
+                syn::parse_quote! { (#other_expr).__gors_as_any().is_none() }
+            } else {
+                syn::parse_quote! { (#other_expr).__gors_as_any().is_some() }
+            };
+        }
+
         if other_ty.is_interface() {
             let other_expr = if left_nil {
                 syn::Expr::from(*binary_expr.y)
@@ -15504,9 +15895,9 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::Expr::from(*binary_expr.x)
             };
             return if is_eq {
-                syn::parse_quote! { #other_expr.lock().unwrap().is_none() }
+                syn::parse_quote! { (#other_expr).lock().unwrap().is_none() }
             } else {
-                syn::parse_quote! { #other_expr.lock().unwrap().is_some() }
+                syn::parse_quote! { (#other_expr).lock().unwrap().is_some() }
             };
         }
 
@@ -19246,6 +19637,36 @@ fn compiler_intrinsic_func_block(func_decl: &ast::FuncDecl) -> Option<syn::Block
     }))
 }
 
+fn generic_map_clone_func_block(
+    func_decl: &ast::FuncDecl,
+    type_param_info: &TypeParamInfo,
+) -> Option<syn::Block> {
+    if func_decl.name.name != "Clone" {
+        return None;
+    }
+    let [param] = func_decl.type_.params.list.as_slice() else {
+        return None;
+    };
+    let param_type = param.type_.as_ref()?;
+    generic_map_param_type(param_type, type_param_info)?;
+    let [result] = func_decl.type_.results.as_ref()?.list.as_slice() else {
+        return None;
+    };
+    let result_type = result.type_.as_ref()?;
+    if type_env_name_from_type_expr(param_type) != type_env_name_from_type_expr(result_type) {
+        return None;
+    }
+    let param_name = param.names.as_ref()?.first()?;
+    let param_ident = syn::Ident::new(&rust_safe_ident_name(param_name.name), Span::mixed_site());
+    Some(syn::parse_quote!({
+        let mut __gors_clone = std::collections::HashMap::new();
+        for (__gors_k, __gors_v) in (#param_ident).iter() {
+            __gors_clone.insert(__gors_k.clone(), __gors_v.clone());
+        }
+        __gors_clone
+    }))
+}
+
 impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
@@ -19258,10 +19679,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
 
         // Convert doc comments to Rust doc attributes
-        let attrs = comment_group_to_attrs(&func_decl.doc);
-        let intrinsic_block = compiler_intrinsic_func_block(&func_decl);
-
         let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
+        let attrs = comment_group_to_attrs(&func_decl.doc);
+        let intrinsic_block = compiler_intrinsic_func_block(&func_decl)
+            .or_else(|| generic_map_clone_func_block(&func_decl, &type_param_info));
 
         // Register parameter types in the type environment
         TYPE_ENV.with(|env| {
@@ -19338,11 +19759,15 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         }
 
-        let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
+        let return_go_types = collect_return_go_types_with_type_params(
+            func_decl.type_.results.as_ref(),
+            Some(&type_param_info),
+        );
         let return_go_types_is_empty = return_go_types.is_empty();
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
         let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
-        let mut output = compile_return_type(func_decl.type_.results)?;
+        let mut output =
+            compile_return_type_with_type_params(func_decl.type_.results, Some(&type_param_info))?;
         add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
         let previous_byte_seq_type_params = BYTE_SEQ_TYPE_PARAMS.with(|params| {
@@ -20989,6 +21414,7 @@ fn go_zero_value_from_type(ty: Option<&syn::Type>) -> syn::Expr {
     }
 }
 
+#[derive(Clone, Copy)]
 enum CommaOkKind {
     MapIndex,
     ChanRecv,
@@ -21002,6 +21428,34 @@ fn detect_comma_ok(rhs: &ast::Expr) -> Option<CommaOkKind> {
         ast::Expr::TypeAssertExpr(ta) if ta.type_.is_some() => Some(CommaOkKind::TypeAssert),
         _ => None,
     }
+}
+
+fn comma_ok_value_go_type(rhs: &ast::Expr, kind: CommaOkKind) -> typeinfer::GoType {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        match (kind, rhs) {
+            (CommaOkKind::MapIndex, ast::Expr::IndexExpr(index)) => {
+                match env.resolve_alias(&typeinfer::GoType::infer_expr(&index.x, &env)) {
+                    typeinfer::GoType::Map(_, value) => *value,
+                    _ => typeinfer::GoType::Unknown,
+                }
+            }
+            (CommaOkKind::ChanRecv, ast::Expr::UnaryExpr(unary))
+                if unary.op == token::Token::ARROW =>
+            {
+                match env.resolve_alias(&typeinfer::GoType::infer_expr(&unary.x, &env)) {
+                    typeinfer::GoType::Chan { elem, .. } => *elem,
+                    _ => typeinfer::GoType::Unknown,
+                }
+            }
+            (CommaOkKind::TypeAssert, ast::Expr::TypeAssertExpr(assert)) => assert
+                .type_
+                .as_ref()
+                .map(|type_expr| typeinfer::GoType::from_expr(type_expr))
+                .unwrap_or(typeinfer::GoType::Unknown),
+            _ => typeinfer::GoType::Unknown,
+        }
+    })
 }
 
 fn type_assert_any_option_expr(source: syn::Expr, source_type: &typeinfer::GoType) -> syn::Expr {
@@ -21201,6 +21655,22 @@ fn compile_comma_ok(
         None => syn::parse_quote! { _ },
         Some(id) => syn::parse_quote! { mut #id },
     };
+
+    if is_define {
+        let value_type = lhs_idents
+            .first()
+            .and_then(|ident| ident.as_ref())
+            .map(|_| comma_ok_value_go_type(&rhs, kind));
+        TYPE_ENV.with(|env| {
+            let mut env = env.borrow_mut();
+            if let (Some(Some(id)), Some(value_type)) = (lhs_idents.first(), value_type) {
+                env.set_var(&id.to_string(), value_type);
+            }
+            if let Some(Some(id)) = lhs_idents.get(1) {
+                env.set_var(&id.to_string(), typeinfer::GoType::Bool);
+            }
+        });
+    }
 
     let rhs_expr: syn::Expr = match kind {
         CommaOkKind::MapIndex => {
@@ -22303,10 +22773,11 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
         record_mapping(&return_stmt.return_, Some("return"));
 
         let expected_return_types = RETURN_TYPES.with(|types| types.borrow().clone());
-        let expr = match return_stmt.results.len() {
+        let results = return_stmt.results;
+        let expr = match results.len() {
             0 => None,
             1 => Some(compile_return_expr_with_expected(
-                return_stmt.results.into_iter().next().unwrap_or_else(|| {
+                results.into_iter().next().unwrap_or_else(|| {
                     ast::Expr::Ident(ast::Ident {
                         name_pos: token::Position::default(),
                         name: "__gors_missing_return",
@@ -22316,12 +22787,29 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
                 expected_return_types.first(),
             )),
             _ => {
+                let clone_flags = results
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, result)| {
+                        let later = results.get(idx + 1..).unwrap_or_default();
+                        return_result_should_clone_for_later_use(
+                            result,
+                            later,
+                            expected_return_types.get(idx),
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 let mut elems = syn::punctuated::Punctuated::new();
-                for (idx, result) in return_stmt.results.into_iter().enumerate() {
-                    elems.push(compile_return_expr_with_expected(
-                        result,
-                        expected_return_types.get(idx),
-                    ));
+                for (idx, (result, should_clone)) in
+                    results.into_iter().zip(clone_flags).enumerate()
+                {
+                    let compiled =
+                        compile_return_expr_with_expected(result, expected_return_types.get(idx));
+                    if should_clone {
+                        elems.push(syn::parse_quote! { (#compiled).clone() });
+                    } else {
+                        elems.push(compiled);
+                    }
                 }
                 Some(syn::Expr::Tuple(syn::ExprTuple {
                     attrs: vec![],
@@ -22910,6 +23398,140 @@ var X int
         assert!(
             output.contains("__gors_switch_tag == FileMode ((cISDIR as u32))"),
             "expected switch cases to coerce constants to the switch tag type: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_preserve_named_numeric_const_masks_and_method_results() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type FileMode uint32
+
+                const (
+                    ModeDir FileMode = 1 << (32 - 1 - iota)
+                    ModeSymlink
+                    ModeType = ModeDir | ModeSymlink
+                    ModePerm FileMode = 0777
+                )
+
+                func (m FileMode) HasType(i int) bool {
+                    return m&(1<<uint(32-1-i)) != 0
+                }
+
+                func (m FileMode) Perm() FileMode {
+                    return m & ModePerm
+                }
+
+                func mode(fm FileMode) int64 {
+                    return int64(fm.Perm())
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("pub const ModeType : FileMode"),
+            "expected const masks inferred from named numeric constants to keep the named type: {output}"
+        );
+        assert!(
+            output.contains("FileMode (((1 <<"),
+            "expected shift expressions used in named numeric bitwise ops to wrap into the named type: {output}"
+        );
+        assert!(
+            output.contains("u32 :: from (fm . Perm ())"),
+            "expected named numeric method results to convert through the inner type: {output}"
+        );
+        assert!(
+            !output.contains("(fm . Perm ()) as i64"),
+            "expected named numeric method result conversion not to use a raw Rust cast: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_keep_ordinary_selector_calls_out_of_function_value_path() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type buffer []byte
+
+                func (b *buffer) writeByte(c byte) {
+                    *b = append(*b, c)
+                }
+
+                type pp struct {
+                    buf *buffer
+                }
+
+                func (p *pp) write() {
+                    p.buf.writeByte('x')
+                }
+
+                type FileMode uint32
+
+                func (m FileMode) IsDir() bool {
+                    return m != 0
+                }
+
+                type info struct{}
+
+                func (i info) Mode() FileMode {
+                    return 1
+                }
+
+                func (i info) IsDir() bool {
+                    return i.Mode().IsDir()
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("writeByte (") && output.contains("IsDir ("),
+            "expected ordinary selector calls to remain method calls: {output}"
+        );
+        assert!(
+            !output.contains("lock_func (&"),
+            "expected ordinary selector calls not to use the function-value path: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_box_named_numeric_variadic_any_args_as_underlying_values_for_fmt() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type WordEncoder byte
+
+                const BEncoding = WordEncoder('b')
+
+                func Println(a ...any) {}
+
+                func main() {
+                    Println(BEncoding)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("u8 :: from (BEncoding)"),
+            "expected named numeric ...any arguments to box their underlying value for fmt-style printing: {output}"
         );
     }
 
@@ -25784,6 +26406,36 @@ func main() {
                     (a / b, a % b)
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_clone_pointer_return_values_reused_later_in_return_list() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Header struct {
+                    Name string
+                }
+
+                var useHeader func(h *Header) error
+
+                func build() (*Header, error) {
+                    h := &Header{Name: "x"}
+                    return h, useHeader(h)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(h) . clone ()") || output.contains("(h).clone()"),
+            "expected reused pointer return value to be cloned before later use: {output}"
         );
     }
 
