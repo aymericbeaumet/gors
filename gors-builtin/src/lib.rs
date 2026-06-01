@@ -1,4 +1,9 @@
-#![allow(dead_code, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals
+)]
 
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
@@ -10,7 +15,6 @@ pub type r#bool = std::primitive::bool;
 pub type byte = u8;
 pub type complex64 = Complex64;
 pub type complex128 = Complex128;
-pub type error = std::string::String;
 pub type float32 = f32;
 pub type float64 = f64;
 pub type int = isize;
@@ -30,6 +34,43 @@ pub type uintptr = usize;
 pub trait comparable {}
 
 impl<T: Eq> comparable for T {}
+
+pub trait error {
+    fn __gors_as_any(&self) -> Option<&dyn Any>;
+    fn Error(&mut self) -> std::string::String;
+}
+
+#[derive(Clone, Default)]
+pub struct __GorsNooperror;
+
+impl error for __GorsNooperror {
+    fn __gors_as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    fn Error(&mut self) -> std::string::String {
+        std::string::String::new()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct __GorsStringError(pub std::string::String);
+
+impl error for __GorsStringError {
+    fn __gors_as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn Error(&mut self) -> std::string::String {
+        self.0.clone()
+    }
+}
+
+impl Default for Box<dyn error> {
+    fn default() -> Self {
+        Box::new(__GorsNooperror::default())
+    }
+}
 
 pub const r#true: r#bool = true;
 pub const r#false: r#bool = false;

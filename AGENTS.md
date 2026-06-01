@@ -141,6 +141,11 @@ gors-builtin/
   interface contract. DCE must preserve the hook on reachable traits and trait
   impls, and any injected structural stdlib helper that implements a Go
   interface, such as `os.File` for `io.Writer`, must implement the hook too.
+- The predeclared `error` interface lowers to the shared
+  `crate::builtin::error` trait object, not to `String`. Its nil value is the
+  noop-interface sentinel `crate::builtin::__GorsNooperror`, and ordinary Go
+  types satisfy it through the same generated interface-implementation path when
+  their method set includes `Error() string`.
 - Values boxed into `any`/`interface{}` must first materialize the Go concrete
   Rust type. In particular, numeric constants need an explicit cast such as
   `42 as isize` before boxing so type assertions and type switches downcast to

@@ -1485,10 +1485,9 @@
           "id": "errors-predeclared-interface",
           "section": "Errors",
           "title": "Predeclared error interface and its nil value",
-          "status": "unsupported",
-          "reason": "The predeclared error interface is lowered as String instead of a trait; custom error types implementing Error() string are not supported",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/errors"
+            "errors"
           ]
         }
       ]

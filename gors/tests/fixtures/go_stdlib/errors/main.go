@@ -7,5 +7,5 @@ import (
 
 func main() {
 	err := errors.New("boom")
-	fmt.Println(err)
+	fmt.Println(err.Error())
 }

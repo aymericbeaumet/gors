@@ -1081,7 +1081,7 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
                         None
                     }
 
-                    fn Write(&mut self, b: Vec<u8>) -> (isize, String) {
+                    fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
                         <pp as State>::Write(&mut **self, b)
                     }
 

@@ -283,6 +283,7 @@ fn is_type_interface(name: &str) -> bool {
 
 fn go_type_interface_name(go_type: &typeinfer::GoType) -> Option<String> {
     match go_type {
+        typeinfer::GoType::Error => Some("error".to_string()),
         typeinfer::GoType::Interface(name) => Some(name.clone()),
         typeinfer::GoType::Named(name) if is_type_interface(name) => Some(name.clone()),
         typeinfer::GoType::Named(name) if TYPE_ENV.with(|env| env.borrow().is_interface(name)) => {
@@ -307,6 +308,9 @@ fn qualified_name_rust_segments(name: &str) -> Vec<String> {
 }
 
 fn interface_trait_path_from_name(name: &str) -> syn::Path {
+    if name == "error" {
+        return syn::parse_quote! { crate::builtin::error };
+    }
     let mut segments = syn::punctuated::Punctuated::new();
     for part in qualified_name_rust_segments(name) {
         let ident = syn::Ident::new(&rust_safe_ident_name(&part), Span::mixed_site());
@@ -322,10 +326,14 @@ fn interface_trait_path_from_name(name: &str) -> syn::Path {
 }
 
 fn interface_trait_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
-    is_interface_expr(expr).then(|| type_from_expr_ref(expr))
+    let trait_path = interface_trait_path_from_expr(expr)?;
+    Some(syn::parse_quote! { #trait_path })
 }
 
 fn borrowed_interface_value_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    if matches!(expr, ast::Expr::Ident(ident) if ident.name == "error") {
+        return None;
+    }
     let trait_ty = interface_trait_type_from_expr(expr)?;
     Some(syn::parse_quote! { &mut dyn #trait_ty })
 }
@@ -695,7 +703,7 @@ fn collect_call_needed_imported_interface_method_sets(
 fn interface_trait_path_from_expr(expr: &ast::Expr) -> Option<syn::Path> {
     match expr {
         ast::Expr::ParenExpr(paren) => interface_trait_path_from_expr(&paren.x),
-        ast::Expr::Ident(ident) if is_type_interface(ident.name) => {
+        ast::Expr::Ident(ident) if ident.name == "error" || is_type_interface(ident.name) => {
             Some(interface_trait_path_from_name(ident.name))
         }
         ast::Expr::Ident(ident) if TYPE_ENV.with(|env| env.borrow().is_interface(ident.name)) => {
@@ -2492,7 +2500,9 @@ fn zero_value_for_type(type_name: Option<&str>) -> syn::Expr {
         }
         Some("float32") | Some("float64") => syn::parse_quote! { 0.0 },
         Some("bool") => syn::parse_quote! { false },
-        Some("error") => syn::parse_quote! { String::new() },
+        Some("error") => syn::parse_quote! {
+            Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+        },
         Some("any") => syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> },
         _ => syn::parse_quote! { Default::default() },
     }
@@ -3855,11 +3865,19 @@ fn inject_post_prune_stdlib_helpers(
                                     Some(self)
                                 }
 
-                                fn Write(&mut self, b: Vec<u8>) -> (isize, String) {
+                                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
                                     let mut stdout = std::io::stdout();
                                     match std::io::Write::write_all(&mut stdout, &b) {
-                                        Ok(()) => (b.len() as isize, String::new()),
-                                        Err(err) => (0, err.to_string()),
+                                        Ok(()) => (
+                                            b.len() as isize,
+                                            Box::new(crate::builtin::__GorsNooperror::default())
+                                                as Box<dyn crate::builtin::error>,
+                                        ),
+                                        Err(err) => (
+                                            0,
+                                            Box::new(crate::builtin::__GorsStringError(err.to_string()))
+                                                as Box<dyn crate::builtin::error>,
+                                        ),
                                     }
                                 }
                             }
@@ -6322,6 +6340,13 @@ fn type_mentions_name(ty: &syn::Type, names: &std::collections::HashSet<String>)
         syn::Type::Reference(reference) => type_mentions_name(&reference.elem, names),
         syn::Type::Ptr(ptr) => type_mentions_name(&ptr.elem, names),
         syn::Type::Slice(slice) => type_mentions_name(&slice.elem, names),
+        syn::Type::TraitObject(trait_object) => trait_object.bounds.iter().any(|bound| match bound
+        {
+            syn::TypeParamBound::Trait(trait_bound) => {
+                path_mentions_name(&trait_bound.path, names)
+            }
+            _ => false,
+        }),
         syn::Type::Tuple(tuple) => tuple.elems.iter().any(|ty| type_mentions_name(ty, names)),
         _ => false,
     }
@@ -7687,6 +7712,11 @@ fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
         ast::Expr::Ident(id) if id.name == "any" => {
             syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
         }
+        ast::Expr::Ident(id) if id.name == "error" => {
+            syn::parse_quote! {
+                Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+            }
+        }
         ast::Expr::InterfaceType(_) => {
             syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
         }
@@ -7791,7 +7821,9 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         ast::Expr::Ident(ident) if ident.name == "uint32" => syn::parse_quote! { u32 },
         ast::Expr::Ident(ident) if ident.name == "uint64" => syn::parse_quote! { u64 },
         ast::Expr::Ident(ident) if ident.name == "uintptr" => syn::parse_quote! { usize },
-        ast::Expr::Ident(ident) if ident.name == "error" => syn::parse_quote! { String },
+        ast::Expr::Ident(ident) if ident.name == "error" => {
+            syn::parse_quote! { Box<dyn crate::builtin::error> }
+        }
         ast::Expr::Ident(ident) => {
             let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
             syn::parse_quote! { #ident }
@@ -9984,7 +10016,7 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
         typeinfer::GoType::Any | typeinfer::GoType::Interface(_) => {
             syn::parse_quote! { Box<dyn std::any::Any> }
         }
-        typeinfer::GoType::Error => syn::parse_quote! { String },
+        typeinfer::GoType::Error => syn::parse_quote! { Box<dyn crate::builtin::error> },
         typeinfer::GoType::Unknown => syn::parse_quote! { Box<dyn std::any::Any> },
         _ => syn::parse_quote! { Box<dyn std::any::Any> },
     }
@@ -11733,6 +11765,8 @@ fn compile_return_expr_with_expected(
         }
         return if is_box_new_call(&compiled) {
             syn::parse_quote! { #compiled as Box<dyn #trait_path + '_> }
+        } else if matches!(expected, typeinfer::GoType::Error) {
+            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path + '_> }
         } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
             syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path + '_> }
         } else {
@@ -11785,6 +11819,11 @@ fn compile_expr_with_expected(
             Some(ty) if is_go_byte_slice_type(ty) => syn::parse_quote! { Default::default() },
             Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_)) => {
                 syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+            }
+            Some(typeinfer::GoType::Error) => {
+                syn::parse_quote! {
+                    Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+                }
             }
             _ => syn::parse_quote! { Default::default() },
         };
@@ -11869,6 +11908,19 @@ fn compile_expr_with_expected(
             expr
         };
         return syn::parse_quote! { Box::new(#expr) as Box<dyn std::any::Any> };
+    }
+
+    if matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Error)) {
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        if go_type_is_interface_like(&actual) {
+            return expr.into();
+        }
+        let compiled: syn::Expr = expr.into();
+        return if is_box_new_call(&compiled) {
+            syn::parse_quote! { #compiled as Box<dyn crate::builtin::error> }
+        } else {
+            syn::parse_quote! { Box::new(#compiled) as Box<dyn crate::builtin::error> }
+        };
     }
 
     if let Some(typeinfer::GoType::Named(name)) = expected {
@@ -14153,9 +14205,9 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
                 syn::Expr::from(*binary_expr.x)
             };
             return if is_eq {
-                syn::parse_quote! { (#other_expr).is_empty() }
+                syn::parse_quote! { (#other_expr).__gors_as_any().is_none() }
             } else {
-                syn::parse_quote! { !(#other_expr).is_empty() }
+                syn::parse_quote! { (#other_expr).__gors_as_any().is_some() }
             };
         }
 
@@ -16469,6 +16521,9 @@ impl From<ast::Expr<'_>> for syn::Type {
             ast::Expr::Ident(ident) if ident.name == "complex128" => {
                 syn::parse_quote! { crate::builtin::Complex128 }
             }
+            ast::Expr::Ident(ident) if ident.name == "error" => {
+                syn::parse_quote! { Box<dyn crate::builtin::error> }
+            }
             ast::Expr::Ident(ident) => {
                 let mut segments = syn::punctuated::Punctuated::new();
                 segments.push(syn::PathSegment {
@@ -16827,6 +16882,10 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 trait_methods.entry(trait_name).or_insert(method_names);
             }
         }
+
+        trait_methods
+            .entry("error".to_string())
+            .or_insert_with(|| vec!["Error".to_string()]);
 
         // Interface satisfaction: check which structs satisfy which traits
         for (trait_name, required_methods) in &trait_methods {
@@ -19486,6 +19545,9 @@ fn interface_assertion_fallback(
 }
 
 fn noop_interface_type_from_name(name: &str) -> syn::Type {
+    if name == "error" {
+        return syn::parse_quote! { crate::builtin::__GorsNooperror };
+    }
     let mut parts = qualified_name_rust_segments(name);
     let Some(last) = parts.pop() else {
         return syn::parse_quote! { __GorsNoopInterface };
@@ -19501,13 +19563,6 @@ fn type_assert_interface_expr(
     interface_name: &str,
     comma_ok: bool,
 ) -> syn::Expr {
-    if interface_name == "error" {
-        return if comma_ok {
-            syn::parse_quote! { (String::new(), false) }
-        } else {
-            syn::parse_quote! { String::new() }
-        };
-    }
     let trait_path = interface_trait_path_from_name(interface_name);
     let implementors = interface_assertion_implementors(interface_name);
     let fallback = interface_assertion_fallback(&trait_path, interface_name, comma_ok);
@@ -22834,7 +22889,7 @@ func (l Level) String() string {
     }
 
     #[test]
-    fn generated_output_prunes_lowered_away_errors_import() {
+    fn generated_output_keeps_referenced_errors_import() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
         write_fixture_file(
@@ -22851,8 +22906,8 @@ func main() {
         );
 
         let output = compile_temp_program(tmp.path());
-        assert!(!output.files.contains_key("errors.rs"));
-        assert!(!output.files.get("lib.rs").unwrap().contains("errors"));
+        assert!(output.files.contains_key("errors.rs"));
+        assert!(output.files.get("lib.rs").unwrap().contains("errors"));
     }
 
     #[test]
@@ -22888,15 +22943,15 @@ func main() {
         let compiled = super::compile_program_multi(program).unwrap();
         assert!(compiled.modules.contains_key("fmt"));
         assert!(compiled.modules.contains_key("strconv"));
-        assert!(!compiled.modules.contains_key("errors"));
+        assert!(compiled.modules.contains_key("errors"));
         let output = printer::generate_multi(compiled).unwrap();
         assert!(output.files.contains_key("fmt.rs"));
         assert!(output.files.contains_key("strconv.rs"));
-        assert!(!output.files.contains_key("errors.rs"));
+        assert!(output.files.contains_key("errors.rs"));
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod fmt"));
         assert!(lib_rs.contains("pub mod strconv"));
-        assert!(!lib_rs.contains("pub mod errors"));
+        assert!(lib_rs.contains("pub mod errors"));
     }
 
     #[test]

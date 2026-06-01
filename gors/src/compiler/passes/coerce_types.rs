@@ -221,14 +221,6 @@ impl VisitMut for CoerceTypes {
             *assign.right = syn::parse_quote! {{
                 w.lock().unwrap().err.clone()
             }};
-        } else if is_path_ident(&assign.left, "err") && is_box_new_call_expr(&assign.right) {
-            let right = assign.right.clone();
-            *assign.right = syn::parse_quote! {{
-                let mut __gors_error_value = #right;
-                __gors_error_value.Error()
-            }};
-        } else if is_path_ident(&assign.left, "err") && is_arc_mutex_new_call_expr(&assign.right) {
-            *assign.right = syn::parse_quote! { String::new() };
         }
 
         if let Some(self_ty) = self.impl_self_types.last()
@@ -1252,23 +1244,6 @@ fn coerce_write_arg(expr: &mut syn::Expr) {
         _ => expr.clone(),
     };
     *expr = syn::parse_quote! { (#inner).to_vec() };
-}
-
-fn is_box_new_call_expr(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::Call(call) if is_path_call(&call.func, &["Box", "new"]))
-}
-
-fn is_arc_mutex_new_call_expr(expr: &syn::Expr) -> bool {
-    let syn::Expr::Call(call) = expr else {
-        return false;
-    };
-    if !is_path_call(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
-        return false;
-    }
-    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
-        return false;
-    };
-    is_path_call(&mutex_call.func, &["std", "sync", "Mutex", "new"])
 }
 
 fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
