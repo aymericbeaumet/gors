@@ -7741,14 +7741,29 @@ fn collect_refs_from_item(
         types: std::collections::HashMap<String, ReceiverTypeRef>,
         module_names: &'a ReachabilityNameSet,
         item_names: &'a ReachabilityNameSet,
+        top_level_field_types: &'a ReceiverFieldTypeMap,
         top_level_return_types: &'a ReceiverTypeMap,
         top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
+        current_self_type: Option<ReceiverTypeRef>,
     }
 
     impl BoundCollector<'_> {
         fn bound_receiver_type_from_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
             match expr {
+                syn::Expr::Call(call) => self
+                    .bound_receiver_type_from_iife_call(call)
+                    .or_else(|| self.bound_receiver_type_from_expr(&call.func)),
                 syn::Expr::Cast(cast) => self.bound_receiver_type_from_expr(&cast.expr),
+                syn::Expr::Field(field) => {
+                    let base_type = self.bound_receiver_type_from_expr(&field.base)?;
+                    let syn::Member::Named(member) = &field.member else {
+                        return None;
+                    };
+                    self.top_level_field_types
+                        .get(&base_type.name)
+                        .and_then(|fields| fields.get(&member.to_string()))
+                        .cloned()
+                }
                 syn::Expr::Group(group) => self.bound_receiver_type_from_expr(&group.expr),
                 syn::Expr::MethodCall(method)
                     if matches!(
@@ -7766,13 +7781,28 @@ fn collect_refs_from_item(
                 }
                 syn::Expr::MethodCall(method) => {
                     let receiver_type = self.bound_receiver_type_from_expr(&method.receiver)?;
-                    external_receiver_method_return_type(&receiver_type, &method.method.to_string())
+                    let method_key = impl_method_reachability_name(
+                        &receiver_type.name,
+                        &method.method.to_string(),
+                    );
+                    self.top_level_return_types
+                        .get(&method_key)
+                        .cloned()
+                        .or_else(|| {
+                            external_receiver_method_return_type(
+                                &receiver_type,
+                                &method.method.to_string(),
+                            )
+                        })
                 }
                 syn::Expr::Paren(paren) => self.bound_receiver_type_from_expr(&paren.expr),
                 syn::Expr::Path(path)
                     if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
                 {
                     let name = path.path.segments.first()?.ident.to_string();
+                    if name == "self" {
+                        return self.current_self_type.clone();
+                    }
                     self.types.get(&name).cloned()
                 }
                 syn::Expr::Reference(reference) => {
@@ -7782,6 +7812,43 @@ fn collect_refs_from_item(
                 _ => None,
             }
         }
+
+        fn bound_receiver_type_from_iife_call(
+            &self,
+            call: &syn::ExprCall,
+        ) -> Option<ReceiverTypeRef> {
+            if !call.args.is_empty() {
+                return None;
+            }
+            let closure = closure_expr_from_call_func(&call.func)?;
+            let tail = tail_expr_from_expr(&closure.body)?;
+            self.bound_receiver_type_from_expr(tail)
+        }
+    }
+
+    fn closure_expr_from_call_func(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
+        match expr {
+            syn::Expr::Closure(closure) => Some(closure),
+            syn::Expr::Group(group) => closure_expr_from_call_func(&group.expr),
+            syn::Expr::Paren(paren) => closure_expr_from_call_func(&paren.expr),
+            _ => None,
+        }
+    }
+
+    fn tail_expr_from_expr(expr: &syn::Expr) -> Option<&syn::Expr> {
+        match expr {
+            syn::Expr::Block(block) => tail_expr_from_block(&block.block),
+            syn::Expr::Group(group) => tail_expr_from_expr(&group.expr),
+            syn::Expr::Paren(paren) => tail_expr_from_expr(&paren.expr),
+            _ => Some(expr),
+        }
+    }
+
+    fn tail_expr_from_block(block: &syn::Block) -> Option<&syn::Expr> {
+        let syn::Stmt::Expr(expr, None) = block.stmts.last()? else {
+            return None;
+        };
+        Some(expr)
     }
 
     impl VisitMut for BoundCollector<'_> {
@@ -7836,6 +7903,14 @@ fn collect_refs_from_item(
                 self.types.insert(name, ty);
             }
             syn::visit_mut::visit_local_mut(self, local);
+        }
+
+        fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+            let previous_self_type = self.current_self_type.clone();
+            self.current_self_type = named_self_type(&item_impl.self_ty)
+                .map(|name| ReceiverTypeRef { module: None, name });
+            syn::visit_mut::visit_item_impl_mut(self, item_impl);
+            self.current_self_type = previous_self_type;
         }
     }
 
@@ -8243,8 +8318,10 @@ fn collect_refs_from_item(
         types: std::collections::HashMap::new(),
         module_names: context.module_names,
         item_names: context.item_names,
+        top_level_field_types: context.top_level_field_types,
         top_level_return_types: context.top_level_return_types,
         top_level_tuple_return_types: context.top_level_tuple_return_types,
+        current_self_type: None,
     };
     let mut item_for_bounds = item.clone();
     bound_collector.visit_item_mut(&mut item_for_bounds);
@@ -28270,6 +28347,44 @@ func main() {
                 matches!(item, syn::TraitItem::Fn(func) if func.sig.ident == "Reset")
             })
         );
+    }
+
+    #[test]
+    fn it_should_collect_methods_called_on_locals_returned_from_self_fields() {
+        let file: syn::File = rust! {
+            pub struct Reader {
+                blk: block,
+            }
+
+            pub struct block;
+            pub struct headerV7;
+
+            impl block {
+                fn toV7(&mut self) -> std::sync::Arc<std::sync::Mutex<headerV7>> {
+                    std::sync::Arc::new(std::sync::Mutex::new(headerV7))
+                }
+            }
+
+            impl headerV7 {
+                fn name(&mut self) -> Vec<u8> {
+                    Vec::new()
+                }
+            }
+
+            impl Reader {
+                fn readHeader(&mut self) {
+                    let mut v7 = (|| { self.blk.toV7() })();
+                    v7.lock().unwrap().name();
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from(["Reader::readHeader".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("block::toV7"));
+        assert!(names.contains("headerV7::name"));
     }
 
     #[test]
