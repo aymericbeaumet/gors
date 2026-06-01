@@ -9509,6 +9509,7 @@ fn compile_method(
     }
 
     let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
+    let return_go_types_is_empty = return_go_types.is_empty();
     let previous_return_types =
         RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
     let previous_named_return_idents = NAMED_RETURN_IDENTS
@@ -9554,6 +9555,9 @@ fn compile_method(
     }
     if body_has_defer {
         prepend_defer_stack(&mut block);
+        if return_go_types_is_empty {
+            wrap_void_defer_body_in_unwind_catch(&mut block);
+        }
     }
 
     // Handle named return values for methods (same logic as top-level functions)
@@ -10735,6 +10739,27 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
     syn::parse_quote! { crate::builtin::panic_value(#arg) }
 }
 
+fn wrap_void_defer_body_in_unwind_catch(block: &mut syn::Block) {
+    if block.stmts.is_empty() {
+        return;
+    }
+    let defer_decl = block.stmts.remove(0);
+    let body_stmts = std::mem::take(&mut block.stmts);
+    block.stmts = vec![
+        defer_decl,
+        syn::parse_quote! {
+            let __gors_panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #(#body_stmts)*
+            }));
+        },
+        syn::parse_quote! {
+            if let Err(__gors_panic_payload) = __gors_panic_result {
+                crate::builtin::set_recover_payload_box(__gors_panic_payload);
+            }
+        },
+    ];
+}
+
 fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
@@ -11162,7 +11187,8 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
 
     let body_has_defer = block_has_defer(&func_lit.body);
     let return_go_types = collect_return_go_types(func_lit.type_.results.as_ref());
-    let panic_returns_through_defer = body_has_defer && return_go_types.is_empty();
+    let return_go_types_is_empty = return_go_types.is_empty();
+    let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
     let ret = compile_return_type(func_lit.type_.results).unwrap_or(syn::ReturnType::Default);
 
     let previous_return_types =
@@ -11188,6 +11214,9 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     });
     if body_has_defer {
         prepend_defer_stack(&mut block);
+        if return_go_types_is_empty {
+            wrap_void_defer_body_in_unwind_catch(&mut block);
+        }
     }
     append_missing_return_panic(&mut block, &ret, completion);
 
@@ -11894,6 +11923,12 @@ fn compile_expr_with_expected(
                 syn::parse_quote! {
                     Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
                 }
+            }
+            Some(typeinfer::GoType::Pointer(_)) => {
+                syn::parse_quote! {{
+                    crate::builtin::panic_value("nil pointer dereference");
+                    Default::default()
+                }}
             }
             _ => syn::parse_quote! { Default::default() },
         };
@@ -14087,6 +14122,33 @@ fn compile_flat_binary_operands(
     expr
 }
 
+fn should_check_integer_division_or_remainder(binary: &ast::BinaryExpr) -> bool {
+    if !matches!(binary.op, token::Token::QUO | token::Token::REM) {
+        return false;
+    }
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let left_ty = typeinfer::GoType::infer_expr(&binary.x, &env);
+    let right_ty = typeinfer::GoType::infer_expr(&binary.y, &env);
+    resolved_go_type(&left_ty).is_integer() || resolved_go_type(&right_ty).is_integer()
+}
+
+fn compile_integer_division_or_remainder(binary: ast::BinaryExpr) -> syn::Expr {
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let left_ty = typeinfer::GoType::infer_expr(&binary.x, &env);
+    let right_ty = typeinfer::GoType::infer_expr(&binary.y, &env);
+    let left = compile_binary_side(*binary.x, &left_ty, &right_ty);
+    let right = compile_binary_side(*binary.y, &right_ty, &left_ty);
+    let op: syn::BinOp = binary.op.into();
+    syn::parse_quote! {{
+        let __gors_div_left = #left;
+        let __gors_div_right = #right;
+        if __gors_div_right == 0 {
+            crate::builtin::panic_value("integer divide by zero");
+        }
+        __gors_div_left #op __gors_div_right
+    }}
+}
+
 fn compile_binary_side(
     expr: ast::Expr,
     expr_ty: &typeinfer::GoType,
@@ -14254,6 +14316,10 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         } else {
             syn::parse_quote! { !(#check) }
         };
+    }
+
+    if should_check_integer_division_or_remainder(&binary_expr) {
+        return compile_integer_division_or_remainder(binary_expr);
     }
 
     if matches!(op, token::Token::EQL | token::Token::NEQ)
@@ -16438,19 +16504,25 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     return syn::parse_quote! { crate::builtin::byte_at(&#base, (#idx) as usize) };
                 }
 
-                // For string indexing, use .as_bytes()[i] since Go's s[i] returns a byte
-                let base = if container_type == typeinfer::GoType::String {
-                    syn::parse_quote! { (#base).as_bytes() }
-                } else {
-                    base
-                };
+                if container_type == typeinfer::GoType::String {
+                    return syn::parse_quote! {{
+                        let __gors_index_base = (#base).clone();
+                        let __gors_index = (#idx) as usize;
+                        if __gors_index >= __gors_index_base.len() {
+                            crate::builtin::panic_value("index out of range");
+                        }
+                        (__gors_index_base.as_bytes()[__gors_index]).clone()
+                    }};
+                }
 
-                Self::Index(syn::ExprIndex {
-                    attrs: vec![],
-                    expr: Box::new(base),
-                    bracket_token: syn::token::Bracket::default(),
-                    index: Box::new(idx),
-                })
+                syn::parse_quote! {{
+                    let __gors_index_base = &#base;
+                    let __gors_index = (#idx) as usize;
+                    if __gors_index >= __gors_index_base.len() {
+                        crate::builtin::panic_value("index out of range");
+                    }
+                    (__gors_index_base[__gors_index]).clone()
+                }}
             }
             ast::Expr::StarExpr(star_expr) => {
                 let inner = *star_expr.x;
@@ -17866,8 +17938,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
 
         let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
+        let return_go_types_is_empty = return_go_types.is_empty();
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
-        let panic_returns_through_defer = body_has_defer && return_go_types.is_empty();
+        let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
         let mut output = compile_return_type(func_decl.type_.results)?;
         add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
@@ -17929,6 +18002,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let mut block = Box::new(block_result?);
         if body_has_defer {
             prepend_defer_stack(&mut block);
+            if return_go_types_is_empty {
+                wrap_void_defer_body_in_unwind_catch(&mut block);
+            }
         }
 
         // For named returns: prepend variable declarations and rewrite bare returns

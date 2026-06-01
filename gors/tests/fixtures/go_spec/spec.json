@@ -1499,10 +1499,9 @@
           "id": "runtime-panics-implicit",
           "section": "Run-time panics",
           "title": "Implicit run-time panics trigger recovery",
-          "status": "unsupported",
-          "reason": "Implicit run-time panics (out-of-bounds, nil pointer, divide by zero) with recover() do not produce matching output",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/run_time_panics"
+            "run_time_panics"
           ]
         }
       ]

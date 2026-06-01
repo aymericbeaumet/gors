@@ -1215,6 +1215,11 @@ pub fn set_recover_payload<T: Any + Send + 'static>(value: T) {
 }
 
 #[inline]
+pub fn set_recover_payload_box(value: Box<dyn Any + Send>) {
+    *recover_payload_lock() = Some(value);
+}
+
+#[inline]
 pub fn recover() -> Box<dyn Any + Send> {
     recover_payload_lock()
         .take()

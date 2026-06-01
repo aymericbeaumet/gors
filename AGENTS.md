@@ -194,6 +194,11 @@ gors-builtin/
   ended the block with a Rust tail value expression. Go rejects reachable
   missing-return paths, but valid Go control-flow constructs and bodyless stdlib
   fallbacks can still need a Rust tail expression after lowering.
+- Void functions and function literals with deferred calls wrap their body in a
+  simple `catch_unwind` boundary so implicit generated panics, such as checked
+  index, nil pointer, or integer divide-by-zero panics from callees, can become
+  recover payloads before deferred calls run. Keep this simple until broader
+  panic/recover conformance requires a richer control-flow model.
 - Named result parameters are declared before a synthetic labeled function-exit
   block. Explicit and bare `return` statements inside that block assign the
   named results and break to the exit label, then the final Rust return reads
