@@ -10451,7 +10451,9 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let src_ty =
                 TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
-            let dst = match compile_assignment_lhs_checked(dst_raw) {
+            let dst = match lvalue_expr_from_ref(&dst_raw)
+                .ok_or_else(|| CompilerError::InvalidAssignment("copy destination is not addressable".to_string()))
+            {
                 Ok(dst) => dst,
                 Err(err) => return compile_error_expr(err.to_string()),
             };
@@ -11440,6 +11442,25 @@ fn coerce_assignment_expr(
 }
 
 fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    if let ast::Expr::SliceExpr(slice) = expr {
+        let base = lvalue_expr_from_ref(&slice.x)?;
+        let low = slice
+            .low
+            .as_ref()
+            .and_then(|expr| lvalue_index_component_expr(expr));
+        let high = slice
+            .high
+            .as_ref()
+            .and_then(|expr| lvalue_index_component_expr(expr));
+        return match (low, high) {
+            (Some(low), Some(high)) => {
+                Some(syn::parse_quote! { #base[(#low) as usize..(#high) as usize] })
+            }
+            (Some(low), None) => Some(syn::parse_quote! { #base[(#low) as usize..] }),
+            (None, Some(high)) => Some(syn::parse_quote! { #base[..(#high) as usize] }),
+            (None, None) => Some(syn::parse_quote! { #base[..] }),
+        };
+    }
     if !is_ir_addressable_expr(expr) {
         return None;
     }
@@ -11469,7 +11490,7 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
         }
         ast::Expr::IndexExpr(index) => {
             let base = lvalue_expr_from_ref(&index.x)?;
-            let index = syn_expr_from_type_expr_like(&index.index)?;
+            let index = lvalue_index_component_expr(&index.index)?;
             Some(syn::parse_quote! { #base[(#index) as usize] })
         }
         ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
@@ -11484,6 +11505,35 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             let inner = syn_expr_from_type_expr_like(&star.x)?;
             Some(syn::parse_quote! { *#inner.lock().unwrap() })
         }
+        _ => None,
+    }
+}
+
+fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    if let Some(expr) = syn_expr_from_type_expr_like(expr) {
+        return Some(expr);
+    }
+    match expr {
+        ast::Expr::IndexExpr(index) => {
+            let env = TYPE_ENV.with(|e| e.borrow().clone());
+            let container_type = typeinfer::GoType::infer_expr(&index.x, &env);
+            let base = lvalue_expr_from_ref(&index.x)?;
+            let idx = lvalue_index_component_expr(&index.index)?;
+            if env.resolve_alias(&container_type) == typeinfer::GoType::String {
+                Some(syn::parse_quote! {{
+                    let __gors_index_base = (#base).clone();
+                    let __gors_index = (#idx) as usize;
+                    if __gors_index >= __gors_index_base.len() {
+                        crate::builtin::panic_value("index out of range");
+                    }
+                    (__gors_index_base.as_bytes()[__gors_index]).clone()
+                }})
+            } else {
+                Some(syn::parse_quote! { #base[(#idx) as usize] })
+            }
+        }
+        ast::Expr::ParenExpr(paren) => lvalue_index_component_expr(&paren.x),
+        ast::Expr::SelectorExpr(_) => lvalue_expr_from_ref(expr),
         _ => None,
     }
 }
@@ -13740,7 +13790,8 @@ fn compile_top_level_value_spec(
             .type_
             .as_ref()
             .map(static_value_type_from_expr)
-            .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init));
+            .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init))
+            .or_else(|| inferred_go_type.as_ref().map(rust_type_from_inferred_go_type));
 
         if tok == token::Token::CONST {
             let mut value = init_ast
@@ -23234,6 +23285,114 @@ func main() {
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("crate::builtin::error_string(&mut err)"), "{main_rs}");
         assert!(!main_rs.contains("(err).clone()"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_infers_package_var_from_function_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/enc"
+
+func main() {
+	_ = enc.StdEncoding
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("enc/enc.go").as_path(),
+            r#"
+package enc
+
+type Encoding struct{}
+
+func NewEncoding() *Encoding {
+	return &Encoding{}
+}
+
+var StdEncoding = NewEncoding()
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("example__enc.rs").unwrap();
+        assert!(
+            main_rs.contains("std::sync::LazyLock")
+                && main_rs.contains("std::sync::Arc<std::sync::Mutex<Encoding>>"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("Box<dyn std::any::Any"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_preserves_fixed_array_static_initializer_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/data"
+
+func main() {
+	_ = data.First()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("data/data.go").as_path(),
+            r#"
+package data
+
+var table = [3]byte{1, 2, 3}
+
+func First() byte {
+	return table[0]
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("example__data.rs").unwrap();
+        assert!(main_rs.contains("std::sync::LazyLock<[u8; 3]>"), "{main_rs}");
+        assert!(!main_rs.contains("std::sync::LazyLock<Vec<u8>>"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_allows_copy_to_array_field_slice() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Encoding struct {
+	encode [4]byte
+}
+
+func Fill(e *Encoding) {
+	copy(e.encode[:], "abcd")
+	e.encode[1+1] = 'Z'
+}
+
+func main() {
+	var e Encoding
+	Fill(&e)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("crate::builtin::copy_slice"), "{main_rs}");
+        assert!(!main_rs.contains("compile_error!"), "{main_rs}");
+        assert!(main_rs.contains("encode[(1 + 1) as usize]"), "{main_rs}");
     }
 
     #[test]

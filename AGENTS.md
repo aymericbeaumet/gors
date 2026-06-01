@@ -83,7 +83,10 @@ gors-builtin/
   import rewrites preserve the original Go selector name in source lowering.
 - Package-level vars in imported/transpiled packages are emitted as concrete
   `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
-  `main()` as startup locals.
+  `main()` as startup locals. Imported package-level vars initialized by
+  function calls must still use the Go-inferred type when choosing the
+  `LazyLock<T>` type; do not fall back to Rust initializer inference alone, or
+  values such as constructor-returned pointers can degrade to `Box<dyn Any>`.
 - Go function values stored in generated data structures and explicit local
   variables of `func(...)` type are reference-counted nil-capable cells:
   `std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(...) -> ... + Send + Sync>>>>`.
@@ -144,6 +147,10 @@ gors-builtin/
   compile keys and values with the expected map key/value Go types. This keeps
   `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
   keys instead of accidentally inferring `&str` keys from Rust literals.
+- Builtins that write into a destination, such as `copy`, must compile that
+  destination through the lvalue path rather than ordinary expression lowering.
+  Addressable slice expressions such as `e.encode[:]`, including array fields
+  and nested index components, need to stay mutable lvalues.
 - String `+=` lowers to `String::push_str(&rhs)` rather than Rust `+=`, because
   Go accepts string operands by value while Rust's `String` add-assign expects a
   borrowed string slice.
