@@ -2464,10 +2464,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "container/heap",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"container/heap"
+		],
 		"symbolCount": 6,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "Fix",
@@ -2478,8 +2480,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Init",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"container/heap"
+				]
 			},
 			{
 				"name": "Interface",
@@ -2490,20 +2494,26 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "Pop",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"container/heap"
+				]
 			},
 			{
 				"name": "Push",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"container/heap"
+				]
 			},
 			{
 				"name": "Remove",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"container/heap"
+				]
 			}
 		]
 	},
@@ -31014,6 +31024,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"compress/gzip",
 			"compress/lzw",
 			"compress/zlib",
+			"container/heap",
 			"crypto/aes",
 			"crypto/des",
 			"crypto/dsa",
@@ -31179,6 +31190,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 				"kind": "func",
 				"tested": true,
 				"fixtures": [
+					"container/heap",
 					"fmt"
 				]
 			},
@@ -31205,6 +31217,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"compress/gzip",
 					"compress/lzw",
 					"compress/zlib",
+					"container/heap",
 					"crypto/aes",
 					"crypto/des",
 					"crypto/dsa",
@@ -79876,11 +79889,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 74,
+	"fixtureCount": 75,
 	"packageCount": 353,
-	"testedPackageCount": 74,
-	"untestedPackageCount": 279,
+	"testedPackageCount": 75,
+	"untestedPackageCount": 278,
 	"symbolCount": 12578,
-	"testedSymbolCount": 457,
-	"untestedSymbolCount": 12121
+	"testedSymbolCount": 461,
+	"untestedSymbolCount": 12117
 } as const;

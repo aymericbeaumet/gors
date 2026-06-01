@@ -8652,6 +8652,10 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
     ]
 }
 
+fn trait_path_is_local(path: &syn::Path) -> bool {
+    path.leading_colon.is_none() && path.segments.len() == 1
+}
+
 fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
     let trait_methods = collect_trait_method_fns(items);
     let trait_supertraits: BTreeMap<String, Vec<syn::Path>> = items
@@ -8701,6 +8705,9 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
             .unwrap_or_default();
         let mut seen = std::collections::BTreeSet::new();
         while let Some(path) = pending.pop() {
+            if !trait_path_is_local(&path) {
+                continue;
+            }
             let Some(name) = path
                 .segments
                 .last()
@@ -9223,6 +9230,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let has_supertraits = !supertraits.is_empty();
             let has_go_methods = !trait_items.is_empty();
+            let has_external_supertraits = supertraits.iter().any(|bound| match bound {
+                syn::TypeParamBound::Trait(trait_bound) => !trait_path_is_local(&trait_bound.path),
+                _ => false,
+            });
             if has_go_methods {
                 trait_items.insert(
                     0,
@@ -9251,7 +9262,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if let Some(Some(box_impl)) = box_impl {
                 items.push(box_impl);
             }
-            if has_methods {
+            if has_methods && !has_external_supertraits {
                 items.extend(noop_interface_items(&ident, &trait_items));
             }
             if has_supertraits && !has_methods {
@@ -9553,17 +9564,19 @@ fn add_elided_lifetime_to_boxed_trait_object(ty: &mut syn::Type) {
         let syn::TypeParamBound::Trait(trait_bound) = bound else {
             return false;
         };
-        trait_bound
+        let segments = trait_bound
             .path
             .segments
             .iter()
             .map(|segment| segment.ident.to_string())
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        segments
             == [
                 "crate".to_string(),
                 "builtin".to_string(),
                 "error".to_string(),
             ]
+            || segments == ["std".to_string(), "any".to_string(), "Any".to_string()]
     }) {
         return;
     }
@@ -12774,7 +12787,15 @@ fn compile_expr_with_expected(
 
     if let Some(expected) = expected {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        let same_named_type = matches!(
+            (&expected, &actual),
+            (
+                typeinfer::GoType::Named(expected_name),
+                typeinfer::GoType::Named(actual_name)
+            ) if expected_name == actual_name
+        );
         if matches!(actual, typeinfer::GoType::Named(_))
+            && !same_named_type
             && matches!(
                 resolved_go_type(expected),
                 typeinfer::GoType::Slice(elem) if *elem != typeinfer::GoType::Uint8
@@ -17487,6 +17508,112 @@ impl From<ast::Expr<'_>> for syn::Type {
     }
 }
 
+fn interface_direct_methods_for_impl(trait_name: &str, fallback: &[String]) -> Vec<String> {
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .get_interface_direct_methods(trait_name)
+            .unwrap_or_else(|| fallback.to_vec())
+    })
+}
+
+fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
+    TYPE_ENV.with(|env| env.borrow().get_interface_embedded_interfaces(trait_name))
+}
+
+fn concrete_interface_impl_items_for_methods(
+    struct_name: &str,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    exposes_any: bool,
+) -> Vec<syn::ImplItem> {
+    let mut impl_items: Vec<syn::ImplItem> = vec![];
+    let as_any_method: syn::ImplItem = if exposes_any {
+        syn::parse_quote! {
+            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+        }
+    } else {
+        syn::parse_quote! {
+            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                None
+            }
+        }
+    };
+    impl_items.push(as_any_method);
+    if let Some(method_list) = methods.get(struct_name) {
+        for method in method_list {
+            if method_names.contains(&method.sig.ident.to_string()) {
+                let mut m = method.clone();
+                m.vis = syn::Visibility::Inherited;
+                if let Some(syn::FnArg::Receiver(receiver)) = m.sig.inputs.first_mut() {
+                    receiver.mutability = Some(<Token![mut]>::default());
+                    *receiver.ty = syn::parse_quote! { &mut Self };
+                }
+                impl_items.push(syn::ImplItem::Fn(m));
+            }
+        }
+    }
+    impl_items
+}
+
+fn pointer_interface_impl_items_for_methods(
+    struct_name: &str,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Vec<syn::ImplItem> {
+    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
+        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+    }];
+    if let Some(method_list) = methods.get(struct_name) {
+        for method in method_list {
+            if !method_names.contains(&method.sig.ident.to_string()) {
+                continue;
+            }
+            let method_ident = method.sig.ident.clone();
+            let arg_idents = method
+                .sig
+                .inputs
+                .iter()
+                .skip(1)
+                .filter_map(|arg| match arg {
+                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                        _ => None,
+                    },
+                    syn::FnArg::Receiver(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let mut sig = method.sig.clone();
+            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+                receiver.mutability = Some(<Token![mut]>::default());
+                *receiver.ty = syn::parse_quote! { &mut Self };
+            }
+            let block = if matches!(sig.output, syn::ReturnType::Default) {
+                syn::parse_quote!({
+                    let mut __gors_guard = self.lock().unwrap();
+                    __gors_guard.#method_ident(#(#arg_idents),*);
+                })
+            } else {
+                syn::parse_quote!({
+                    let mut __gors_guard = self.lock().unwrap();
+                    __gors_guard.#method_ident(#(#arg_idents),*)
+                })
+            };
+            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
+                attrs: vec![],
+                vis: syn::Visibility::Inherited,
+                defaultness: None,
+                sig,
+                block,
+            }));
+        }
+    }
+    impl_items
+}
+
 impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
@@ -17769,10 +17896,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
             .or_insert_with(|| vec!["Error".to_string()]);
 
         // Interface satisfaction: check which structs satisfy which traits
+        let mut emitted_interface_impls = std::collections::BTreeSet::new();
         for (trait_name, required_methods) in &trait_methods {
             if required_methods.is_empty() {
                 continue;
             }
+            let direct_required_methods =
+                interface_direct_methods_for_impl(trait_name, required_methods);
+            let embedded_interfaces = interface_embedded_interfaces_for_impl(trait_name);
             for (struct_name, struct_method_list) in &struct_methods {
                 let pointer_methods = struct_pointer_methods.get(struct_name);
                 let pointer_satisfies = required_methods
@@ -17789,68 +17920,95 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
 
-                    // Get method implementations from the methods map
-                    let mut impl_items: Vec<syn::ImplItem> = vec![];
                     let exposes_any = !BORROWED_INTERFACE_STRUCTS
                         .with(|structs| structs.borrow().contains_key(struct_name))
                         && method_generics
                             .get(struct_name)
                             .is_none_or(std::vec::Vec::is_empty);
-                    let as_any_method: syn::ImplItem = if exposes_any {
-                        syn::parse_quote! {
-                            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                                Some(self)
-                            }
-                        }
-                    } else {
-                        syn::parse_quote! {
-                            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                                None
-                            }
-                        }
-                    };
-                    impl_items.push(as_any_method);
-                    if let Some(method_list) = methods.get(struct_name) {
-                        for method in method_list {
-                            if required_methods.contains(&method.sig.ident.to_string()) {
-                                let mut m = method.clone();
-                                m.vis = syn::Visibility::Inherited;
-                                if let Some(syn::FnArg::Receiver(receiver)) =
-                                    m.sig.inputs.first_mut()
-                                {
-                                    receiver.mutability = Some(<Token![mut]>::default());
-                                    *receiver.ty = syn::parse_quote! { &mut Self };
-                                }
-                                impl_items.push(syn::ImplItem::Fn(m));
-                            }
-                        }
-                    }
-
-                    items.push(syn::Item::Impl(syn::ItemImpl {
-                        attrs: vec![],
-                        defaultness: None,
-                        unsafety: None,
-                        impl_token: <Token![impl]>::default(),
-                        generics: if BORROWED_INTERFACE_STRUCTS
-                            .with(|structs| structs.borrow().contains_key(struct_name))
-                        {
-                            syn::parse_quote! { <'__gors> }
-                        } else {
-                            syn::Generics::default()
-                        },
-                        trait_: Some((None, trait_path, <Token![for]>::default())),
-                        self_ty: Box::new(
-                            if BORROWED_INTERFACE_STRUCTS
+                    if emitted_interface_impls.insert((
+                        trait_name.clone(),
+                        struct_name.clone(),
+                        false,
+                    )) {
+                        let impl_items = concrete_interface_impl_items_for_methods(
+                            struct_name,
+                            &direct_required_methods,
+                            &methods,
+                            exposes_any,
+                        );
+                        items.push(syn::Item::Impl(syn::ItemImpl {
+                            attrs: vec![],
+                            defaultness: None,
+                            unsafety: None,
+                            impl_token: <Token![impl]>::default(),
+                            generics: if BORROWED_INTERFACE_STRUCTS
                                 .with(|structs| structs.borrow().contains_key(struct_name))
                             {
-                                syn::parse_quote! { #struct_ident<'__gors> }
+                                syn::parse_quote! { <'__gors> }
                             } else {
-                                syn::parse_quote! { #struct_ident }
+                                syn::Generics::default()
                             },
-                        ),
-                        brace_token: syn::token::Brace::default(),
-                        items: impl_items,
-                    }));
+                            trait_: Some((None, trait_path, <Token![for]>::default())),
+                            self_ty: Box::new(
+                                if BORROWED_INTERFACE_STRUCTS
+                                    .with(|structs| structs.borrow().contains_key(struct_name))
+                                {
+                                    syn::parse_quote! { #struct_ident<'__gors> }
+                                } else {
+                                    syn::parse_quote! { #struct_ident }
+                                },
+                            ),
+                            brace_token: syn::token::Brace::default(),
+                            items: impl_items,
+                        }));
+                    }
+
+                    for embedded_name in &embedded_interfaces {
+                        if !emitted_interface_impls.insert((
+                            embedded_name.clone(),
+                            struct_name.clone(),
+                            false,
+                        )) {
+                            continue;
+                        }
+                        let embedded_methods = TYPE_ENV.with(|env| {
+                            env.borrow()
+                                .get_interface_methods(embedded_name)
+                                .unwrap_or_default()
+                        });
+                        let trait_path = interface_trait_path_from_name(embedded_name);
+                        let impl_items = concrete_interface_impl_items_for_methods(
+                            struct_name,
+                            &embedded_methods,
+                            &methods,
+                            exposes_any,
+                        );
+                        items.push(syn::Item::Impl(syn::ItemImpl {
+                            attrs: vec![],
+                            defaultness: None,
+                            unsafety: None,
+                            impl_token: <Token![impl]>::default(),
+                            generics: if BORROWED_INTERFACE_STRUCTS
+                                .with(|structs| structs.borrow().contains_key(struct_name))
+                            {
+                                syn::parse_quote! { <'__gors> }
+                            } else {
+                                syn::Generics::default()
+                            },
+                            trait_: Some((None, trait_path, <Token![for]>::default())),
+                            self_ty: Box::new(
+                                if BORROWED_INTERFACE_STRUCTS
+                                    .with(|structs| structs.borrow().contains_key(struct_name))
+                                {
+                                    syn::parse_quote! { #struct_ident<'__gors> }
+                                } else {
+                                    syn::parse_quote! { #struct_ident }
+                                },
+                            ),
+                            brace_token: syn::token::Brace::default(),
+                            items: impl_items,
+                        }));
+                    }
                 }
                 if pointer_satisfies
                     && !BORROWED_INTERFACE_STRUCTS
@@ -17861,61 +18019,48 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
-                        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                            Some(self)
-                        }
-                    }];
-                    if let Some(method_list) = methods.get(struct_name) {
-                        for method in method_list {
-                            if !required_methods.contains(&method.sig.ident.to_string()) {
-                                continue;
+                    if emitted_interface_impls.insert((
+                        trait_name.clone(),
+                        struct_name.clone(),
+                        true,
+                    )) {
+                        let impl_items = pointer_interface_impl_items_for_methods(
+                            struct_name,
+                            &direct_required_methods,
+                            &methods,
+                        );
+                        items.push(syn::parse_quote! {
+                            impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
+                                #(#impl_items)*
                             }
-                            let method_ident = method.sig.ident.clone();
-                            let arg_idents = method
-                                .sig
-                                .inputs
-                                .iter()
-                                .skip(1)
-                                .filter_map(|arg| match arg {
-                                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                                        _ => None,
-                                    },
-                                    syn::FnArg::Receiver(_) => None,
-                                })
-                                .collect::<Vec<_>>();
-                            let mut sig = method.sig.clone();
-                            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                                receiver.mutability = Some(<Token![mut]>::default());
-                                *receiver.ty = syn::parse_quote! { &mut Self };
-                            }
-                            let block = if matches!(sig.output, syn::ReturnType::Default) {
-                                syn::parse_quote!({
-                                    let mut __gors_guard = self.lock().unwrap();
-                                    __gors_guard.#method_ident(#(#arg_idents),*);
-                                })
-                            } else {
-                                syn::parse_quote!({
-                                    let mut __gors_guard = self.lock().unwrap();
-                                    __gors_guard.#method_ident(#(#arg_idents),*)
-                                })
-                            };
-                            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                                attrs: vec![],
-                                vis: syn::Visibility::Inherited,
-                                defaultness: None,
-                                sig,
-                                block,
-                            }));
-                        }
+                        });
                     }
 
-                    items.push(syn::parse_quote! {
-                        impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
-                            #(#impl_items)*
+                    for embedded_name in &embedded_interfaces {
+                        if !emitted_interface_impls.insert((
+                            embedded_name.clone(),
+                            struct_name.clone(),
+                            true,
+                        )) {
+                            continue;
                         }
-                    });
+                        let embedded_methods = TYPE_ENV.with(|env| {
+                            env.borrow()
+                                .get_interface_methods(embedded_name)
+                                .unwrap_or_default()
+                        });
+                        let trait_path = interface_trait_path_from_name(embedded_name);
+                        let impl_items = pointer_interface_impl_items_for_methods(
+                            struct_name,
+                            &embedded_methods,
+                            &methods,
+                        );
+                        items.push(syn::parse_quote! {
+                            impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
+                                #(#impl_items)*
+                            }
+                        });
+                    }
                 }
             }
         }

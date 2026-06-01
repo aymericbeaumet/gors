@@ -575,7 +575,9 @@ fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeE
 
 fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) => env.get_func_return(&format!("{name}.{method}")),
+        GoType::Named(name) | GoType::Interface(name) => {
+            env.get_func_return(&format!("{name}.{method}"))
+        }
         GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
         _ => GoType::Unknown,
     }
@@ -583,7 +585,7 @@ fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &T
 
 fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) => {
+        GoType::Named(name) | GoType::Interface(name) => {
             let key = format!("{name}.{method}");
             if env.has_func(&key) {
                 GoType::Func {
@@ -710,6 +712,8 @@ pub enum TypeKind {
     Alias(GoType),
 }
 
+type InterfaceMethodSignature = (std::string::String, Vec<GoType>, Vec<GoType>, Option<usize>);
+
 fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
     let ast::Expr::InterfaceType(interface) = expr else {
         return Vec::new();
@@ -723,6 +727,45 @@ fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
                 .iter()
                 .filter_map(|field| field.names.as_ref())
                 .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn interface_method_signatures(expr: &ast::Expr) -> Vec<InterfaceMethodSignature> {
+    let ast::Expr::InterfaceType(interface) = expr else {
+        return Vec::new();
+    };
+    interface
+        .methods
+        .as_ref()
+        .map(|methods| {
+            methods
+                .list
+                .iter()
+                .filter_map(|field| {
+                    let names = field.names.as_ref()?;
+                    let ast::Expr::FuncType(func_type) = field.type_.as_ref()? else {
+                        return None;
+                    };
+                    let GoType::Func {
+                        params,
+                        results,
+                        variadic_start,
+                    } = GoType::from_func_type(func_type)
+                    else {
+                        return None;
+                    };
+                    Some(names.iter().map(move |name| {
+                        (
+                            name.name.to_string(),
+                            params.clone(),
+                            results.clone(),
+                            variadic_start,
+                        )
+                    }))
+                })
+                .flatten()
                 .collect()
         })
         .unwrap_or_default()
@@ -1177,6 +1220,16 @@ impl TypeEnv {
         Some(methods)
     }
 
+    pub fn get_interface_direct_methods(&self, name: &str) -> Option<Vec<std::string::String>> {
+        self.interface_methods.get(name).cloned()
+    }
+
+    pub fn get_interface_embedded_interfaces(&self, name: &str) -> Vec<std::string::String> {
+        let mut out = Vec::new();
+        self.collect_interface_embedded_interfaces(name, &mut HashSet::new(), &mut out);
+        out
+    }
+
     pub fn set_interface_type_terms(&mut self, name: &str, terms: Vec<GoType>) {
         if !terms.is_empty() {
             self.interface_type_terms.insert(name.to_string(), terms);
@@ -1427,6 +1480,30 @@ impl TypeEnv {
                     continue;
                 };
                 self.collect_interface_methods(&resolved_name, visiting, methods);
+            }
+        }
+        visiting.remove(name);
+    }
+
+    fn collect_interface_embedded_interfaces(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<std::string::String>,
+        out: &mut Vec<std::string::String>,
+    ) {
+        if !visiting.insert(name.to_string()) {
+            return;
+        }
+        if let Some(embedded) = self.interface_embedded.get(name) {
+            for embedded_name in embedded {
+                let Some(resolved_name) = self.resolve_embedded_interface_name(embedded_name)
+                else {
+                    continue;
+                };
+                if !out.contains(&resolved_name) {
+                    out.push(resolved_name.clone());
+                }
+                self.collect_interface_embedded_interfaces(&resolved_name, visiting, out);
             }
         }
         visiting.remove(name);
@@ -1722,6 +1799,16 @@ impl TypeEnv {
                 self.set_interface_methods(name.name, interface_method_names(&ts.type_));
                 self.set_interface_embedded(name.name, interface_embedded_names(&ts.type_));
                 self.set_interface_type_terms(name.name, interface_constraint_terms(&ts.type_));
+                for (method_name, params, returns, variadic_start) in
+                    interface_method_signatures(&ts.type_)
+                {
+                    let method_key = format!("{}.{}", name.name, method_name);
+                    self.set_func_params(&method_key, params);
+                    self.set_func(&method_key, returns);
+                    if let Some(start) = variadic_start {
+                        self.set_func_variadic_start(&method_key, start);
+                    }
+                }
             }
             other => {
                 let underlying = GoType::from_expr(other);
@@ -2015,6 +2102,48 @@ mod tests {
             env.get_interface_methods("ReadWriter"),
             Some(vec!["Write".to_string(), "Read".to_string()])
         );
+    }
+
+    #[test]
+    fn scan_file_records_interface_method_signatures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Heap interface {
+                    Push(any)
+                    Pop() any
+                }
+
+                func Use(h Heap) any {
+                    return h.Pop()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(env.get_func_params("Heap.Push"), vec![GoType::Any]);
+        assert_eq!(env.get_func_return("Heap.Pop"), GoType::Any);
+
+        let ret = file
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                ast::Decl::FuncDecl(func) if func.name.name == "Use" => func.body.as_ref(),
+                _ => None,
+            })
+            .and_then(|body| body.list.first())
+            .and_then(|stmt| match stmt {
+                ast::Stmt::ReturnStmt(ret) => ret.results.first(),
+                _ => None,
+            })
+            .expect("return expression");
+
+        assert_eq!(GoType::infer_expr(ret, &env), GoType::Any);
     }
 
     #[test]
