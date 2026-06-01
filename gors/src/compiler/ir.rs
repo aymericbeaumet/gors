@@ -1562,6 +1562,7 @@ pub fn invalid_statement_in_func_with_type(
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
+    env.retain_package_value_bindings();
     let mut scopes = ShortVarScopes::new();
     record_func_type_bindings(func_type, &mut env);
     seed_field_names_in_short_var_scope(&func_type.params, &mut scopes);
@@ -1577,6 +1578,7 @@ pub fn invalid_return_in_func(
     env: &TypeEnv,
 ) -> Option<InvalidStatement> {
     let mut env = env.clone();
+    env.retain_package_value_bindings();
     record_func_type_bindings(func_type, &mut env);
     invalid_return_in_block(body, &return_signature(func_type), &mut env)
 }
@@ -2777,6 +2779,7 @@ fn invalid_receiver_base_type(base: &str, env: &TypeEnv) -> Option<InvalidReceiv
     match kind {
         TypeKind::Struct => None,
         TypeKind::Interface => Some(InvalidReceiverTypeReason::Interface),
+        TypeKind::TypeParam => Some(InvalidReceiverTypeReason::Undefined),
         TypeKind::Alias(ty) => {
             let resolved = env.resolve_alias(ty);
             if matches!(resolved, GoType::Pointer(_)) {
@@ -6125,7 +6128,12 @@ fn invalid_statement_in_stmt(
                 if let Some(reason) = invalid_type_switch_stmt(type_switch, &switch_env) {
                     return Some(InvalidStatement::TypeSwitch { reason });
                 }
-                invalid_statement_in_case_block(&type_switch.body, &switch_env, scopes)
+                invalid_statement_in_type_switch_case_block(
+                    &type_switch.body,
+                    &switch_env,
+                    scopes,
+                    type_switch_guard_binding_name(&type_switch.assign),
+                )
             })
         }
     }
@@ -6133,6 +6141,32 @@ fn invalid_statement_in_stmt(
 
 fn is_short_var_decl_stmt(stmt: &ast::Stmt<'_>) -> bool {
     matches!(stmt, ast::Stmt::AssignStmt(assign) if assign.tok == token::Token::DEFINE)
+}
+
+fn invalid_statement_in_type_switch_case_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    scopes: &mut ShortVarScopes,
+    binding_name: Option<&str>,
+) -> Option<InvalidStatement> {
+    for stmt in &block.list {
+        let ast::Stmt::CaseClause(case) = stmt else {
+            let mut block_env = env.clone();
+            return invalid_statement_in_stmt(stmt, &mut block_env, scopes);
+        };
+        let mut case_env = env.clone();
+        if let Some(invalid) = scopes.with_scope(|scopes| {
+            if let Some(binding_name) = binding_name
+                && let Some(case_ty) = type_switch_single_case_binding_type(case)
+            {
+                case_env.set_var(binding_name, case_ty);
+            }
+            invalid_statement_in_stmt_list(&case.body, &mut case_env, scopes)
+        }) {
+            return Some(invalid);
+        }
+    }
+    None
 }
 
 fn has_duplicate_case_default(block: &ast::BlockStmt<'_>) -> bool {
@@ -7486,6 +7520,9 @@ fn invalid_return_in_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<Inv
     if let Some(invalid) = invalid_return_in_call_operands(call, env) {
         return Some(invalid);
     }
+    if unshadowed_builtin_call_kind(call, env).is_some() {
+        return None;
+    }
     if let Some(reason) = invalid_type_conversion_call(call, env) {
         return Some(InvalidStatement::Expression { reason });
     }
@@ -8707,7 +8744,7 @@ fn expr_is_nil(expr: &ast::Expr<'_>) -> bool {
 }
 
 fn type_can_compare_to_nil(ty: &GoType, env: &TypeEnv) -> bool {
-    let ty = env.resolve_alias(ty);
+    let ty = env.resolve_alias_or_type_param_constraint(ty);
     match &ty {
         GoType::Any
         | GoType::Error
@@ -9043,6 +9080,9 @@ fn invalid_expression_after_call_operands(
     call: &ast::CallExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    if unshadowed_builtin_call_kind(call, env).is_some() {
+        return None;
+    }
     if call_is_type_conversion(call, env) {
         return invalid_type_conversion_call(call, env);
     }
@@ -9303,6 +9343,7 @@ fn invalid_builtin_function_value(
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     if env.get_var(ident.name).is_some()
+        || env.is_top_level_var(ident.name)
         || env.has_func(ident.name)
         || env.get_type_kind(ident.name).is_some()
     {
@@ -9608,7 +9649,11 @@ fn invalid_expression_in_stmt(
             if let Some(reason) = invalid_expression_in_stmt(&type_switch.assign, &mut switch_env) {
                 return Some(reason);
             }
-            invalid_expression_in_type_switch_block(&type_switch.body, &mut switch_env)
+            invalid_expression_in_type_switch_block(
+                &type_switch.body,
+                &mut switch_env,
+                type_switch_guard_binding_name(&type_switch.assign),
+            )
         }
     }
 }
@@ -9616,9 +9661,10 @@ fn invalid_expression_in_stmt(
 fn invalid_expression_in_type_switch_block(
     block: &ast::BlockStmt<'_>,
     env: &mut TypeEnv,
+    binding_name: Option<&str>,
 ) -> Option<InvalidStatementReason> {
     for stmt in &block.list {
-        if let Some(reason) = invalid_expression_in_type_switch_stmt(stmt, env) {
+        if let Some(reason) = invalid_expression_in_type_switch_stmt(stmt, env, binding_name) {
             return Some(reason);
         }
     }
@@ -9628,6 +9674,7 @@ fn invalid_expression_in_type_switch_block(
 fn invalid_expression_in_type_switch_stmt(
     stmt: &ast::Stmt<'_>,
     env: &mut TypeEnv,
+    binding_name: Option<&str>,
 ) -> Option<InvalidStatementReason> {
     let ast::Stmt::CaseClause(case) = stmt else {
         return invalid_expression_in_stmt(stmt, env);
@@ -9640,7 +9687,36 @@ fn invalid_expression_in_type_switch_stmt(
     {
         return Some(reason);
     }
+    if let Some(binding_name) = binding_name
+        && let Some(case_ty) = type_switch_single_case_binding_type(case)
+    {
+        case_env.set_var(binding_name, case_ty);
+    }
     invalid_expression_in_stmt_list(&case.body, &mut case_env)
+}
+
+fn type_switch_guard_binding_name<'a>(stmt: &'a ast::Stmt<'a>) -> Option<&'a str> {
+    let ast::Stmt::AssignStmt(assign) = stmt else {
+        return None;
+    };
+    if assign.tok != token::Token::DEFINE || assign.lhs.len() != 1 {
+        return None;
+    }
+    let ast::Expr::Ident(ident) = assign.lhs.first()? else {
+        return None;
+    };
+    (ident.name != "_").then_some(ident.name)
+}
+
+fn type_switch_single_case_binding_type(case: &ast::CaseClause<'_>) -> Option<GoType> {
+    let list = case.list.as_ref()?;
+    let [expr] = list.as_slice() else {
+        return None;
+    };
+    if matches!(expr, ast::Expr::Ident(ident) if ident.name == "nil") {
+        return None;
+    }
+    Some(GoType::from_expr(expr))
 }
 
 fn invalid_expression_in_stmt_list(
@@ -10182,7 +10258,7 @@ fn binary_shift_left_operand_is_integer(
 
 fn shift_count_is_negative_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
     expr_is_untyped_numeric_constant_for_comparison(expr, env)
-        && integer_constant_value_i128(expr).is_some_and(|value| value < 0)
+        && integer_constant_value_i128_with_env(expr, env).is_some_and(|value| value < 0)
 }
 
 fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
@@ -10489,29 +10565,35 @@ fn comparison_constant_is_assignable_to(
     }
     match expected {
         GoType::Any | GoType::Interface(_) | GoType::Error => {
-            untyped_constant_default_type_is_representable(expr, actual)
+            untyped_constant_default_type_is_representable(expr, actual, env)
         }
         GoType::Unknown | GoType::Named(_) => true,
         GoType::Bool => matches!(actual, GoType::Bool),
         GoType::String => matches!(actual, GoType::String),
         expected if expected.is_integer() => {
-            if let Some(value) = integer_constant_value_i128(expr) {
+            if let Some(value) = integer_constant_value_i128_with_env(expr, env) {
                 return integer_constant_fits_type(value, expected);
             }
             actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
         }
-        expected if expected.is_float() => float_constant_is_assignable_to(expr, actual, expected),
+        expected if expected.is_float() => {
+            float_constant_is_assignable_to(expr, actual, expected, env)
+        }
         GoType::Complex64 | GoType::Complex128 => go_type_is_numeric(actual),
         _ => false,
     }
 }
 
-fn untyped_constant_default_type_is_representable(expr: &ast::Expr<'_>, actual: &GoType) -> bool {
+fn untyped_constant_default_type_is_representable(
+    expr: &ast::Expr<'_>,
+    actual: &GoType,
+    env: &TypeEnv,
+) -> bool {
     match actual {
-        GoType::Float64 => float_constant_is_assignable_to(expr, actual, &GoType::Float64),
-        GoType::Int => integer_constant_value_i128(expr)
+        GoType::Float64 => float_constant_is_assignable_to(expr, actual, &GoType::Float64, env),
+        GoType::Int => integer_constant_value_i128_with_env(expr, env)
             .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int)),
-        GoType::Int32 => integer_constant_value_i128(expr)
+        GoType::Int32 => integer_constant_value_i128_with_env(expr, env)
             .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int32)),
         GoType::Bool | GoType::String | GoType::Complex128 => true,
         GoType::Unknown | GoType::Named(_) => true,
@@ -10536,11 +10618,12 @@ fn float_constant_is_assignable_to(
     expr: &ast::Expr<'_>,
     actual: &GoType,
     expected: &GoType,
+    env: &TypeEnv,
 ) -> bool {
     if let Some(representable) = float_constant_is_representable_by_type(expr, expected) {
         return representable;
     }
-    go_type_is_ordered_numeric(actual) || integer_constant_value_i128(expr).is_some()
+    go_type_is_ordered_numeric(actual) || integer_constant_value_i128_with_env(expr, env).is_some()
 }
 
 fn float_constant_is_representable_by_type(
@@ -11299,6 +11382,27 @@ fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
             integer_constant_value_i128(&unary.x).and_then(i128::checked_neg)
         }
         _ => None,
+    }
+}
+
+fn integer_constant_value_i128_with_env(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::Ident(ident) if env.is_const(ident.name) => {
+            env.get_const_integer_value(ident.name)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(base) = selector.x.as_ref() else {
+                return None;
+            };
+            env.get_const_integer_value(&format!("{}.{}", base.name, selector.sel.name))
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            integer_constant_value_i128_with_env(&unary.x, env)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
+            integer_constant_value_i128_with_env(&unary.x, env).and_then(i128::checked_neg)
+        }
+        _ => integer_constant_value_i128(expr),
     }
 }
 
@@ -12188,6 +12292,7 @@ fn invalid_type_parameter_constraint_call_arg(
     let constraints = env.get_func_type_param_constraint(target, type_param)?;
     let actual = env.resolve_alias(&GoType::infer_expr(arg, env));
     if matches!(actual, GoType::Unknown)
+        || type_param_constraint_set_allows_actual_type_param(&constraints, &actual, arg, env)
         || constraints
             .iter()
             .any(|constraint| type_param_constraint_allows_arg(constraint, &actual, arg, env))
@@ -12201,6 +12306,44 @@ fn invalid_type_parameter_constraint_call_arg(
             go_type_display_name(&actual)
         ),
     ))
+}
+
+fn type_param_constraint_set_allows_actual_type_param(
+    constraints: &[GoType],
+    actual: &GoType,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    let GoType::Named(actual_name) = actual else {
+        return false;
+    };
+    let Some(actual_constraints) = env.get_type_param_constraints(actual_name) else {
+        return false;
+    };
+    let actual_terms = actual_constraints
+        .iter()
+        .flat_map(|term| expanded_constraint_terms(term, env))
+        .collect::<Vec<_>>();
+    !actual_terms.is_empty()
+        && actual_terms.iter().all(|actual_term| {
+            constraints.iter().any(|constraint| {
+                type_param_constraint_allows_arg(constraint, actual_term, arg, env)
+            })
+        })
+}
+
+fn expanded_constraint_terms(term: &GoType, env: &TypeEnv) -> Vec<GoType> {
+    let term = env.resolve_alias(term);
+    if let GoType::Named(name) = &term {
+        let terms = env.get_interface_type_terms(name);
+        if !terms.is_empty() {
+            return terms
+                .iter()
+                .flat_map(|term| expanded_constraint_terms(term, env))
+                .collect();
+        }
+    }
+    vec![term]
 }
 
 fn type_param_constraint_allows_arg(
@@ -22026,6 +22169,7 @@ mod tests {
                 type I interface{}
                 type P *int
                 type Slice []int
+                const threshold = 1e6
 
                 func main() {
                     _ = 1 + 2
@@ -22059,6 +22203,7 @@ mod tests {
                     _ = 1.0 << 2
                     _ = n64 >= -1<<binBits
                     _ = n64 < 1<<binBits
+                    _ = n64 > threshold
                     var c128 complex128
                     _ = c128 + 1
                     _ = c128 + 1i
@@ -22093,6 +22238,61 @@ mod tests {
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
         );
+
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func Clone[M ~map[K]V, K comparable, V any](m M) M {
+                    if m == nil {
+                        return nil
+                    }
+                    return m
+                }
+
+                type dedup struct {
+                    recent [128][4]uint64
+                }
+
+                func Seen(d *dedup, h uint64) {
+                    cache := &d.recent[uint(h)%uint(len(d.recent))]
+                    for i := 0; i < len(cache); i++ {
+                        _ = cache[i]
+                    }
+                }
+
+                type Ordered interface {
+                    ~int | ~string
+                }
+
+                func Less[T Ordered](x, y T) bool {
+                    return x < y
+                }
+
+                func Sort[E Ordered](data []E) {
+                    _ = Less(data[0], data[1])
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        for func in file.decls.iter().filter_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) {
+            assert_eq!(
+                super::invalid_statement_in_func_with_type(
+                    &func.type_,
+                    func.body.as_ref().expect("body"),
+                    &env
+                ),
+                None,
+                "{}",
+                func.name.name
+            );
+        }
     }
 
     #[test]
@@ -23940,6 +24140,8 @@ mod tests {
                 type T struct {}
                 func (T) M() {}
 
+                func takesString(s string) {}
+
                 func main(x any, y I) {
                     switch x.(type) {
                     case nil:
@@ -23948,6 +24150,10 @@ mod tests {
                     }
                     switch y.(type) {
                     case T:
+                    }
+                    switch v := x.(type) {
+                    case string:
+                        takesString(v)
                     }
                 }
             "#,

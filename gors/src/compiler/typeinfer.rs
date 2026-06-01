@@ -534,6 +534,94 @@ fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -
     }
 }
 
+fn const_integer_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
+            parse_integer_literal_i128(lit.value)
+        }
+        ast::Expr::BasicLit(lit)
+            if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
+        {
+            parse_decimal_float_integer_i128(lit.value)
+        }
+        ast::Expr::Ident(ident) => env.get_const_integer_value(ident.name),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
+            const_integer_value_i128(&unary.x, env)
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
+            const_integer_value_i128(&unary.x, env).and_then(i128::checked_neg)
+        }
+        _ => None,
+    }
+}
+
+fn parse_integer_literal_i128(value: &str) -> Option<i128> {
+    let cleaned = value.replace('_', "");
+    let (radix, digits) = if let Some(rest) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
+        (8, cleaned.trim_start_matches('0'))
+    } else {
+        (10, cleaned.as_str())
+    };
+    i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+}
+
+fn decimal_float_literal_is_integer(value: &str) -> bool {
+    parse_decimal_float_integer_i128(value).is_some()
+}
+
+fn parse_decimal_float_integer_i128(value: &str) -> Option<i128> {
+    let value = value.replace('_', "").to_ascii_lowercase();
+    if value.starts_with("0x") || value.contains('p') {
+        return None;
+    }
+
+    let (mantissa, exponent) = value
+        .split_once('e')
+        .map_or((value.as_str(), 0), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().ok().unwrap_or(0))
+        });
+    let negative = mantissa.starts_with('-');
+    let mantissa = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{int_part}{frac_part}");
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let shift = exponent - frac_part.len() as i32;
+    let normalized = if shift >= 0 {
+        let mut digits = digits;
+        digits.extend(std::iter::repeat_n('0', shift as usize));
+        digits
+    } else {
+        let trim = (-shift) as usize;
+        if digits.bytes().rev().take(trim).any(|byte| byte != b'0') {
+            return None;
+        }
+        digits[..digits.len().saturating_sub(trim)].to_string()
+    };
+    let parsed = normalized.parse::<i128>().ok()?;
+    if negative {
+        parsed.checked_neg()
+    } else {
+        Some(parsed)
+    }
+}
+
 fn new_arg_is_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
     match unparen_expr(expr) {
         ast::Expr::Ident(ident) => {
@@ -796,12 +884,14 @@ pub struct TypeEnv {
     top_level_var_types: HashMap<std::string::String, GoType>,
     consts: HashSet<std::string::String>,
     const_types: HashMap<std::string::String, GoType>,
+    const_integer_values: HashMap<std::string::String, i128>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeKind {
     Struct,
     Interface,
+    TypeParam,
     Alias(GoType),
 }
 
@@ -1486,6 +1576,11 @@ impl TypeEnv {
         self.vars.get(name).cloned()
     }
 
+    pub fn retain_package_value_bindings(&mut self) {
+        self.vars
+            .retain(|name, _| self.top_level_vars.contains(name) || self.consts.contains(name));
+    }
+
     pub fn set_func(&mut self, name: &str, returns: Vec<GoType>) {
         self.funcs.insert(name.to_string(), returns);
     }
@@ -1550,6 +1645,13 @@ impl TypeEnv {
             .cloned()
     }
 
+    pub fn get_type_param_constraints(&self, type_param: &str) -> Option<Vec<GoType>> {
+        self.func_type_param_constraints
+            .values()
+            .find_map(|constraints| constraints.get(type_param))
+            .cloned()
+    }
+
     pub fn has_func(&self, name: &str) -> bool {
         self.funcs.contains_key(name) || self.func_params.contains_key(name)
     }
@@ -1606,6 +1708,10 @@ impl TypeEnv {
 
     pub fn set_type_kind(&mut self, name: &str, kind: TypeKind) {
         self.type_kinds.insert(name.to_string(), kind);
+    }
+
+    pub fn remove_type_kind(&mut self, name: &str) {
+        self.type_kinds.remove(name);
     }
 
     pub fn get_type_kind(&self, name: &str) -> Option<&TypeKind> {
@@ -1913,13 +2019,8 @@ impl TypeEnv {
         let GoType::Named(name) = ty else {
             return None;
         };
-        self.func_type_param_constraints
-            .values()
-            .find_map(|constraints| {
-                constraints
-                    .get(name)
-                    .and_then(|terms| terms.first().cloned())
-            })
+        self.get_type_param_constraints(name)
+            .and_then(|terms| terms.first().cloned())
     }
 
     pub fn resolve_alias_or_type_param_constraint(&self, ty: &GoType) -> GoType {
@@ -2119,6 +2220,15 @@ impl TypeEnv {
         self.const_types.insert(name.to_string(), ty);
     }
 
+    pub fn set_const_integer_value(&mut self, name: &str, value: i128) {
+        self.set_const(name);
+        self.const_integer_values.insert(name.to_string(), value);
+    }
+
+    pub fn get_const_integer_value(&self, name: &str) -> Option<i128> {
+        self.const_integer_values.get(name).copied()
+    }
+
     pub fn is_const(&self, name: &str) -> bool {
         self.consts.contains(name)
             && self
@@ -2262,6 +2372,12 @@ impl TypeEnv {
             self.set_const_type(
                 &qualified_name,
                 qualify_package_type(package_name, ty, package_env),
+            );
+        }
+        for (name, value) in &package_env.const_integer_values {
+            self.set_const_integer_value(
+                &qualify_package_member_name(package_name, name, package_env),
+                *value,
             );
         }
         for name in &package_env.string_consts {
@@ -2411,6 +2527,11 @@ impl TypeEnv {
             };
             if tok == token::Token::CONST {
                 self.set_const_type(name.name, ty.clone());
+                if let Some(value_expr) = values.and_then(|values| values.get(i))
+                    && let Some(value) = const_integer_value_i128(value_expr, self)
+                {
+                    self.set_const_integer_value(name.name, value);
+                }
             }
             if tok == token::Token::CONST && matches!(ty, GoType::String) {
                 self.set_string_const(name.name);

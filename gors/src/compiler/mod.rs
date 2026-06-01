@@ -66,6 +66,7 @@ thread_local! {
     static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
     static LOCAL_CONST_VALUES: RefCell<Vec<BTreeMap<String, ConstValue>>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_LOCAL_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 #[derive(Clone)]
@@ -134,6 +135,14 @@ struct PanicReturnsThroughDeferGuard {
 
 struct LocalConstScopeGuard;
 
+struct ActiveLocalNamesGuard {
+    previous: std::collections::HashSet<String>,
+}
+
+struct TypeParamKindsGuard {
+    previous: Vec<(String, Option<typeinfer::TypeKind>)>,
+}
+
 impl MainPackageVarModeGuard {
     fn set(current: bool) -> Self {
         let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
@@ -142,6 +151,36 @@ impl MainPackageVarModeGuard {
             previous
         });
         Self { previous }
+    }
+}
+
+impl ActiveLocalNamesGuard {
+    fn set(current: std::collections::HashSet<String>) -> Self {
+        let previous =
+            ACTIVE_LOCAL_NAMES.with(|names| std::mem::replace(&mut *names.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+impl Drop for ActiveLocalNamesGuard {
+    fn drop(&mut self) {
+        ACTIVE_LOCAL_NAMES.with(|names| {
+            *names.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+    }
+}
+
+impl TypeParamKindsGuard {
+    fn set(type_args: &[syn::Ident]) -> Self {
+        Self {
+            previous: seed_type_param_kinds(type_args),
+        }
+    }
+}
+
+impl Drop for TypeParamKindsGuard {
+    fn drop(&mut self) {
+        restore_type_param_kinds(std::mem::take(&mut self.previous));
     }
 }
 
@@ -1801,25 +1840,29 @@ fn rust_type_from_type_expr(expr: &ast::Expr) -> Option<syn::Type> {
 }
 
 fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics {
+    compile_go_type_params_ref(type_params.as_ref())
+}
+
+fn compile_go_type_params_ref(type_params: Option<&ast::FieldList>) -> syn::Generics {
     let Some(type_params) = type_params else {
         return syn::Generics::default();
     };
 
-    let info = collect_type_param_info(Some(&type_params));
+    let info = collect_type_param_info(Some(type_params));
     let skipped = info.skipped_names();
     let mut params = syn::punctuated::Punctuated::new();
-    for field in type_params.list {
+    for field in &type_params.list {
         let bounds = field
             .type_
             .as_ref()
             .map(go_constraint_to_rust_bounds)
             .unwrap_or_default();
-        if let Some(names) = field.names {
+        if let Some(names) = &field.names {
             for name in names {
                 if skipped.contains(name.name) {
                     continue;
                 }
-                let ident: syn::Ident = name.into();
+                let ident = syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
                 let mut bounds = bounds.clone();
                 if info.map_key_names.contains(&ident.to_string()) {
                     bounds.push(syn::parse_quote! { Eq });
@@ -1881,6 +1924,43 @@ fn generics_for_idents(idents: &[syn::Ident]) -> syn::Generics {
         params,
         where_clause: None,
     }
+}
+
+fn ensure_type_param_bound(param: &mut syn::TypeParam, bound: syn::TypeParamBound) {
+    let bound_tokens = bound.to_token_stream().to_string();
+    if param
+        .bounds
+        .iter()
+        .any(|existing| existing.to_token_stream().to_string() == bound_tokens)
+    {
+        return;
+    }
+    param.colon_token.get_or_insert_with(<Token![:]>::default);
+    param.bounds.push(bound);
+}
+
+fn method_impl_generics(
+    type_args: &[syn::Ident],
+    type_generics: Option<&syn::Generics>,
+) -> syn::Generics {
+    let mut generics = type_generics
+        .cloned()
+        .unwrap_or_else(|| generics_for_idents(type_args));
+    let type_arg_names = type_args
+        .iter()
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    for param in &mut generics.params {
+        let syn::GenericParam::Type(param) = param else {
+            continue;
+        };
+        if !type_arg_names.contains(&param.ident.to_string()) {
+            continue;
+        }
+        ensure_type_param_bound(param, syn::parse_quote! { Clone });
+        ensure_type_param_bound(param, syn::parse_quote! { Default });
+    }
+    generics
 }
 
 #[derive(Clone, Debug)]
@@ -7059,7 +7139,7 @@ fn macro_token_item_names(
             match token {
                 proc_macro2::TokenTree::Ident(ident) => {
                     let name = ident.to_string();
-                    if item_names.contains(&name) && is_reachability_name(&name) {
+                    if item_names.contains(&name) {
                         names.insert(name);
                     }
                 }
@@ -8033,9 +8113,7 @@ fn collect_refs_from_item(
                     }
                 }
                 (Some(local), Some(symbol), assoc, _) if self.item_names.contains(local) => {
-                    if is_reachability_name(local) {
-                        self.local_names.insert(local.to_string());
-                    }
+                    self.local_names.insert(local.to_string());
                     self.local_names.insert(symbol.to_string());
                     self.local_names
                         .insert(impl_method_reachability_name(local, symbol));
@@ -8062,10 +8140,7 @@ fn collect_refs_from_item(
             else {
                 return;
             };
-            if self.item_names.contains(&name)
-                && !self.bound_names.contains(&name)
-                && is_reachability_name(&name)
-            {
+            if self.item_names.contains(&name) && !self.bound_names.contains(&name) {
                 self.local_names.insert(name);
             }
         }
@@ -8076,7 +8151,7 @@ fn collect_refs_from_item(
                 return;
             };
             let name = last.ident.to_string();
-            if self.item_names.contains(&name) && is_reachability_name(&name) {
+            if self.item_names.contains(&name) {
                 self.local_names.insert(name);
             }
         }
@@ -8087,7 +8162,7 @@ fn collect_refs_from_item(
                 return;
             };
             let name = last.ident.to_string();
-            if self.item_names.contains(&name) && is_reachability_name(&name) {
+            if self.item_names.contains(&name) {
                 self.local_names.insert(name);
             }
             syn::visit_mut::visit_expr_struct_mut(self, expr_struct);
@@ -8098,7 +8173,7 @@ fn collect_refs_from_item(
                 && let Some(last) = path.segments.last()
             {
                 let name = last.ident.to_string();
-                if self.item_names.contains(&name) && is_reachability_name(&name) {
+                if self.item_names.contains(&name) {
                     self.local_names.insert(name);
                 }
             }
@@ -8114,7 +8189,7 @@ fn collect_refs_from_item(
                 && let Some(last) = trait_bound.path.segments.last()
             {
                 let name = last.ident.to_string();
-                if self.item_names.contains(&name) && is_reachability_name(&name) {
+                if self.item_names.contains(&name) {
                     self.local_names.insert(name);
                 }
             }
@@ -8124,7 +8199,6 @@ fn collect_refs_from_item(
         fn visit_item_macro_mut(&mut self, item_macro: &mut syn::ItemMacro) {
             if let Some(name) = item_macro_name(item_macro)
                 && self.item_names.contains(&name)
-                && is_reachability_name(&name)
             {
                 self.local_names.insert(name);
             }
@@ -10521,6 +10595,68 @@ fn receiver_type_args(expr: &ast::Expr) -> Vec<syn::Ident> {
     }
 }
 
+fn field_list_binding_names(fields: &ast::FieldList) -> std::collections::HashSet<String> {
+    fields
+        .list
+        .iter()
+        .filter_map(|field| field.names.as_ref())
+        .flat_map(|names| names.iter())
+        .filter(|name| !name.name.is_empty() && name.name != "_")
+        .map(|name| rust_safe_ident_name(name.name))
+        .collect()
+}
+
+fn func_type_local_binding_names(func_type: &ast::FuncType) -> std::collections::HashSet<String> {
+    let mut names = field_list_binding_names(&func_type.params);
+    if let Some(results) = &func_type.results {
+        names.extend(field_list_binding_names(results));
+    }
+    names
+}
+
+fn type_param_idents(type_params: Option<&ast::FieldList>) -> Vec<syn::Ident> {
+    type_params
+        .map(|fields| {
+            fields
+                .list
+                .iter()
+                .filter_map(|field| field.names.as_ref())
+                .flat_map(|names| names.iter())
+                .filter(|name| !name.name.is_empty() && name.name != "_")
+                .map(|name| syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn seed_type_param_kinds(type_args: &[syn::Ident]) -> Vec<(String, Option<typeinfer::TypeKind>)> {
+    TYPE_ENV.with(|env| {
+        let mut env = env.borrow_mut();
+        type_args
+            .iter()
+            .map(|ident| {
+                let name = ident.to_string();
+                let previous = env.get_type_kind(&name).cloned();
+                env.set_type_kind(&name, typeinfer::TypeKind::TypeParam);
+                (name, previous)
+            })
+            .collect()
+    })
+}
+
+fn restore_type_param_kinds(previous: Vec<(String, Option<typeinfer::TypeKind>)>) {
+    TYPE_ENV.with(|env| {
+        let mut env = env.borrow_mut();
+        for (name, kind) in previous {
+            if let Some(kind) = kind {
+                env.set_type_kind(&name, kind);
+            } else {
+                env.remove_type_kind(&name);
+            }
+        }
+    });
+}
+
 fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: bool) {
     use syn::visit_mut::VisitMut;
 
@@ -10776,6 +10912,12 @@ fn compile_method(
     let has_borrowed_interface_field =
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
     let type_args = receiver_type_args(&recv_type);
+    let mut active_local_names = func_type_local_binding_names(&func_decl.type_);
+    if !recv_name.is_empty() {
+        active_local_names.insert(recv_name.clone());
+    }
+    let _active_local_names = ActiveLocalNamesGuard::set(active_local_names);
+    let _type_param_kinds = TypeParamKindsGuard::set(&type_args);
 
     let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) =
         if is_pointer || is_slice_receiver || has_borrowed_interface_field {
@@ -11584,7 +11726,9 @@ fn builtin_call_kind(call_expr: &ast::CallExpr) -> Option<ir::BuiltinCallKind> {
     };
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        if env.get_var(ident.name).is_some()
+        let is_local = ACTIVE_LOCAL_NAMES.with(|names| names.borrow().contains(ident.name));
+        if is_local
+            || env.is_top_level_var(ident.name)
             || env.has_func(ident.name)
             || env.get_type_kind(ident.name).is_some()
         {
@@ -12968,11 +13112,28 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
                     syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
                 return Some(syn::parse_quote! { #module::#sel });
             }
+            let promoted_field_info = TYPE_ENV.with(|env| {
+                let env = env.borrow();
+                let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
+                promoted_field_info(&base_ty, selector.sel.name, &env)
+            });
             let mut base = lvalue_expr_from_ref(&selector.x)?;
             if is_owning_pointer_cell_expr_ref(&selector.x) {
                 base = syn::parse_quote! { #base.lock().unwrap() };
             }
             let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+            if let Some(promoted) = promoted_field_info {
+                let embedded_field = syn::Ident::new(
+                    &rust_safe_ident_name(&promoted.embedded_field),
+                    Span::mixed_site(),
+                );
+                let embedded_expr: syn::Expr = syn::parse_quote! { #base.#embedded_field };
+                return if promoted.embedded_is_pointer {
+                    Some(syn::parse_quote! { (#embedded_expr).lock().unwrap().#sel })
+                } else {
+                    Some(syn::parse_quote! { #embedded_expr.#sel })
+                };
+            }
             Some(syn::parse_quote! { #base.#sel })
         }
         ast::Expr::IndexExpr(index) => {
@@ -14372,18 +14533,23 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
     let mut result: Option<syn::Expr> = else_block;
     for case in cases.into_iter().rev() {
-        let type_cases: Vec<(syn::Type, Option<String>, bool)> = case
+        let type_cases: Vec<(syn::Type, Option<String>, bool, typeinfer::GoType)> = case
             .list
             .unwrap_or_default()
             .into_iter()
             .map(|expr| {
                 let interface_name = interface_type_expr_name(&expr);
                 let is_nil = is_nil_type_case_expr(&expr);
-                (syn::Type::from(expr), interface_name, is_nil)
+                let go_type = if is_nil {
+                    typeinfer::GoType::Unknown
+                } else {
+                    typeinfer::GoType::from_expr(&expr)
+                };
+                (syn::Type::from(expr), interface_name, is_nil, go_type)
             })
             .collect();
 
-        let cond = if let Some((ty, interface_name, is_nil)) =
+        let cond = if let Some((ty, interface_name, is_nil, _)) =
             type_cases.first().filter(|_| type_cases.len() == 1)
         {
             let val = &value_expr;
@@ -14402,7 +14568,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         } else {
             type_cases
                 .iter()
-                .map(|(ty, is_interface, is_nil)| {
+                .map(|(ty, is_interface, is_nil, _)| {
                     let val = &value_expr;
                     let any_ref = value_ref(val);
                     if *is_nil {
@@ -14423,7 +14589,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
 
         let mut body_stmts = vec![];
         if let Some(ref name) = binding_name {
-            if let Some((ty, interface_name, is_nil)) =
+            if let Some((ty, interface_name, is_nil, _)) =
                 type_cases.first().filter(|_| type_cases.len() == 1)
             {
                 let val = &value_expr;
@@ -14457,9 +14623,17 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
                 }
             }
         }
-        for stmt in case.body {
-            body_stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
-        }
+        let case_binding_type = binding_name.as_ref().and_then(|_| {
+            type_cases
+                .first()
+                .filter(|_| type_cases.len() == 1)
+                .and_then(|(_, _, is_nil, go_type)| (!*is_nil).then(|| go_type.clone()))
+        });
+        body_stmts.extend(compile_type_switch_case_body(
+            case.body,
+            binding_name.as_deref(),
+            case_binding_type,
+        )?);
 
         result = Some(syn::Expr::If(syn::ExprIf {
             attrs: vec![],
@@ -14494,6 +14668,32 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
         }),
         None,
     )])
+}
+
+fn compile_type_switch_case_body(
+    body: Vec<ast::Stmt>,
+    binding_name: Option<&str>,
+    binding_type: Option<typeinfer::GoType>,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let Some((binding_name, binding_type)) = binding_name.zip(binding_type) else {
+        return body
+            .into_iter()
+            .map(Vec::<syn::Stmt>::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|chunks| chunks.into_iter().flatten().collect());
+    };
+
+    let previous = TYPE_ENV.with(|env| env.borrow().clone());
+    TYPE_ENV.with(|env| {
+        env.borrow_mut().set_var(binding_name, binding_type);
+    });
+    let result = body
+        .into_iter()
+        .map(Vec::<syn::Stmt>::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map(|chunks| chunks.into_iter().flatten().collect());
+    set_type_env(previous);
+    result
 }
 
 fn type_switch_guard_source(stmt: ast::Stmt) -> Result<(Option<String>, ast::Expr), CompilerError> {
@@ -18867,6 +19067,27 @@ impl TryFrom<ast::File<'_>> for syn::File {
             collect_needed_imported_interface_method_sets(&file.decls);
 
         let mut items = vec![];
+        let mut type_decl_generics: BTreeMap<String, syn::Generics> = BTreeMap::new();
+        for decl in &file.decls {
+            let ast::Decl::GenDecl(gen_decl) = decl else {
+                continue;
+            };
+            if gen_decl.tok != token::Token::TYPE {
+                continue;
+            }
+            for spec in &gen_decl.specs {
+                let ast::Spec::TypeSpec(type_spec) = spec else {
+                    continue;
+                };
+                let Some(name) = &type_spec.name else {
+                    continue;
+                };
+                let generics = compile_go_type_params_ref(type_spec.type_params.as_ref());
+                if !generics.params.is_empty() {
+                    type_decl_generics.insert(name.name.to_string(), generics);
+                }
+            }
+        }
         let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
         let mut method_generics: BTreeMap<String, Vec<syn::Ident>> = BTreeMap::new();
         let mut init_bodies: Vec<syn::Block> = vec![];
@@ -19080,7 +19301,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             let type_args = method_generics.get(type_name).cloned().unwrap_or_default();
             let has_borrowed_interface_field =
                 BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(type_name));
-            let mut generics = generics_for_idents(&type_args);
+            let mut generics = method_impl_generics(&type_args, type_decl_generics.get(type_name));
             if has_borrowed_interface_field {
                 let mut params = syn::punctuated::Punctuated::new();
                 params.push(syn::GenericParam::Lifetime(syn::LifetimeParam::new(
@@ -20059,6 +20280,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
         // Convert doc comments to Rust doc attributes
         let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
+        let active_local_names = func_type_local_binding_names(&func_decl.type_);
+        let _active_local_names = ActiveLocalNamesGuard::set(active_local_names);
+        let type_param_args = type_param_idents(func_decl.type_.type_params.as_ref());
+        let _type_param_kinds = TypeParamKindsGuard::set(&type_param_args);
         let attrs = comment_group_to_attrs(&func_decl.doc);
         let intrinsic_block = compiler_intrinsic_func_block(&func_decl)
             .or_else(|| generic_map_clone_func_block(&func_decl, &type_param_info));
@@ -23687,16 +23912,8 @@ var X int
         super::set_type_env(super::typeinfer::TypeEnv::new());
         let builtin_kind = super::builtin_call_kind(call);
 
-        let mut env = super::typeinfer::TypeEnv::new();
-        env.set_var(
-            "print",
-            super::typeinfer::GoType::Func {
-                params: Vec::new(),
-                results: Vec::new(),
-                variadic_start: None,
-            },
-        );
-        super::set_type_env(env);
+        let _active_local_names =
+            super::ActiveLocalNamesGuard::set(std::iter::once("print".to_string()).collect());
         let shadowed_kind = super::builtin_call_kind(call);
         super::set_type_env(super::typeinfer::TypeEnv::new());
 
@@ -23982,6 +24199,128 @@ var X int
         assert!(
             !output.contains("let mut n = 9"),
             "expected local const not to lower to a mutable local: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_bind_dereferenced_pointer_call_results() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type value struct {
+                    text string
+                }
+
+                type holder struct {
+                    value *value
+                }
+
+                func (h *holder) Load() *value {
+                    return h.value
+                }
+
+                func use(h *holder) string {
+                    v := *h.Load()
+                    return v.text
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let mut v"),
+            "expected dereferenced pointer call result to be bound: {output}"
+        );
+        assert!(
+            output.contains("__gors_pointer_value"),
+            "expected pointer call result to be materialized before field access: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_call_methods_on_promoted_pointer_fields() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type cell struct {
+                    text string
+                }
+
+                func (c *cell) Load() *cell {
+                    return c
+                }
+
+                type inner struct {
+                    value cell
+                }
+
+                type outer struct {
+                    *inner
+                }
+
+                func use(o *outer) string {
+                    v := *o.value.Load()
+                    return v.text
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("inner) . lock () . unwrap () . value . Load"),
+            "expected promoted field receiver to pass through embedded pointer: {output}"
+        );
+        assert!(
+            output.contains("let mut v"),
+            "expected promoted field method result to be bound: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_narrow_type_switch_bindings_inside_single_type_cases() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func fnvString(h uint64, x string) uint64 {
+                    return h
+                }
+
+                func Hash(data ...any) uint64 {
+                    var h uint64
+                    for _, v := range data {
+                        switch v := v.(type) {
+                        case string:
+                            h = fnvString(h, v)
+                        }
+                    }
+                    return h
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("downcast_ref :: < String >"),
+            "expected string case binding to downcast to String: {output}"
+        );
+        assert!(
+            output.contains("fnvString (h , (v) . clone ())"),
+            "expected narrowed binding to be accepted as a string argument: {output}"
         );
     }
 
@@ -26389,6 +26728,23 @@ func main() {
     }
 
     #[test]
+    fn prune_items_to_roots_retains_local_types_named_like_ambient_items() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Error(pub isize);
+
+            pub const ErrSyntax: Error = Error(2);
+        };
+        let roots = std::collections::HashSet::from(["ErrSyntax".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        super::prune_items_to_roots(&mut file.items, &roots, &module_names);
+
+        let source = quote! { #file }.to_string();
+        assert!(source.contains("pub struct Error"), "{source}");
+        assert!(source.contains("pub const ErrSyntax : Error"), "{source}");
+    }
+
+    #[test]
     fn collect_external_refs_follows_stdlib_const_paths() {
         let file: syn::File = rust! {
             pub fn main() {
@@ -28765,7 +29121,10 @@ func main() {}
 
         assert!(output.contains("pub struct Holder<T>"), "{output}");
         assert!(output.contains("value: T"), "{output}");
-        assert!(output.contains("impl<T: Clone> Holder<T>"), "{output}");
+        assert!(
+            output.contains("impl<T: Clone + Default> Holder<T>"),
+            "{output}"
+        );
         assert!(output.contains("pub fn Get(&self) -> T"), "{output}");
         assert!(output.contains("(self.value).clone()"), "{output}");
         assert!(
@@ -28773,5 +29132,36 @@ func main() {}
             "{output}"
         );
         assert!(output.contains("self.value = (value).clone();"), "{output}");
+    }
+
+    #[test]
+    fn it_should_compile_generic_receiver_new_type_parameter() {
+        let go_input = r#"
+package main
+
+type Bag[K comparable, V any] struct {
+	value V
+}
+
+func (b *Bag[K, V]) Store(new V) {
+	b.value = new
+}
+
+func (b *Bag[K, V]) Zero() V {
+	return *new(V)
+}
+
+func main() {}
+"#;
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("impl<K: PartialEq + Clone + Default, V: Clone + Default> Bag<K, V>"),
+            "{output}"
+        );
+        assert!(output.contains("<V>::default()"), "{output}");
+        assert!(!output.contains("new(V)"), "{output}");
     }
 }

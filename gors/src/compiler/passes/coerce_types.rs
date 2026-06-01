@@ -99,13 +99,15 @@ impl VisitMut for CoerceTypes {
 
         if func.sig.ident != "printArg" {
             prune_static_false_branches(&mut func.block.stmts);
-            let prune_self_value = should_prune_fmt_self_value(&func.block);
+            let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
+                && should_prune_fmt_self_value(&func.block);
             prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
             return;
         }
 
         prune_static_false_branches(&mut func.block.stmts);
-        let prune_self_value = should_prune_fmt_self_value(&func.block);
+        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
+            && should_prune_fmt_self_value(&func.block);
         prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
         prune_print_arg_unsupported_cases(func);
     }
@@ -1498,6 +1500,33 @@ mod tests {
         assert!(
             !tokens.contains("crate :: reflect"),
             "expected reflect dependency to be pruned: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_prune_non_fmt_self_value_statements() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Setting {
+                pub value: isize,
+            }
+
+            impl Setting {
+                pub fn Value(&mut self) -> isize {
+                    let mut v = self.value;
+                    if v > 0 {
+                        return v;
+                    }
+                    v
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("let mut v = self . value"),
+            "expected ordinary self.value local binding to remain: {tokens}"
         );
     }
 
