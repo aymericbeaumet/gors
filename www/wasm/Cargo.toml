@@ -2,6 +2,7 @@
 name = "gors-wasm"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96.0"
 license = "MIT"
 description = "WebAssembly bindings for gors"
 repository = "https://github.com/aymericbeaumet/gors/"

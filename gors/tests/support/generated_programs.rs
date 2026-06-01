@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 const PROGRAM_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 const DEFAULT_GO_RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_GENERATED_RUN_TIMEOUT: Duration = Duration::from_secs(10);
+const RUST_TOOLCHAIN: &str = "1.96.0";
+const RUST_EDITION: &str = "2024";
 
 fn program_name(fixture_root: &Path, dir: &Path) -> String {
     dir.strip_prefix(fixture_root)
@@ -366,12 +368,14 @@ fn compile_and_run_generated_rust(
     let incremental_path = build_dir.join("rustc-incremental");
     fs::create_dir_all(&incremental_path).map_err(|e| e.to_string())?;
     let incremental_arg = format!("incremental={}", incremental_path.display());
+    let edition_arg = format!("--edition={RUST_EDITION}");
 
-    let mut rustc = Command::new("rustc");
+    let mut rustc = Command::new("rustup");
     rustc
+        .args(["run", RUST_TOOLCHAIN, "rustc"])
         .arg(&src_path)
         .args([
-            "--edition=2024",
+            edition_arg.as_str(),
             "-D",
             "unused_imports",
             "-D",
@@ -450,7 +454,12 @@ fn cached_generated_output_dir(
     hasher.update(rustc_fingerprint().as_bytes());
     hasher.update(b"\0");
     hasher.update(gors::STDLIB_VERSION.as_bytes());
-    hasher.update(b"\0rustc-flags:edition2024,deny-unused,overflow-checks-off");
+    hasher.update(
+        format!(
+            "\0rustc-toolchain:{RUST_TOOLCHAIN},rustc-flags:edition{RUST_EDITION},deny-unused,overflow-checks-off"
+        )
+        .as_bytes(),
+    );
     hasher.update(b"\0");
     for (filename, source) in &output.files {
         hasher.update(filename.as_bytes());
@@ -471,8 +480,8 @@ fn cached_generated_output_dir(
 fn rustc_fingerprint() -> &'static str {
     static RUSTC_FINGERPRINT: OnceLock<String> = OnceLock::new();
     RUSTC_FINGERPRINT.get_or_init(|| {
-        Command::new("rustc")
-            .arg("-vV")
+        Command::new("rustup")
+            .args(["run", RUST_TOOLCHAIN, "rustc", "-vV"])
             .output()
             .map(|output| {
                 let mut hasher = Sha256::new();

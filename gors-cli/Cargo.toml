@@ -2,6 +2,7 @@
 name = "gors-cli"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96.0"
 license = "MIT"
 description = "CLI for gors — Go toolchain written in Rust"
 

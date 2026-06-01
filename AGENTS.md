@@ -340,8 +340,21 @@ for both `go_oracle` and `go run` comparisons. CI should not install Go via
 GitHub Actions caches `$CARGO_HOME/gors-cache` as `~/.cargo/gors-cache`, keyed
 by runner OS and root `.go-version`, so SDK download/extraction changes must keep
 that cache path and key source aligned.
+Manual fixture debugging must follow the same rule: prefer filtered integration
+targets such as
+`rtk env GORS_TEST_FILTER=container/heap make rust-test-integration-go-stdlib`
+over ad hoc `go run`, and if a direct Go reference run is unavoidable, invoke
+the cached SDK through `gors/tests/common.rs::go_command()` or the exact
+`gors::GO_SDK_PATH/bin/go` binary it resolves. Do not run bare system `go`
+commands against fixture paths from the workspace.
 
 ## Testing
+
+The Rust toolchain is pinned to `1.96.0` in `rust-toolchain.toml`. Keep all
+workspace crates on Rust edition 2024, keep each package `rust-version` aligned
+to `1.96.0`, and do not switch CI back to floating `stable`. Any direct rustc
+path used by tests or the CLI must invoke `rustup run 1.96.0 rustc` and pass
+edition 2024.
 
 ### Unit tests
 
@@ -451,6 +464,12 @@ The run harness caches generated-program binaries under
 `target/gors-integration-run/` using a key derived from the generated Rust
 source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
 compiler-sensitive inputs in that key if the harness starts skipping more work.
+The generated Rust test harness and any manual generated-artifact `rustc`
+reproduction must compile with Rust edition 2024 through the pinned toolchain.
+Do not call `rustc` directly or use older edition flags; invoke
+`rtk rustup run 1.96.0 rustc --edition=2024 <artifact>/main.rs` or, preferably,
+rerun the filtered integration target so the harness supplies the same flags
+used by CI.
 Generated-program integration targets execute fixtures in a Rayon pool
 with 16 MiB worker stacks, matching the lexer/parser integration stack budget.
 Large stdlib fixtures such as `go_stdlib/net/http` can overflow the default test

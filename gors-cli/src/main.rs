@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
+const RUST_TOOLCHAIN: &str = "1.96.0";
+const RUST_EDITION: &str = "2024";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
 
@@ -480,7 +483,10 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let rustc_timer = ProfileTimer::start("cli.rustc");
-    let rustc_status = Command::new("rustc").args(Vec::from(rustc_args)).status()?;
+    let rustc_status = Command::new("rustup")
+        .args(["run", RUST_TOOLCHAIN, "rustc"])
+        .args(Vec::from(rustc_args))
+        .status()?;
     drop(rustc_timer);
 
     if !rustc_status.success() {
@@ -646,7 +652,7 @@ impl<'a> From<RustcArgs<'a>> for Vec<String> {
     fn from(args: RustcArgs<'a>) -> Self {
         let mut flags = vec![
             args.src.to_string(),
-            "--edition=2024".to_string(),
+            format!("--edition={RUST_EDITION}"),
             "-D".to_string(),
             "unused_imports".to_string(),
             "-D".to_string(),

@@ -89,7 +89,7 @@ Hello, World!
 
 ```bash
 brew install rustup binaryen watchexec
-rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
+rustup toolchain install 1.96.0 --component rustfmt --component clippy && rustup toolchain install nightly && rustup default 1.96.0
 cargo install --force cargo-fuzz
 ```
 
