@@ -9028,12 +9028,11 @@ fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
 }
 
 fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
-    let Some(len) = array_type.len.as_ref() else {
+    if array_type.len.is_none() {
         return syn::parse_quote! { Default::default() };
-    };
-    let len_expr = array_len_expr(len);
+    }
     let elem_default = default_expr_for_type(&array_type.elt);
-    syn::parse_quote! { [#elem_default; #len_expr] }
+    syn::parse_quote! { std::array::from_fn(|_| #elem_default) }
 }
 
 fn selector_path_from_ref(selector_expr: &ast::SelectorExpr) -> syn::Path {
@@ -10372,8 +10371,25 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 resolved_go_type(&underlying_go_type),
                 typeinfer::GoType::String
             );
+            let fixed_array_default = match &other {
+                ast::Expr::ArrayType(array_type) if array_type.len.is_some() => {
+                    Some(default_expr_for_array_type(array_type))
+                }
+                _ => None,
+            };
+            let is_fixed_array_alias = fixed_array_default.is_some();
             let rust_type: syn::Type = other.into();
-            let struct_item: syn::Item = if is_integer_alias {
+            let struct_item: syn::Item = if is_fixed_array_alias && is_copy_alias {
+                syn::parse_quote! {
+                    #[derive(Clone, Copy, PartialEq, PartialOrd)]
+                    #vis struct #ident #generics(pub #rust_type);
+                }
+            } else if is_fixed_array_alias {
+                syn::parse_quote! {
+                    #[derive(Clone)]
+                    #vis struct #ident #generics(pub #rust_type);
+                }
+            } else if is_integer_alias {
                 syn::parse_quote! {
                     #[derive(Clone, Copy, Default, Eq, Hash, PartialEq, PartialOrd)]
                     #vis struct #ident #generics(pub #rust_type);
@@ -10401,6 +10417,23 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 }
             };
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
+            if let Some(default_expr) = fixed_array_default {
+                items.push(syn::parse_quote! {
+                    impl Default for #ident {
+                        fn default() -> Self { Self(#default_expr) }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Len for #ident {
+                        fn len_value(&self) -> usize { self.0.len() }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::Cap for #ident {
+                        fn cap_value(&self) -> usize { self.0.len() }
+                    }
+                });
+            }
             if is_copy_alias {
                 items.push(newtype_into_inner_impl(&ident, &rust_type));
             }
@@ -27400,6 +27433,43 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_fixed_array_type_alias_helpers() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 512
+
+                type block [blockSize]byte
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("# [derive (Clone , Copy , PartialEq , PartialOrd)] pub struct block"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("Default , PartialEq , PartialOrd)] pub struct block"),
+            "{output}"
+        );
+        assert!(output.contains("impl Default for block"), "{output}");
+        assert!(output.contains("std :: array :: from_fn"), "{output}");
+        assert!(
+            output.contains("impl crate :: builtin :: Len for block"),
+            "{output}"
+        );
+        assert!(
+            output.contains("impl crate :: builtin :: Cap for block"),
+            "{output}"
         );
     }
 
