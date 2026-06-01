@@ -503,11 +503,25 @@ fn add_imported_package_usage(
     let needle = format!("{}.", import.name);
     let mut rest = source.as_str();
     while let Some(index) = rest.find(&needle) {
+        let before = &rest[..index];
         let after = &rest[index + needle.len()..];
         if let Some((first, first_len)) = read_identifier(after) {
             mark_tested(symbols_by_package, &import.path, &first, fixture);
             let after_first = &after[first_len..];
             if let Some(after_dot) = after_first.strip_prefix('.')
+                && let Some((second, _)) = read_identifier(after_dot)
+                && is_exported(&first)
+                && is_exported(&second)
+            {
+                mark_tested(
+                    symbols_by_package,
+                    &import.path,
+                    &format!("{first}.{second}"),
+                    fixture,
+                );
+            }
+            if (before.ends_with("(*") || before.ends_with('('))
+                && let Some(after_dot) = after_first.strip_prefix(").")
                 && let Some((second, _)) = read_identifier(after_dot)
                 && is_exported(&first)
                 && is_exported(&second)
@@ -863,4 +877,88 @@ fn slug(value: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn symbol_map(names: &[&str]) -> BTreeMap<String, BTreeMap<String, StdlibSymbol>> {
+        let mut symbols = BTreeMap::new();
+        for name in names {
+            add_symbol(&mut symbols, "archive/tar", name, "method");
+        }
+        symbols
+    }
+
+    fn fixtures_for(
+        symbols: &BTreeMap<String, BTreeMap<String, StdlibSymbol>>,
+        name: &str,
+    ) -> BTreeSet<String> {
+        symbols
+            .get("archive/tar")
+            .and_then(|package| package.get(name))
+            .map(|symbol| symbol.fixtures.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn fixture_usage_marks_imported_pointer_method_expressions() {
+        let mut symbols = symbol_map(&["Header.FileInfo", "Reader.Next", "Writer.WriteHeader"]);
+        let import = Import {
+            name: "tar".to_string(),
+            path: "archive/tar".to_string(),
+        };
+        let source = r#"
+package main
+
+import "archive/tar"
+
+func coverArchiveTarAPI() {
+	var _ = (*tar.Header).FileInfo
+	var _ = (*tar.Reader).Next
+	var _ = (*tar.Writer).WriteHeader
+}
+"#;
+
+        add_imported_package_usage(&mut symbols, source, "archive/tar", &import);
+
+        assert_eq!(
+            fixtures_for(&symbols, "Header.FileInfo"),
+            BTreeSet::from(["archive/tar".to_string()])
+        );
+        assert_eq!(
+            fixtures_for(&symbols, "Reader.Next"),
+            BTreeSet::from(["archive/tar".to_string()])
+        );
+        assert_eq!(
+            fixtures_for(&symbols, "Writer.WriteHeader"),
+            BTreeSet::from(["archive/tar".to_string()])
+        );
+    }
+
+    #[test]
+    fn fixture_usage_still_marks_imported_value_method_expressions() {
+        let mut symbols = symbol_map(&["Format.String"]);
+        let import = Import {
+            name: "tar".to_string(),
+            path: "archive/tar".to_string(),
+        };
+        let source = r#"
+package main
+
+import "archive/tar"
+
+func coverArchiveTarAPI() {
+	var _ = tar.Format.String
+}
+"#;
+
+        add_imported_package_usage(&mut symbols, source, "archive/tar", &import);
+
+        assert_eq!(
+            fixtures_for(&symbols, "Format.String"),
+            BTreeSet::from(["archive/tar".to_string()])
+        );
+    }
 }

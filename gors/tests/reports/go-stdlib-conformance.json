@@ -11,10 +11,10 @@
   },
   "summary": {
     "groupCount": 345,
-    "passingGroupCount": 7,
-    "caseCount": 12595,
-    "passingCaseCount": 454,
-    "unsupportedCaseCount": 12141,
+    "passingGroupCount": 10,
+    "caseCount": 12597,
+    "passingCaseCount": 500,
+    "unsupportedCaseCount": 12097,
     "fixtureCount": 76
   },
   "groups": [
@@ -29,8 +29,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 32,
-        "unsupportedCaseCount": 8,
+        "passingCaseCount": 40,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -193,8 +193,10 @@
           "title": "Header.FileInfo",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -235,8 +237,10 @@
           "title": "Reader.Next",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -244,8 +248,10 @@
           "title": "Reader.Read",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -418,8 +424,10 @@
           "title": "Writer.AddFS",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -427,8 +435,10 @@
           "title": "Writer.Close",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -436,8 +446,10 @@
           "title": "Writer.Flush",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -445,8 +457,10 @@
           "title": "Writer.Write",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {
@@ -454,8 +468,10 @@
           "title": "Writer.WriteHeader",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         }
       ]
@@ -471,8 +487,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 19,
-        "unsupportedCaseCount": 21,
+        "passingCaseCount": 40,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -569,8 +585,10 @@
           "title": "File.DataOffset",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -578,8 +596,10 @@
           "title": "File.Open",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -587,8 +607,10 @@
           "title": "File.OpenRaw",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -607,8 +629,10 @@
           "title": "FileHeader.FileInfo",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -616,8 +640,10 @@
           "title": "FileHeader.ModTime",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -625,8 +651,10 @@
           "title": "FileHeader.Mode",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -634,8 +662,10 @@
           "title": "FileHeader.SetModTime",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -643,8 +673,10 @@
           "title": "FileHeader.SetMode",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -707,8 +739,10 @@
           "title": "ReadCloser.Close",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -727,8 +761,10 @@
           "title": "Reader.Open",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -736,8 +772,10 @@
           "title": "Reader.RegisterDecompressor",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -789,8 +827,10 @@
           "title": "Writer.AddFS",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -798,8 +838,10 @@
           "title": "Writer.Close",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -807,8 +849,10 @@
           "title": "Writer.Copy",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -816,8 +860,10 @@
           "title": "Writer.Create",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -825,8 +871,10 @@
           "title": "Writer.CreateHeader",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -834,8 +882,10 @@
           "title": "Writer.CreateRaw",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -843,8 +893,10 @@
           "title": "Writer.Flush",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -852,8 +904,10 @@
           "title": "Writer.RegisterCompressor",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -861,8 +915,10 @@
           "title": "Writer.SetComment",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -870,8 +926,10 @@
           "title": "Writer.SetOffset",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         }
       ]
@@ -42766,8 +42824,8 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 24,
-        "passingCaseCount": 9,
+        "caseCount": 26,
+        "passingCaseCount": 11,
         "unsupportedCaseCount": 15,
         "fixtureCount": 0
       },
@@ -42945,6 +43003,28 @@
           "title": "NoPadding",
           "subtitle": "const",
           "kind": "const",
+          "status": "passing",
+          "fixtures": [
+            "encoding/base32"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "encoding/base32::NoPadding.DecodedLen",
+          "title": "NoPadding.DecodedLen",
+          "subtitle": "usage",
+          "kind": "usage",
+          "status": "passing",
+          "fixtures": [
+            "encoding/base32"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "encoding/base32::NoPadding.EncodedLen",
+          "title": "NoPadding.EncodedLen",
+          "subtitle": "usage",
+          "kind": "usage",
           "status": "passing",
           "fixtures": [
             "encoding/base32"
@@ -108325,8 +108405,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 37,
-        "passingCaseCount": 22,
-        "unsupportedCaseCount": 15,
+        "passingCaseCount": 37,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -108357,8 +108437,10 @@
           "title": "Float64Slice.Len",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108366,8 +108448,10 @@
           "title": "Float64Slice.Less",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108375,8 +108459,10 @@
           "title": "Float64Slice.Search",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108384,8 +108470,10 @@
           "title": "Float64Slice.Sort",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108393,8 +108481,10 @@
           "title": "Float64Slice.Swap",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108435,8 +108525,10 @@
           "title": "IntSlice.Len",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108444,8 +108536,10 @@
           "title": "IntSlice.Less",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108453,8 +108547,10 @@
           "title": "IntSlice.Search",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108462,8 +108558,10 @@
           "title": "IntSlice.Sort",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108471,8 +108569,10 @@
           "title": "IntSlice.Swap",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108645,8 +108745,10 @@
           "title": "StringSlice.Len",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108654,8 +108756,10 @@
           "title": "StringSlice.Less",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108663,8 +108767,10 @@
           "title": "StringSlice.Search",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108672,8 +108778,10 @@
           "title": "StringSlice.Sort",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -108681,8 +108789,10 @@
           "title": "StringSlice.Swap",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
