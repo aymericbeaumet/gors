@@ -31062,6 +31062,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"mime",
 			"net",
 			"net/http",
+			"net/url",
 			"os",
 			"path",
 			"regexp/syntax",
@@ -31252,6 +31253,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"mime",
 					"net",
 					"net/http",
+					"net/url",
 					"os",
 					"path",
 					"regexp/syntax",
@@ -66085,10 +66087,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "net/url",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"net/url"
+		],
 		"symbolCount": 46,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "Error",
@@ -66171,26 +66175,34 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "PathEscape",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"net/url"
+				]
 			},
 			{
 				"name": "PathUnescape",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"net/url"
+				]
 			},
 			{
 				"name": "QueryEscape",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"net/url"
+				]
 			},
 			{
 				"name": "QueryUnescape",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"net/url"
+				]
 			},
 			{
 				"name": "URL",
@@ -79864,11 +79876,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 73,
+	"fixtureCount": 74,
 	"packageCount": 353,
-	"testedPackageCount": 73,
-	"untestedPackageCount": 280,
+	"testedPackageCount": 74,
+	"untestedPackageCount": 279,
 	"symbolCount": 12578,
-	"testedSymbolCount": 453,
-	"untestedSymbolCount": 12125
+	"testedSymbolCount": 457,
+	"untestedSymbolCount": 12121
 } as const;

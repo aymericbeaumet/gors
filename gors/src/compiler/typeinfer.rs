@@ -409,7 +409,7 @@ impl GoType {
             }
             ast::Expr::IndexExpr(index) => {
                 let container = GoType::infer_expr(&index.x, env);
-                match env.resolve_alias(&container) {
+                match env.resolve_alias_outer(&container) {
                     GoType::String => GoType::Uint8,
                     GoType::Slice(elem) | GoType::Array(elem) => *elem,
                     GoType::Map(_, value) => *value,
@@ -1362,6 +1362,16 @@ impl TypeEnv {
             GoType::Chan { elem, direction } => GoType::Chan {
                 elem: Box::new(self.resolve_alias(elem)),
                 direction: *direction,
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    pub fn resolve_alias_outer(&self, ty: &GoType) -> GoType {
+        match ty {
+            GoType::Named(name) => match self.type_kinds.get(name) {
+                Some(TypeKind::Alias(inner)) => inner.clone(),
+                _ => ty.clone(),
             },
             _ => ty.clone(),
         }

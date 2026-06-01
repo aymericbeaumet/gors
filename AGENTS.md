@@ -248,6 +248,11 @@ gors-builtin/
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
+- Named `string` types are also newtypes and must implement `StringValue` for
+  owned, shared-reference, and mutable-reference receivers. Method receiver
+  rewriting must avoid turning `string(r)` into `builtin::string(&self)` because
+  trait impl receiver shims can make that `&&mut T`; use the receiver value
+  itself for the builtin string conversion.
 - Direct method-expression calls lower through the generated Rust inherent
   method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`),
   and variadic method-expression arguments use the same packed/spread lowering
@@ -578,6 +583,11 @@ before compilation to collect variable types, function signatures, struct fields
 and interface declarations. The `GoType` enum represents Go types. Used during
 code generation for type-aware decisions (string indexing, numeric casts,
 interface detection).
+Index expression inference must preserve named element and map value types.
+Resolve only the outer container alias when discovering string/slice/array/map
+shape; recursively resolving element aliases erases newtypes such as
+`[N]encoding` elements and can make generated comparisons coerce constants to
+the underlying Rust scalar instead of the Go defined type.
 Struct field scanning also records fixed array field lengths so compile-time
 `len`/`cap` evaluation can fold selectors such as `len(Dirent{}.Name)` without
 hardcoding package-specific stdlib behavior.

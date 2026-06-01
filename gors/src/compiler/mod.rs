@@ -9268,6 +9268,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let is_slice_alias = matches!(underlying_go_type, typeinfer::GoType::Slice(_));
             let is_copy_alias = go_type_is_copy(&underlying_go_type);
             let is_numeric_alias = resolved_go_type(&underlying_go_type).is_numeric();
+            let is_string_alias = matches!(
+                resolved_go_type(&underlying_go_type),
+                typeinfer::GoType::String
+            );
             let rust_type: syn::Type = other.into();
             let struct_item: syn::Item = if is_copy_alias {
                 syn::parse_quote! {
@@ -9301,6 +9305,29 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     &rust_type,
                     &resolved_go_type(&underlying_go_type),
                 ));
+            }
+            if is_string_alias {
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::StringValue for #ident {
+                        fn string_value(self) -> String {
+                            self.0
+                        }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::StringValue for &#ident {
+                        fn string_value(self) -> String {
+                            self.0.clone()
+                        }
+                    }
+                });
+                items.push(syn::parse_quote! {
+                    impl crate::builtin::StringValue for &mut #ident {
+                        fn string_value(self) -> String {
+                            self.0.clone()
+                        }
+                    }
+                });
             }
             if is_slice_alias && !is_byte_slice {
                 items.push(syn::parse_quote! {
@@ -9741,6 +9768,18 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
                 && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident("self"))
             {
                 *expr = syn::parse_quote! { self };
+                return;
+            }
+
+            if let syn::Expr::Call(call) = expr
+                && is_path_call_expr(&call.func, &["crate", "builtin", "string"])
+                && call.args.len() == 1
+                && let Some(first_arg) = call.args.first_mut()
+                && let syn::Expr::Reference(reference) = first_arg
+                && reference.mutability.is_none()
+                && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident("self"))
+            {
+                *first_arg = syn::parse_quote! { self };
                 return;
             }
 
