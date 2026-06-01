@@ -9079,6 +9079,14 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
     let vis: syn::Visibility = syn::parse_quote! { pub };
     let ident: syn::Ident = name.into();
     let mut generics = compile_go_type_params(ts.type_params);
+    let is_alias_decl = ts.assign.is_some();
+
+    if is_alias_decl && !matches!(ts.type_, ast::Expr::InterfaceType(_)) {
+        let target_ty = type_from_expr_ref(&ts.type_);
+        return Ok(vec![syn::parse_quote! {
+            #vis type #ident #generics = #target_ty;
+        }]);
+    }
 
     match ts.type_ {
         ast::Expr::StructType(struct_type) => {
@@ -9859,6 +9867,12 @@ fn top_level_var_read_expr(path: syn::Expr, go_type: &typeinfer::GoType) -> syn:
 
 fn register_type_spec_in_env(ts: &ast::TypeSpec) {
     let Some(name) = &ts.name else { return };
+    if ts.assign.is_some() {
+        TYPE_ENV.with(|env| {
+            env.borrow_mut()
+                .set_type_alias(name.name, extract_type_name(&ts.type_), false);
+        });
+    }
     match &ts.type_ {
         ast::Expr::StructType(st) => {
             TYPE_ENV.with(|env| {
@@ -10457,6 +10471,17 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
         return syn::parse_quote! { Default::default() };
     }
     if let Some(typeinfer::TypeKind::Alias(inner)) = type_kind_for_type_expr(&target_fun) {
+        if type_expr_denotes_declared_alias(&target_fun) {
+            if inner.is_numeric()
+                && let Some(inner_ty) = rust_type_from_go_type(&inner)
+            {
+                return syn::parse_quote! { ((#arg) as #inner_ty) };
+            }
+            if matches!(inner, typeinfer::GoType::Slice(_)) {
+                return syn::parse_quote! { #target_ty::from(#arg) };
+            }
+            return arg;
+        }
         if inner.is_numeric()
             && let Some(inner_ty) = rust_type_from_go_type(&inner)
         {
@@ -10517,6 +10542,9 @@ fn named_numeric_newtype_inner(
     let typeinfer::GoType::Named(name) = ty else {
         return None;
     };
+    if env.is_type_alias(name) {
+        return None;
+    }
     matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Alias(_)))
         .then(|| env.resolve_alias(ty))
         .filter(typeinfer::GoType::is_numeric)
@@ -11808,11 +11836,16 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 let type_kind =
                     TYPE_ENV.with(|env| env.borrow().get_type_kind(&type_name).cloned());
                 if let Some(typeinfer::TypeKind::Alias(alias_type)) = type_kind {
+                    let is_declared_alias =
+                        TYPE_ENV.with(|env| env.borrow().is_type_alias(&type_name));
                     if let typeinfer::GoType::Array(elem_type) = alias_type {
                         let elts = raw_elts
                             .into_iter()
                             .map(|elt| compile_expr_with_expected(elt, Some(&elem_type)))
                             .collect::<Vec<_>>();
+                        if is_declared_alias {
+                            return syn::parse_quote! { [#(#elts),*] };
+                        }
                         return syn::parse_quote! { #type_ident([#(#elts),*]) };
                     }
                     if let typeinfer::GoType::Slice(elem_type) = alias_type {
@@ -11820,12 +11853,23 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                             .into_iter()
                             .map(|elt| compile_expr_with_expected(elt, Some(&elem_type)))
                             .collect::<Vec<_>>();
+                        if is_declared_alias {
+                            return syn::parse_quote! { Vec::from([#(#elts),*]) };
+                        }
                         return syn::parse_quote! { #type_ident(Vec::from([#(#elts),*])) };
                     }
                     let elts = compile_raw_elts(raw_elts);
                     if elts.is_empty() || elts.iter().any(|elt| matches!(elt, syn::Expr::Tuple(_)))
                     {
                         return syn::parse_quote! { #type_ident::default() };
+                    }
+                    if is_declared_alias {
+                        if let [elt] = elts.as_slice() {
+                            return elt.clone();
+                        }
+                        return compile_error_expr(
+                            "unsupported composite literal for alias declaration",
+                        );
                     }
                     return syn::parse_quote! { #type_ident(#(#elts),*) };
                 }
@@ -12399,9 +12443,11 @@ fn is_named_numeric_alias(type_name: &str) -> bool {
         return false;
     }
     TYPE_ENV.with(|env| {
-        env.borrow()
-            .resolve_alias(&typeinfer::GoType::Named(type_name.to_string()))
-            .is_numeric()
+        let env = env.borrow();
+        !env.is_type_alias(type_name)
+            && env
+                .resolve_alias(&typeinfer::GoType::Named(type_name.to_string()))
+                .is_numeric()
     })
 }
 
@@ -12593,6 +12639,20 @@ fn coerce_numeric_expr(
         && expected_resolved.is_numeric()
         && !matches!(actual, typeinfer::GoType::Named(actual_name) if actual_name == name)
     {
+        if TYPE_ENV.with(|env| env.borrow().is_type_alias(name)) {
+            if expected_resolved == actual_resolved {
+                return expr;
+            }
+            let Some(inner_ty) = rust_type_from_go_type(&expected_resolved) else {
+                return expr;
+            };
+            if !actual_resolved.is_numeric()
+                && !matches!(actual_resolved, typeinfer::GoType::Uintptr)
+            {
+                return expr;
+            }
+            return syn::parse_quote! { (#expr as #inner_ty) };
+        }
         if is_named_constructor_expr(&expr, name) {
             return expr;
         }
@@ -18793,7 +18853,42 @@ fn type_kind_for_type_expr(expr: &ast::Expr) -> Option<typeinfer::TypeKind> {
     })
 }
 
+fn type_expr_alias_decl_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => type_expr_alias_decl_name(&paren.x),
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(pkg) = &*selector.x {
+                let key = format!("{}.{}", pkg.name, selector.sel.name);
+                return TYPE_ENV.with(|env| {
+                    let env = env.borrow();
+                    if env.is_type_alias(&key) {
+                        Some(key)
+                    } else if env.is_type_alias(selector.sel.name) {
+                        Some(selector.sel.name.to_string())
+                    } else {
+                        None
+                    }
+                });
+            }
+            None
+        }
+        ast::Expr::IndexExpr(index) => type_expr_alias_decl_name(&index.x),
+        ast::Expr::IndexListExpr(index) => type_expr_alias_decl_name(&index.x),
+        _ => None,
+    }
+}
+
+fn type_expr_denotes_declared_alias(expr: &ast::Expr) -> bool {
+    type_expr_alias_decl_name(expr)
+        .as_deref()
+        .is_some_and(|name| TYPE_ENV.with(|env| env.borrow().is_type_alias(name)))
+}
+
 fn type_expr_resolves_to_slice_alias(expr: &ast::Expr) -> bool {
+    if type_expr_denotes_declared_alias(expr) {
+        return false;
+    }
     matches!(
         type_kind_for_type_expr(expr),
         Some(typeinfer::TypeKind::Alias(typeinfer::GoType::Slice(_)))
@@ -24949,6 +25044,41 @@ func main() {
                 }
             },
         );
+    }
+
+    #[test]
+    fn it_should_compile_type_alias_declaration_as_type_alias() {
+        test(
+            r#"
+                package main
+
+                type Count = int
+            "#,
+            rust! {
+                pub type Count = isize;
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_not_construct_numeric_alias_declarations() {
+        let go_source = r#"
+package main
+
+type Count = int
+
+func main() {
+	var count Count = 6
+	_ = count
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("pub type Count = isize;"), "{output}");
+        assert!(output.contains("let mut count: Count = 6;"), "{output}");
+        assert!(!output.contains("Count(6)"), "{output}");
     }
 
     #[test]

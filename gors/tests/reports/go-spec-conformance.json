@@ -11,10 +11,10 @@
   },
   "summary": {
     "groupCount": 15,
-    "passingGroupCount": 14,
+    "passingGroupCount": 15,
     "caseCount": 192,
-    "passingCaseCount": 191,
-    "unsupportedCaseCount": 1,
+    "passingCaseCount": 192,
+    "unsupportedCaseCount": 0,
     "fixtureCount": 0
   },
   "groups": [
@@ -547,17 +547,17 @@
       "subtitle": "",
       "fixtures": [
         "_negative/types_interface_method_sets",
-        "_unsupported/types_aliases",
         "named_numeric_types",
         "types",
+        "types_aliases",
         "types_slice_alias_mutation"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 27,
-        "passingCaseCount": 26,
-        "unsupportedCaseCount": 1,
+        "passingCaseCount": 27,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -841,11 +841,11 @@
           "title": "Alias declarations preserve identity with the aliased type",
           "subtitle": "Alias declarations",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/types_aliases"
+            "types_aliases"
           ],
-          "reason": "gors currently emits aliases as distinct wrapper types, so alias values do not preserve Go type identity at runtime."
+          "reason": ""
         },
         {
           "id": "types-recursive",

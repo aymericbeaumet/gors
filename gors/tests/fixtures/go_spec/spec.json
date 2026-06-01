@@ -627,11 +627,10 @@
           "id": "types-aliases",
           "section": "Alias declarations",
           "title": "Alias declarations preserve identity with the aliased type",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/types_aliases"
-          ],
-          "reason": "gors currently emits aliases as distinct wrapper types, so alias values do not preserve Go type identity at runtime."
+            "types_aliases"
+          ]
         },
         {
           "id": "types-recursive",
