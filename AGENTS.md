@@ -249,6 +249,11 @@ gors-builtin/
 - Method values (`v.M`) infer to generated function-value cells. The backend
   lowers them as closures that bind the receiver once; pointer receiver values
   capture the generated pointer cell and lock it per invocation.
+- Generated Rust nominal types are emitted public even when the Go type is not
+  exported. Cross-module generated code may need to call public methods through
+  exported package-level values whose concrete receiver type is unexported, such
+  as `encoding/binary.LittleEndian`; Rust privacy must not block that generated
+  call path.
 
 ### Incremental builds
 

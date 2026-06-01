@@ -5890,6 +5890,8 @@ fn reachable_stdlib_items(
     loop {
         let mut changed = false;
         changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
+        changed |=
+            expand_top_level_receiver_method_names(&mut names, &top_level_types, &item_names);
         for (idx, item) in items.iter().enumerate() {
             let Some(mut reachable_item) =
                 reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
@@ -6061,6 +6063,36 @@ fn expand_supertrait_method_names(
             changed |= names.insert(impl_method_reachability_name(&supertrait, &method_name));
             if let Some(next) = supertraits.get(&supertrait) {
                 stack.extend(next.iter().cloned());
+            }
+        }
+    }
+    changed
+}
+
+fn expand_top_level_receiver_method_names(
+    names: &mut std::collections::HashSet<String>,
+    top_level_types: &ReceiverTypeMap,
+    item_names: &std::collections::HashSet<String>,
+) -> bool {
+    let roots = names
+        .iter()
+        .filter_map(|name| {
+            name.split_once("::")
+                .map(|(value_name, method_name)| (value_name.to_string(), method_name.to_string()))
+        })
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for (value_name, receiver_type) in top_level_types {
+        if receiver_type.module.is_some() || !names.contains(value_name) {
+            continue;
+        }
+        for (root_value_name, method_name) in &roots {
+            if root_value_name != value_name {
+                continue;
+            }
+            let method_root = impl_method_reachability_name(&receiver_type.name, method_name);
+            if item_names.contains(&method_root) {
+                changed |= names.insert(method_root);
             }
         }
     }
@@ -7234,6 +7266,10 @@ fn collect_refs_from_item(
                 if let Some((_, symbol)) =
                     external_path_symbol_from_expr(&method.receiver, self.module_names)
                 {
+                    entry.insert(impl_method_reachability_name(
+                        &symbol,
+                        &method.method.to_string(),
+                    ));
                     entry.insert(symbol);
                 }
             } else if !self.top_level_names.contains(&name) {
@@ -8497,7 +8533,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
     let name = ts
         .name
         .ok_or_else(|| CompilerError::UnsupportedConstruct("type spec has no name".to_string()))?;
-    let vis: syn::Visibility = (&name).into();
+    let vis: syn::Visibility = syn::parse_quote! { pub };
     let ident: syn::Ident = name.into();
     let mut generics = compile_go_type_params(ts.type_params);
 
@@ -25111,6 +25147,29 @@ func main() {
         assert!(tokens.contains("impl Writer for __GorsNoopHash32"));
         assert!(tokens.contains("fn Sum"));
         assert!(tokens.contains("fn Write"));
+    }
+
+    #[test]
+    fn it_should_expand_top_level_receiver_method_roots() {
+        let mut names = std::collections::HashSet::from([
+            "LittleEndian".to_string(),
+            "LittleEndian::PutUint32".to_string(),
+        ]);
+        let top_level_types = std::collections::HashMap::from([(
+            "LittleEndian".to_string(),
+            super::ReceiverTypeRef {
+                module: None,
+                name: "littleEndian".to_string(),
+            },
+        )]);
+        let item_names = std::collections::HashSet::from(["littleEndian::PutUint32".to_string()]);
+
+        assert!(super::expand_top_level_receiver_method_names(
+            &mut names,
+            &top_level_types,
+            &item_names,
+        ));
+        assert!(names.contains("littleEndian::PutUint32"));
     }
 
     #[test]

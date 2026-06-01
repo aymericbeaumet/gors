@@ -6,8 +6,16 @@ import (
 )
 
 func main() {
+	fmt.Println("== encoding/binary/byte-order ==")
+	caseByteOrder()
 	fmt.Println("== encoding/binary/varint ==")
 	caseVarint()
+}
+
+func caseByteOrder() {
+	buf := []byte{4, 3, 2, 1, 5, 6}
+	fmt.Println(binary.LittleEndian.Uint32(buf[:4]))
+	fmt.Println(binary.BigEndian.Uint16(buf[4:6]))
 }
 
 func caseVarint() {
