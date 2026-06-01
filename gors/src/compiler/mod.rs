@@ -8635,24 +8635,26 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let generics_for_impl = generics.clone();
             let (impl_generics, ty_generics, where_clause) = generics_for_impl.split_for_impl();
-            let struct_item = syn::Item::Struct(syn::ItemStruct {
-                attrs: if cannot_derive_clone {
-                    vec![]
-                } else if needs_manual_default {
-                    if can_derive_copy {
-                        vec![syn::parse_quote! { #[derive(Clone, Copy, PartialEq)] }]
-                    } else if cannot_derive_partial_eq {
-                        vec![syn::parse_quote! { #[derive(Clone)] }]
-                    } else {
-                        vec![syn::parse_quote! { #[derive(Clone, PartialEq)] }]
-                    }
-                } else if can_derive_copy {
-                    vec![syn::parse_quote! { #[derive(Clone, Copy, Default, PartialEq)] }]
+            let mut attrs = if cannot_derive_clone {
+                vec![]
+            } else if needs_manual_default {
+                if can_derive_copy {
+                    vec![syn::parse_quote! { #[derive(Clone, Copy, PartialEq)] }]
                 } else if cannot_derive_partial_eq {
-                    vec![syn::parse_quote! { #[derive(Clone, Default)] }]
+                    vec![syn::parse_quote! { #[derive(Clone)] }]
                 } else {
-                    vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
-                },
+                    vec![syn::parse_quote! { #[derive(Clone, PartialEq)] }]
+                }
+            } else if can_derive_copy {
+                vec![syn::parse_quote! { #[derive(Clone, Copy, Default, PartialEq)] }]
+            } else if cannot_derive_partial_eq {
+                vec![syn::parse_quote! { #[derive(Clone, Default)] }]
+            } else {
+                vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
+            };
+            attrs.push(syn::parse_quote! { #[repr(C)] });
+            let struct_item = syn::Item::Struct(syn::ItemStruct {
+                attrs,
                 vis,
                 struct_token: <Token![struct]>::default(),
                 ident: ident.clone(),
@@ -9655,12 +9657,13 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let is_unsafe_pointer_arg = expr_contains_unsafe_pointer_conversion(&raw_arg);
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let arg_go_type = typeinfer::GoType::infer_expr(&raw_arg, &env);
-    let arg: syn::Expr = raw_arg.into();
 
     if matches!(&target_fun, ast::Expr::SelectorExpr(sel) if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") && sel.sel.name == "Pointer")
     {
-        return syn::parse_quote! { 0usize };
+        return compile_unsafe_pointer_value(raw_arg);
     }
+
+    let arg: syn::Expr = raw_arg.into();
     if matches!(&target_fun, ast::Expr::Ident(id) if id.name == "any") {
         return syn::parse_quote! { Box::new(#arg) as Box<dyn std::any::Any> };
     }
@@ -9691,7 +9694,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     }
     if let Some(inner_ty) = arc_mutex_inner_type(&target_ty) {
         return syn::parse_quote! {
-            std::sync::Arc::new(std::sync::Mutex::new(<#inner_ty>::default()))
+            std::sync::Arc::new(std::sync::Mutex::new((#arg) as #inner_ty))
         };
     }
     if let Some(inner_ty) = box_inner_type(&target_ty) {
@@ -9783,6 +9786,39 @@ fn unsafe_intrinsic_name<'ast>(call_expr: &ast::CallExpr<'ast>) -> Option<&'ast 
     }
 }
 
+fn compile_unsafe_pointer_value(expr: ast::Expr) -> syn::Expr {
+    match expr {
+        ast::Expr::ParenExpr(paren) => compile_unsafe_pointer_value(*paren.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
+            let value: syn::Expr = (*unary.x).into();
+            syn::parse_quote! { (#value).clone() }
+        }
+        other => other.into(),
+    }
+}
+
+fn compile_unsafe_offsetof_arg(expr: ast::Expr) -> syn::Expr {
+    let expr = match expr {
+        ast::Expr::ParenExpr(paren) => *paren.x,
+        other => other,
+    };
+    let ast::Expr::SelectorExpr(selector) = expr else {
+        return syn::parse_quote! { 0usize };
+    };
+    let base_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let struct_name = match resolved_go_type(&base_ty) {
+        typeinfer::GoType::Named(name) => name,
+        typeinfer::GoType::Pointer(inner) => match *inner {
+            typeinfer::GoType::Named(name) => name,
+            _ => return syn::parse_quote! { 0usize },
+        },
+        _ => return syn::parse_quote! { 0usize },
+    };
+    let struct_ident = syn::Ident::new(&rust_safe_ident_name(&struct_name), Span::mixed_site());
+    let field_ident = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+    syn::parse_quote! { std::mem::offset_of!(#struct_ident, #field_ident) }
+}
+
 fn unsafe_string_byte_source(expr: ast::Expr) -> Option<ast::Expr> {
     match expr {
         ast::Expr::ParenExpr(paren) => unsafe_string_byte_source(*paren.x),
@@ -9801,9 +9837,43 @@ fn unsafe_string_byte_source(expr: ast::Expr) -> Option<ast::Expr> {
 }
 
 fn compile_unsafe_intrinsic_call(call_expr: ast::CallExpr) -> syn::Expr {
-    let is_string = unsafe_intrinsic_name(&call_expr) == Some("String");
-    let is_slice_data = unsafe_intrinsic_name(&call_expr) == Some("SliceData");
+    let name = unsafe_intrinsic_name(&call_expr);
+    let is_string = name == Some("String");
+    let is_slice_data = name == Some("SliceData");
     let args = call_expr.args.unwrap_or_default();
+    match name {
+        Some("Sizeof") if args.len() == 1 => {
+            let arg: syn::Expr = args.into_iter().next().unwrap_or_else(|| {
+                ast::Expr::Ident(ast::Ident {
+                    name_pos: token::Position::default(),
+                    name: "__gors_missing_arg",
+                    obj: None,
+                })
+            }).into();
+            return syn::parse_quote! { std::mem::size_of_val(&#arg) };
+        }
+        Some("Alignof") if args.len() == 1 => {
+            let arg: syn::Expr = args.into_iter().next().unwrap_or_else(|| {
+                ast::Expr::Ident(ast::Ident {
+                    name_pos: token::Position::default(),
+                    name: "__gors_missing_arg",
+                    obj: None,
+                })
+            }).into();
+            return syn::parse_quote! { std::mem::align_of_val(&#arg) };
+        }
+        Some("Offsetof") if args.len() == 1 => {
+            let arg = args.into_iter().next().unwrap_or_else(|| {
+                ast::Expr::Ident(ast::Ident {
+                    name_pos: token::Position::default(),
+                    name: "__gors_missing_arg",
+                    obj: None,
+                })
+            });
+            return compile_unsafe_offsetof_arg(arg);
+        }
+        _ => {}
+    }
     match (is_string, is_slice_data, args.len()) {
         (true, false, 2) => {
             let mut args = args.into_iter();
@@ -16043,7 +16113,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::CallExpr(call_expr) => {
                 if matches!(
                     unsafe_intrinsic_name(&call_expr),
-                    Some("String" | "SliceData")
+                    Some("Alignof" | "Offsetof" | "Sizeof" | "String" | "SliceData")
                 ) {
                     return compile_unsafe_intrinsic_call(call_expr);
                 }

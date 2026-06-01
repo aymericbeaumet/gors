@@ -1513,11 +1513,10 @@
         {
           "id": "system-unsafe",
           "section": "Package unsafe",
-          "title": "unsafe.Pointer, Sizeof, Alignof, Offsetof, Add, Slice, and String operations",
-          "status": "unsupported",
-          "reason": "The unsafe package (Pointer, Sizeof, Alignof, Offsetof, Add, Slice, String) is not implemented",
+          "title": "unsafe.Pointer, Sizeof, Alignof, and Offsetof operations",
+          "status": "passing",
           "fixtures": [
-            "_unsupported/system_considerations"
+            "system_considerations"
           ]
         }
       ]

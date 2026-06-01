@@ -126,6 +126,11 @@ gors-builtin/
   representation, so `p := &x`, `*p = v`, and later reads of `x` observe the
   shared storage. Borrowed pointer parameters may still lower to `&mut T` when
   the existing escape analysis proves the pointer does not escape.
+- Generated Go structs use `#[repr(C)]` so Rust preserves declaration-order
+  layout for codegen that depends on Go field offsets, such as
+  `unsafe.Offsetof`. Keep unsafe support simple and codegen-first while
+  conformance is still incomplete; broaden semantics through generic lowering
+  rather than package-specific stdlib replacements.
 - Map literals, comma-ok map indexes, map assignments, and `delete` calls must
   compile keys and values with the expected map key/value Go types. This keeps
   `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
