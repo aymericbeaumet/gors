@@ -995,6 +995,192 @@ fn interpret_go_string_escapes(s: &str) -> String {
     result
 }
 
+fn interpreted_go_string_bytes(s: &str) -> Vec<u8> {
+    let mut result = Vec::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+
+        match chars.next() {
+            Some('n') => result.push(b'\n'),
+            Some('t') => result.push(b'\t'),
+            Some('r') => result.push(b'\r'),
+            Some('\\') => result.push(b'\\'),
+            Some('"') => result.push(b'"'),
+            Some('\'') => result.push(b'\''),
+            Some('a') => result.push(0x07),
+            Some('b') => result.push(0x08),
+            Some('f') => result.push(0x0c),
+            Some('v') => result.push(0x0b),
+            Some('x') => {
+                let hex: String = chars.by_ref().take(2).collect();
+                if let Ok(val) = u8::from_str_radix(&hex, 16) {
+                    result.push(val);
+                } else {
+                    result.extend_from_slice(b"\\x");
+                    result.extend_from_slice(hex.as_bytes());
+                }
+            }
+            Some('u') => {
+                let hex: String = chars.by_ref().take(4).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    let mut buf = [0u8; 4];
+                    result.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                } else {
+                    result.extend_from_slice(b"\\u");
+                    result.extend_from_slice(hex.as_bytes());
+                }
+            }
+            Some('U') => {
+                let hex: String = chars.by_ref().take(8).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    let mut buf = [0u8; 4];
+                    result.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                } else {
+                    result.extend_from_slice(b"\\U");
+                    result.extend_from_slice(hex.as_bytes());
+                }
+            }
+            Some(other) if other.is_ascii_digit() => {
+                let mut oct = String::new();
+                oct.push(other);
+                for _ in 0..2 {
+                    if let Some(next) = chars.as_str().chars().next() {
+                        if next.is_ascii_digit() {
+                            oct.push(chars.next().unwrap_or('0'));
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if let Ok(val) = u8::from_str_radix(&oct, 8) {
+                    result.push(val);
+                } else {
+                    result.push(b'\\');
+                    result.extend_from_slice(oct.as_bytes());
+                }
+            }
+            Some(other) => {
+                result.push(b'\\');
+                let mut buf = [0u8; 4];
+                result.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => result.push(b'\\'),
+        }
+    }
+    result
+}
+
+fn go_string_literal_bytes(lit: &ast::BasicLit) -> Option<Vec<u8>> {
+    if lit.kind != token::Token::STRING {
+        return None;
+    }
+    let raw = lit.value;
+    let inner = raw.get(1..raw.len().checked_sub(1)?)?;
+    if raw.starts_with('`') {
+        Some(
+            inner
+                .as_bytes()
+                .iter()
+                .copied()
+                .filter(|byte| *byte != b'\r')
+                .collect(),
+        )
+    } else {
+        Some(interpreted_go_string_bytes(inner))
+    }
+}
+
+fn byte_vec_expr(bytes: &[u8]) -> syn::Expr {
+    let elems: Vec<syn::Expr> = bytes
+        .iter()
+        .map(|byte| {
+            let lit = syn::LitInt::new(&format!("{byte}u8"), Span::mixed_site());
+            syn::parse_quote! { #lit }
+        })
+        .collect();
+    syn::parse_quote! { Vec::<u8>::from([#(#elems),*]) }
+}
+
+fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_string_const_bytes_{}", import_rust_name(name)),
+        Span::mixed_site(),
+    )
+}
+
+fn selector_string_const_bytes_path(selector_expr: &ast::SelectorExpr) -> Option<syn::Path> {
+    let mut path = selector_path_from_ref(selector_expr);
+    let last = path.segments.last_mut()?;
+    last.ident = string_const_bytes_fn_ident(selector_expr.sel.name);
+    Some(path)
+}
+
+fn const_eval_string_bytes(
+    expr: &ast::Expr,
+    values: &BTreeMap<String, Vec<u8>>,
+) -> Option<Vec<u8>> {
+    match expr {
+        ast::Expr::BasicLit(lit) => go_string_literal_bytes(lit),
+        ast::Expr::Ident(ident) => values.get(ident.name).cloned(),
+        ast::Expr::ParenExpr(paren) => const_eval_string_bytes(&paren.x, values),
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
+            let mut lhs = const_eval_string_bytes(&binary.x, values)?;
+            let rhs = const_eval_string_bytes(&binary.y, values)?;
+            lhs.extend(rhs);
+            Some(lhs)
+        }
+        _ => None,
+    }
+}
+
+fn string_bytes_vec_expr_for_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::BasicLit(lit) => go_string_literal_bytes(lit).map(|bytes| byte_vec_expr(&bytes)),
+        ast::Expr::Ident(ident) if is_active_string_const_fn(ident.name) => {
+            let ident = string_const_bytes_fn_ident(ident.name);
+            Some(syn::parse_quote! { #ident() })
+        }
+        ast::Expr::SelectorExpr(selector) if is_active_selector_string_const_fn(selector) => {
+            let path = selector_string_const_bytes_path(selector)?;
+            Some(syn::parse_quote! { #path() })
+        }
+        ast::Expr::ParenExpr(paren) => string_bytes_vec_expr_for_expr(&paren.x),
+        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
+            let lhs = string_bytes_vec_expr_for_expr(&binary.x)?;
+            let rhs = string_bytes_vec_expr_for_expr(&binary.y)?;
+            Some(syn::parse_quote! {{
+                let mut __gors_string_bytes = #lhs;
+                __gors_string_bytes.extend_from_slice(&#rhs);
+                __gors_string_bytes
+            }})
+        }
+        _ => None,
+    }
+}
+
+fn byte_slice_conversion_bytes_vec_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => byte_slice_conversion_bytes_vec_expr(&paren.x),
+        ast::Expr::CallExpr(call) => {
+            if special_type_conversion_kind(call) != Some(ir::SpecialTypeConversionKind::ByteSlice)
+            {
+                return None;
+            }
+            let args = call.args.as_deref()?;
+            let [arg] = args else {
+                return None;
+            };
+            string_bytes_vec_expr_for_expr(arg)
+        }
+        _ => None,
+    }
+}
+
 /// Convert a Go type constraint expression to Rust trait bounds.
 ///
 /// Maps common Go constraints to appropriate Rust trait bounds:
@@ -2315,6 +2501,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
     let mut items = vec![];
     let mut last_valued_idx: Option<usize> = None;
     let mut const_values: BTreeMap<String, ConstValue> = BTreeMap::new();
+    let mut const_string_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
     for (iota, spec_idx) in (0..value_specs.len()).enumerate() {
         let Some(value_spec) = value_specs.get(spec_idx) else {
@@ -2366,6 +2553,8 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             let value_expr = source_values.and_then(|vals| vals.get(name_idx));
             let evaluated = value_expr
                 .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
+            let evaluated_string_bytes =
+                value_expr.and_then(|expr| const_eval_string_bytes(expr, &const_string_bytes));
 
             let rust_type: syn::Type = if let Some(name) = type_name_str {
                 const_rust_type_from_type_name(name)
@@ -2460,10 +2649,23 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 STRING_CONST_NAMES.with(|names| {
                     names.borrow_mut().insert(ident.to_string());
                 });
+                let bytes_ident = string_const_bytes_fn_ident(name.name);
+                let bytes = evaluated_string_bytes
+                    .as_ref()
+                    .map_or_else(|| {
+                        let value = value.clone();
+                        syn::parse_quote! { (#value).as_bytes().to_vec() }
+                    }, |bytes| byte_vec_expr(bytes));
+                let string_value = value.clone();
                 items.push(syn::parse_quote! {
                     #[inline]
                     #[allow(non_snake_case)]
-                    #vis fn #ident() -> String { #value.to_string() }
+                    #vis fn #ident() -> String { #string_value.to_string() }
+                });
+                items.push(syn::parse_quote! {
+                    #[inline]
+                    #[allow(non_snake_case)]
+                    #vis fn #bytes_ident() -> Vec<u8> { #bytes }
                 });
             } else {
                 items.push(syn::parse_quote! {
@@ -2472,6 +2674,9 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             }
             if let Some(evaluated) = evaluated {
                 const_values.insert(name.name.to_string(), evaluated);
+            }
+            if let Some(bytes) = evaluated_string_bytes {
+                const_string_bytes.insert(name.name.to_string(), bytes);
             }
         }
     }
@@ -4357,10 +4562,19 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
             if indices.contains(&index) {
-                clone_path_arg(arg);
+                normalize_vec_value_arg(arg);
             }
         }
     }
+}
+
+fn normalize_vec_value_arg(arg: &mut syn::Expr) {
+    if let syn::Expr::Reference(reference) = arg
+        && reference.mutability.is_none()
+    {
+        *arg = (*reference.expr).clone();
+    }
+    clone_path_arg(arg);
 }
 
 fn clone_path_arg(arg: &mut syn::Expr) {
@@ -9961,6 +10175,12 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
     let arg_go_type =
         typeinfer::GoType::infer_expr(&raw_arg, &TYPE_ENV.with(|e| e.borrow().clone()));
     let is_numeric_var = arg_go_type.is_integer();
+    if kind == "[]byte"
+        && matches!(resolved_go_type(&arg_go_type), typeinfer::GoType::String)
+        && let Some(bytes) = string_bytes_vec_expr_for_expr(&raw_arg)
+    {
+        return bytes;
+    }
     let arg: syn::Expr = raw_arg.into();
     match kind {
         "string" if is_int_arg || is_numeric_var => {
@@ -10377,15 +10597,7 @@ impl VariadicCallTarget {
     fn call(self, args: syn::punctuated::Punctuated<syn::Expr, Token![,]>) -> syn::Expr {
         match self {
             Self::Function(fun) => syn::parse_quote! { #fun(#args) },
-            Self::Method { receiver, method } => syn::Expr::MethodCall(syn::ExprMethodCall {
-                attrs: vec![],
-                receiver: Box::new(receiver),
-                dot_token: <Token![.]>::default(),
-                method,
-                turbofish: None,
-                paren_token: syn::token::Paren::default(),
-                args,
-            }),
+            Self::Method { receiver, method } => method_call_expr(receiver, method, args),
         }
     }
 }
@@ -10624,9 +10836,18 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 Ok(dst) => dst,
                 Err(err) => return compile_error_expr(err.to_string()),
             };
+            let src_bytes = if matches!(resolved_go_type(&src_ty), typeinfer::GoType::String) {
+                string_bytes_vec_expr_for_expr(&src_raw)
+            } else {
+                None
+            };
             let src = compile_expr_with_expected(src_raw, None);
             if matches!(resolved_go_type(&src_ty), typeinfer::GoType::String) {
-                syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, (#src).as_bytes()) }
+                if let Some(bytes) = src_bytes {
+                    syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#bytes) }
+                } else {
+                    syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, (#src).as_bytes()) }
+                }
             } else {
                 syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#src) }
             }
@@ -11715,6 +11936,32 @@ fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
     lvalue_expr_from_ref(&expr).unwrap_or_else(|| expr.into())
 }
 
+fn receiver_expr_needs_scoped_temp(expr: &syn::Expr) -> bool {
+    expr.to_token_stream()
+        .to_string()
+        .replace(' ', "")
+        .contains(".lock().unwrap()")
+}
+
+fn method_call_expr(
+    receiver: syn::Expr,
+    method: syn::Ident,
+    args: syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+) -> syn::Expr {
+    if receiver_expr_needs_scoped_temp(&receiver) {
+        return syn::parse_quote! { (|| { #receiver.#method(#args) })() };
+    }
+    syn::Expr::MethodCall(syn::ExprMethodCall {
+        attrs: vec![],
+        receiver: Box::new(receiver),
+        dot_token: <Token![.]>::default(),
+        method,
+        turbofish: None,
+        paren_token: syn::token::Paren::default(),
+        args,
+    })
+}
+
 fn is_ir_addressable_expr(expr: &ast::Expr) -> bool {
     TYPE_ENV.with(|env| {
         matches!(
@@ -12194,6 +12441,10 @@ fn compile_expr_with_expected(
             Some(typeinfer::GoType::Pointer(_)) => syn::parse_quote! { Default::default() },
             _ => syn::parse_quote! { Default::default() },
         };
+    }
+
+    if let Some(bytes) = byte_slice_conversion_bytes_vec_expr(&expr) {
+        return bytes;
     }
 
     if matches!(
@@ -16558,15 +16809,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                 args.push(arg);
                             }
                         }
-                        return syn::Expr::MethodCall(syn::ExprMethodCall {
-                            attrs: vec![],
-                            receiver: Box::new(receiver),
-                            dot_token: <Token![.]>::default(),
-                            method,
-                            turbofish: None,
-                            paren_token: syn::token::Paren::default(),
-                            args,
-                        });
+                        return method_call_expr(receiver, method, args);
                     }
                 }
                 Self::Call(call_expr.into())

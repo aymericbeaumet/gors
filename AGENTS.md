@@ -87,6 +87,11 @@ gors-builtin/
   function calls must still use the Go-inferred type when choosing the
   `LazyLock<T>` type; do not fall back to Rust initializer inference alone, or
   values such as constructor-returned pointers can degrade to `Box<dyn Any>`.
+- Method calls whose generated receiver locks a package-level or pointer cell
+  must scope the `MutexGuard` to that single call. Do not emit multiple
+  `x.lock().unwrap().M()` temporaries directly into one Rust argument list,
+  because Rust can keep the first guard alive until the statement ends and
+  deadlock the next call.
 - Go function values stored in generated data structures and explicit local
   variables of `func(...)` type are reference-counted nil-capable cells:
   `std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(...) -> ... + Send + Sync>>>>`.
@@ -154,6 +159,10 @@ gors-builtin/
 - String `+=` lowers to `String::push_str(&rhs)` rather than Rust `+=`, because
   Go accepts string operands by value while Rust's `String` add-assign expects a
   borrowed string slice.
+- Go string literals are byte sequences. Any lowering that views a string
+  literal or string constant as bytes, including `[]byte(s)` and `copy(dst, s)`,
+  must preserve byte escapes such as `\xff` directly instead of routing through
+  Rust UTF-8 `String::as_bytes()`.
 - Main-package package-level vars are injected as startup locals in `main()`.
   Preserve explicit Go types there: typed initializers must be compiled with the
   expected type and emitted with a Rust type annotation, and typed zero values
@@ -359,6 +368,16 @@ actually needed.
 the split unit and integration targets below and should not redefine its own
 combined Cargo command. CI should call the split `make rust-test-*` targets
 below for clearer job boundaries and failure output.
+
+Unit tests and directly invoked partial integration targets use the custom `ci`
+profile, which is a debuggable release-style profile: light optimization,
+debug symbols, no LTO, and many codegen units. The aggregate
+`make rust-test-integration` target intentionally overrides the integration
+profile to `release` so full integration sweeps optimize for faster runtime.
+Keep this split in the Makefile through `RUST_TEST_PARTIAL_PROFILE`,
+`RUST_TEST_INTEGRATION_PROFILE`, and `RUST_TEST_FULL_INTEGRATION_PROFILE`.
+macOS builds use Apple's `ld_prime` linker through Cargo target rustflags for
+faster links in all profiles.
 
 ### Integration tests
 
