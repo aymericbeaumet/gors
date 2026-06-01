@@ -303,6 +303,19 @@ another package should improve parsing, type inference, code generation,
 reachability, or backend/runtime primitives for arbitrary Go packages. Do not
 make a stdlib test pass by reimplementing that stdlib function, method, type, or
 constant in Rust, or by adding package-name-specific lowering rules.
+Stdlib conformance work must proceed package by package in alphabetical order
+from `gors/tests/reports/go-stdlib-conformance.json`. Before moving past a
+package, inspect every exported package-level function, method, type, constant,
+and variable reported for that package and add or fix integration coverage until
+each supported row is backed by an e2e generated-program check that compares Go
+output with gors output. A symbol is not covered just because a fixture compiles
+with `var _ = pkg.Symbol`, `var _ Type`, a method expression, or another
+selector-only reference; those references may exercise reachability, but they do
+not prove behavior. Mark a stdlib method or function as covered only when the
+fixture actually calls it, observes its result or side effect through stdout, and
+the integration harness compares that observable behavior against the pinned Go
+SDK. If the conformance reporter marks selector-only references as passing, fix
+the reporter or the fixture semantics before claiming package completion.
 
 The `ParsedProgram.stdlib_imports` field tracks which stdlib packages a program
 uses directly. `compile_program_multi()` scans those packages for type
@@ -448,6 +461,11 @@ For broad stdlib API coverage, prefer grouping related checks into one package
 fixture such as `gors/tests/fixtures/go_stdlib/strings/main.go` rather than
 creating one runnable fixture per function; `rust-test-integration-go-stdlib` pays a
 full transpile plus `rustc` execution cost per discovered program directory.
+Within those grouped fixtures, coverage must be behavioral: call each function
+or method under test, print deterministic results or state transitions, and let
+the generated-program harness compare stdout against the pinned Go SDK. Do not
+use compile-only references such as `var _ = strings.Clone`, `var _ T`, or
+`var _ = (*T).M` as evidence that a package, function, method, or type is done.
 Generated-program fixtures compare stdout only. Use `fmt.Print*` for observable
 fixture output unless the fixture is explicitly testing the predeclared
 `print`/`println` builtins, because Go's predeclared `print` and `println`
@@ -455,9 +473,10 @@ write to stderr under the pinned SDK.
 After adding or changing `gors/tests/fixtures/go_stdlib` fixtures, run
 `npm --prefix www run generate:go-stdlib-conformance` from the repository root to
 run the stdlib generated-program integration test and refresh
-`gors/tests/reports/go-stdlib-conformance.json`. The Rust reporter marks
-fixture-used selectors as tested and derives untested package/symbol rows from
-the embedded Go SDK source.
+`gors/tests/reports/go-stdlib-conformance.json`. The Rust reporter derives
+untested package/symbol rows from the embedded Go SDK source; keep its coverage
+classification aligned with the behavioral rule above, not with mere selector
+presence in fixture source.
 The Go specification conformance matrix lives in
 `gors/tests/fixtures/go_spec/spec.json` and is emitted by the Rust reporter as
 `gors/tests/reports/go-spec-conformance.json`. Mark implemented entries as
