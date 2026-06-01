@@ -62,6 +62,7 @@ thread_local! {
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
+    static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone)]
@@ -374,6 +375,51 @@ fn qualify_interface_param_name(
     }
 }
 
+fn collect_go_type_needed_interface_method_sets(
+    go_type: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    match env.resolve_alias(go_type) {
+        typeinfer::GoType::Interface(name) | typeinfer::GoType::Named(name) => {
+            if env.is_interface(&name)
+                && let Some(methods) = env.get_interface_methods(&name)
+                && !methods.is_empty()
+            {
+                out.entry(name).or_insert(methods);
+            }
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            collect_go_type_needed_interface_method_sets(&inner, env, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_field_list_needed_interface_method_sets(
+    fields: Option<&ast::FieldList<'_>>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    if let Some(fields) = fields {
+        for field in &fields.list {
+            if let Some(type_) = &field.type_ {
+                let go_type = typeinfer::GoType::from_expr(type_);
+                collect_go_type_needed_interface_method_sets(&go_type, env, out);
+            }
+        }
+    }
+}
+
+fn collect_func_type_needed_interface_method_sets(
+    func_type: &ast::FuncType<'_>,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    collect_field_list_needed_interface_method_sets(Some(&func_type.params), env, out);
+    collect_field_list_needed_interface_method_sets(func_type.results.as_ref(), env, out);
+}
+
 fn collect_needed_imported_interface_method_sets<'src>(
     decls: &[ast::Decl<'src>],
 ) -> BTreeMap<String, Vec<String>> {
@@ -394,6 +440,17 @@ fn collect_decl_needed_imported_interface_method_sets(
 ) {
     match decl {
         ast::Decl::FuncDecl(func) => {
+            let collect_signature = func.recv.is_none()
+                && func.name.name == "New"
+                && ACTIVE_REACHABILITY_ROOTS.with(|roots| {
+                    roots
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|roots| roots.contains(func.name.name))
+                });
+            if collect_signature {
+                collect_func_type_needed_interface_method_sets(&func.type_, env, out);
+            }
             if let Some(body) = &func.body {
                 collect_block_needed_imported_interface_method_sets(body, env, out);
             }
@@ -746,6 +803,18 @@ fn set_type_env(type_env: typeinfer::TypeEnv) {
     TYPE_ENV.with(|env| {
         *env.borrow_mut() = type_env;
     });
+}
+
+pub(crate) fn with_active_reachability_roots<T>(
+    roots: Option<&std::collections::HashSet<String>>,
+    f: impl FnOnce() -> T,
+) -> T {
+    ACTIVE_REACHABILITY_ROOTS.with(|active| {
+        let previous = active.replace(roots.cloned());
+        let result = f();
+        active.replace(previous);
+        result
+    })
 }
 
 fn set_import_renames(import_renames: BTreeMap<String, String>) {
@@ -4166,9 +4235,10 @@ fn inject_post_prune_stdlib_helpers(
                     .iter()
                     .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == "Stdout"))
                 => {
+                    let file_names = std::collections::HashSet::from(["File".to_string()]);
                     module.file.items.retain(|item| match item {
                         syn::Item::Impl(item_impl) => {
-                            named_self_type(&item_impl.self_ty).as_deref() != Some("File")
+                            !type_mentions_name(&item_impl.self_ty, &file_names)
                         }
                         _ => item_name(item)
                             .as_deref()
@@ -7503,8 +7573,12 @@ fn collect_refs_from_item(
                         self.local_names.insert(local.to_string());
                     }
                     self.local_names.insert(symbol.to_string());
+                    self.local_names
+                        .insert(impl_method_reachability_name(local, symbol));
                     if let Some(assoc) = assoc {
                         self.local_names.insert(assoc.to_string());
+                        self.local_names
+                            .insert(impl_method_reachability_name(symbol, assoc));
                     }
                 }
                 _ => {}
@@ -8656,6 +8730,133 @@ fn trait_path_is_local(path: &syn::Path) -> bool {
     path.leading_colon.is_none() && path.segments.len() == 1
 }
 
+fn trait_path_interface_name(path: &syn::Path) -> Option<String> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [] => None,
+        [single] => Some(single.clone()),
+        [crate_name, rest @ ..] if crate_name == "crate" => Some(rest.join(".")),
+        _ => Some(segments.join(".")),
+    }
+}
+
+fn noop_impl_item_for_signature(sig: syn::Signature) -> syn::ImplItem {
+    let block = if sig.ident == "__gors_as_any" {
+        syn::parse_quote!({ None })
+    } else if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({})
+    } else {
+        syn::parse_quote!({ crate::builtin::panic_value("called no-op interface method") })
+    };
+    syn::ImplItem::Fn(syn::ImplItemFn {
+        attrs: vec![],
+        vis: syn::Visibility::Inherited,
+        defaultness: None,
+        sig,
+        block,
+    })
+}
+
+fn noop_impl_items_for_trait_fns<'a>(
+    methods: impl IntoIterator<Item = &'a syn::TraitItemFn>,
+) -> Vec<syn::ImplItem> {
+    methods
+        .into_iter()
+        .map(|trait_fn| noop_impl_item_for_signature(trait_fn.sig.clone()))
+        .collect()
+}
+
+fn return_type_from_go_results(results: &[typeinfer::GoType]) -> syn::ReturnType {
+    match results {
+        [] => syn::ReturnType::Default,
+        [single] => {
+            let ty = rust_type_from_inferred_go_type(single);
+            syn::parse_quote! { -> #ty }
+        }
+        many => {
+            let tys = many
+                .iter()
+                .map(rust_type_from_inferred_go_type)
+                .collect::<Vec<_>>();
+            syn::parse_quote! { -> (#(#tys),*) }
+        }
+    }
+}
+
+fn interface_method_signature_from_type_env(
+    interface_name: &str,
+    method_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> syn::Signature {
+    let method_ident = syn::Ident::new(&rust_safe_ident_name(method_name), Span::mixed_site());
+    let mut inputs = syn::punctuated::Punctuated::new();
+    inputs.push(syn::FnArg::Receiver(syn::Receiver {
+        attrs: vec![],
+        reference: Some((<Token![&]>::default(), None)),
+        mutability: Some(<Token![mut]>::default()),
+        self_token: <Token![self]>::default(),
+        colon_token: None,
+        ty: Box::new(syn::parse_quote! { &mut Self }),
+    }));
+    for (idx, param) in env
+        .get_method_params(interface_name, method_name)
+        .into_iter()
+        .enumerate()
+    {
+        let ident = syn::Ident::new(&format!("__gors_arg_{idx}"), Span::mixed_site());
+        let ty = rust_type_from_inferred_go_type(&param);
+        inputs.push(syn::FnArg::Typed(syn::PatType {
+            attrs: vec![],
+            pat: Box::new(syn::Pat::Ident(syn::PatIdent {
+                attrs: vec![],
+                by_ref: None,
+                subpat: None,
+                mutability: None,
+                ident,
+            })),
+            colon_token: <Token![:]>::default(),
+            ty: Box::new(ty),
+        }));
+    }
+    syn::Signature {
+        constness: None,
+        asyncness: None,
+        unsafety: None,
+        abi: None,
+        fn_token: <Token![fn]>::default(),
+        ident: method_ident,
+        generics: syn::Generics::default(),
+        paren_token: syn::token::Paren::default(),
+        inputs,
+        variadic: None,
+        output: return_type_from_go_results(&env.get_method_returns(interface_name, method_name)),
+    }
+}
+
+fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<syn::ImplItem> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let Some(method_names) = env.get_interface_direct_methods(interface_name) else {
+            return Vec::new();
+        };
+        let mut items = vec![noop_impl_item_for_signature(syn::parse_quote! {
+            fn __gors_as_any(&self) -> Option<&dyn std::any::Any>
+        })];
+        items.extend(method_names.iter().map(|method_name| {
+            noop_impl_item_for_signature(interface_method_signature_from_type_env(
+                interface_name,
+                method_name,
+                &env,
+            ))
+        }));
+        items
+    })
+}
+
 fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
     let trait_methods = collect_trait_method_fns(items);
     let trait_supertraits: BTreeMap<String, Vec<syn::Path>> = items
@@ -8705,9 +8906,6 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
             .unwrap_or_default();
         let mut seen = std::collections::BTreeSet::new();
         while let Some(path) = pending.pop() {
-            if !trait_path_is_local(&path) {
-                continue;
-            }
             let Some(name) = path
                 .segments
                 .last()
@@ -8715,39 +8913,34 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
             else {
                 continue;
             };
-            if !seen.insert(name.clone()) {
+            let seen_name = trait_path_interface_name(&path).unwrap_or_else(|| name.clone());
+            if !seen.insert(seen_name) {
                 continue;
             }
-            if let Some(next) = trait_supertraits.get(&name) {
+            if trait_path_is_local(&path)
+                && let Some(next) = trait_supertraits.get(&name)
+            {
                 pending.extend(next.iter().cloned());
             }
-            if !trait_methods.contains_key(&name) && !trait_supertraits.contains_key(&name) {
+            let impl_items = if trait_path_is_local(&path) {
+                if !trait_methods.contains_key(&name) && !trait_supertraits.contains_key(&name) {
+                    continue;
+                }
+                noop_impl_items_for_trait_fns(
+                    trait_methods
+                        .get(&name)
+                        .into_iter()
+                        .flat_map(|methods| methods.iter()),
+                )
+            } else if let Some(interface_name) = trait_path_interface_name(&path) {
+                let items = noop_impl_items_for_interface_name(&interface_name);
+                if items.is_empty() {
+                    continue;
+                }
+                items
+            } else {
                 continue;
-            }
-            let impl_items = trait_methods
-                .get(&name)
-                .into_iter()
-                .flat_map(|methods| methods.iter())
-                .map(|trait_fn| {
-                    let sig = trait_fn.sig.clone();
-                    let block = if sig.ident == "__gors_as_any" {
-                        syn::parse_quote!({ None })
-                    } else if matches!(sig.output, syn::ReturnType::Default) {
-                        syn::parse_quote!({})
-                    } else {
-                        syn::parse_quote!({
-                            crate::builtin::panic_value("called no-op interface method")
-                        })
-                    };
-                    syn::ImplItem::Fn(syn::ImplItemFn {
-                        attrs: vec![],
-                        vis: syn::Visibility::Inherited,
-                        defaultness: None,
-                        sig,
-                        block,
-                    })
-                })
-                .collect::<Vec<_>>();
+            };
             out.push(syn::parse_quote! {
                 impl #path for #noop_ident {
                     #(#impl_items)*
@@ -12400,6 +12593,9 @@ fn coerce_numeric_expr(
         && expected_resolved.is_numeric()
         && !matches!(actual, typeinfer::GoType::Named(actual_name) if actual_name == name)
     {
+        if is_named_constructor_expr(&expr, name) {
+            return expr;
+        }
         let Some(inner_ty) = rust_type_from_go_type(&expected_resolved) else {
             return expr;
         };
@@ -12441,6 +12637,19 @@ fn coerce_numeric_expr(
         return expr;
     }
     syn::parse_quote! { (#expr as #target_ty) }
+}
+
+fn is_named_constructor_expr(expr: &syn::Expr, name: &str) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let Some(last) = path.path.segments.last() else {
+        return false;
+    };
+    last.ident == rust_safe_ident_name(name)
 }
 
 fn is_complex_go_type(ty: &typeinfer::GoType) -> bool {
@@ -12913,7 +13122,7 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
                         .get_var(pkg_or_recv.name)
                         .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
                     {
-                        return env.get_func_params(&format!("{}.{}", name, sel.sel.name));
+                        return env.get_method_params(&name, sel.sel.name);
                     }
                 }
                 Vec::new()
@@ -12928,7 +13137,7 @@ fn receiver_method_type_name_for_call(
     env: &typeinfer::TypeEnv,
 ) -> Option<String> {
     match env.resolve_alias(&ty) {
-        typeinfer::GoType::Named(name) => Some(name),
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
         typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
         _ => None,
     }
@@ -12963,12 +13172,12 @@ fn method_value_info(selector: &ast::SelectorExpr) -> Option<MethodValueInfo> {
         let env = env.borrow();
         let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
         let receiver_name = receiver_method_type_name_for_call(receiver_type.clone(), &env)?;
-        let method_key = format!("{}.{}", receiver_name, selector.sel.name);
-        env.has_func(&method_key).then(|| MethodValueInfo {
-            receiver_type,
-            params: env.get_func_params(&method_key),
-            results: env.get_func_returns(&method_key),
-        })
+        env.has_method_func(&receiver_name, selector.sel.name)
+            .then(|| MethodValueInfo {
+                receiver_type,
+                params: env.get_method_params(&receiver_name, selector.sel.name),
+                results: env.get_method_returns(&receiver_name, selector.sel.name),
+            })
     })
 }
 
@@ -13208,12 +13417,12 @@ fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
                     }
 
                     if let Some(typeinfer::GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
-                        return env.get_func_returns(&format!("{}.{}", name, sel.sel.name));
+                        return env.get_method_returns(&name, sel.sel.name);
                     }
                 }
                 let receiver_type = typeinfer::GoType::infer_expr(&sel.x, &env);
                 if let Some(name) = receiver_method_type_name_for_call(receiver_type, &env) {
-                    return env.get_func_returns(&format!("{}.{}", name, sel.sel.name));
+                    return env.get_method_returns(&name, sel.sel.name);
                 }
                 Vec::new()
             }
@@ -17512,8 +17721,15 @@ fn interface_direct_methods_for_impl(trait_name: &str, fallback: &[String]) -> V
     TYPE_ENV.with(|env| {
         env.borrow()
             .get_interface_direct_methods(trait_name)
+            .or_else(|| interface_direct_methods_from_import(trait_name))
             .unwrap_or_else(|| fallback.to_vec())
     })
+}
+
+fn interface_direct_methods_from_import(trait_name: &str) -> Option<Vec<String>> {
+    let (package_name, type_name) = trait_name.split_once('.')?;
+    let (_, env) = crate::resolve::scan_type_env(package_name)?;
+    env.get_interface_direct_methods(type_name)
 }
 
 fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
@@ -17559,6 +17775,7 @@ fn concrete_interface_impl_items_for_methods(
 
 fn pointer_interface_impl_items_for_methods(
     struct_name: &str,
+    _trait_path: &syn::Path,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
 ) -> Vec<syn::ImplItem> {
@@ -17573,6 +17790,7 @@ fn pointer_interface_impl_items_for_methods(
                 continue;
             }
             let method_ident = method.sig.ident.clone();
+            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
             let arg_idents = method
                 .sig
                 .inputs
@@ -17594,12 +17812,12 @@ fn pointer_interface_impl_items_for_methods(
             let block = if matches!(sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    __gors_guard.#method_ident(#(#arg_idents),*);
+                    #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*);
                 })
             } else {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    __gors_guard.#method_ident(#(#arg_idents),*)
+                    #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*)
                 })
             };
             impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
@@ -17634,11 +17852,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
         set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
-        let needed_imported_interface_methods = if is_main_package {
-            collect_needed_imported_interface_method_sets(&file.decls)
-        } else {
-            BTreeMap::new()
-        };
+        let needed_imported_interface_methods =
+            collect_needed_imported_interface_method_sets(&file.decls);
 
         let mut items = vec![];
         let mut methods: BTreeMap<String, Vec<syn::ImplItemFn>> = BTreeMap::new();
@@ -17885,10 +18100,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }));
         }
 
-        if is_main_package {
-            for (trait_name, method_names) in needed_imported_interface_methods {
-                trait_methods.entry(trait_name).or_insert(method_names);
-            }
+        for (trait_name, method_names) in needed_imported_interface_methods {
+            trait_methods.entry(trait_name).or_insert(method_names);
         }
 
         trait_methods
@@ -17973,7 +18186,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         }
                         let embedded_methods = TYPE_ENV.with(|env| {
                             env.borrow()
-                                .get_interface_methods(embedded_name)
+                                .get_interface_direct_methods(embedded_name)
+                                .or_else(|| interface_direct_methods_from_import(embedded_name))
                                 .unwrap_or_default()
                         });
                         let trait_path = interface_trait_path_from_name(embedded_name);
@@ -18026,6 +18240,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     )) {
                         let impl_items = pointer_interface_impl_items_for_methods(
                             struct_name,
+                            &trait_path,
                             &direct_required_methods,
                             &methods,
                         );
@@ -18046,12 +18261,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         }
                         let embedded_methods = TYPE_ENV.with(|env| {
                             env.borrow()
-                                .get_interface_methods(embedded_name)
+                                .get_interface_direct_methods(embedded_name)
+                                .or_else(|| interface_direct_methods_from_import(embedded_name))
                                 .unwrap_or_default()
                         });
                         let trait_path = interface_trait_path_from_name(embedded_name);
                         let impl_items = pointer_interface_impl_items_for_methods(
                             struct_name,
+                            &trait_path,
                             &embedded_methods,
                             &methods,
                         );

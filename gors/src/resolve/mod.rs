@@ -337,11 +337,13 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             &BTreeMap::new(),
             &imported_type_envs,
         );
-        let compiled = match crate::compiler::compile_with_type_env_and_import_renames(
-            ast,
-            type_env,
-            import_renames.clone(),
-        ) {
+        let compiled = match crate::compiler::with_active_reachability_roots(roots, || {
+            crate::compiler::compile_with_type_env_and_import_renames(
+                ast,
+                type_env,
+                import_renames.clone(),
+            )
+        }) {
             Ok(compiled) => compiled,
             Err(e) => {
                 log_skip(format_args!(

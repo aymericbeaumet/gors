@@ -31054,7 +31054,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"go/scanner",
 			"go/token",
 			"go/version",
-			"hash/adler32",
 			"hash/crc32",
 			"hash/crc64",
 			"html/template",
@@ -31247,7 +31246,6 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 					"go/scanner",
 					"go/token",
 					"go/version",
-					"hash/adler32",
 					"hash/crc32",
 					"hash/crc64",
 					"html/template",
@@ -36800,7 +36798,7 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			"hash/adler32"
 		],
 		"symbolCount": 3,
-		"testedSymbolCount": 2,
+		"testedSymbolCount": 3,
 		"symbols": [
 			{
 				"name": "Checksum",
@@ -36813,8 +36811,10 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "New",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/adler32"
+				]
 			},
 			{
 				"name": "Size",
@@ -79894,6 +79894,6 @@ export const gostdlibCoverageSummary = {
 	"testedPackageCount": 75,
 	"untestedPackageCount": 278,
 	"symbolCount": 12578,
-	"testedSymbolCount": 461,
-	"untestedSymbolCount": 12117
+	"testedSymbolCount": 462,
+	"untestedSymbolCount": 12116
 } as const;

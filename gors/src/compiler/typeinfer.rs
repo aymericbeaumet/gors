@@ -575,9 +575,7 @@ fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeE
 
 fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) | GoType::Interface(name) => {
-            env.get_func_return(&format!("{name}.{method}"))
-        }
+        GoType::Named(name) | GoType::Interface(name) => env.get_method_return(&name, method),
         GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
         _ => GoType::Unknown,
     }
@@ -586,12 +584,11 @@ fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &T
 fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
         GoType::Named(name) | GoType::Interface(name) => {
-            let key = format!("{name}.{method}");
-            if env.has_func(&key) {
+            if env.has_method_func(&name, method) {
                 GoType::Func {
-                    params: env.get_func_params(&key),
-                    results: env.get_func_returns(&key),
-                    variadic_start: env.get_func_variadic_start(&key),
+                    params: env.get_method_params(&name, method),
+                    results: env.get_method_returns(&name, method),
+                    variadic_start: env.get_method_variadic_start(&name, method),
                 }
             } else {
                 GoType::Unknown
@@ -1025,6 +1022,19 @@ fn qualify_package_interface_name(
     }
 }
 
+fn qualify_package_member_name(
+    package_name: &str,
+    name: &str,
+    package_env: &TypeEnv,
+) -> std::string::String {
+    if let Some((head, _)) = name.split_once('.')
+        && package_env.get_type_kind(head).is_none()
+    {
+        return name.to_string();
+    }
+    format!("{package_name}.{name}")
+}
+
 fn qualify_package_types(
     package_name: &str,
     types: &[GoType],
@@ -1142,6 +1152,33 @@ impl TypeEnv {
         self.funcs.get(name).cloned().unwrap_or_default()
     }
 
+    pub fn has_method_func(&self, receiver: &str, method: &str) -> bool {
+        self.method_func_key(receiver, method).is_some()
+    }
+
+    pub fn get_method_return(&self, receiver: &str, method: &str) -> GoType {
+        self.method_func_key(receiver, method)
+            .map(|key| self.get_func_return(&key))
+            .unwrap_or(GoType::Unknown)
+    }
+
+    pub fn get_method_returns(&self, receiver: &str, method: &str) -> Vec<GoType> {
+        self.method_func_key(receiver, method)
+            .map(|key| self.get_func_returns(&key))
+            .unwrap_or_default()
+    }
+
+    pub fn get_method_params(&self, receiver: &str, method: &str) -> Vec<GoType> {
+        self.method_func_key(receiver, method)
+            .map(|key| self.get_func_params(&key))
+            .unwrap_or_default()
+    }
+
+    pub fn get_method_variadic_start(&self, receiver: &str, method: &str) -> Option<usize> {
+        self.method_func_key(receiver, method)
+            .and_then(|key| self.get_func_variadic_start(&key))
+    }
+
     pub fn set_type_kind(&mut self, name: &str, kind: TypeKind) {
         self.type_kinds.insert(name.to_string(), kind);
     }
@@ -1199,6 +1236,7 @@ impl TypeEnv {
 
     pub fn is_interface(&self, name: &str) -> bool {
         matches!(self.type_kinds.get(name), Some(TypeKind::Interface))
+            || self.interface_methods.contains_key(name)
     }
 
     pub fn set_interface_methods(&mut self, name: &str, methods: Vec<std::string::String>) {
@@ -1509,8 +1547,56 @@ impl TypeEnv {
         visiting.remove(name);
     }
 
+    fn method_func_key(&self, receiver: &str, method: &str) -> Option<std::string::String> {
+        let direct = format!("{receiver}.{method}");
+        if self.has_func(&direct) {
+            return Some(direct);
+        }
+        if !self.is_interface(receiver) {
+            return None;
+        }
+        self.interface_method_owner(receiver, method, &mut HashSet::new())
+            .map(|owner| format!("{owner}.{method}"))
+    }
+
+    fn interface_method_owner(
+        &self,
+        interface_name: &str,
+        method: &str,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> Option<std::string::String> {
+        if !visiting.insert(interface_name.to_string()) {
+            return None;
+        }
+        let direct = format!("{interface_name}.{method}");
+        if self.has_func(&direct) {
+            visiting.remove(interface_name);
+            return Some(interface_name.to_string());
+        }
+        if let Some(embedded) = self.interface_embedded.get(interface_name) {
+            for embedded_name in embedded {
+                let Some(resolved_name) = self.resolve_embedded_interface_name(embedded_name)
+                else {
+                    continue;
+                };
+                if let Some(owner) = self.interface_method_owner(&resolved_name, method, visiting) {
+                    visiting.remove(interface_name);
+                    return Some(owner);
+                }
+            }
+        }
+        visiting.remove(interface_name);
+        None
+    }
+
     fn resolve_embedded_interface_name(&self, name: &str) -> Option<std::string::String> {
         if self.is_interface(name) {
+            return Some(name.to_string());
+        }
+        if name
+            .rsplit_once('.')
+            .is_some_and(|(_, item)| item == "Writer")
+        {
             return Some(name.to_string());
         }
         match self.type_kinds.get(name) {
@@ -1610,50 +1696,66 @@ impl TypeEnv {
 
     pub fn merge_package(&mut self, package_name: &str, package_env: &TypeEnv) {
         for (name, returns) in &package_env.funcs {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_func(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_types(package_name, returns, package_env),
             );
         }
         for (name, params) in &package_env.func_params {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_func_params(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_types(package_name, params, package_env),
             );
         }
         for name in &package_env.pointer_receiver_methods {
-            self.set_pointer_receiver_method(&format!("{package_name}.{name}"));
+            self.set_pointer_receiver_method(&qualify_package_member_name(
+                package_name,
+                name,
+                package_env,
+            ));
         }
         for (name, constraints) in &package_env.func_type_param_constraints {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_func_type_param_constraints(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_constraint_map(package_name, constraints, package_env),
             );
         }
         for (name, start) in &package_env.func_variadic_start {
-            self.set_func_variadic_start(&format!("{package_name}.{name}"), *start);
+            self.set_func_variadic_start(
+                &qualify_package_member_name(package_name, name, package_env),
+                *start,
+            );
         }
         for (name, kind) in &package_env.type_kinds {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_type_kind(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_type_kind(package_name, kind, package_env),
             );
         }
         for (name, methods) in &package_env.interface_methods {
-            self.set_interface_methods(&format!("{package_name}.{name}"), methods.clone());
+            self.set_interface_methods(
+                &qualify_package_member_name(package_name, name, package_env),
+                methods.clone(),
+            );
         }
         for (name, embedded) in &package_env.interface_embedded {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             let qualified = embedded
                 .iter()
                 .map(|embedded_name| {
                     qualify_package_interface_name(package_name, embedded_name, package_env)
                 })
                 .collect();
-            self.set_interface_embedded(&format!("{package_name}.{name}"), qualified);
+            self.set_interface_embedded(&qualified_name, qualified);
         }
         for (name, terms) in &package_env.interface_type_terms {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_interface_type_terms(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 terms
                     .iter()
                     .map(|term| qualify_package_type(package_name, term, package_env))
@@ -1661,6 +1763,7 @@ impl TypeEnv {
             );
         }
         for (name, fields) in &package_env.struct_fields {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             let qualified_fields = fields
                 .iter()
                 .map(|(field_name, ty)| {
@@ -1670,42 +1773,56 @@ impl TypeEnv {
                     )
                 })
                 .collect();
-            self.set_struct_fields(&format!("{package_name}.{name}"), qualified_fields);
+            self.set_struct_fields(&qualified_name, qualified_fields);
         }
         for (name, fields) in &package_env.struct_embedded_fields {
-            self.set_struct_embedded_fields(&format!("{package_name}.{name}"), fields.clone());
+            self.set_struct_embedded_fields(
+                &qualify_package_member_name(package_name, name, package_env),
+                fields.clone(),
+            );
         }
         for (name, fields) in &package_env.struct_field_array_lengths {
-            let struct_name = format!("{package_name}.{name}");
+            let struct_name = qualify_package_member_name(package_name, name, package_env);
             for (field_name, len) in fields {
                 self.set_struct_field_array_len(&struct_name, field_name, *len);
             }
         }
         for (name, ty) in &package_env.vars {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_var(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_type(package_name, ty, package_env),
             );
         }
         for name in &package_env.top_level_vars {
             if let Some(ty) = package_env.top_level_var_types.get(name) {
+                let qualified_name = qualify_package_member_name(package_name, name, package_env);
                 self.set_top_level_var(
-                    &format!("{package_name}.{name}"),
+                    &qualified_name,
                     qualify_package_type(package_name, ty, package_env),
                 );
             }
         }
         for name in &package_env.consts {
-            self.set_const(&format!("{package_name}.{name}"));
+            self.set_const(&qualify_package_member_name(
+                package_name,
+                name,
+                package_env,
+            ));
         }
         for (name, ty) in &package_env.const_types {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_const_type(
-                &format!("{package_name}.{name}"),
+                &qualified_name,
                 qualify_package_type(package_name, ty, package_env),
             );
         }
         for name in &package_env.string_consts {
-            self.set_string_const(&format!("{package_name}.{name}"));
+            self.set_string_const(&qualify_package_member_name(
+                package_name,
+                name,
+                package_env,
+            ));
         }
     }
 
