@@ -6925,14 +6925,35 @@ fn top_level_item_return_types(
 ) -> std::collections::HashMap<String, ReceiverTypeRef> {
     let mut types = std::collections::HashMap::new();
     for item in items {
-        let syn::Item::Fn(item_fn) = item else {
-            continue;
-        };
-        let syn::ReturnType::Type(_, ty) = &item_fn.sig.output else {
-            continue;
-        };
-        if let Some(return_type) = receiver_type_from_type(ty, module_names) {
-            types.insert(item_fn.sig.ident.to_string(), return_type);
+        match item {
+            syn::Item::Fn(item_fn) => {
+                let syn::ReturnType::Type(_, ty) = &item_fn.sig.output else {
+                    continue;
+                };
+                if let Some(return_type) = receiver_type_from_type(ty, module_names) {
+                    types.insert(item_fn.sig.ident.to_string(), return_type);
+                }
+            }
+            syn::Item::Impl(item_impl) => {
+                let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                    continue;
+                };
+                for impl_item in &item_impl.items {
+                    let syn::ImplItem::Fn(func) = impl_item else {
+                        continue;
+                    };
+                    let syn::ReturnType::Type(_, ty) = &func.sig.output else {
+                        continue;
+                    };
+                    if let Some(return_type) = receiver_type_from_type(ty, module_names) {
+                        types.insert(
+                            impl_method_reachability_name(&self_name, &func.sig.ident.to_string()),
+                            return_type,
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
     types
@@ -7076,13 +7097,10 @@ fn receiver_type_from_init_expr(
             item_names,
             top_level_return_types,
         ),
-        syn::Expr::Struct(expr_struct) => expr_struct
-            .path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
-            .filter(|name| item_names.contains(name))
-            .map(|name| ReceiverTypeRef { module: None, name }),
+        syn::Expr::Struct(expr_struct) => receiver_type_from_path(&expr_struct.path, module_names)
+            .filter(|receiver_type| {
+                receiver_type.module.is_some() || item_names.contains(&receiver_type.name)
+            }),
         syn::Expr::MethodCall(method)
             if matches!(
                 method.method.to_string().as_str(),
@@ -7501,6 +7519,14 @@ fn collect_refs_from_item(
                     ) =>
                 {
                     self.receiver_type_from_expr(&method.receiver)
+                }
+                syn::Expr::MethodCall(method) => {
+                    let receiver_type = self.receiver_type_from_expr(&method.receiver)?;
+                    let method_key = impl_method_reachability_name(
+                        &receiver_type.name,
+                        &method.method.to_string(),
+                    );
+                    self.top_level_return_types.get(&method_key).cloned()
                 }
                 syn::Expr::Cast(cast) => self.receiver_type_from_expr(&cast.expr),
                 syn::Expr::Field(field) => {
@@ -9748,7 +9774,7 @@ fn add_elided_lifetime_to_borrowed_interface_return(
         .iter()
         .filter(|input| match input {
             syn::FnArg::Typed(pat_type) => matches!(&*pat_type.ty, syn::Type::Reference(_)),
-            syn::FnArg::Receiver(receiver) => receiver.reference.is_some(),
+            syn::FnArg::Receiver(_) => false,
         })
         .count();
     if reference_inputs != 1 {
@@ -10436,6 +10462,19 @@ fn extract_type_name(expr: &ast::Expr) -> Option<String> {
     }
 }
 
+fn type_env_name_from_type_expr(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(id) => Some(id.name.to_string()),
+        ast::Expr::StarExpr(star) => type_env_name_from_type_expr(&star.x),
+        ast::Expr::SelectorExpr(sel) => {
+            selector_type_env_name(sel).or_else(|| Some(sel.sel.name.to_string()))
+        }
+        ast::Expr::IndexExpr(index) => type_env_name_from_type_expr(&index.x),
+        ast::Expr::IndexListExpr(index) => type_env_name_from_type_expr(&index.x),
+        _ => None,
+    }
+}
+
 fn is_general_type_conversion_fun(fun: &ast::Expr) -> bool {
     TYPE_ENV.with(|env| ir::is_general_type_conversion_fun(fun, &env.borrow()))
 }
@@ -10914,7 +10953,8 @@ fn rust_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
 }
 
 fn named_go_type_path(name: &str) -> syn::Type {
-    rust_type_path_from_segments(name.split('.'), true)
+    let parts = qualified_name_rust_segments(name);
+    rust_type_path_from_segments(parts.iter().map(String::as_str), true)
 }
 
 fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
@@ -11724,7 +11764,7 @@ fn has_unnamed_field_values(field_values: &[syn::FieldValue]) -> bool {
 }
 
 fn struct_literal_path_from_type_expr(type_expr: &ast::Expr) -> Option<(syn::Path, String)> {
-    let type_name = extract_type_name(type_expr)?;
+    let type_name = type_env_name_from_type_expr(type_expr)?;
     let syn::Type::Path(type_path) = type_from_expr_ref(type_expr) else {
         return None;
     };
@@ -11933,8 +11973,8 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 }
             }
             ast::Expr::SelectorExpr(sel) => {
+                let type_name = selector_type_env_name(&sel);
                 let path: syn::ExprPath = sel.into();
-                let type_name = path.path.segments.last().map(|seg| seg.ident.to_string());
                 let field_values = raw_elts_to_field_values(type_name.as_deref(), raw_elts);
                 if field_values.is_empty() || has_unnamed_field_values(&field_values) {
                     let p = &path.path;
@@ -12944,6 +12984,14 @@ fn compile_expr_with_expected(
 
     if let Some(bytes) = byte_slice_conversion_bytes_vec_expr(&expr) {
         return bytes;
+    }
+
+    if matches!(expected, Some(typeinfer::GoType::Pointer(_)))
+        && let ast::Expr::Ident(ident) = &expr
+        && is_borrowed_pointer_param_name(&rust_safe_ident_name(ident.name))
+    {
+        let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+        return syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new((#ident).clone())) };
     }
 
     if matches!(
@@ -15293,6 +15341,15 @@ fn compile_binary_side_for_parent(
     parenthesize_binary_child_if_needed(compiled, child_op, parent_op, side)
 }
 
+fn shift_left_needs_wide_untyped_left(left: &ast::Expr, right: &ast::Expr) -> bool {
+    if !is_const_like_expr(left) {
+        return false;
+    }
+    const_eval_expr_in_active_env(right, 0, &BTreeMap::new())
+        .and_then(|value| value.as_u128())
+        .is_some_and(|shift| shift >= 32)
+}
+
 fn is_string_concat_binary_expr(binary_expr: &ast::BinaryExpr) -> bool {
     TYPE_ENV.with(|env| ir::is_string_concat_binary_expr(binary_expr, &env.borrow()))
 }
@@ -15512,7 +15569,14 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op: syn::BinOp = original_op.into();
     let is_shift = matches!(original_op, token::Token::SHL | token::Token::SHR);
     let left = if is_shift {
-        (*binary_expr.x).into()
+        if original_op == token::Token::SHL
+            && shift_left_needs_wide_untyped_left(&binary_expr.x, &binary_expr.y)
+        {
+            let left: syn::Expr = (*binary_expr.x).into();
+            syn::parse_quote! { (#left as i128) }
+        } else {
+            (*binary_expr.x).into()
+        }
     } else {
         compile_binary_side_for_parent(
             *binary_expr.x,
@@ -20021,6 +20085,10 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
         }];
 
         let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+        let tag_type = switch_stmt
+            .tag
+            .as_ref()
+            .map(|tag| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(tag, &env.borrow())));
         let tag_syn: Option<syn::Expr> = if let Some(tag) = switch_stmt.tag {
             let tag_expr: syn::Expr = tag.into();
             stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
@@ -20036,7 +20104,11 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
                 default_index = Some(index);
                 None
             } else {
-                Some(build_case_condition(case.list, tag_syn.as_ref())?)
+                Some(build_case_condition(
+                    case.list,
+                    tag_syn.as_ref(),
+                    tag_type.as_ref(),
+                )?)
             };
             if let Some(cond) = &cond {
                 let case_index = syn::LitInt::new(&index.to_string(), Span::mixed_site());
@@ -20090,6 +20162,9 @@ fn compile_non_fallthrough_switch(
 ) -> Result<syn::Expr, CompilerError> {
     let mut prefix_stmts = vec![];
     let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+    let tag_type = tag
+        .as_ref()
+        .map(|tag| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(tag, &env.borrow())));
     let tag_syn: Option<syn::Expr> = if let Some(tag) = tag {
         let tag_expr: syn::Expr = tag.into();
         prefix_stmts.push(syn::parse_quote! { let #tag_ident = #tag_expr; });
@@ -20112,7 +20187,7 @@ fn compile_non_fallthrough_switch(
         .map(|body| switch_case_expr_block(body, &switch_label))
         .transpose()?;
     for case in cases.into_iter().rev() {
-        let cond = build_case_condition(case.list, tag_syn.as_ref())?;
+        let cond = build_case_condition(case.list, tag_syn.as_ref(), tag_type.as_ref())?;
         let then_stmts = compile_breakable_stmt_list(case.body, &switch_label)?;
         result = Some(syn::Expr::If(syn::ExprIf {
             attrs: vec![],
@@ -20498,6 +20573,7 @@ fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
 fn build_case_condition(
     list: Option<Vec<ast::Expr>>,
     tag: Option<&syn::Expr>,
+    tag_type: Option<&typeinfer::GoType>,
 ) -> Result<syn::Expr, CompilerError> {
     let exprs = list.unwrap_or_default();
 
@@ -20506,7 +20582,7 @@ fn build_case_condition(
             .into_iter()
             .map(|e| {
                 let tag_expr = tag.clone();
-                let val_expr: syn::Expr = e.into();
+                let val_expr = compile_expr_with_expected(e, tag_type);
                 binary_expr(tag_expr, syn::BinOp::Eq(<Token![==]>::default()), val_expr)
             })
             .collect();
@@ -21791,9 +21867,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 .lhs
                 .iter()
                 .map(|expr| match expr {
-                    ast::Expr::Ident(ident) if ident.name != "_" => {
-                        inferred_function_type_for_name(ident.name)
-                    }
+                    ast::Expr::Ident(ident) if ident.name != "_" => TYPE_ENV
+                        .with(|env| env.borrow().get_var(ident.name))
+                        .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+                        .or_else(|| inferred_function_type_for_name(ident.name)),
                     _ => None,
                 })
                 .collect();
@@ -22798,6 +22875,65 @@ var X int
         assert!(
             output.contains("u32 :: from (d >> 16)"),
             "expected shift count to stay primitive: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_coerce_named_numeric_short_var_binary_and_switch_cases() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type FileMode uint32
+
+                const cISDIR = 040000
+
+                func modeBits(mode int64) FileMode {
+                    switch m := FileMode(mode) &^ 07777; m {
+                    case cISDIR:
+                        return m
+                    }
+                    return 0
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("FileMode ((4095 as u32))"),
+            "expected untyped bit-clear rhs to wrap into the named numeric type: {output}"
+        );
+        assert!(
+            output.contains("__gors_switch_tag == FileMode ((cISDIR as u32))"),
+            "expected switch cases to coerce constants to the switch tag type: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_widen_large_untyped_shift_left_constants() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func mask(x uint64) uint64 {
+                    const mask32 = 1<<32 - 1
+                    return x & mask32
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(1 as i128) << 32"),
+            "expected large untyped shift-left constants to avoid Rust literal overflow: {output}"
         );
     }
 
@@ -26437,6 +26573,65 @@ func main() {
         let sort_refs = refs.get("sort").expect("sort refs");
         assert!(sort_refs.contains("Float64Slice"));
         assert!(sort_refs.contains("Float64Slice::Less"));
+    }
+
+    #[test]
+    fn it_should_collect_external_methods_called_on_imported_struct_literals() {
+        let mut item: syn::Item = rust! {
+            pub fn main() {
+                let mut h = std::sync::Arc::new(std::sync::Mutex::new(archive__tar::Header {
+                    ..Default::default()
+                }));
+                h.lock().unwrap().FileInfo();
+            }
+        };
+        let module_names = std::collections::HashSet::from(["archive__tar".to_string()]);
+        let item_names = std::collections::HashSet::new();
+        let top_level_names = std::collections::HashSet::new();
+        let top_level_types = std::collections::HashMap::new();
+        let top_level_field_types = std::collections::HashMap::new();
+        let top_level_return_types = std::collections::HashMap::new();
+        let top_level_tuple_return_types = std::collections::HashMap::new();
+
+        let context = super::RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let (_, refs) = super::collect_refs_from_item(&mut item, &context);
+
+        let tar_refs = refs.get("archive__tar").expect("archive/tar refs");
+        assert!(tar_refs.contains("Header"));
+        assert!(tar_refs.contains("Header::FileInfo"));
+    }
+
+    #[test]
+    fn it_should_collect_external_methods_from_local_method_return_types() {
+        let file: syn::File = rust! {
+            pub struct headerFileInfo;
+
+            impl headerFileInfo {
+                pub fn Mode(&self) -> crate::io__fs::FileMode {
+                    crate::io__fs::FileMode(0)
+                }
+
+                pub fn IsDir(&self) -> bool {
+                    self.Mode().IsDir()
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from(["headerFileInfo::IsDir".to_string()]);
+        let module_names = std::collections::HashSet::from(["io__fs".to_string()]);
+
+        let (_, refs, _) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        let fs_refs = refs.get("io__fs").expect("io/fs refs");
+        assert!(fs_refs.contains("FileMode"));
+        assert!(fs_refs.contains("FileMode::IsDir"));
     }
 
     #[test]

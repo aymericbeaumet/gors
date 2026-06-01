@@ -304,6 +304,20 @@ impl GoType {
                     {
                         GoType::Complex64
                     }
+                    token::Token::ADD
+                    | token::Token::SUB
+                    | token::Token::MUL
+                    | token::Token::QUO
+                    | token::Token::REM
+                    | token::Token::AND
+                    | token::Token::OR
+                    | token::Token::XOR
+                    | token::Token::AND_NOT
+                        if expr_is_untyped_constant_for_inference(&bin.x, env)
+                            && !expr_is_untyped_constant_for_inference(&bin.y, env) =>
+                    {
+                        right
+                    }
                     // Arithmetic preserves the type of the left operand
                     _ => left,
                 }
@@ -389,6 +403,9 @@ impl GoType {
                     ast::Expr::SelectorExpr(sel) => {
                         if let ast::Expr::Ident(pkg) = &*sel.x {
                             let key = format!("{}.{}", pkg.name, sel.sel.name);
+                            if env.get_type_kind(&key).is_some() {
+                                return GoType::from_expr(&call.fun);
+                            }
                             let package_return = env.get_func_return(&key);
                             if !matches!(package_return, GoType::Unknown) {
                                 return package_return;
@@ -468,6 +485,10 @@ impl GoType {
                     GoType::String => GoType::String,
                     GoType::Slice(elem) => GoType::Slice(elem),
                     GoType::Array(elem) => GoType::Slice(elem),
+                    GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+                        GoType::Array(elem) => GoType::Slice(elem),
+                        _ => GoType::Pointer(inner),
+                    },
                     GoType::Named(name) => GoType::Named(name),
                     other => other,
                 }
@@ -483,6 +504,33 @@ impl GoType {
             ast::Expr::ParenExpr(p) => GoType::infer_expr(&p.x, env),
             _ => GoType::Unknown,
         }
+    }
+}
+
+fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(_) => true,
+        ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
+        ast::Expr::Ident(ident) => env.is_const(ident.name),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
+                return false;
+            };
+            env.is_const(&format!("{}.{}", pkg.name, selector.sel.name))
+        }
+        ast::Expr::UnaryExpr(unary)
+            if matches!(
+                unary.op,
+                token::Token::ADD | token::Token::SUB | token::Token::NOT | token::Token::XOR
+            ) =>
+        {
+            expr_is_untyped_constant_for_inference(&unary.x, env)
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            expr_is_untyped_constant_for_inference(&binary.x, env)
+                && expr_is_untyped_constant_for_inference(&binary.y, env)
+        }
+        _ => false,
     }
 }
 
@@ -2344,6 +2392,113 @@ mod tests {
 
         assert_eq!(env.get_var("magic"), Some(GoType::String));
         assert_eq!(env.get_var("marshaledSize"), Some(GoType::Int));
+    }
+
+    #[test]
+    fn infer_binary_expr_uses_typed_operand_for_untyped_constants() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                const absoluteYears = 292277022400
+
+                func f(year int64) {
+                    century := uint64(year) / 100
+                    centurydays := 146097 * century / 4
+                    _ = centurydays + absoluteYears
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        let ast::Decl::FuncDecl(func) = file.decls.get(1).expect("expected declaration") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(century) = body.list.first().expect("expected statement") else {
+            panic!("expected century assignment");
+        };
+        let ast::Stmt::AssignStmt(centurydays) = body.list.get(1).expect("expected statement")
+        else {
+            panic!("expected centurydays assignment");
+        };
+        env.set_var(
+            "century",
+            GoType::infer_expr(century.rhs.first().expect("expected rhs"), &env),
+        );
+
+        assert_eq!(env.get_var("century"), Some(GoType::Uint64));
+        assert_eq!(
+            GoType::infer_expr(centurydays.rhs.first().expect("expected rhs"), &env),
+            GoType::Uint64
+        );
+    }
+
+    #[test]
+    fn infer_slice_of_pointer_to_array_as_slice() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                func f(buf *[32]byte) {
+                    _ = buf[:]
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.set_var(
+            "buf",
+            GoType::Pointer(Box::new(GoType::Array(Box::new(GoType::Uint8)))),
+        );
+
+        let ast::Decl::FuncDecl(func) = file.decls.first().expect("expected declaration") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(assign) = body.list.first().expect("expected statement") else {
+            panic!("expected assignment");
+        };
+
+        assert_eq!(
+            GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env),
+            GoType::Slice(Box::new(GoType::Uint8))
+        );
+    }
+
+    #[test]
+    fn infer_selector_type_conversion_as_named_type() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                func f(mode int64) {
+                    _ = fs.FileMode(mode)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.set_type_kind("fs.FileMode", TypeKind::Alias(GoType::Uint32));
+        env.set_var("mode", GoType::Int64);
+
+        let ast::Decl::FuncDecl(func) = file.decls.first().expect("expected declaration") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(assign) = body.list.first().expect("expected statement") else {
+            panic!("expected assignment");
+        };
+
+        assert_eq!(
+            GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env),
+            GoType::Named("fs.FileMode".to_string())
+        );
     }
 
     #[test]
