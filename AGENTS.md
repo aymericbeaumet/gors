@@ -164,6 +164,17 @@ gors-builtin/
   Rust type. In particular, numeric constants need an explicit cast such as
   `42 as isize` before boxing so type assertions and type switches downcast to
   Go's `int` representation instead of Rust's default literal type.
+- `[]any`/`[]interface{}` index expressions cannot call Rust `Clone` on
+  `Box<dyn Any>` directly. Use the runtime `builtin::clone_any` helper for
+  copied interface elements, and bind cloned interface-index temporaries before
+  type assertions so downcasts do not borrow a dropped temporary.
+- The predeclared `error` interface is represented as an owned
+  `Box<dyn crate::builtin::error>`, including in struct fields and named
+  returns. Do not treat `error` fields like borrowed structural interfaces.
+  Boxing an existing boxed error is tolerated through the runtime delegating
+  `error` impl for `Box<dyn error>`, and variadic `any` arguments should
+  materialize error values through `builtin::error_string` instead of cloning the
+  trait object.
 - Backward `goto Label` targeting the immediately labeled statement is still
   lowered by wrapping that statement in a generated Rust labeled `loop` and
   translating the `goto` to `continue 'Label`. Scope-safe forward gotos whose

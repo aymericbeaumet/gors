@@ -8520,24 +8520,33 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         CompilerError::UnsupportedConstruct("struct field has no type".to_string())
                     })?;
                     let interface_trait_path = interface_trait_path_from_expr(&field_type);
-                    has_borrowed_interface_field |= interface_trait_path.is_some();
+                    let field_go_type = typeinfer::GoType::from_expr(&field_type);
+                    let field_is_error = matches!(field_go_type, typeinfer::GoType::Error);
+                    let borrowed_interface_trait_path = if field_is_error {
+                        None
+                    } else {
+                        interface_trait_path.clone()
+                    };
+                    has_borrowed_interface_field |= borrowed_interface_trait_path.is_some();
                     let field_contains_func = contains_func_type(&field_type);
                     let field_needs_manual_default =
-                        contains_array_type(&field_type) || field_contains_func;
+                        contains_array_type(&field_type) || field_contains_func || field_is_error;
                     let field_cannot_derive_clone =
                         contains_any_type(&field_type) || interface_trait_path.is_some();
                     let field_cannot_derive_partial_eq =
                         !expr_supports_derived_partial_eq(&field_type, &ident);
-                    let field_cannot_default = interface_trait_path.is_some();
+                    let field_cannot_default = borrowed_interface_trait_path.is_some();
                     let field_can_derive_copy = !field_contains_func
                         && interface_trait_path.is_none()
                         && (self_referential_pointer_type(&field_type, &ident).is_some()
-                            || go_type_is_copy(&typeinfer::GoType::from_expr(&field_type)));
+                            || go_type_is_copy(&field_go_type));
                     let field_default = default_expr_for_type(&field_type);
                     can_derive_copy &= field_can_derive_copy;
 
                     if let Some(names) = field.names {
-                        let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
+                        let rust_type: syn::Type = if let Some(trait_path) =
+                            &borrowed_interface_trait_path
+                        {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
                             type_from_struct_field_expr(&field_type, &ident)
@@ -8571,7 +8580,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     } else {
                         // Embedded field: type name becomes the field name
                         let embedded_name = extract_type_name(&field_type);
-                        let rust_type: syn::Type = if let Some(trait_path) = &interface_trait_path {
+                        let rust_type: syn::Type = if let Some(trait_path) =
+                            &borrowed_interface_trait_path
+                        {
                             syn::parse_quote! { &'__gors mut dyn #trait_path }
                         } else {
                             type_from_struct_field_expr(&field_type, &ident)
@@ -8585,7 +8596,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                                 } else {
                                     syn::Visibility::Inherited
                                 };
-                            if let Some(trait_path) = &interface_trait_path {
+                            if let Some(trait_path) = &borrowed_interface_trait_path {
                                 embedded_interface_fields.push(EmbeddedInterfaceField {
                                     field_ident: field_ident.clone(),
                                     trait_path: trait_path.clone(),
@@ -8594,7 +8605,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             embedded_types.push((
                                 field_ident.clone(),
                                 rust_type.clone(),
-                                interface_trait_path.clone(),
+                                borrowed_interface_trait_path.clone(),
                             ));
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             needs_manual_default |= field_needs_manual_default;
@@ -9516,6 +9527,12 @@ fn compile_method(
                         let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
                         let rust_type = field.type_.as_ref().map(type_from_expr_ref);
                         let zero = zero_value_for_type(type_name);
+                        if let Some(type_expr) = field.type_.as_ref() {
+                            let go_type = typeinfer::GoType::from_expr(type_expr);
+                            TYPE_ENV.with(|env| {
+                                env.borrow_mut().set_var(name.name, go_type);
+                            });
+                        }
                         let ident =
                             syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
                         named_return_info.push((ident.clone(), rust_type, zero));
@@ -10334,6 +10351,10 @@ fn compile_variadic_any_arg(
             syn::parse_quote! { (#expr as i32) }
         }
         ast::Expr::Ident(id) if id.name == "true" || id.name == "false" => arg.into(),
+        _ if matches!(resolved_go_type(&inferred_type), typeinfer::GoType::Error) => {
+            let expr = compile_expr_with_expected(arg, Some(&typeinfer::GoType::Error));
+            syn::parse_quote! { crate::builtin::error_string(&mut #expr) }
+        }
         _ if matches!(
             variadic_elem.map(resolved_go_type),
             Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
@@ -11881,6 +11902,9 @@ fn compile_return_expr_with_expected(
         let trait_path = interface_trait_path_from_name(&interface_name);
         let compiled: syn::Expr = expr.into();
         if matches!(expected, typeinfer::GoType::Error) {
+            if go_type_is_interface_like(&actual) {
+                return compiled;
+            }
             return if is_box_new_call(&compiled) {
                 syn::parse_quote! { #compiled as Box<dyn #trait_path> }
             } else {
@@ -16570,6 +16594,21 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     }};
                 }
 
+                if matches!(
+                    env.resolve_alias(&container_type),
+                    typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem)
+                        if matches!(resolved_go_type(&elem), typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+                ) {
+                    return syn::parse_quote! {{
+                        let __gors_index_base = &#base;
+                        let __gors_index = (#idx) as usize;
+                        if __gors_index >= __gors_index_base.len() {
+                            crate::builtin::panic_value("index out of range");
+                        }
+                        crate::builtin::clone_any(&__gors_index_base[__gors_index])
+                    }};
+                }
+
                 syn::parse_quote! {{
                     let __gors_index_base = &#base;
                     let __gors_index = (#idx) as usize;
@@ -16604,9 +16643,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::SliceExpr(slice_expr) => compile_slice_expr(slice_expr),
             ast::Expr::TypeAssertExpr(ta) => {
                 let source_ast = *ta.x;
-                let source_is_borrowable = is_ir_addressable_expr(&source_ast);
                 let source_type =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_ast, &env.borrow()));
+                let source_is_borrowable =
+                    type_assert_source_is_borrowable(&source_ast, &source_type);
                 let x: syn::Expr = source_ast.into();
                 if let Some(type_expr) = ta.type_ {
                     if let Some(interface_name) = interface_name_from_type_expr(&type_expr) {
@@ -17989,6 +18029,12 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                             let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
                             let rust_type = field.type_.as_ref().map(type_from_expr_ref);
                             let zero = zero_value_for_type(type_name);
+                            if let Some(type_expr) = field.type_.as_ref() {
+                                let go_type = typeinfer::GoType::from_expr(type_expr);
+                                TYPE_ENV.with(|env| {
+                                    env.borrow_mut().set_var(name.name, go_type);
+                                });
+                            }
                             let ident = syn::Ident::new(
                                 &rust_safe_ident_name(name.name),
                                 Span::mixed_site(),
@@ -19665,6 +19711,18 @@ fn type_assert_any_option_expr(source: syn::Expr, source_type: &typeinfer::GoTyp
     }
 }
 
+fn type_assert_source_is_borrowable(expr: &ast::Expr, source_type: &typeinfer::GoType) -> bool {
+    if matches!(expr, ast::Expr::IndexExpr(_))
+        && matches!(
+            resolved_go_type(source_type),
+            typeinfer::GoType::Any | typeinfer::GoType::Interface(_)
+        )
+    {
+        return false;
+    }
+    is_ir_addressable_expr(expr)
+}
+
 fn type_assert_with_any_option(
     source: syn::Expr,
     source_type: &typeinfer::GoType,
@@ -19881,9 +19939,10 @@ fn compile_comma_ok(
         CommaOkKind::TypeAssert => {
             if let ast::Expr::TypeAssertExpr(ta) = rhs {
                 let source_ast = *ta.x;
-                let source_is_borrowable = is_ir_addressable_expr(&source_ast);
                 let source_type =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_ast, &env.borrow()));
+                let source_is_borrowable =
+                    type_assert_source_is_borrowable(&source_ast, &source_type);
                 let x_e: syn::Expr = source_ast.into();
                 let Some(type_expr) = ta.type_ else {
                     return Err(CompilerError::InvalidAssignment(
@@ -23042,6 +23101,139 @@ func main() {
         );
         assert!(main_rs.contains("usePointer("), "{main_rs}");
         assert!(main_rs.contains("&mut {"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_error_struct_fields_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type wrapError struct {
+	err error
+}
+
+func main() {
+	var w wrapError
+	_ = w.err
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("err: Box<dyn crate::builtin::error>"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("err: &'__gors mut dyn crate::builtin::error"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("impl Default for wrapError"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_does_not_double_box_error_returns() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func passthrough() (err error) {
+	return err
+}
+
+func main() {
+	_ = passthrough()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(!main_rs.contains("Box::new(err)"), "{main_rs}");
+        assert!(main_rs.contains("break '__gors_named_return_"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_clones_any_slice_elements_with_runtime_helper() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func first(values []any) any {
+	return values[0]
+}
+
+func main() {
+	_ = first([]any{"value"})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("crate::builtin::clone_any"), "{main_rs}");
+        assert!(!main_rs.contains("]).clone()"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_binds_any_index_before_type_assertion() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func firstInt(values []any) (int, bool) {
+	v, ok := values[0].(int)
+	return v, ok
+}
+
+func main() {
+	_, _ = firstInt([]any{1})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("let __gors_any_source ="), "{main_rs}");
+        assert!(main_rs.contains("crate::builtin::clone_any"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_boxes_variadic_error_as_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func sink(args ...any) {}
+
+func main() {
+	var err error
+	sink(err)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("crate::builtin::error_string(&mut err)"), "{main_rs}");
+        assert!(!main_rs.contains("(err).clone()"), "{main_rs}");
     }
 
     #[test]

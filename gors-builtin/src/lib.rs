@@ -72,6 +72,58 @@ impl Default for Box<dyn error> {
     }
 }
 
+impl error for Box<dyn error> {
+    fn __gors_as_any(&self) -> Option<&dyn Any> {
+        (**self).__gors_as_any()
+    }
+
+    fn Error(&mut self) -> std::string::String {
+        (**self).Error()
+    }
+}
+
+pub fn error_string(value: &mut Box<dyn error>) -> std::string::String {
+    if value.__gors_as_any().is_none() {
+        std::string::String::new()
+    } else {
+        value.Error()
+    }
+}
+
+pub fn clone_any(value: &Box<dyn Any>) -> Box<dyn Any> {
+    clone_any_ref(value.as_ref())
+}
+
+pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
+    macro_rules! clone_if {
+        ($ty:ty) => {
+            if let Some(v) = value.downcast_ref::<$ty>() {
+                return Box::new(v.clone()) as Box<dyn Any>;
+            }
+        };
+    }
+
+    clone_if!(std::string::String);
+    clone_if!(&'static str);
+    clone_if!(bool);
+    clone_if!(isize);
+    clone_if!(i8);
+    clone_if!(i16);
+    clone_if!(i32);
+    clone_if!(i64);
+    clone_if!(usize);
+    clone_if!(u8);
+    clone_if!(u16);
+    clone_if!(u32);
+    clone_if!(u64);
+    clone_if!(f32);
+    clone_if!(f64);
+    clone_if!(Vec<u8>);
+    clone_if!(Vec<std::string::String>);
+
+    Box::new(())
+}
+
 pub const r#true: r#bool = true;
 pub const r#false: r#bool = false;
 pub const iota: int = 0;
