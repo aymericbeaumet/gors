@@ -249,6 +249,11 @@ gors-builtin/
 - Method values (`v.M`) infer to generated function-value cells. The backend
   lowers them as closures that bind the receiver once; pointer receiver values
   capture the generated pointer cell and lock it per invocation.
+- Go value-receiver methods that assign to the receiver or its fields must lower
+  to an owned `mut self` receiver. Borrowed `&self` is only valid for
+  non-mutating value receivers; mutating value receivers such as
+  `encoding/base64.Encoding.WithPadding` must mutate the Go copy and may return
+  a pointer to that copy.
 - Generated Rust nominal types are emitted public even when the Go type is not
   exported. Cross-module generated code may need to call public methods through
   exported package-level values whose concrete receiver type is unexported, such

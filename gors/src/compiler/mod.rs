@@ -7002,6 +7002,14 @@ fn collect_refs_from_item(
         module_names: &std::collections::HashSet<String>,
     ) -> Option<(String, String)> {
         match expr {
+            syn::Expr::MethodCall(method)
+                if matches!(
+                    method.method.to_string().as_str(),
+                    "clone" | "lock" | "unwrap"
+                ) =>
+            {
+                external_path_symbol_from_expr(&method.receiver, module_names)
+            }
             syn::Expr::Field(field) => {
                 let syn::Member::Named(member) = &field.member else {
                     return None;
@@ -9455,6 +9463,123 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str) {
     RewriteReceiver { recv_name }.visit_block_mut(block);
 }
 
+fn value_receiver_body_mutates_receiver(body: &ast::BlockStmt, recv_name: &str) -> bool {
+    if recv_name.is_empty() {
+        return false;
+    }
+    body.list
+        .iter()
+        .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+}
+
+fn stmt_mutates_receiver(stmt: &ast::Stmt, recv_name: &str) -> bool {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => assign
+            .lhs
+            .iter()
+            .any(|expr| expr_targets_receiver(expr, recv_name)),
+        ast::Stmt::BlockStmt(block) => value_receiver_body_mutates_receiver(block, recv_name),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(|stmt| stmt_mutates_receiver(stmt, recv_name)),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || comm
+                    .body
+                    .iter()
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || value_receiver_body_mutates_receiver(&for_stmt.body, recv_name)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || value_receiver_body_mutates_receiver(&if_stmt.body, recv_name)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => expr_targets_receiver(&inc_dec.x, recv_name),
+        ast::Stmt::LabeledStmt(labeled) => stmt_mutates_receiver(&labeled.stmt, recv_name),
+        ast::Stmt::RangeStmt(range) => {
+            range
+                .key
+                .as_ref()
+                .is_some_and(|expr| expr_targets_receiver(expr, recv_name))
+                || range
+                    .value
+                    .as_ref()
+                    .is_some_and(|expr| expr_targets_receiver(expr, recv_name))
+                || value_receiver_body_mutates_receiver(&range.body, recv_name)
+        }
+        ast::Stmt::SelectStmt(select) => select
+            .body
+            .list
+            .iter()
+            .any(|stmt| stmt_mutates_receiver(stmt, recv_name)),
+        ast::Stmt::SwitchStmt(switch) => {
+            switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                || stmt_mutates_receiver(&type_switch.assign, recv_name)
+                || type_switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+        }
+        ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => false,
+    }
+}
+
+fn expr_targets_receiver(expr: &ast::Expr, recv_name: &str) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name == recv_name,
+        ast::Expr::IndexExpr(index) => expr_targets_receiver(&index.x, recv_name),
+        ast::Expr::ParenExpr(paren) => expr_targets_receiver(&paren.x, recv_name),
+        ast::Expr::SelectorExpr(selector) => expr_targets_receiver(&selector.x, recv_name),
+        ast::Expr::SliceExpr(slice) => expr_targets_receiver(&slice.x, recv_name),
+        ast::Expr::StarExpr(star) => expr_targets_receiver(&star.x, recv_name),
+        _ => false,
+    }
+}
+
 fn compile_method(
     func_decl: ast::FuncDecl,
 ) -> Result<(String, Vec<syn::Ident>, syn::ImplItemFn), CompilerError> {
@@ -9494,6 +9619,12 @@ fn compile_method(
 
     let self_arg: syn::FnArg = if is_pointer || is_slice_receiver || has_borrowed_interface_field {
         syn::parse_quote! { &mut self }
+    } else if func_decl
+        .body
+        .as_ref()
+        .is_some_and(|body| value_receiver_body_mutates_receiver(body, &recv_name))
+    {
+        syn::parse_quote! { mut self }
     } else {
         syn::parse_quote! { &self }
     };
@@ -23397,6 +23528,49 @@ func First() byte {
         let main_rs = output.files.get("example__data.rs").unwrap();
         assert!(main_rs.contains("std::sync::LazyLock<[u8; 3]>"), "{main_rs}");
         assert!(!main_rs.contains("std::sync::LazyLock<Vec<u8>>"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_value_receiver_mutation_uses_owned_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/enc"
+
+func main() {
+	_ = enc.Raw
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("enc/enc.go").as_path(),
+            r#"
+package enc
+
+type Encoding struct {
+	pad int
+}
+
+var Std Encoding
+var Raw = Std.WithPadding(-1)
+
+func (enc Encoding) WithPadding(padding int) *Encoding {
+	enc.pad = padding
+	return &enc
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("example__enc.rs").unwrap();
+        assert!(main_rs.contains("pub fn WithPadding"), "{main_rs}");
+        assert!(main_rs.contains("mut self"), "{main_rs}");
+        assert!(main_rs.contains("std::sync::Mutex::new(self)"), "{main_rs}");
+        assert!(!main_rs.contains("std::sync::Mutex::new(&self)"), "{main_rs}");
     }
 
     #[test]
