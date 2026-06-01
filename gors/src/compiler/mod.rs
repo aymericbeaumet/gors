@@ -13682,21 +13682,33 @@ fn compile_top_level_value_spec(
 
         let vis: syn::Visibility = (&name).into();
         let ident: syn::Ident = name.into();
+        let explicit_go_type = vs.type_.as_ref().map(typeinfer::GoType::from_expr);
+        let inferred_go_type = explicit_go_type.clone().or_else(|| {
+            init_ast.as_ref().and_then(|expr| {
+                TYPE_ENV.with(|env| {
+                    let ty = typeinfer::GoType::infer_expr(expr, &env.borrow());
+                    (!matches!(ty, typeinfer::GoType::Unknown)).then_some(ty)
+                })
+            })
+        });
         let inferred_type = vs
             .type_
             .as_ref()
             .map(static_value_type_from_expr)
             .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init));
-        let init = init_ast.map(syn::Expr::from);
 
         if tok == token::Token::CONST {
-            let mut value = init.unwrap_or_else(|| syn::parse_quote! { 0 });
-            let explicit_go_type = vs.type_.as_ref().map(typeinfer::GoType::from_expr);
+            let mut value = init_ast
+                .map(syn::Expr::from)
+                .unwrap_or_else(|| syn::parse_quote! { 0 });
             let explicit_alias_name = match vs.type_.as_ref() {
                 Some(ast::Expr::Ident(id)) => Some(id.name),
                 _ => None,
             };
-            let ty: syn::Type = if matches!(explicit_go_type, Some(typeinfer::GoType::String)) {
+            let ty: syn::Type = if matches!(
+                explicit_go_type.as_ref(),
+                Some(typeinfer::GoType::String)
+            ) {
                 syn::parse_quote! { &str }
             } else if let Some(type_expr) = vs.type_.as_ref() {
                 type_from_expr_ref(type_expr)
@@ -13722,7 +13734,10 @@ fn compile_top_level_value_spec(
                 syn::parse_quote! { isize }
             };
 
-            if matches!(explicit_go_type, Some(typeinfer::GoType::String))
+            if matches!(
+                explicit_go_type.as_ref(),
+                Some(typeinfer::GoType::String)
+            )
                 && !matches!(
                     &value,
                     syn::Expr::Lit(syn::ExprLit {
@@ -13748,7 +13763,16 @@ fn compile_top_level_value_spec(
                 #vis const #ident: #ty = #value;
             });
         } else {
-            let mut value = init.unwrap_or_else(|| go_zero_value(vs.type_.as_ref()));
+            let mut value = match init_ast {
+                Some(expr) => {
+                    if let Some(go_type) = inferred_go_type.as_ref() {
+                        compile_expr_with_expected(expr, Some(go_type))
+                    } else {
+                        expr.into()
+                    }
+                }
+                None => go_zero_value(vs.type_.as_ref()),
+            };
             let mut ty: syn::Type =
                 inferred_type.unwrap_or_else(|| syn::parse_quote! { Box<dyn std::any::Any> });
             if is_any_type(&ty) {
@@ -22708,8 +22732,8 @@ func main() {
         assert!(output.files.contains_key("builtin.rs"));
         assert!(!output.files.contains_key("fmt.rs"));
         let main_rs = output.files.get("main.rs").unwrap();
-        assert!(main_rs.contains("mod lib"));
-        assert!(main_rs.contains("use lib::{"));
+        assert!(main_rs.contains("mod __gors_lib"));
+        assert!(main_rs.contains("use __gors_lib::{"));
         assert!(main_rs.contains("builtin"));
         assert!(main_rs.contains("println_value"));
         let lib_rs = output.files.get("lib.rs").unwrap();
@@ -22831,6 +22855,48 @@ func Hello() {}
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("renamed::Hello()"), "{main_rs}");
         assert!(output.files.contains_key("example__lib.rs"));
+    }
+
+    #[test]
+    fn compile_program_multi_allows_imported_package_named_lib() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/lib"
+
+func main() {
+	println(lib.Value)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("lib/lib.go").as_path(),
+            r#"
+package lib
+
+var Value = "qualified"
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("mod __gors_lib;"), "{main_rs}");
+        assert!(
+            main_rs.contains("use __gors_lib::{builtin, lib};"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("lib::__gors_init();"), "{main_rs}");
+        assert!(main_rs.contains("lib::Value"), "{main_rs}");
+        let lib_rs = output.files.get("example__lib.rs").unwrap();
+        assert!(
+            lib_rs.contains("std::sync::LazyLock<String>"),
+            "{lib_rs}"
+        );
+        assert!(lib_rs.contains("\"qualified\".to_string()"), "{lib_rs}");
     }
 
     #[test]

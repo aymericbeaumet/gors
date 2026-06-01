@@ -58,6 +58,9 @@ gors-builtin/
 - Each Go package → individual `.rs` file
 - Naming: `import_path.replace('/', "__")` + `.rs` (e.g., `example/math` → `example__math.rs`)
 - `lib.rs` declares all modules with `#[path]` attributes
+- `main.rs` includes `lib.rs` through an internal collision-free wrapper module
+  such as `__gors_lib`; do not name that wrapper `lib`, because Go packages can
+  legitimately be imported with the package name `lib`.
 - `main.rs` includes `lib.rs` and contains main function items
 - Stdlib modules are resolved lazily from build-time generated Go SDK metadata
   and filtered to reachable root symbols before being compiled to Rust. Do not add

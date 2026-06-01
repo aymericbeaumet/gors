@@ -449,6 +449,14 @@ pub struct GeneratedOutput {
 static MULTI_CODEGEN_CACHE: OnceLock<Mutex<std::collections::BTreeMap<String, GeneratedOutput>>> =
     OnceLock::new();
 
+fn main_wrapper_module_name(dependency_mods: &[&str]) -> String {
+    let mut name = "__gors_lib".to_string();
+    while dependency_mods.iter().any(|dep| *dep == name.as_str()) {
+        name.push('_');
+    }
+    name
+}
+
 pub fn generate_multi(
     program: crate::compiler::CompiledProgram,
 ) -> Result<GeneratedOutput, Box<dyn std::error::Error>> {
@@ -493,8 +501,9 @@ pub fn generate_multi(
             .map(|module| module.mod_name.as_str())
             .collect();
         if !dependency_mods.is_empty() {
+            let wrapper_mod = main_wrapper_module_name(&dependency_mods);
             main_parts.push(format!(
-                "#[path = \"lib.rs\"]\nmod lib;\nuse lib::{{{}}};",
+                "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::{{{}}};",
                 dependency_mods.join(", ")
             ));
         }
