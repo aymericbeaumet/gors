@@ -36984,10 +36984,12 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 	},
 	{
 		"packagePath": "hash/fnv",
-		"tested": false,
-		"fixtures": [],
+		"tested": true,
+		"fixtures": [
+			"hash/fnv"
+		],
 		"symbolCount": 6,
-		"testedSymbolCount": 0,
+		"testedSymbolCount": 4,
 		"symbols": [
 			{
 				"name": "New128",
@@ -37004,26 +37006,34 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 			{
 				"name": "New32",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			},
 			{
 				"name": "New32a",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			},
 			{
 				"name": "New64",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			},
 			{
 				"name": "New64a",
 				"kind": "func",
-				"tested": false,
-				"fixtures": []
+				"tested": true,
+				"fixtures": [
+					"hash/fnv"
+				]
 			}
 		]
 	},
@@ -79889,11 +79899,11 @@ export const gostdlibCoverage: readonly GostdlibCoveragePackage[] = [
 ];
 
 export const gostdlibCoverageSummary = {
-	"fixtureCount": 75,
+	"fixtureCount": 76,
 	"packageCount": 353,
-	"testedPackageCount": 75,
-	"untestedPackageCount": 278,
+	"testedPackageCount": 76,
+	"untestedPackageCount": 277,
 	"symbolCount": 12578,
-	"testedSymbolCount": 462,
-	"untestedSymbolCount": 12116
+	"testedSymbolCount": 466,
+	"untestedSymbolCount": 12112
 } as const;

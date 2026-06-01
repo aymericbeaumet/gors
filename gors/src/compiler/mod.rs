@@ -441,7 +441,7 @@ fn collect_decl_needed_imported_interface_method_sets(
     match decl {
         ast::Decl::FuncDecl(func) => {
             let collect_signature = func.recv.is_none()
-                && func.name.name == "New"
+                && func.name.name.starts_with("New")
                 && ACTIVE_REACHABILITY_ROOTS.with(|roots| {
                     roots
                         .borrow()
