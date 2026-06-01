@@ -766,6 +766,8 @@ pub struct TypeEnv {
         HashMap<std::string::String, HashMap<std::string::String, Vec<GoType>>>,
     /// Function/method name → index where a variadic parameter starts
     func_variadic_start: HashMap<std::string::String, usize>,
+    /// Function/method name → named interfaces asserted in the function body.
+    func_interface_assertions: HashMap<std::string::String, Vec<std::string::String>>,
     /// Type name → kind (struct, interface, alias)
     type_kinds: HashMap<std::string::String, TypeKind>,
     /// Type name → declared type parameter count
@@ -860,6 +862,302 @@ fn interface_method_signatures(expr: &ast::Expr) -> Vec<InterfaceMethodSignature
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn interface_assertion_names_in_block(block: &ast::BlockStmt<'_>) -> Vec<std::string::String> {
+    let mut names = Vec::new();
+    collect_interface_assertion_names_from_block(block, &mut names);
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn collect_interface_assertion_names_from_block(
+    block: &ast::BlockStmt<'_>,
+    out: &mut Vec<std::string::String>,
+) {
+    for stmt in &block.list {
+        collect_interface_assertion_names_from_stmt(stmt, out);
+    }
+}
+
+fn collect_interface_assertion_names_from_stmt(
+    stmt: &ast::Stmt<'_>,
+    out: &mut Vec<std::string::String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_interface_assertion_names_from_expr(expr, out);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => collect_interface_assertion_names_from_block(block, out),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+        ast::Stmt::CaseClause(case) => {
+            if let Some(list) = &case.list {
+                for expr in list {
+                    collect_interface_assertion_names_from_expr(expr, out);
+                }
+            }
+            for stmt in &case.body {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+            for stmt in &comm.body {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec
+                    && let Some(values) = &value.values
+                {
+                    for expr in values {
+                        collect_interface_assertion_names_from_expr(expr, out);
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => {
+            collect_interface_assertion_names_from_expr(&defer.call.fun, out);
+            if let Some(args) = &defer.call.args {
+                for arg in args {
+                    collect_interface_assertion_names_from_expr(arg, out);
+                }
+            }
+        }
+        ast::Stmt::ExprStmt(expr) => collect_interface_assertion_names_from_expr(&expr.x, out),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_interface_assertion_names_from_stmt(init, out);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_interface_assertion_names_from_expr(cond, out);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_interface_assertion_names_from_stmt(post, out);
+            }
+            collect_interface_assertion_names_from_block(&for_stmt.body, out);
+        }
+        ast::Stmt::GoStmt(go) => {
+            collect_interface_assertion_names_from_expr(&go.call.fun, out);
+            if let Some(args) = &go.call.args {
+                for arg in args {
+                    collect_interface_assertion_names_from_expr(arg, out);
+                }
+            }
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = &*if_stmt.init {
+                collect_interface_assertion_names_from_stmt(init, out);
+            }
+            collect_interface_assertion_names_from_expr(&if_stmt.cond, out);
+            collect_interface_assertion_names_from_block(&if_stmt.body, out);
+            if let Some(else_stmt) = &*if_stmt.else_ {
+                collect_interface_assertion_names_from_stmt(else_stmt, out);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_interface_assertion_names_from_expr(&inc_dec.x, out);
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            collect_interface_assertion_names_from_stmt(&labeled.stmt, out);
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                collect_interface_assertion_names_from_expr(key, out);
+            }
+            if let Some(value) = &range.value {
+                collect_interface_assertion_names_from_expr(value, out);
+            }
+            collect_interface_assertion_names_from_expr(&range.x, out);
+            collect_interface_assertion_names_from_block(&range.body, out);
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_interface_assertion_names_from_expr(expr, out);
+            }
+        }
+        ast::Stmt::SelectStmt(select) => {
+            for stmt in &select.body.list {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_interface_assertion_names_from_expr(&send.chan, out);
+            collect_interface_assertion_names_from_expr(&send.value, out);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_interface_assertion_names_from_stmt(init, out);
+            }
+            if let Some(tag) = &switch.tag {
+                collect_interface_assertion_names_from_expr(tag, out);
+            }
+            for stmt in &switch.body.list {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_interface_assertion_names_from_stmt(init, out);
+            }
+            collect_interface_assertion_names_from_stmt(&type_switch.assign, out);
+            for stmt in &type_switch.body.list {
+                collect_interface_assertion_names_from_stmt(stmt, out);
+            }
+        }
+    }
+}
+
+fn collect_interface_assertion_names_from_expr(
+    expr: &ast::Expr<'_>,
+    out: &mut Vec<std::string::String>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_interface_assertion_names_from_expr(len, out);
+            }
+            collect_interface_assertion_names_from_expr(&array.elt, out);
+        }
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::BinaryExpr(binary) => {
+            collect_interface_assertion_names_from_expr(&binary.x, out);
+            collect_interface_assertion_names_from_expr(&binary.y, out);
+        }
+        ast::Expr::CallExpr(call) => {
+            collect_interface_assertion_names_from_expr(&call.fun, out);
+            if let Some(args) = &call.args {
+                for arg in args {
+                    collect_interface_assertion_names_from_expr(arg, out);
+                }
+            }
+        }
+        ast::Expr::ChanType(chan) => {
+            collect_interface_assertion_names_from_expr(&chan.value, out);
+        }
+        ast::Expr::CompositeLit(lit) => {
+            if let Some(type_) = &lit.type_ {
+                collect_interface_assertion_names_from_expr(type_, out);
+            }
+            if let Some(elts) = &lit.elts {
+                for elt in elts {
+                    collect_interface_assertion_names_from_expr(elt, out);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_interface_assertion_names_from_expr(elt, out);
+            }
+        }
+        ast::Expr::FuncLit(func) => collect_interface_assertion_names_from_block(&func.body, out),
+        ast::Expr::FuncType(func) => {
+            for field in &func.params.list {
+                if let Some(type_) = &field.type_ {
+                    collect_interface_assertion_names_from_expr(type_, out);
+                }
+            }
+            if let Some(results) = &func.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_interface_assertion_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_interface_assertion_names_from_expr(&index.x, out);
+            collect_interface_assertion_names_from_expr(&index.index, out);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_interface_assertion_names_from_expr(&index.x, out);
+            for expr in &index.indices {
+                collect_interface_assertion_names_from_expr(expr, out);
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                for field in &methods.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_interface_assertion_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(key_value) => {
+            collect_interface_assertion_names_from_expr(&key_value.key, out);
+            collect_interface_assertion_names_from_expr(&key_value.value, out);
+        }
+        ast::Expr::MapType(map) => {
+            collect_interface_assertion_names_from_expr(&map.key, out);
+            collect_interface_assertion_names_from_expr(&map.value, out);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_interface_assertion_names_from_expr(&paren.x, out);
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            collect_interface_assertion_names_from_expr(&selector.x, out);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_interface_assertion_names_from_expr(&slice.x, out);
+            if let Some(low) = &slice.low {
+                collect_interface_assertion_names_from_expr(low, out);
+            }
+            if let Some(high) = &slice.high {
+                collect_interface_assertion_names_from_expr(high, out);
+            }
+            if let Some(max) = &slice.max {
+                collect_interface_assertion_names_from_expr(max, out);
+            }
+        }
+        ast::Expr::StarExpr(star) => {
+            collect_interface_assertion_names_from_expr(&star.x, out);
+        }
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                for field in &fields.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_interface_assertion_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_interface_assertion_names_from_expr(&assert.x, out);
+            if let Some(type_) = &assert.type_ {
+                if let Some(name) = named_assertion_type(type_) {
+                    out.push(name);
+                }
+                collect_interface_assertion_names_from_expr(type_, out);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            collect_interface_assertion_names_from_expr(&unary.x, out);
+        }
+    }
+}
+
+fn named_assertion_type(expr: &ast::Expr<'_>) -> Option<std::string::String> {
+    match expr {
+        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = &*selector.x else {
+                return None;
+            };
+            Some(format!("{}.{}", pkg.name, selector.sel.name))
+        }
+        ast::Expr::ParenExpr(paren) => named_assertion_type(&paren.x),
+        ast::Expr::StarExpr(star) => named_assertion_type(&star.x),
+        ast::Expr::IndexExpr(index) => named_assertion_type(&index.x),
+        ast::Expr::IndexListExpr(index) => named_assertion_type(&index.x),
+        _ => None,
+    }
 }
 
 fn embedded_interface_name(expr: &ast::Expr) -> Option<std::string::String> {
@@ -1116,6 +1414,17 @@ fn qualify_package_interface_name(
     }
 }
 
+fn qualify_package_interface_names(
+    package_name: &str,
+    names: &[std::string::String],
+    package_env: &TypeEnv,
+) -> Vec<std::string::String> {
+    names
+        .iter()
+        .map(|name| qualify_package_interface_name(package_name, name, package_env))
+        .collect()
+}
+
 fn qualify_package_member_name(
     package_name: &str,
     name: &str,
@@ -1191,6 +1500,28 @@ impl TypeEnv {
 
     pub fn get_func_variadic_start(&self, name: &str) -> Option<usize> {
         self.func_variadic_start.get(name).copied()
+    }
+
+    pub fn set_func_interface_assertions(
+        &mut self,
+        name: &str,
+        mut assertions: Vec<std::string::String>,
+    ) {
+        assertions.sort();
+        assertions.dedup();
+        if assertions.is_empty() {
+            self.func_interface_assertions.remove(name);
+        } else {
+            self.func_interface_assertions
+                .insert(name.to_string(), assertions);
+        }
+    }
+
+    pub fn get_func_interface_assertions(&self, name: &str) -> Vec<std::string::String> {
+        self.func_interface_assertions
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn get_func_params(&self, name: &str) -> Vec<GoType> {
@@ -1279,6 +1610,22 @@ impl TypeEnv {
 
     pub fn get_type_kind(&self, name: &str) -> Option<&TypeKind> {
         self.type_kinds.get(name)
+    }
+
+    pub fn struct_type_names(&self) -> Vec<std::string::String> {
+        let mut names = self
+            .type_kinds
+            .iter()
+            .filter_map(|(name, kind)| matches!(kind, TypeKind::Struct).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    pub fn interface_names(&self) -> Vec<std::string::String> {
+        let mut names = self.interface_methods.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     pub fn set_type_param_count(&mut self, name: &str, count: usize) {
@@ -1823,6 +2170,12 @@ impl TypeEnv {
                 *start,
             );
         }
+        for (name, assertions) in &package_env.func_interface_assertions {
+            self.set_func_interface_assertions(
+                &qualify_package_member_name(package_name, name, package_env),
+                qualify_package_interface_names(package_name, assertions, package_env),
+            );
+        }
         for (name, kind) in &package_env.type_kinds {
             let qualified_name = qualify_package_member_name(package_name, name, package_env);
             self.set_type_kind(
@@ -2132,6 +2485,12 @@ impl TypeEnv {
                     if let Some(start) = variadic_start {
                         self.set_func_variadic_start(&method_key, start);
                     }
+                    if let Some(body) = &fd.body {
+                        self.set_func_interface_assertions(
+                            &method_key,
+                            interface_assertion_names_in_block(body),
+                        );
+                    }
                 }
             }
         }
@@ -2141,6 +2500,9 @@ impl TypeEnv {
             self.set_func_type_param_constraints(name, type_param_constraints);
             if let Some(start) = variadic_start {
                 self.set_func_variadic_start(name, start);
+            }
+            if let Some(body) = &fd.body {
+                self.set_func_interface_assertions(name, interface_assertion_names_in_block(body));
             }
         }
 

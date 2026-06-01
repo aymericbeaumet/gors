@@ -63,6 +63,8 @@ thread_local! {
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
+    static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+    static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 #[derive(Clone)]
@@ -87,6 +89,14 @@ struct MainPackageVarModeGuard {
 
 struct SharedCaptureNamesGuard {
     previous: std::collections::HashSet<String>,
+}
+
+struct CurrentGoPackageNameGuard {
+    previous: Option<String>,
+}
+
+struct ExternalInterfaceImplementorsGuard {
+    previous: BTreeMap<String, Vec<syn::Type>>,
 }
 
 struct GotoContinueLabelsGuard {
@@ -155,6 +165,41 @@ impl Drop for SharedCaptureNamesGuard {
     fn drop(&mut self) {
         SHARED_CAPTURE_NAMES.with(|shared| {
             *shared.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl CurrentGoPackageNameGuard {
+    fn set(current: String) -> Self {
+        let previous = CURRENT_GO_PACKAGE_NAME.with(|name| {
+            let previous = name.borrow().clone();
+            *name.borrow_mut() = Some(current);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for CurrentGoPackageNameGuard {
+    fn drop(&mut self) {
+        CURRENT_GO_PACKAGE_NAME.with(|name| {
+            *name.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl ExternalInterfaceImplementorsGuard {
+    fn set(current: BTreeMap<String, Vec<syn::Type>>) -> Self {
+        let previous = EXTERNAL_INTERFACE_IMPLEMENTORS
+            .with(|implementors| std::mem::replace(&mut *implementors.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+impl Drop for ExternalInterfaceImplementorsGuard {
+    fn drop(&mut self) {
+        EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
+            *implementors.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -401,6 +446,19 @@ fn collect_go_type_needed_interface_method_sets(
             collect_go_type_needed_interface_method_sets(&inner, env, out);
         }
         _ => {}
+    }
+}
+
+fn collect_named_needed_interface_method_set(
+    interface_name: &str,
+    env: &typeinfer::TypeEnv,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    if env.is_interface(interface_name)
+        && let Some(methods) = env.get_interface_methods(interface_name)
+        && !methods.is_empty()
+    {
+        out.entry(interface_name.to_string()).or_insert(methods);
     }
 }
 
@@ -755,6 +813,9 @@ fn collect_call_needed_imported_interface_method_sets(
                     }
                 }
             }
+            for interface_name in env.get_func_interface_assertions(&function_name) {
+                collect_named_needed_interface_method_set(&interface_name, env, out);
+            }
         }
     }
     collect_expr_needed_imported_interface_method_sets(&call.fun, env, out);
@@ -823,6 +884,10 @@ pub(crate) fn with_active_reachability_roots<T>(
         active.replace(previous);
         result
     })
+}
+
+pub(crate) fn has_external_interface_implementors() -> bool {
+    EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| !implementors.borrow().is_empty())
 }
 
 fn set_import_renames(import_renames: BTreeMap<String, String>) {
@@ -3927,6 +3992,89 @@ pub struct CompiledProgram {
     pub has_main: bool,
 }
 
+fn crate_root_type_path(type_name: &str) -> syn::Type {
+    let type_ident = syn::Ident::new(&rust_safe_ident_name(type_name), Span::mixed_site());
+    syn::parse_quote! { crate::#type_ident }
+}
+
+fn crate_module_type_path(module_name: &str, type_name: &str) -> syn::Type {
+    let module_ident = syn::Ident::new(&rust_safe_ident_name(module_name), Span::mixed_site());
+    let type_ident = syn::Ident::new(&rust_safe_ident_name(type_name), Span::mixed_site());
+    syn::parse_quote! { crate::#module_ident::#type_ident }
+}
+
+fn external_program_concrete_types(
+    main_type_env: &typeinfer::TypeEnv,
+    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_module_names: &BTreeMap<String, String>,
+) -> Vec<(String, syn::Type)> {
+    let mut out = main_type_env
+        .struct_type_names()
+        .into_iter()
+        .filter(|name| !name.contains('.'))
+        .map(|name| {
+            let rust_ty = crate_root_type_path(&name);
+            (name, rust_ty)
+        })
+        .collect::<Vec<_>>();
+
+    for (import_path, (package_name, env)) in local_type_envs {
+        let Some(module_name) = local_module_names.get(import_path) else {
+            continue;
+        };
+        for type_name in env.struct_type_names() {
+            let go_name = format!("{package_name}.{type_name}");
+            let rust_ty = crate_module_type_path(module_name, &type_name);
+            out.push((go_name, rust_ty));
+        }
+    }
+
+    out.sort_by(|(left, _), (right, _)| left.cmp(right));
+    out.dedup_by(|(left, _), (right, _)| left == right);
+    out
+}
+
+fn external_interface_implementors_for_program(
+    main_type_env: &typeinfer::TypeEnv,
+    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_module_names: &BTreeMap<String, String>,
+) -> BTreeMap<String, Vec<syn::Type>> {
+    let concrete_types =
+        external_program_concrete_types(main_type_env, local_type_envs, local_module_names);
+    if concrete_types.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let mut implementors = BTreeMap::new();
+    for interface_name in main_type_env.interface_names() {
+        let Some(methods) = main_type_env.get_interface_methods(&interface_name) else {
+            continue;
+        };
+        if methods.is_empty() {
+            continue;
+        }
+
+        let mut interface_implementors = Vec::new();
+        for (go_name, rust_ty) in &concrete_types {
+            if main_type_env.named_type_implements_interface(go_name, &interface_name, false) {
+                interface_implementors.push(rust_ty.clone());
+            }
+            if main_type_env.named_type_implements_interface(go_name, &interface_name, true) {
+                let pointer_ty: syn::Type =
+                    syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#rust_ty>> };
+                interface_implementors.push(pointer_ty);
+            }
+        }
+
+        if !interface_implementors.is_empty() {
+            let mut seen = std::collections::BTreeSet::new();
+            interface_implementors.retain(|ty| seen.insert(ty.to_token_stream().to_string()));
+            implementors.insert(interface_name, interface_implementors);
+        }
+    }
+    implementors
+}
+
 pub fn import_path_to_filename(import_path: &str) -> String {
     if import_path.is_empty() || import_path == "main" {
         return "main.rs".to_string();
@@ -4207,6 +4355,11 @@ fn compile_program_impl(
     )?;
     validate_unused_imports(&program.main_package.ast, &import_package_names)?;
     let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
+    let external_interface_implementors = external_interface_implementors_for_program(
+        &main_type_env,
+        &local_type_envs,
+        &local_module_names,
+    );
     set_import_package_names(import_package_names);
     set_type_env(main_type_env);
     set_import_renames(main_import_rewrites.clone());
@@ -4238,8 +4391,12 @@ fn compile_program_impl(
     drop(local_compile_timer);
 
     let stdlib_timer = ProfileTimer::start("compiler.stdlib_resolution");
-    resolve_required_stdlib_modules(&mut modules, &stdlib_imports);
-    prune_dependency_stdlib_modules(&mut modules, &stdlib_imports);
+    {
+        let _external_interface_implementors =
+            ExternalInterfaceImplementorsGuard::set(external_interface_implementors);
+        resolve_required_stdlib_modules(&mut modules, &stdlib_imports);
+        prune_dependency_stdlib_modules(&mut modules, &stdlib_imports);
+    }
     drop(stdlib_timer);
 
     for module in modules.values_mut() {
@@ -7135,6 +7292,33 @@ fn external_receiver_method_return_type(
         })
 }
 
+fn external_function_return_type(module: &str, function: &str) -> Option<ReceiverTypeRef> {
+    TYPE_ENV
+        .with(|env| {
+            let env = env.borrow();
+            let function_names =
+                type_env_name_candidates_for_rust_path_name(&format!("{module}.{function}"));
+            function_names.into_iter().find_map(|function_name| {
+                let ret = env.get_func_return(&function_name);
+                if matches!(ret, typeinfer::GoType::Unknown) {
+                    None
+                } else {
+                    receiver_type_ref_from_go_type(ret)
+                }
+            })
+        })
+        .or_else(|| {
+            let import_path = module.replace("__", "/");
+            let (_, package_env) = crate::resolve::scan_type_env(&import_path)?;
+            let ret = package_env.get_func_return(function);
+            if matches!(ret, typeinfer::GoType::Unknown) {
+                None
+            } else {
+                receiver_type_ref_from_go_type_with_default_module(ret, Some(module))
+            }
+        })
+}
+
 fn receiver_type_from_init_expr(
     expr: &syn::Expr,
     module_names: &std::collections::HashSet<String>,
@@ -7170,6 +7354,11 @@ fn receiver_type_from_init_expr(
             {
                 if let Some(qself) = &path.qself
                     && let Some(receiver_type) = receiver_type_from_type(&qself.ty, module_names)
+                {
+                    return Some(receiver_type);
+                }
+                if let Some(receiver_type) =
+                    external_function_return_type_from_path(&path.path, module_names)
                 {
                     return Some(receiver_type);
                 }
@@ -7240,6 +7429,26 @@ fn receiver_type_from_init_expr(
             item_names,
             top_level_return_types,
         ),
+        _ => None,
+    }
+}
+
+fn external_function_return_type_from_path(
+    path: &syn::Path,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [krate, module, function, ..] if krate == "crate" && module_names.contains(module) => {
+            external_function_return_type(module, function)
+        }
+        [module, function, ..] if module_names.contains(module) => {
+            external_function_return_type(module, function)
+        }
         _ => None,
     }
 }
@@ -9553,7 +9762,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         if let Some(ast::Expr::FuncType(func_type)) = field.type_ {
                             for param in func_type.params.list {
                                 let ty: syn::Type = if let Some(type_expr) = param.type_ {
-                                    type_expr.into()
+                                    borrowed_interface_value_type_from_expr(&type_expr)
+                                        .unwrap_or_else(|| type_expr.into())
                                 } else {
                                     syn::parse_quote! { () }
                                 };
@@ -9677,7 +9887,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let slice_elem_type = slice_elem_type_from_expr(&other);
             let underlying_go_type = typeinfer::GoType::from_expr(&other);
             let is_slice_alias = matches!(underlying_go_type, typeinfer::GoType::Slice(_));
-            let is_copy_alias = go_type_is_copy(&underlying_go_type);
+            let is_func_alias = matches!(underlying_go_type, typeinfer::GoType::Func { .. });
+            let is_copy_alias = !is_func_alias && go_type_is_copy(&underlying_go_type);
             let is_numeric_alias = resolved_go_type(&underlying_go_type).is_numeric();
             let is_integer_alias = resolved_go_type(&underlying_go_type).is_integer()
                 || matches!(
@@ -12033,16 +12244,48 @@ fn compile_struct_composite_lit(
     type_name: Option<&str>,
     raw_elts: Vec<ast::Expr>,
 ) -> syn::Expr {
-    let field_values = raw_elts_to_field_values(type_name, raw_elts);
+    let mut field_values = raw_elts_to_field_values(type_name, raw_elts);
     if field_values.is_empty() || has_unnamed_field_values(&field_values) {
         syn::parse_quote! { #path::default() }
     } else {
-        let all_struct_fields_set = type_name.is_some_and(|type_name| {
+        let all_struct_fields_set = if let Some(type_name) = type_name {
             TYPE_ENV.with(|env| {
-                let count = env.borrow().get_struct_fields(type_name).len();
-                count > 0 && field_values.len() == count
+                let env = env.borrow();
+                let struct_fields = env.get_struct_fields(type_name);
+                let mut present = field_values
+                    .iter()
+                    .filter_map(|field| match &field.member {
+                        syn::Member::Named(ident) => Some(ident.to_string()),
+                        syn::Member::Unnamed(_) => None,
+                    })
+                    .collect::<std::collections::HashSet<_>>();
+                let missing_defaults = struct_fields
+                    .iter()
+                    .filter(|(field_name, _)| !present.contains(&rust_safe_ident_name(field_name)))
+                    .map(|(field_name, field_type)| {
+                        go_zero_value_from_go_type(field_type).map(|expr| (field_name, expr))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(missing_defaults) = missing_defaults {
+                    for (field_name, expr) in missing_defaults {
+                        let field_name = rust_safe_ident_name(field_name);
+                        present.insert(field_name.clone());
+                        field_values.push(syn::FieldValue {
+                            attrs: vec![],
+                            member: syn::Member::Named(syn::Ident::new(
+                                &field_name,
+                                Span::mixed_site(),
+                            )),
+                            colon_token: Some(<Token![:]>::default()),
+                            expr,
+                        });
+                    }
+                }
+                !struct_fields.is_empty() && field_values.len() == struct_fields.len()
             })
-        });
+        } else {
+            false
+        };
         let mut fields = syn::punctuated::Punctuated::new();
         for fv in field_values {
             fields.push(fv);
@@ -18468,7 +18711,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
     fn try_from(file: ast::File) -> Result<Self, Self::Error> {
-        let is_main_package = file.name.name == "main";
+        let package_name = file.name.name.to_string();
+        let _current_package_name = CurrentGoPackageNameGuard::set(package_name.clone());
+        let is_main_package = package_name == "main";
         let _main_package_var_mode = MainPackageVarModeGuard::set(is_main_package);
 
         // Track import names for selector expr disambiguation
@@ -21347,6 +21592,21 @@ fn go_zero_value(type_expr: Option<&ast::Expr>) -> syn::Expr {
     }
 }
 
+fn go_zero_value_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr> {
+    match resolved_go_type(go_type) {
+        typeinfer::GoType::Error => Some(syn::parse_quote! {
+            Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+        }),
+        typeinfer::GoType::Any => Some(syn::parse_quote! {
+            Box::new(()) as Box<dyn std::any::Any>
+        }),
+        typeinfer::GoType::Bool => Some(syn::parse_quote! { false }),
+        typeinfer::GoType::String => Some(syn::parse_quote! { String::new() }),
+        typeinfer::GoType::Interface(_) => None,
+        _ => Some(syn::parse_quote! { Default::default() }),
+    }
+}
+
 fn is_any_type(ty: &syn::Type) -> bool {
     let syn::Type::Path(type_path) = ty else {
         return false;
@@ -21534,8 +21794,32 @@ fn comma_ok_type_assert_concrete_expr(
     type_assert_with_any_option(source, source_type, source_is_borrowable, body)
 }
 
+fn current_package_qualified_interface_name(interface_name: &str) -> String {
+    if interface_name == "error" || interface_name.contains('.') {
+        return interface_name.to_string();
+    }
+    CURRENT_GO_PACKAGE_NAME.with(|package| {
+        package
+            .borrow()
+            .as_ref()
+            .map(|package| format!("{package}.{interface_name}"))
+            .unwrap_or_else(|| interface_name.to_string())
+    })
+}
+
+fn external_interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
+    let qualified_name = current_package_qualified_interface_name(interface_name);
+    EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
+        implementors
+            .borrow()
+            .get(&qualified_name)
+            .cloned()
+            .unwrap_or_default()
+    })
+}
+
 fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
-    TYPE_ENV.with(|env| {
+    let mut implementors = TYPE_ENV.with(|env| {
         let env = env.borrow();
         let mut implementors = env
             .interface_implementors(interface_name)
@@ -21551,7 +21835,11 @@ fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
                 }),
         );
         implementors
-    })
+    });
+    implementors.extend(external_interface_assertion_implementors(interface_name));
+    let mut seen = std::collections::BTreeSet::new();
+    implementors.retain(|ty| seen.insert(ty.to_token_stream().to_string()));
+    implementors
 }
 
 fn interface_assertion_fallback(

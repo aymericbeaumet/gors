@@ -165,6 +165,10 @@ pub fn resolve_with_roots(import_path: &str, roots: &HashSet<String>) -> Option<
 }
 
 fn resolve_cached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
+    if crate::compiler::has_external_interface_implementors() {
+        return resolve_uncached(import_path, roots);
+    }
+
     let cache_key = resolve_cache_key(import_path, roots);
     let Some(cell) = resolved_module_cell(&cache_key) else {
         return resolve_uncached(import_path, roots);

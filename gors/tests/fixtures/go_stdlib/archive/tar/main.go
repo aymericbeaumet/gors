@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"fmt"
+	"io/fs"
+	"time"
 )
 
 func main() {
@@ -16,6 +18,8 @@ func main() {
 	caseHeaderFileInfo()
 	fmt.Println("== archive/tar/fileinfo-header ==")
 	caseFileInfoHeader()
+	fmt.Println("== archive/tar/fileinfo-names ==")
+	caseFileInfoNames()
 }
 
 func caseErrors() {
@@ -72,4 +76,25 @@ func caseFileInfoHeader() {
 	h := &tar.Header{Name: "dir/file.txt", Size: 7, Mode: 0644, Typeflag: tar.TypeReg, Uname: "old-owner", Gname: "old-group"}
 	fromHeader, err := tar.FileInfoHeader(h.FileInfo(), "")
 	fmt.Println(err == nil, fromHeader.Name, fromHeader.Size, fromHeader.Typeflag, uint32(fromHeader.Mode), fromHeader.Uname, fromHeader.Gname)
+}
+
+type namedFileInfo struct{}
+
+func (namedFileInfo) Name() string       { return "named.txt" }
+func (namedFileInfo) Size() int64        { return 11 }
+func (namedFileInfo) Mode() fs.FileMode  { return 0640 }
+func (namedFileInfo) ModTime() time.Time { return time.Time{} }
+func (namedFileInfo) IsDir() bool        { return false }
+func (namedFileInfo) Sys() any           { return nil }
+func (namedFileInfo) Uname() (string, error) {
+	return "fixture-user", nil
+}
+func (namedFileInfo) Gname() (string, error) {
+	return "fixture-group", nil
+}
+
+func caseFileInfoNames() {
+	// gors:stdlib-cover archive/tar::FileInfoNames
+	fromNames, err := tar.FileInfoHeader(namedFileInfo{}, "")
+	fmt.Println(err == nil, fromNames.Name, fromNames.Size, fromNames.Typeflag, uint32(fromNames.Mode), fromNames.Uname, fromNames.Gname)
 }

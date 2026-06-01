@@ -309,11 +309,13 @@ package, inspect every exported package-level function, method, type, constant,
 and variable reported for that package and add or fix integration coverage until
 each supported row is backed by an e2e generated-program check that compares Go
 output with gors output. Treat existing package rows as an audit queue, not as
-proof: check all package integration checks one by one, open the fixture that
-claims each passing row, and confirm that the referenced symbol is exercised by a
-behavioral check. Do not mark a package complete until every reported exported
-function, method, type, constant, and variable for that package has been audited
-against an actual e2e check. A symbol is not covered just because a fixture
+proof: check all package integration checks one by one, including rows already
+marked `passing`, open the fixture that claims each row, and confirm that the
+referenced symbol is exercised by a behavioral check. Do not mark a package
+complete until every reported exported function, method, type, constant, and
+variable for that package has been audited against an actual e2e check. If a
+passing row cannot be tied to such a check, fix the fixture/reporter or downgrade
+the row before moving on. A symbol is not covered just because a fixture
 compiles with `var _ = pkg.Symbol`, `var _ Type`, a method expression,
 assignment of a method/function value that is never called, or another
 selector-only reference; those references may exercise reachability, type
