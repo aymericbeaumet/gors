@@ -131,8 +131,9 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 		page.locator(".package-cell > code").filter({ hasText: /^fmt$/ }),
 	).toHaveClass(/(^|\s)partial(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "13/29 passing" }),
+		page.locator(".package-cell span").filter({ hasText: "13/29 covered" }),
 	).toHaveClass(/(^|\s)partial(\s|$)/);
+	await expect(page.locator(".package-cell .fixture-cell")).toHaveCount(0);
 	await expect(page.getByText("Println", { exact: true })).toBeVisible();
 	await expect(
 		page.getByRole("link", { name: "fmt", exact: true }).first(),
@@ -154,14 +155,14 @@ test("conformance route shows stdlib package and symbol coverage", async ({
 			.filter({ hasText: /^container\/list$/ }),
 	).toHaveClass(/(^|\s)none(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "0/20 passing" }),
+		page.locator(".package-cell span").filter({ hasText: "0/20 covered" }),
 	).toHaveClass(/(^|\s)none(\s|$)/);
 
 	await expect(
 		page.locator(".package-cell > code").filter({ hasText: /^structs$/ }),
 	).toHaveClass(/(^|\s)tested(\s|$)/);
 	await expect(
-		page.locator(".package-cell span").filter({ hasText: "1/1 passing" }),
+		page.locator(".package-cell span").filter({ hasText: "1/1 covered" }),
 	).toHaveClass(/(^|\s)tested(\s|$)/);
 
 	await expect

@@ -7,14 +7,14 @@
     "url": "https://go.dev/ref/spec",
     "languageVersion": "go1.26",
     "published": "2026-01-12",
-    "retrieved": "2026-05-27"
+    "retrieved": "2026-06-01"
   },
   "summary": {
     "groupCount": 15,
-    "passingGroupCount": 15,
-    "caseCount": 167,
-    "passingCaseCount": 167,
-    "unsupportedCaseCount": 0,
+    "passingGroupCount": 14,
+    "caseCount": 192,
+    "passingCaseCount": 191,
+    "unsupportedCaseCount": 1,
     "fixtureCount": 0
   },
   "groups": [
@@ -26,13 +26,14 @@
         "_source_bytes/bom_leading",
         "_source_bytes/bom_middle",
         "_source_bytes/source_nul",
-        "source_code_representation"
+        "source_code_representation",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 4,
-        "passingCaseCount": 4,
+        "caseCount": 6,
+        "passingCaseCount": 6,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -56,6 +57,29 @@
           "status": "passing",
           "fixtures": [
             "source_code_representation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "source-characters",
+          "title": "Unicode code points are accepted in source text and literals",
+          "subtitle": "Characters",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "source-letters-and-digits",
+          "title": "Unicode letters and digits form identifiers without changing code point identity",
+          "subtitle": "Letters and digits",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation",
+            "spec_section_edgecases"
           ],
           "reason": ""
         },
@@ -89,13 +113,14 @@
       "title": "Lexical elements",
       "subtitle": "",
       "fixtures": [
-        "lexical_elements"
+        "lexical_elements",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 16,
-        "passingCaseCount": 16,
+        "caseCount": 17,
+        "passingCaseCount": 17,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -108,6 +133,18 @@
           "status": "passing",
           "fixtures": [
             "lexical_elements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "lexical-tokens",
+          "title": "Tokens are formed from identifiers, keywords, operators, punctuation, and literals",
+          "subtitle": "Tokens",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements",
+            "spec_section_edgecases"
           ],
           "reason": ""
         },
@@ -401,17 +438,30 @@
       "title": "Variables and zero values",
       "subtitle": "",
       "fixtures": [
+        "spec_section_edgecases",
         "variables_and_zero_values"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 7,
-        "passingCaseCount": 7,
+        "caseCount": 8,
+        "passingCaseCount": 8,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
+        {
+          "id": "vars-general",
+          "title": "Variables hold typed storage locations that can be read through operands",
+          "subtitle": "Variables",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
         {
           "id": "vars-var-declarations",
           "title": "var declarations with and without explicit types initialize correctly",
@@ -497,6 +547,7 @@
       "subtitle": "",
       "fixtures": [
         "_negative/types_interface_method_sets",
+        "_unsupported/types_aliases",
         "named_numeric_types",
         "types",
         "types_slice_alias_mutation"
@@ -505,8 +556,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 27,
-        "passingCaseCount": 27,
-        "unsupportedCaseCount": 0,
+        "passingCaseCount": 26,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -787,14 +838,14 @@
         },
         {
           "id": "types-aliases",
-          "title": "Alias declarations preserve underlying behavior",
+          "title": "Alias declarations preserve identity with the aliased type",
           "subtitle": "Alias declarations",
           "kind": "spec-test",
-          "status": "passing",
+          "status": "unsupported",
           "fixtures": [
-            "types"
+            "_unsupported/types_aliases"
           ],
-          "reason": ""
+          "reason": "gors currently emits aliases as distinct wrapper types, so alias values do not preserve Go type identity at runtime."
         },
         {
           "id": "types-recursive",
@@ -815,17 +866,55 @@
       "subtitle": "",
       "fixtures": [
         "_negative/properties_non_comparable",
-        "properties_of_types_and_values"
+        "named_numeric_types",
+        "properties_of_types_and_values",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 4,
-        "passingCaseCount": 4,
+        "caseCount": 7,
+        "passingCaseCount": 7,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
+        {
+          "id": "properties-representation-of-values",
+          "title": "Values have concrete runtime representations that preserve observable operations",
+          "subtitle": "Representation of values",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "properties-underlying-types",
+          "title": "Defined numeric types use their underlying type for explicit conversions",
+          "subtitle": "Underlying types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "named_numeric_types",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "properties-type-identity",
+          "title": "Distinct defined types preserve identity while allowing explicit conversions",
+          "subtitle": "Type identity",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "named_numeric_types",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
         {
           "id": "properties-assignability",
           "title": "Values assign to variables with compatible types",
@@ -882,13 +971,16 @@
         "declarations_and_scope_exported",
         "declarations_and_scope_labels",
         "declarations_and_scope_predeclared",
-        "declarations_and_scope_uniqueness"
+        "declarations_and_scope_uniqueness",
+        "generics",
+        "generics_type_sets",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 14,
-        "passingCaseCount": 14,
+        "caseCount": 15,
+        "passingCaseCount": 15,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -993,6 +1085,19 @@
           "reason": ""
         },
         {
+          "id": "decl-type-parameter-declarations",
+          "title": "Type parameter lists declare generic function and type parameters",
+          "subtitle": "Type parameter declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
           "id": "decl-var",
           "title": "var declarations work at package and block scope",
           "subtitle": "Variable declarations",
@@ -1054,23 +1159,50 @@
       "title": "Expressions",
       "subtitle": "",
       "fixtures": [
+        "built_in_functions",
         "composite_literals",
         "expressions",
         "expressions_method_values",
         "expressions_qualified_identifiers",
         "expressions_variadic_spread",
+        "generics",
         "method_expressions",
+        "spec_section_edgecases",
         "types"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 21,
-        "passingCaseCount": 21,
+        "caseCount": 27,
+        "passingCaseCount": 27,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
+        {
+          "id": "expr-general",
+          "title": "Expressions combine operands, operators, calls, conversions, and selectors into values",
+          "subtitle": "Expressions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-operands",
+          "title": "Operands include literals, identifiers, and parenthesized expressions",
+          "subtitle": "Operands",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
         {
           "id": "expr-method-values",
           "title": "Method values bind a receiver and a method",
@@ -1259,6 +1391,18 @@
           "reason": ""
         },
         {
+          "id": "expr-arithmetic-operators",
+          "title": "Arithmetic operators preserve numeric, shift, and bit-clear semantics",
+          "subtitle": "Arithmetic operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
           "id": "expr-bit-clear-and-shifts",
           "title": "Shift and bit clear operators execute with Go precedence",
           "subtitle": "Operators",
@@ -1277,6 +1421,42 @@
           "status": "passing",
           "fixtures": [
             "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-logical-operators",
+          "title": "Logical operators preserve boolean precedence and short-circuit grouping",
+          "subtitle": "Logical operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-receive-operator",
+          "title": "Receive expressions read channel values in expression contexts",
+          "subtitle": "Receive operator",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-type-inference",
+          "title": "Generic function calls infer omitted type arguments from ordinary arguments",
+          "subtitle": "Type inference",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "spec_section_edgecases"
           ],
           "reason": ""
         },
@@ -1309,9 +1489,11 @@
       "title": "Statements",
       "subtitle": "",
       "fixtures": [
+        "declarations_and_scope_labels",
         "range_statements",
         "return_statements",
         "select_statements",
+        "spec_section_edgecases",
         "statements",
         "statements_forward_goto",
         "switch_statements"
@@ -1319,12 +1501,60 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 33,
-        "passingCaseCount": 33,
+        "caseCount": 37,
+        "passingCaseCount": 37,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
+        {
+          "id": "stmt-terminating",
+          "title": "Return, break, continue, goto, and fallthrough terminate statement lists where permitted",
+          "subtitle": "Terminating statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "statements",
+            "return_statements",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-empty",
+          "title": "Explicit empty statements compile without changing control flow",
+          "subtitle": "Empty statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-expression",
+          "title": "Function and method call expressions are valid statements",
+          "subtitle": "Expression statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "statements",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-labeled",
+          "title": "Labels attach to statements and can be branch targets",
+          "subtitle": "Labeled statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_labels",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
         {
           "id": "stmt-empty-expression",
           "title": "Empty and expression statements compile",
@@ -1361,7 +1591,7 @@
         {
           "id": "stmt-assignments",
           "title": "Simple, compound, and multi-value assignments execute",
-          "subtitle": "Assignments",
+          "subtitle": "Assignment statements",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
@@ -1697,13 +1927,14 @@
       "fixtures": [
         "append_copy_clear_builtins",
         "built_in_functions",
-        "built_in_panic_recover"
+        "built_in_panic_recover",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 14,
-        "passingCaseCount": 14,
+        "caseCount": 15,
+        "passingCaseCount": 15,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -1775,9 +2006,21 @@
           "reason": ""
         },
         {
+          "id": "builtin-allocation",
+          "title": "new allocates zeroed storage and returns an addressable pointer value",
+          "subtitle": "Allocation",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
           "id": "builtin-delete-clear",
           "title": "delete and clear update maps and slices",
-          "subtitle": "Deleting map elements",
+          "subtitle": "Deletion of map elements",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
@@ -1843,18 +2086,19 @@
         {
           "id": "builtin-close",
           "title": "close marks a channel closed and receive observes closure",
-          "subtitle": "Channel types",
+          "subtitle": "Close",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
-            "built_in_functions"
+            "built_in_functions",
+            "spec_section_edgecases"
           ],
           "reason": ""
         },
         {
           "id": "builtin-close-buffered-channel",
           "title": "Receiving from a closed buffered channel returns queued values before zero values",
-          "subtitle": "Channel types",
+          "subtitle": "Close",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
@@ -1870,13 +2114,14 @@
       "subtitle": "",
       "fixtures": [
         "packages_and_program_initialization",
-        "packages_import_aliases"
+        "packages_import_aliases",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 6,
-        "passingCaseCount": 6,
+        "caseCount": 10,
+        "passingCaseCount": 10,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -1896,6 +2141,30 @@
           "id": "packages-multiple-files",
           "title": "Multiple files in one package compile together",
           "subtitle": "Packages",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "packages-source-file-organization",
+          "title": "A package is built from one or more source files sharing a package name",
+          "subtitle": "Source file organization",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "packages-example-package",
+          "title": "Multi-file packages can expose declarations through ordinary imports",
+          "subtitle": "An example package",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
@@ -1943,6 +2212,30 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "packages-package-initialization",
+          "title": "Package variables initialize before init functions run",
+          "subtitle": "Package initialization",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "packages-program-initialization",
+          "title": "Imported packages initialize before main package execution",
+          "subtitle": "Program initialization",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
             "packages_and_program_initialization"
           ],
           "reason": ""
@@ -1956,13 +2249,14 @@
       "fixtures": [
         "_negative/generics_constraints",
         "generics",
-        "generics_type_sets"
+        "generics_type_sets",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 9,
-        "passingCaseCount": 9,
+        "caseCount": 10,
+        "passingCaseCount": 10,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -2065,6 +2359,19 @@
             "generics"
           ],
           "reason": ""
+        },
+        {
+          "id": "generics-type-unification-rules",
+          "title": "Type inference unifies generic arguments with type parameter constraints",
+          "subtitle": "Type unification rules",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2131,13 +2438,14 @@
       "title": "System considerations",
       "subtitle": "",
       "fixtures": [
+        "spec_section_edgecases",
         "system_considerations"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 1,
-        "passingCaseCount": 1,
+        "caseCount": 2,
+        "passingCaseCount": 2,
         "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
@@ -2150,6 +2458,18 @@
           "status": "passing",
           "fixtures": [
             "system_considerations"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "system-size-alignment-guarantees",
+          "title": "unsafe size, alignment, and field offset queries return observable nonzero layout values",
+          "subtitle": "Size and alignment guarantees",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "system_considerations",
+            "spec_section_edgecases"
           ],
           "reason": ""
         }

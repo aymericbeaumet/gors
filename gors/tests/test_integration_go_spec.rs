@@ -10,7 +10,18 @@ use std::path::Path;
 
 #[derive(serde::Deserialize)]
 struct SpecManifest {
+    source: SpecSource,
     categories: Vec<SpecCategory>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpecSource {
+    title: String,
+    url: String,
+    language_version: String,
+    published: String,
+    retrieved: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -22,6 +33,8 @@ struct SpecCategory {
 #[derive(serde::Deserialize)]
 struct SpecCase {
     id: String,
+    section: String,
+    title: String,
     status: String,
     fixtures: Option<Vec<String>>,
     reason: Option<String>,
@@ -34,14 +47,144 @@ struct SourceBytesFixture {
     source: String,
 }
 
-#[test]
-fn go_spec_manifest_has_valid_statuses_and_fixtures() {
+const GO_1_26_SPEC_SECTIONS: &[&str] = &[
+    "Source code representation",
+    "Characters",
+    "Letters and digits",
+    "Lexical elements",
+    "Comments",
+    "Tokens",
+    "Semicolons",
+    "Identifiers",
+    "Keywords",
+    "Operators and punctuation",
+    "Integer literals",
+    "Floating-point literals",
+    "Imaginary literals",
+    "Rune literals",
+    "String literals",
+    "Constants",
+    "Variables",
+    "Types",
+    "Boolean types",
+    "Numeric types",
+    "String types",
+    "Array types",
+    "Slice types",
+    "Struct types",
+    "Pointer types",
+    "Function types",
+    "Interface types",
+    "Map types",
+    "Channel types",
+    "Properties of types and values",
+    "Representation of values",
+    "Underlying types",
+    "Type identity",
+    "Assignability",
+    "Representability",
+    "Method sets",
+    "Blocks",
+    "Declarations and scope",
+    "Label scopes",
+    "Blank identifier",
+    "Predeclared identifiers",
+    "Exported identifiers",
+    "Uniqueness of identifiers",
+    "Constant declarations",
+    "Iota",
+    "Type declarations",
+    "Type parameter declarations",
+    "Variable declarations",
+    "Short variable declarations",
+    "Function declarations",
+    "Method declarations",
+    "Expressions",
+    "Operands",
+    "Qualified identifiers",
+    "Composite literals",
+    "Function literals",
+    "Primary expressions",
+    "Selectors",
+    "Method expressions",
+    "Method values",
+    "Index expressions",
+    "Slice expressions",
+    "Type assertions",
+    "Calls",
+    "Passing arguments to ... parameters",
+    "Instantiations",
+    "Type inference",
+    "Operators",
+    "Arithmetic operators",
+    "Comparison operators",
+    "Logical operators",
+    "Address operators",
+    "Receive operator",
+    "Conversions",
+    "Constant expressions",
+    "Order of evaluation",
+    "Statements",
+    "Terminating statements",
+    "Empty statements",
+    "Labeled statements",
+    "Expression statements",
+    "Send statements",
+    "IncDec statements",
+    "Assignment statements",
+    "If statements",
+    "Switch statements",
+    "For statements",
+    "Go statements",
+    "Select statements",
+    "Return statements",
+    "Break statements",
+    "Continue statements",
+    "Goto statements",
+    "Fallthrough statements",
+    "Defer statements",
+    "Built-in functions",
+    "Appending to and copying slices",
+    "Clear",
+    "Close",
+    "Manipulating complex numbers",
+    "Deletion of map elements",
+    "Length and capacity",
+    "Making slices, maps and channels",
+    "Min and max",
+    "Allocation",
+    "Handling panics",
+    "Bootstrapping",
+    "Packages",
+    "Source file organization",
+    "Package clause",
+    "Import declarations",
+    "An example package",
+    "Program initialization and execution",
+    "The zero value",
+    "Package initialization",
+    "Program initialization",
+    "Program execution",
+    "Errors",
+    "Run-time panics",
+    "System considerations",
+    "Package unsafe",
+    "Size and alignment guarantees",
+    "Type unification rules",
+];
+
+fn read_spec_manifest() -> SpecManifest {
     let manifest_path = fixtures_dir().join("go_spec/spec.json");
-    let manifest: SpecManifest = serde_json::from_str(
+    serde_json::from_str(
         &fs::read_to_string(&manifest_path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", manifest_path.display(), e)),
     )
-    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e));
+    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e))
+}
+
+#[test]
+fn go_spec_manifest_has_valid_statuses_and_fixtures() {
+    let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
     let mut ids = HashSet::new();
     let mut total = 0usize;
@@ -55,6 +198,16 @@ fn go_spec_manifest_has_valid_statuses_and_fixtures() {
         );
         for case in category.tests {
             total += 1;
+            assert!(
+                !case.section.trim().is_empty(),
+                "spec test {} has an empty section",
+                case.id
+            );
+            assert!(
+                !case.title.trim().is_empty(),
+                "spec test {} has an empty title",
+                case.id
+            );
             assert!(
                 ids.insert(case.id.clone()),
                 "duplicate spec test id {}",
@@ -110,13 +263,43 @@ fn go_spec_manifest_has_valid_statuses_and_fixtures() {
 }
 
 #[test]
+fn go_spec_manifest_covers_go_1_26_language_sections() {
+    let manifest = read_spec_manifest();
+    assert_eq!(
+        manifest.source.title,
+        "The Go Programming Language Specification"
+    );
+    assert_eq!(manifest.source.url, "https://go.dev/ref/spec");
+    assert_eq!(manifest.source.language_version, "go1.26");
+    assert_eq!(manifest.source.published, "2026-01-12");
+    assert!(
+        !manifest.source.retrieved.trim().is_empty(),
+        "spec manifest source retrieval date is empty"
+    );
+
+    let mut covered = HashSet::new();
+    for category in &manifest.categories {
+        covered.insert(category.name.as_str());
+        for case in &category.tests {
+            covered.insert(case.section.as_str());
+        }
+    }
+    let missing = GO_1_26_SPEC_SECTIONS
+        .iter()
+        .copied()
+        .filter(|section| !covered.contains(section))
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "spec manifest is missing Go 1.26 sections: {}",
+        missing.join(", ")
+    );
+}
+
+#[test]
 fn go_spec_compile_error_fixtures_reject_like_go() {
-    let manifest_path = fixtures_dir().join("go_spec/spec.json");
-    let manifest: SpecManifest = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {}", manifest_path.display(), e)),
-    )
-    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e));
+    let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
     let mut checked = 0usize;
 
@@ -137,12 +320,7 @@ fn go_spec_compile_error_fixtures_reject_like_go() {
 
 #[test]
 fn go_spec_source_byte_fixtures_match_go() {
-    let manifest_path = fixtures_dir().join("go_spec/spec.json");
-    let manifest: SpecManifest = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {}", manifest_path.display(), e)),
-    )
-    .unwrap_or_else(|e| panic!("cannot parse {}: {}", manifest_path.display(), e));
+    let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
     let mut checked = 0usize;
 

@@ -76,14 +76,15 @@ const reportViews: readonly {
 		fixtureSet: "go_stdlib",
 		groupColumn: "Package",
 		caseColumn: "Symbols",
-		caseMetricLabel: "symbols passing",
+		caseMetricLabel: "symbols covered",
 		sourceLabel: "Go Standard Library",
 	},
 ];
 
 function symbolCoverageTitle(symbol: ConformanceCase): string {
 	if (symbol.status !== "passing") return `${symbol.kind}; not covered`;
-	return `${symbol.kind}; tested by ${symbol.fixtures.join(", ")}`;
+	if (symbol.fixtures.length === 0) return `${symbol.kind}; covered`;
+	return `${symbol.kind}; covered by ${symbol.fixtures.join(", ")}`;
 }
 
 function groupCoverageClass(item: ConformanceGroup): string {
@@ -100,7 +101,7 @@ function fixtureGithubUrl(
 }
 
 function statusLabel(status: ConformanceStatus): string {
-	return status === "passing" ? "Passing" : "Uncovered";
+	return status === "passing" ? "Covered" : "Uncovered";
 }
 
 function statusClass(status: ConformanceStatus): string {
@@ -136,28 +137,19 @@ function coverageMetric(tested: number, total: number): string {
         </div>
       </div>
 
-      <div class="spec-list" role="table" aria-label={`${view.report.title} report`}>
-        <div class="spec-list-head" role="row">
-          <span role="columnheader">{view.groupColumn}</span>
-          <span role="columnheader">{view.caseColumn}</span>
+      <div class="spec-list" aria-label={`${view.report.title} report`}>
+        <div class="spec-list-head">
+          <span>{view.groupColumn}</span>
+          <span>{view.caseColumn}</span>
         </div>
         <div class="spec-list-body">
           {#each view.report.groups as group}
-            <div class="spec-category-row" role="row">
-              <div class="spec-category-cell package-cell" role="cell">
+            <div class="spec-category-row">
+              <div class="spec-category-card package-cell">
                 <code class={groupCoverageClass(group)}>{group.title}</code>
-                <span class={groupCoverageClass(group)}>{group.summary.passingCaseCount}/{group.summary.caseCount} passing</span>
-                {#if group.fixtures.length > 0}
-                  <div class="fixture-cell">
-                    {#each group.fixtures as fixture}
-                      <a href={fixtureGithubUrl(view.fixtureSet, fixture)} target="_blank" rel="noopener">
-                        <code>{fixture}</code>
-                      </a>
-                    {/each}
-                  </div>
-                {/if}
+                <span class={groupCoverageClass(group)}>{group.summary.passingCaseCount}/{group.summary.caseCount} covered</span>
               </div>
-              <div class="spec-tests-cell stdlib-symbols-cell" role="cell">
+              <div class="spec-group-cases stdlib-symbols-cell" aria-label={`${group.title} ${view.caseColumn.toLowerCase()} coverage`}>
                 {#each group.cases as item}
                   <div class={`spec-test stdlib-symbol ${statusClass(item.status)}`} title={symbolCoverageTitle(item)}>
                     <div class="spec-test-main">
@@ -432,28 +424,28 @@ function coverageMetric(tested: number, total: number): string {
   }
 
   .spec-list {
+    --section-border: 2px solid #aeb8c4;
     display: flex;
     max-width: 100%;
     min-width: 0;
     flex-direction: column;
-    overflow: visible;
-    border: 1px solid #d0d7de;
+    overflow: hidden;
+    border: var(--section-border);
     border-radius: 8px;
     background: #ffffff;
   }
 
-  .spec-list-head,
-  .spec-category-row {
+  .spec-list-head {
     display: grid;
-    grid-template-columns: minmax(120px, 0.34fr) minmax(0, 1.66fr);
-    align-items: start;
+    grid-template-columns: minmax(104px, 164px) minmax(0, 1fr);
+    align-items: center;
     column-gap: 8px;
     min-width: 0;
   }
 
   .spec-list-head {
     padding: 7px 10px;
-    border-bottom: 1px solid #d0d7de;
+    border-bottom: var(--section-border);
     background: #f6f8fa;
     color: #57606a;
     font-size: 11px;
@@ -461,65 +453,90 @@ function coverageMetric(tested: number, total: number): string {
   }
 
   .spec-list-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     min-width: 0;
   }
 
   .spec-category-row {
-    padding: 8px;
-    border-bottom: 1px solid #d8dee4;
+    display: grid;
+    grid-template-columns: minmax(104px, 164px) minmax(0, 1fr);
+    align-items: stretch;
+    min-width: 0;
+    border-top: var(--section-border);
   }
 
-  .spec-category-row:last-child {
-    border-bottom: 0;
+  .spec-category-row:first-child {
+    border-top: 0;
   }
 
-  .spec-category-cell {
+  .spec-group-cases {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+    align-content: start;
+    min-width: 0;
+  }
+
+  .spec-category-card {
     display: flex;
     min-width: 0;
     flex-direction: column;
     gap: 4px;
+    padding: 8px 10px;
+    border-right: var(--section-border);
+    border-bottom: 1px solid #d8dee4;
+    background: #ffffff;
   }
 
-  .spec-category-cell strong {
+  .spec-category-card strong {
     color: #1f2328;
     font-size: 12px;
     line-height: 1.25;
   }
 
-  .spec-category-cell span {
+  .spec-category-card span {
     color: #57606a;
     font-size: 11px;
   }
 
-  .spec-tests-cell {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 6px;
-  }
-
   .spec-test {
+    --status-color: #d0d7de;
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
+    box-sizing: border-box;
     min-width: 0;
-    padding: 6px;
-    border: 1px solid #d0d7de;
-    border-left-width: 4px;
-    border-radius: 5px;
+    padding: 7px 7px 7px 11px;
+    overflow: hidden;
+    border: 0;
+    border-right: 1px solid #d8dee4;
+    border-bottom: 1px solid #d8dee4;
+    border-radius: 0;
     background: #ffffff;
   }
 
+  .spec-test::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    background: var(--status-color);
+    content: "";
+  }
+
   .spec-test.tested {
-    border-left-color: #2da44e;
+    --status-color: #2da44e;
   }
 
   .spec-test.partial {
-    border-left-color: #d4a72c;
+    --status-color: #d4a72c;
   }
 
   .spec-test.none {
-    border-left-color: #cf222e;
+    --status-color: #cf222e;
   }
 
   .spec-test-main {
@@ -576,9 +593,7 @@ function coverageMetric(tested: number, total: number): string {
   }
 
   .stdlib-symbols-cell {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
+    align-items: stretch;
   }
 
   .stdlib-symbol {
@@ -632,7 +647,10 @@ function coverageMetric(tested: number, total: number): string {
     .spec-category-row,
     .spec-test {
       grid-template-columns: 1fr;
-      gap: 10px;
+    }
+
+    .spec-category-card {
+      border-right: 0;
     }
 
     .stdlib-symbols-cell {
