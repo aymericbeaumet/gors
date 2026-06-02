@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 1,
     "caseCount": 12584,
-    "passingCaseCount": 123,
-    "unsupportedCaseCount": 12461,
+    "passingCaseCount": 128,
+    "unsupportedCaseCount": 12456,
     "fixtureCount": 77
   },
   "groups": [
@@ -3571,13 +3571,15 @@
       "id": "container/heap",
       "title": "container/heap",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "container/heap"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 6,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 6,
+        "passingCaseCount": 5,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -3595,8 +3597,10 @@
           "title": "Init",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         },
         {
@@ -3604,8 +3608,10 @@
           "title": "Interface",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         },
         {
@@ -3613,8 +3619,10 @@
           "title": "Pop",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         },
         {
@@ -3622,8 +3630,10 @@
           "title": "Push",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         },
         {
@@ -3631,8 +3641,10 @@
           "title": "Remove",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         }
       ]

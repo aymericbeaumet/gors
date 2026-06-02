@@ -33,12 +33,17 @@ func (h *IntHeap) Pop() any {
 
 func main() {
 	fmt.Println("== container/heap/intheap ==")
+	// gors:stdlib-cover container/heap::Interface
 	h := &IntHeap{2, 1, 5}
+	// gors:stdlib-cover container/heap::Init
 	heap.Init(h)
+	// gors:stdlib-cover container/heap::Push
 	heap.Push(h, 3)
 	fmt.Println("min", (*h)[0])
+	// gors:stdlib-cover container/heap::Remove
 	fmt.Println("remove", heap.Remove(h, 1).(int))
 	for h.Len() > 0 {
+		// gors:stdlib-cover container/heap::Pop
 		fmt.Print(heap.Pop(h).(int), " ")
 	}
 	fmt.Println()
