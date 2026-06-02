@@ -5629,7 +5629,7 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
             && call.args.len() == 1
             && let Some(arg) = call.args.first_mut()
         {
-            clone_path_arg(arg);
+            clone_value_arg(arg);
         }
 
         let Some(key) = call_target_key(&call.func, &self.module_name) else {
@@ -5652,21 +5652,21 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr) {
     {
         *arg = (*reference.expr).clone();
     }
-    clone_path_arg(arg);
+    clone_value_arg(arg);
 }
 
-fn clone_path_arg(arg: &mut syn::Expr) {
-    if !matches!(arg, syn::Expr::Path(_)) {
+fn clone_value_arg(arg: &mut syn::Expr) {
+    if !matches!(
+        arg,
+        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_)
+    ) {
         return;
     }
-    let Some(name) = expr_path_ident(arg) else {
-        return;
-    };
-    if name == "self" {
+    if matches!(expr_path_ident(arg).as_deref(), Some("self")) {
         return;
     }
-    let ident = syn::Ident::new(&name, Span::mixed_site());
-    *arg = syn::parse_quote! { #ident.clone() };
+    let inner = arg.clone();
+    *arg = syn::parse_quote! { (#inner).clone() };
 }
 
 fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
@@ -27402,6 +27402,59 @@ var X int
         assert!(
             output.contains("fnvString (h , (v) . clone ())"),
             "expected narrowed binding to be accepted as a string argument: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_clones_field_and_index_value_args() {
+        let helper_file: syn::File = rust! {
+            pub fn take(mut first: String, mut second: String) {}
+        };
+        let main_file: syn::File = rust! {
+            pub struct Item {
+                pub name: String,
+            }
+
+            pub fn call(mut item: Item, mut values: Vec<String>) {
+                crate::helper::take(item.name, values[0]);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "helper".to_string(),
+                super::CompiledModule {
+                    mod_name: "helper".to_string(),
+                    import_path: "helper".to_string(),
+                    file: helper_file,
+                    filename: "helper.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains(
+                "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone ())"
+            ),
+            "expected value-copy coercions to follow callee String parameters: {output}"
         );
     }
 

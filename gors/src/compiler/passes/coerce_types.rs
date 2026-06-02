@@ -458,18 +458,6 @@ impl VisitMut for CoerceTypes {
             || is_path_call(&call.func, &["unicode__utf8", "FullRune"])
             || is_path_call(&call.func, &["crate", "utf8", "FullRune"])
             || is_path_call(&call.func, &["utf8", "FullRune"])
-            || is_path_call(&call.func, &["crate", "strconv", "CanBackquote"])
-            || is_path_call(&call.func, &["strconv", "CanBackquote"])
-            || is_path_call(&call.func, &["crate", "strconv", "Quote"])
-            || is_path_call(&call.func, &["strconv", "Quote"])
-            || is_path_call(&call.func, &["crate", "strconv", "Atoi"])
-            || is_path_call(&call.func, &["strconv", "Atoi"])
-            || is_path_call(&call.func, &["crate", "strconv", "ParseBool"])
-            || is_path_call(&call.func, &["strconv", "ParseBool"])
-            || is_path_call(&call.func, &["crate", "strconv", "ParseInt"])
-            || is_path_call(&call.func, &["strconv", "ParseInt"])
-            || is_path_call(&call.func, &["crate", "strconv", "ParseFloat"])
-            || is_path_call(&call.func, &["strconv", "ParseFloat"])
             || is_path_call(&call.func, &["crate", "reflect", "TypeOf"])
             || is_path_call(&call.func, &["reflect", "TypeOf"])
         {
@@ -477,16 +465,6 @@ impl VisitMut for CoerceTypes {
                 borrow_expr(first);
             }
             return;
-        }
-
-        if is_path_call(&call.func, &["crate", "strconv", "AppendQuote"])
-            || is_path_call(&call.func, &["strconv", "AppendQuote"])
-            || is_path_call(&call.func, &["crate", "strconv", "AppendQuoteToASCII"])
-            || is_path_call(&call.func, &["strconv", "AppendQuoteToASCII"])
-        {
-            if let Some(second) = call.args.iter_mut().nth(1) {
-                borrow_expr(second);
-            }
         }
     }
 
