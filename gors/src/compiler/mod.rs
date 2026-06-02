@@ -21239,6 +21239,21 @@ fn borrowed_pointer_interface_impl_items_for_methods(
     impl_items
 }
 
+fn borrowed_pointer_interface_impl_can_delegate(
+    trait_name: &str,
+    method_names: &[String],
+    pointer_methods: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
+    method_names.iter().all(|method_name| {
+        !pointer_methods.is_some_and(|methods| methods.contains(method_name))
+            || interface_method_allows_mutable_borrowed_delegate(trait_name, method_name)
+    })
+}
+
+fn interface_method_allows_mutable_borrowed_delegate(trait_name: &str, method_name: &str) -> bool {
+    trait_name != "error" || method_name != "Error"
+}
+
 fn imported_pointer_interface_impls_for_local_structs(
     struct_methods: &BTreeMap<String, Vec<String>>,
     struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -21299,7 +21314,11 @@ fn imported_pointer_interface_impls_for_local_structs(
                         }
                     });
                 }
-                if emitted_borrowed_pointer_interface_impls
+                if borrowed_pointer_interface_impl_can_delegate(
+                    &interface_name,
+                    &method_set.direct_methods,
+                    pointer_methods,
+                ) && emitted_borrowed_pointer_interface_impls
                     .insert((interface_name.clone(), struct_name.clone()))
                 {
                     let trait_path = interface_trait_path_from_name(&interface_name);
@@ -21349,7 +21368,11 @@ fn imported_pointer_interface_impls_for_local_structs(
                             #(#impl_items)*
                         }
                     });
-                    if emitted_borrowed_pointer_interface_impls
+                    if borrowed_pointer_interface_impl_can_delegate(
+                        embedded_name,
+                        &embedded_method_set.direct_methods,
+                        pointer_methods,
+                    ) && emitted_borrowed_pointer_interface_impls
                         .insert((embedded_name.clone(), struct_name.clone()))
                     {
                         let trait_path = interface_trait_path_from_name(embedded_name);
@@ -21828,7 +21851,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             }
                         });
                     }
-                    if emitted_borrowed_pointer_interface_impls
+                    if borrowed_pointer_interface_impl_can_delegate(
+                        trait_name,
+                        &method_set.direct_methods,
+                        pointer_methods,
+                    ) && emitted_borrowed_pointer_interface_impls
                         .insert((trait_name.clone(), struct_name.clone()))
                     {
                         let impl_items = borrowed_pointer_interface_impl_items_for_methods(
@@ -21875,7 +21902,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 #(#impl_items)*
                             }
                         });
-                        if emitted_borrowed_pointer_interface_impls
+                        if borrowed_pointer_interface_impl_can_delegate(
+                            embedded_name,
+                            &embedded_method_set.direct_methods,
+                            pointer_methods,
+                        ) && emitted_borrowed_pointer_interface_impls
                             .insert((embedded_name.clone(), struct_name.clone()))
                         {
                             let impl_items = borrowed_pointer_interface_impl_items_for_methods(
@@ -29608,6 +29639,10 @@ var ErrValue error = &wrapError{msg: "boom"}
             errpkg_rs.contains(
                 "impl crate::builtin::error for std::sync::Arc<std::sync::Mutex<wrapError>>"
             ),
+            "{errpkg_rs}"
+        );
+        assert!(
+            !errpkg_rs.contains("impl<'__gors> crate::builtin::error for &'__gors mut wrapError"),
             "{errpkg_rs}"
         );
         assert!(
