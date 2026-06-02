@@ -13389,16 +13389,16 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
 
     let slice: syn::Expr = match (low, high) {
         (None, None) => {
-            syn::parse_quote! { #x[..] }
+            syn::parse_quote! { (#x)[..] }
         }
         (Some(lo), None) => {
-            syn::parse_quote! { #x[#lo..] }
+            syn::parse_quote! { (#x)[#lo..] }
         }
         (None, Some(hi)) => {
-            syn::parse_quote! { #x[..#hi] }
+            syn::parse_quote! { (#x)[..#hi] }
         }
         (Some(lo), Some(hi)) => {
-            syn::parse_quote! { #x[#lo..#hi] }
+            syn::parse_quote! { (#x)[#lo..#hi] }
         }
     };
 
@@ -27195,7 +27195,7 @@ const Header = "hello, world"
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("config::Header()"), "{main_rs}");
         assert!(main_rs.contains("&config::Header()"), "{main_rs}");
-        assert!(main_rs.contains("config::Header()[.."), "{main_rs}");
+        assert!(main_rs.contains("(config::Header())[.."), "{main_rs}");
         assert!(!main_rs.contains("config::Header[.."), "{main_rs}");
     }
 
@@ -28443,10 +28443,41 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2, 3]);
-                    let mut t = (s[(1) as usize..(2) as usize]).to_vec();
+                    let mut t = ((s)[(1) as usize..(2) as usize]).to_vec();
                     let _ = t;
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_parenthesize_top_level_named_array_slice_bases() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type block [4]byte
+
+                var zero block
+
+                func use() {
+                    b := zero[:]
+                    _ = b
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("((* zero) [..]) . to_vec ()"),
+            "expected top-level named array slice base to be parenthesized: {output}"
+        );
+        assert!(
+            !output.contains("* zero [..]"),
+            "expected slice not to dereference the slice result: {output}"
         );
     }
 
@@ -28466,7 +28497,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = Vec::from([1, 2, 3]);
-                    let mut t = (s[(1) as usize..]).to_vec();
+                    let mut t = ((s)[(1) as usize..]).to_vec();
                     {
                         let __gors_slice_alias_value = 9;
                         (t)[(0) as usize] = __gors_slice_alias_value;
@@ -28504,7 +28535,7 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = "abba".to_string();
-                    s = (s[..((crate::builtin::len(&s) as isize) - 1) as usize]).to_string();
+                    s = ((std::mem::take(&mut s))[..((crate::builtin::len(&s) as isize) - 1) as usize]).to_string();
                 }
             },
         );
