@@ -32466,6 +32466,33 @@ func main() {
     }
 
     #[test]
+    fn it_should_emit_named_types_for_evaluated_const_chains() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Duration int64
+
+                const (
+                    Nanosecond Duration = 1
+                    Microsecond          = 1000 * Nanosecond
+                    Millisecond          = 1000 * Microsecond
+                    Second               = 1000 * Millisecond
+                )
+
+                func main() {}
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("pub const Second: Duration"), "{output}");
+        assert!(!output.contains("pub const Second: isize"), "{output}");
+    }
+
+    #[test]
     fn it_should_support_blank_identifier_in_const() {
         test(
             r#"

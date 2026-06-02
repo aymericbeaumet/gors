@@ -523,12 +523,15 @@ fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -
     match unparen_expr(expr) {
         ast::Expr::BasicLit(_) => true,
         ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
-        ast::Expr::Ident(ident) => env.is_const(ident.name),
+        ast::Expr::Ident(ident) => {
+            env.is_const(ident.name) && !const_name_has_named_type(ident.name, env)
+        }
         ast::Expr::SelectorExpr(selector) => {
             let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
                 return false;
             };
-            env.is_const(&format!("{}.{}", pkg.name, selector.sel.name))
+            let name = format!("{}.{}", pkg.name, selector.sel.name);
+            env.is_const(&name) && !const_name_has_named_type(&name, env)
         }
         ast::Expr::UnaryExpr(unary)
             if matches!(
@@ -544,6 +547,13 @@ fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -
         }
         _ => false,
     }
+}
+
+fn const_name_has_named_type(name: &str, env: &TypeEnv) -> bool {
+    matches!(
+        env.get_var(name).or_else(|| env.get_top_level_var(name)),
+        Some(GoType::Named(_))
+    )
 }
 
 fn const_integer_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
@@ -2962,6 +2972,42 @@ mod tests {
 
         assert_eq!(env.get_var("magic"), Some(GoType::String));
         assert_eq!(env.get_var("marshaledSize"), Some(GoType::Int));
+    }
+
+    #[test]
+    fn scan_file_preserves_named_const_type_through_constant_expressions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Duration int64
+
+                const (
+                    Nanosecond Duration = 1
+                    Microsecond          = 1000 * Nanosecond
+                    Millisecond          = 1000 * Microsecond
+                    Second               = 1000 * Millisecond
+                )
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(
+            env.get_var("Microsecond"),
+            Some(GoType::Named("Duration".to_string()))
+        );
+        assert_eq!(
+            env.get_var("Millisecond"),
+            Some(GoType::Named("Duration".to_string()))
+        );
+        assert_eq!(
+            env.get_var("Second"),
+            Some(GoType::Named("Duration".to_string()))
+        );
     }
 
     #[test]
