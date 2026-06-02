@@ -13317,7 +13317,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: New returns hash.Hash interface values backed by mutable digest state and currently exposes generic hash trait-object return and transitive FIPS/runtime module lowering gaps."
         },
         {
           "id": "crypto/md5::Size",
@@ -13337,7 +13337,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sum depends on passing address-taken local digest values to helper functions, coercing copy result counts into Go int fields, and pruning or lowering transitive crypto runtime modules."
         }
       ]
     },
