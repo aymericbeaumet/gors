@@ -215,9 +215,11 @@ fn is_active_local_name(name: &str) -> bool {
 
 fn add_active_local_names(names: impl IntoIterator<Item = String>) {
     ACTIVE_LOCAL_NAMES.with(|active| {
-        active
-            .borrow_mut()
-            .extend(names.into_iter().filter(|name| !name.is_empty() && name != "_"));
+        active.borrow_mut().extend(
+            names
+                .into_iter()
+                .filter(|name| !name.is_empty() && name != "_"),
+        );
     });
 }
 
