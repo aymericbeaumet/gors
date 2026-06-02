@@ -58,6 +58,12 @@ struct ProgramRunResult {
     error: Option<String>,
 }
 
+pub struct ProgramFixtureRun {
+    pub attempted_fixture_names: Vec<String>,
+    pub passed_fixture_names: Vec<String>,
+    pub retain_unattempted_fixture_names: bool,
+}
+
 #[derive(Default)]
 struct RunMetrics {
     go: AtomicU64,
@@ -510,7 +516,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-pub fn run_generated_program_fixture_set(fixture_set: &str) {
+pub fn run_generated_program_fixture_set(fixture_set: &str) -> ProgramFixtureRun {
     let config = TestConfig::from_env();
     let fixture_root = fixtures_dir().join(fixture_set);
     let dirs = discover_program_dirs(&fixture_root, &config);
@@ -541,7 +547,16 @@ pub fn run_generated_program_fixture_set(fixture_set: &str) {
             .collect()
     });
 
-    let passed = results.iter().filter(|result| result.passed).count();
+    let attempted_fixture_names = results
+        .iter()
+        .map(|result| result.name.clone())
+        .collect::<Vec<_>>();
+    let passed_fixture_names = results
+        .iter()
+        .filter(|result| result.passed)
+        .map(|result| result.name.clone())
+        .collect::<Vec<_>>();
+    let passed = passed_fixture_names.len();
     let skipped = results.iter().filter(|result| result.skipped).count();
     let failed: Vec<(String, String)> = results
         .into_iter()
@@ -559,6 +574,11 @@ pub fn run_generated_program_fixture_set(fixture_set: &str) {
         }
     }
     assert!(failed.is_empty(), "{} tests failed", failed.len());
+    ProgramFixtureRun {
+        attempted_fixture_names,
+        passed_fixture_names,
+        retain_unattempted_fixture_names: config.filter.is_some() || config.limit.is_some(),
+    }
 }
 
 fn discover_program_dirs(fixture_root: &Path, config: &TestConfig) -> Vec<PathBuf> {

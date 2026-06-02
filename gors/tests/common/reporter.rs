@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 const REPORT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConformanceReport {
     schema_version: u32,
@@ -17,7 +17,7 @@ pub struct ConformanceReport {
     groups: Vec<ReportGroup>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportSource {
     title: String,
@@ -27,7 +27,7 @@ struct ReportSource {
     retrieved: String,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportSummary {
     group_count: usize,
@@ -38,7 +38,7 @@ struct ReportSummary {
     fixture_count: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportGroup {
     id: String,
@@ -49,7 +49,7 @@ struct ReportGroup {
     cases: Vec<ReportCase>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportCase {
     id: String,
@@ -61,7 +61,7 @@ struct ReportCase {
     reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ReportStatus {
     Passing,
@@ -168,10 +168,32 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
     write_report("go-spec-conformance.json", &report)
 }
 
-pub fn write_go_stdlib_conformance() -> Result<(), String> {
+pub fn write_go_stdlib_conformance(
+    passed_fixture_names: &[String],
+    attempted_fixture_names: &[String],
+    retain_unattempted_fixture_names: bool,
+) -> Result<(), String> {
     let fixture_root = fixtures_dir().join("go_stdlib");
     let mut symbols_by_package = collect_stdlib_symbols()?;
-    let fixture_names = add_fixture_usage(&fixture_root, &mut symbols_by_package)?;
+    let passed_fixture_names = if retain_unattempted_fixture_names {
+        merge_existing_passing_fixture_names(
+            "go-stdlib-conformance.json",
+            passed_fixture_names,
+            attempted_fixture_names,
+        )?
+    } else {
+        passed_fixture_names
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    let fixture_names = add_fixture_usage(
+        &fixture_root,
+        &passed_fixture_names,
+        &mut symbols_by_package,
+    )?;
 
     let groups = symbols_by_package
         .into_iter()
@@ -209,7 +231,15 @@ pub fn write_go_stdlib_conformance() -> Result<(), String> {
         .collect::<Vec<_>>();
 
     let mut summary = summarize_groups(&groups);
-    summary.fixture_count = fixture_names.len();
+    summary.fixture_count = if retain_unattempted_fixture_names {
+        merge_existing_fixture_count(
+            "go-stdlib-conformance.json",
+            &fixture_names,
+            attempted_fixture_names,
+        )?
+    } else {
+        fixture_names.len()
+    };
     let report = ConformanceReport {
         schema_version: REPORT_SCHEMA_VERSION,
         kind: "go-stdlib".to_string(),
@@ -274,14 +304,102 @@ fn summarize_groups(groups: &[ReportGroup]) -> ReportSummary {
     }
 }
 
-fn write_report(filename: &str, report: &ConformanceReport) -> Result<(), String> {
+fn report_path(filename: &str) -> PathBuf {
     let report_dir = workspace_root().join("gors/tests/reports");
-    fs::create_dir_all(&report_dir).map_err(|e| e.to_string())?;
-    let path = report_dir.join(filename);
+    report_dir.join(filename)
+}
+
+fn write_report(filename: &str, report: &ConformanceReport) -> Result<(), String> {
+    let path = report_path(filename);
+    let report_dir = path
+        .parent()
+        .ok_or_else(|| format!("report path has no parent: {}", path.display()))?;
+    fs::create_dir_all(report_dir).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     fs::write(&path, format!("{json}\n")).map_err(|e| e.to_string())?;
     eprintln!("Wrote {}", path.display());
     Ok(())
+}
+
+fn merge_existing_passing_fixture_names(
+    filename: &str,
+    passed_fixture_names: &[String],
+    attempted_fixture_names: &[String],
+) -> Result<Vec<String>, String> {
+    let mut fixtures = passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let attempted = attempted_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let path = report_path(filename);
+    if !path.exists() {
+        return Ok(fixtures.into_iter().collect());
+    }
+    let existing: ConformanceReport = serde_json::from_str(
+        &fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+    )
+    .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+    for case in existing.groups.into_iter().flat_map(|group| group.cases) {
+        if case.status != ReportStatus::Passing {
+            continue;
+        }
+        for fixture in case.fixtures {
+            if !attempted.contains(&fixture) {
+                fixtures.insert(fixture);
+            }
+        }
+    }
+    Ok(fixtures.into_iter().collect())
+}
+
+fn merge_existing_fixture_count(
+    filename: &str,
+    passed_fixture_names: &[String],
+    attempted_fixture_names: &[String],
+) -> Result<usize, String> {
+    let Some((existing_count, existing_fixtures)) = existing_report_fixture_snapshot(filename)?
+    else {
+        return Ok(passed_fixture_names.len());
+    };
+    let passed = passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let attempted = attempted_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let added = passed
+        .iter()
+        .filter(|fixture| attempted.contains(*fixture) && !existing_fixtures.contains(*fixture))
+        .count();
+    let removed = attempted
+        .iter()
+        .filter(|fixture| !passed.contains(*fixture) && existing_fixtures.contains(*fixture))
+        .count();
+    Ok(existing_count.saturating_add(added).saturating_sub(removed))
+}
+
+fn existing_report_fixture_snapshot(
+    filename: &str,
+) -> Result<Option<(usize, BTreeSet<String>)>, String> {
+    let path = report_path(filename);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let existing: ConformanceReport = serde_json::from_str(
+        &fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+    )
+    .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+    let fixtures = existing
+        .groups
+        .iter()
+        .flat_map(|group| group.fixtures.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    Ok(Some((existing.summary.fixture_count, fixtures)))
 }
 
 fn collect_stdlib_symbols() -> Result<BTreeMap<String, BTreeMap<String, StdlibSymbol>>, String> {
@@ -346,10 +464,15 @@ fn collect_go_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), S
 
 fn add_fixture_usage(
     fixture_root: &Path,
+    passed_fixture_names: &[String],
     symbols_by_package: &mut BTreeMap<String, BTreeMap<String, StdlibSymbol>>,
 ) -> Result<Vec<String>, String> {
-    let mut fixtures = Vec::new();
-    collect_fixture_names(fixture_root, "", &mut fixtures)?;
+    let fixtures = passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     for fixture in &fixtures {
         let source_path = fixture_root.join(fixture).join("main.go");
         let source = fs::read_to_string(&source_path)
@@ -357,39 +480,6 @@ fn add_fixture_usage(
         add_behavioral_fixture_usage(symbols_by_package, &source, fixture)?;
     }
     Ok(fixtures)
-}
-
-fn collect_fixture_names(
-    root: &Path,
-    relative: &str,
-    fixtures: &mut Vec<String>,
-) -> Result<(), String> {
-    let dir = if relative.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    for entry in fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('_') {
-            continue;
-        }
-        let next = if relative.is_empty() {
-            name
-        } else {
-            format!("{relative}/{name}")
-        };
-        if root.join(&next).join("main.go").exists() {
-            fixtures.push(next.clone());
-        }
-        collect_fixture_names(root, &next, fixtures)?;
-    }
-    fixtures.sort();
-    Ok(())
 }
 
 fn add_symbol(
@@ -910,6 +1000,52 @@ func coverArchiveTarAPI() {
         add_behavioral_fixture_usage(&mut symbols, source, "archive/tar").unwrap();
 
         assert!(fixtures_for(&symbols, "Format.String").is_empty());
+        assert!(fixtures_for(&symbols, "Writer.WriteHeader").is_empty());
+    }
+
+    #[test]
+    fn fixture_usage_reads_only_passed_fixtures() {
+        let mut symbols = symbol_map(&["Header.FileInfo", "Writer.WriteHeader"]);
+        let fixture_root = tempfile::tempdir().unwrap();
+        let passed = fixture_root.path().join("archive/tar");
+        let skipped = fixture_root.path().join("archive/zip");
+        fs::create_dir_all(&passed).unwrap();
+        fs::create_dir_all(&skipped).unwrap();
+        fs::write(
+            passed.join("main.go"),
+            r#"
+package main
+
+func main() {
+	// gors:stdlib-cover archive/tar::Header.FileInfo
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            skipped.join("main.go"),
+            r#"
+package main
+
+func main() {
+	// gors:stdlib-cover archive/tar::Writer.WriteHeader
+}
+"#,
+        )
+        .unwrap();
+
+        let fixtures = add_fixture_usage(
+            fixture_root.path(),
+            &["archive/tar".to_string()],
+            &mut symbols,
+        )
+        .unwrap();
+
+        assert_eq!(fixtures, vec!["archive/tar".to_string()]);
+        assert_eq!(
+            fixtures_for(&symbols, "Header.FileInfo"),
+            BTreeSet::from(["archive/tar".to_string()])
+        );
         assert!(fixtures_for(&symbols, "Writer.WriteHeader").is_empty());
     }
 
