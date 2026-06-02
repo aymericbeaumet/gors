@@ -120,23 +120,6 @@ impl VisitMut for CoerceTypes {
 
         prune_static_false_branches(&mut func.block.stmts);
         prune_print_arg_reflection_fallback(&mut func.block.stmts, false);
-
-        if func.sig.ident == "newPrinter" && block_mentions_ident(&func.block, "ppFree") {
-            *func.block = syn::parse_quote!({
-                let mut p = std::sync::Arc::new(std::sync::Mutex::new(pp::default()));
-                {
-                    let mut p = p.lock().unwrap();
-                    p.panicking = false;
-                    p.erroring = false;
-                    p.wrapErrs = false;
-                    p.fmt.buf = std::sync::Arc::new(std::sync::Mutex::new((p.buf).clone()));
-                    p.fmt.fmtFlags = fmtFlags::default();
-                    p.fmt.wid = 0;
-                    p.fmt.prec = 0;
-                }
-                p
-            });
-        }
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
@@ -148,11 +131,6 @@ impl VisitMut for CoerceTypes {
         self.has_generic_params.pop();
         self.generic_value_params.pop();
         self.mutable_ref_params.pop();
-
-        if func.sig.ident == "free" && block_mentions_ident(&func.block, "ppFree") {
-            func.block = syn::parse_quote!({});
-            return;
-        }
 
         prune_static_false_branches(&mut func.block.stmts);
         let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
@@ -349,14 +327,6 @@ fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
                 return;
             }
             syn::visit::visit_expr_method_call(self, call);
-        }
-
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_field_named(field, "value") {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
         }
     }
 
@@ -694,64 +664,6 @@ impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
         }
         syn::visit::visit_expr_field(self, field);
     }
-}
-
-fn block_mentions_ident(block: &syn::Block, ident: &str) -> bool {
-    struct Finder<'a> {
-        ident: &'a str,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-            if path
-                .path
-                .segments
-                .iter()
-                .any(|segment| segment.ident == self.ident)
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_path(self, path);
-        }
-
-        fn visit_type_path(&mut self, path: &syn::TypePath) {
-            if path
-                .path
-                .segments
-                .iter()
-                .any(|segment| segment.ident == self.ident)
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_type_path(self, path);
-        }
-
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if call.method == self.ident {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if member_ident_name(&field.member).is_some_and(|member| member == self.ident) {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-
-    let mut finder = Finder {
-        ident,
-        found: false,
-    };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
 }
 
 fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
@@ -1324,7 +1236,7 @@ fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
     let syn::Stmt::Expr(syn::Expr::MethodCall(call), _) = stmt else {
         return Vec::new();
     };
-    let Some(receiver_name) = path_ident_name(&call.receiver) else {
+    let Some(receiver_name) = receiver_root_ident_name(&call.receiver) else {
         return Vec::new();
     };
 
@@ -1341,6 +1253,32 @@ fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
         });
     }
     hoisted
+}
+
+fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(_) => path_ident_name(expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            receiver_root_ident_name(&unary.expr)
+        }
+        syn::Expr::Paren(paren) => receiver_root_ident_name(&paren.expr),
+        syn::Expr::Group(group) => receiver_root_ident_name(&group.expr),
+        syn::Expr::Field(field) => receiver_root_ident_name(&field.base),
+        syn::Expr::Reference(reference) => receiver_root_ident_name(&reference.expr),
+        syn::Expr::MethodCall(method)
+            if method.args.is_empty() && is_transparent_receiver_method(&method.method) =>
+        {
+            receiver_root_ident_name(&method.receiver)
+        }
+        _ => None,
+    }
+}
+
+fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
+    matches!(
+        method.to_string().as_str(),
+        "as_mut" | "as_ref" | "clone" | "lock" | "unwrap"
+    )
 }
 
 fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
@@ -2030,6 +1968,34 @@ mod tests {
         assert!(
             !tokens.contains("Box :: new (())"),
             "expected no method-name-driven empty any replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_hoists_args_that_read_locked_receiver_root() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub fn call(mut p: P) {
+                (|| {
+                    (p.lock().unwrap().fmt).init(crate::builtin::GorsPtr::new({
+                        let __gors_pointer_field = (p.lock().unwrap().buf).clone();
+                        __gors_pointer_field
+                    }));
+                })();
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        let hoist_pos = tokens
+            .find("let __gors_premethod_arg_0 = crate :: builtin :: GorsPtr :: new")
+            .unwrap_or_else(|| panic!("expected locked receiver argument to be hoisted: {tokens}"));
+        let call_pos = tokens
+            .find("(p . lock () . unwrap () . fmt) . init (__gors_premethod_arg_0)")
+            .unwrap_or_else(|| panic!("expected method call to use hoisted argument: {tokens}"));
+        assert!(
+            hoist_pos < call_pos,
+            "expected argument to be evaluated before locked receiver call: {tokens}"
         );
     }
 

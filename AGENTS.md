@@ -142,17 +142,16 @@ gors-builtin/
   assigning an addressable same-type value into a field or local should be
   cloned from Go type facts there, not patched later by Rust identifier or field
   names.
-- Go pointer values lower to `Arc<Mutex<T>>` cells. Locals whose address is
-  taken are promoted through the IR addressability analysis into the same cell
-  representation, so `p := &x`, `*p = v`, and later reads of `x` observe the
-  shared storage. Borrowed pointer parameters may still lower to `&mut T` when
-  the existing escape analysis proves the pointer does not escape.
+- Go pointer values lower to nil-aware `crate::builtin::GorsPtr<T>` cells backed
+  by `Option<Arc<Mutex<T>>>`. Locals whose address is taken are promoted through
+  the IR addressability analysis into shared `Arc<Mutex<T>>` storage and exposed
+  through `GorsPtr::from_arc`, so `p := &x`, `*p = v`, and later reads of `x`
+  observe the shared storage. Do not lower ordinary Go pointer parameters to
+  borrowed `&mut T`; the shared pointer model must carry nil and aliasing through
+  calls.
 - Nil pointer values must lower to the pointer zero value for assignments,
   fields, returns, and other value construction. Do not emit an immediate panic
-  for `nil` itself; the panic belongs to dereference/use. The current borrowed
-  pointer-parameter representation cannot carry nil through `&mut T`, so a nil
-  argument coerced into a borrowed pointer parameter should emit the
-  nil-pointer panic at that call boundary.
+  for `nil` itself; the panic belongs to dereference/use.
 - Generated Go structs use `#[repr(C)]` so Rust preserves declaration-order
   layout for codegen that depends on Go field offsets, such as
   `unsafe.Offsetof`. Keep unsafe support simple and codegen-first while

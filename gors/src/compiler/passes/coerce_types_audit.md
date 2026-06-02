@@ -27,8 +27,6 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| Function body replacement | `newPrinter` plus `ppFree` AST identifier mention | stdlib workaround | Lower package/function bodies from Go semantics without replacing named bodies. The missing rule is a typed initialization/aliasing model for package-level pooled state and self-referential buffers, driven by field types and assignment targets. |
-| Method body removal | `free` plus `ppFree` AST identifier mention | stdlib workaround | Model unsupported host/runtime pool operations through a runtime primitive or generic sync-pool lowering, not by deleting a named method body. |
 | Reflection fallback pruning | `printArg`, `printValue`, `fmtPointer`, `reflect` AST path/type-path checks | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
 | `Box::new` field clone | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
 | `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
@@ -39,6 +37,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | File | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
 | `gors/src/compiler/mod.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
+| `gors/src/compiler/mod.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
 | `gors/src/compiler/mod.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
 | `gors/src/compiler/mod.rs` | `sort.Slice*` custom lowering | stdlib workaround | Lower function-typed callback arguments and slice mutation generically, then compile the stdlib implementation normally. |
 | `gors/src/compiler/mod.rs` | `strconv.AppendFloat` custom lowering to `builtin::append_float` | stdlib workaround | Implement the missing formatting/runtime primitive behind generic function lowering or type-directed expected arguments. |
@@ -83,3 +82,5 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | rendered-token matching in `coerce_types.rs` body/pruning triggers | Remaining body replacement and reflection-pruning gates now use `syn` AST visitors for identifiers, methods, fields, expression paths, and type paths. String literals and formatting cannot accidentally trigger generated-body rewrites or reflection pruning. |
 | `padString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic method-call and string argument lowering, preserving width-padding behavior instead of replacing the named method with a direct write. |
 | `fmtString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic branch, receiver-method, and string argument lowering, preserving `%q`, `%x`, and `% X` string formatting behavior instead of replacing the named method with `fmtS`. |
+| `newPrinter` body replacement in `coerce_types.rs` | The generated Go body now compiles through pointer-cell ownership, generic receiver-method argument hoisting, manual cloning for structs with `any` fields, and a minimal `sync.Pool` runtime primitive instead of replacing the named function body. |
+| `free` body removal in `coerce_types.rs` | The generated Go method body is no longer deleted by method name; currently supported pool behavior is handled at the `sync.Pool` runtime boundary. |

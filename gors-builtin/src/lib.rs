@@ -152,6 +152,79 @@ pub const r#false: r#bool = false;
 pub const iota: int = 0;
 pub const nil: Option<()> = None;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GorsNilPointer;
+
+impl std::fmt::Display for GorsNilPointer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nil pointer dereference")
+    }
+}
+
+impl std::error::Error for GorsNilPointer {}
+
+pub struct GorsPtr<T> {
+    inner: Option<Arc<Mutex<T>>>,
+}
+
+impl<T> Clone for GorsPtr<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T> Default for GorsPtr<T> {
+    fn default() -> Self {
+        Self::nil()
+    }
+}
+
+impl<T> GorsPtr<T> {
+    pub fn nil() -> Self {
+        Self { inner: None }
+    }
+
+    pub fn new(value: T) -> Self {
+        Self {
+            inner: Some(Arc::new(Mutex::new(value))),
+        }
+    }
+
+    pub fn from_arc(inner: Arc<Mutex<T>>) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    pub fn is_nil(&self) -> bool {
+        self.inner.is_none()
+    }
+
+    pub fn lock(&self) -> Result<MutexGuard<'_, T>, GorsNilPointer> {
+        self.inner.as_ref().ok_or(GorsNilPointer).map(|inner| {
+            inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
+    }
+
+    pub fn ptr_eq(left: &Self, right: &Self) -> bool {
+        match (&left.inner, &right.inner) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
+impl<T> PartialEq for GorsPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Self::ptr_eq(self, other)
+    }
+}
+
+impl<T> Eq for GorsPtr<T> {}
+
 static RECOVER_PAYLOAD: Mutex<Option<Box<dyn Any + Send>>> = Mutex::new(None);
 
 fn recover_payload_lock() -> MutexGuard<'static, Option<Box<dyn Any + Send>>> {
