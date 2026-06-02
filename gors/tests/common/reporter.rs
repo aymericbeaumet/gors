@@ -461,14 +461,17 @@ fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
     let source = strip_go_comments(source);
     let mut result = Vec::new();
     let mut group_kind: Option<&str> = None;
+    let mut brace_depth = 0usize;
     for raw_line in source.lines() {
         let line = raw_line.trim();
         if line.is_empty() {
             continue;
         }
+        let at_top_level = brace_depth == 0;
         if let Some(kind) = group_kind {
             if line.starts_with(')') {
                 group_kind = None;
+                brace_depth = update_go_brace_depth(brace_depth, line);
                 continue;
             }
             if let Some((name, _)) = read_identifier(line)
@@ -476,10 +479,16 @@ fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
             {
                 result.push((name, kind.to_string()));
             }
+            brace_depth = update_go_brace_depth(brace_depth, line);
+            continue;
+        }
+        if !at_top_level {
+            brace_depth = update_go_brace_depth(brace_depth, line);
             continue;
         }
         if matches!(line, "const (" | "var (") {
             group_kind = line.split_whitespace().next();
+            brace_depth = update_go_brace_depth(brace_depth, line);
             continue;
         }
         if let Some(rest) = line.strip_prefix("func ") {
@@ -494,6 +503,7 @@ fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
                 {
                     result.push((format!("{receiver}.{name}"), "method".to_string()));
                 }
+                brace_depth = update_go_brace_depth(brace_depth, line);
                 continue;
             }
             if let Some((name, _)) = read_identifier(rest)
@@ -501,6 +511,7 @@ fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
             {
                 result.push((name, "func".to_string()));
             }
+            brace_depth = update_go_brace_depth(brace_depth, line);
             continue;
         }
         for (prefix, kind) in [("type ", "type"), ("const ", "const"), ("var ", "var")] {
@@ -511,8 +522,31 @@ fn parse_exported_symbols(source: &str) -> Vec<(String, String)> {
                 result.push((name, kind.to_string()));
             }
         }
+        brace_depth = update_go_brace_depth(brace_depth, line);
     }
     result
+}
+
+fn update_go_brace_depth(mut depth: usize, line: &str) -> usize {
+    let mut chars = line.chars();
+    let mut in_string: Option<char> = None;
+    while let Some(ch) = chars.next() {
+        if let Some(quote) = in_string {
+            if ch == '\\' && quote != '`' {
+                chars.next();
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' | '`' => in_string = Some(ch),
+            '{' => depth = depth.saturating_add(1),
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
 }
 
 fn receiver_type_name(receiver: &str) -> String {
@@ -803,6 +837,30 @@ mod tests {
             .and_then(|package| package.get(name))
             .map(|symbol| symbol.fixtures.clone())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn exported_symbol_parser_ignores_function_locals() {
+        let source = r#"
+package cipher
+
+type Stream interface {
+	XORKeyStream(dst, src []byte)
+}
+
+func NewCTR(block Block, iv []byte) Stream {
+	var H, counter [16]byte
+	_ = H
+	_ = counter
+	return nil
+}
+"#;
+
+        let symbols = parse_exported_symbols(source);
+
+        assert!(symbols.contains(&("Stream".to_string(), "type".to_string())));
+        assert!(symbols.contains(&("NewCTR".to_string(), "func".to_string())));
+        assert!(!symbols.iter().any(|(name, _)| name == "H"));
     }
 
     #[test]

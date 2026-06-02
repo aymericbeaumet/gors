@@ -10,11 +10,11 @@
     "retrieved": ""
   },
   "summary": {
-    "groupCount": 345,
+    "groupCount": 344,
     "passingGroupCount": 1,
-    "caseCount": 12584,
+    "caseCount": 12418,
     "passingCaseCount": 153,
-    "unsupportedCaseCount": 12431,
+    "unsupportedCaseCount": 12265,
     "fixtureCount": 79
   },
   "groups": [
@@ -4567,9 +4567,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 20,
+        "caseCount": 19,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 20,
+        "unsupportedCaseCount": 19,
         "fixtureCount": 0
       },
       "cases": [
@@ -4596,15 +4596,6 @@
           "title": "BlockMode",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/cipher::H",
-          "title": "H",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -4824,9 +4815,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 14,
+        "caseCount": 13,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 14,
+        "unsupportedCaseCount": 13,
         "fixtureCount": 0
       },
       "cases": [
@@ -4853,15 +4844,6 @@
           "title": "GenerateParameters",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/dsa::L",
-          "title": "L",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -6982,9 +6964,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 34,
+        "caseCount": 32,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 34,
+        "unsupportedCaseCount": 32,
         "fixtureCount": 0
       },
       "cases": [
@@ -7178,15 +7160,6 @@
           "reason": ""
         },
         {
-          "id": "crypto/internal/fips140/aes/gcm::H",
-          "title": "H",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "crypto/internal/fips140/aes/gcm::New",
           "title": "New",
           "subtitle": "func",
@@ -7277,15 +7250,6 @@
           "reason": ""
         },
         {
-          "id": "crypto/internal/fips140/aes/gcm::S",
-          "title": "S",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "crypto/internal/fips140/aes/gcm::SealWithRandomNonce",
           "title": "SealWithRandomNonce",
           "subtitle": "func",
@@ -7304,9 +7268,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 18,
+        "caseCount": 16,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 18,
+        "unsupportedCaseCount": 16,
         "fixtureCount": 0
       },
       "cases": [
@@ -7412,24 +7376,6 @@
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::BSWAP",
           "title": "BSWAP",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::KS",
-          "title": "KS",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::NR",
-          "title": "NR",
           "subtitle": "var",
           "kind": "var",
           "status": "unsupported",
@@ -8537,9 +8483,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 28,
+        "caseCount": 26,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 28,
+        "unsupportedCaseCount": 26,
         "fixtureCount": 0
       },
       "cases": [
@@ -8773,24 +8719,6 @@
           "title": "Scalar.Subtract",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/edwards25519::XX",
-          "title": "XX",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/edwards25519::YplusX",
-          "title": "YplusX",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -9481,9 +9409,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 36,
+        "caseCount": 34,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 36,
+        "unsupportedCaseCount": 34,
         "fixtureCount": 0
       },
       "cases": [
@@ -9699,24 +9627,6 @@
           "title": "GenerateKeyInternal768",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/mlkem::K",
-          "title": "K",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/internal/fips140/mlkem::N",
-          "title": "N",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -18123,9 +18033,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 150,
+        "caseCount": 149,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 150,
+        "unsupportedCaseCount": 149,
         "fixtureCount": 0
       },
       "cases": [
@@ -18998,15 +18908,6 @@
           "title": "OID.UnmarshalText",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "crypto/x509::OIDBytes",
-          "title": "OIDBytes",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -21542,9 +21443,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 13,
+        "caseCount": 3,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 13,
+        "unsupportedCaseCount": 3,
         "fixtureCount": 0
       },
       "cases": [
@@ -21553,96 +21454,6 @@
           "title": "BuildInfo",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_ALIGN_32BYTES",
-          "title": "IMAGE_SCN_ALIGN_32BYTES",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_CNT_CODE",
-          "title": "IMAGE_SCN_CNT_CODE",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_CNT_INITIALIZED_DATA",
-          "title": "IMAGE_SCN_CNT_INITIALIZED_DATA",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_CNT_UNINITIALIZED_DATA",
-          "title": "IMAGE_SCN_CNT_UNINITIALIZED_DATA",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_LNK_NRELOC_OVFL",
-          "title": "IMAGE_SCN_LNK_NRELOC_OVFL",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_MEM_DISCARDABLE",
-          "title": "IMAGE_SCN_MEM_DISCARDABLE",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_MEM_EXECUTE",
-          "title": "IMAGE_SCN_MEM_EXECUTE",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_MEM_READ",
-          "title": "IMAGE_SCN_MEM_READ",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::IMAGE_SCN_MEM_WRITE",
-          "title": "IMAGE_SCN_MEM_WRITE",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/buildinfo::RW",
-          "title": "RW",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -39417,9 +39228,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 151,
+        "caseCount": 148,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 151,
+        "unsupportedCaseCount": 148,
         "fixtureCount": 0
       },
       "cases": [
@@ -40297,33 +40108,6 @@
           "reason": ""
         },
         {
-          "id": "debug/macho::N_EXT",
-          "title": "N_EXT",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/macho::N_TYPE",
-          "title": "N_TYPE",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/macho::N_UNDF",
-          "title": "N_UNDF",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "debug/macho::NewFatFile",
           "title": "NewFatFile",
           "subtitle": "func",
@@ -40792,9 +40576,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 126,
+        "caseCount": 125,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 126,
+        "unsupportedCaseCount": 125,
         "fixtureCount": 0
       },
       "cases": [
@@ -41791,15 +41575,6 @@
         {
           "id": "debug/pe::IMAGE_SUBSYSTEM_XBOX",
           "title": "IMAGE_SUBSYSTEM_XBOX",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "debug/pe::IMAGE_SYM_CLASS_STATIC",
-          "title": "IMAGE_SYM_CLASS_STATIC",
           "subtitle": "const",
           "kind": "const",
           "status": "unsupported",
@@ -47925,9 +47700,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 24,
+        "caseCount": 23,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 24,
+        "unsupportedCaseCount": 23,
         "fixtureCount": 0
       },
       "cases": [
@@ -48125,15 +47900,6 @@
           "title": "Package.IsCommand",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "go/build::Sfiles",
-          "title": "Sfiles",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -49496,9 +49262,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 14,
+        "caseCount": 13,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 14,
+        "unsupportedCaseCount": 13,
         "fixtureCount": 0
       },
       "cases": [
@@ -49534,15 +49300,6 @@
           "title": "Mode",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "go/parser::N",
-          "title": "N",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -51126,9 +50883,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 345,
+        "caseCount": 341,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 345,
+        "unsupportedCaseCount": 341,
         "fixtureCount": 0
       },
       "cases": [
@@ -51601,15 +51358,6 @@
           "reason": ""
         },
         {
-          "id": "go/types::E",
-          "title": "E",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "go/types::Error",
           "title": "Error",
           "subtitle": "type",
@@ -51740,15 +51488,6 @@
           "title": "Func.String",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "go/types::G",
-          "title": "G",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -53032,15 +52771,6 @@
           "reason": ""
         },
         {
-          "id": "go/types::S",
-          "title": "S",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "go/types::Satisfies",
           "title": "Satisfies",
           "subtitle": "func",
@@ -53540,15 +53270,6 @@
           "title": "Struct.Underlying",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "go/types::T",
-          "title": "T",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -63296,21 +63017,12 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 2,
+        "caseCount": 1,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 2,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
-        {
-          "id": "internal/diff::C",
-          "title": "C",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
         {
           "id": "internal/diff::Diff",
           "title": "Diff",
@@ -63330,9 +63042,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 6,
+        "caseCount": 5,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 6,
+        "unsupportedCaseCount": 5,
         "fixtureCount": 0
       },
       "cases": [
@@ -63350,15 +63062,6 @@
           "title": "FindPkg",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "internal/exportdata::HeaderSize",
-          "title": "HeaderSize",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -76466,9 +76169,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 73,
+        "caseCount": 72,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 73,
+        "unsupportedCaseCount": 72,
         "fixtureCount": 0
       },
       "cases": [
@@ -76864,15 +76567,6 @@
           "title": "NewEmitter",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "internal/trace/traceviewer::PB",
-          "title": "PB",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84114,9 +83808,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 196,
+        "caseCount": 97,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 196,
+        "unsupportedCaseCount": 97,
         "fixtureCount": 0
       },
       "cases": [
@@ -84193,33 +83887,6 @@
           "reason": ""
         },
         {
-          "id": "math::B1",
-          "title": "B1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::B2",
-          "title": "B2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::C",
-          "title": "C",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Cbrt",
           "title": "Cbrt",
           "subtitle": "func",
@@ -84260,15 +83927,6 @@
           "title": "Cosh",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::D",
-          "title": "D",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84328,15 +83986,6 @@
           "reason": ""
         },
         {
-          "id": "math::Euler",
-          "title": "Euler",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Exp",
           "title": "Exp",
           "subtitle": "func",
@@ -84359,15 +84008,6 @@
           "title": "Expm1",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::F",
-          "title": "F",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84436,37 +84076,10 @@
           "reason": ""
         },
         {
-          "id": "math::G",
-          "title": "G",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Gamma",
           "title": "Gamma",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::HalfMax",
-          "title": "HalfMax",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Huge",
-          "title": "Huge",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84494,15 +84107,6 @@
           "title": "Inf",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::InvLn2",
-          "title": "InvLn2",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84553,78 +84157,6 @@
           "reason": ""
         },
         {
-          "id": "math::L1",
-          "title": "L1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L2",
-          "title": "L2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L3",
-          "title": "L3",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L4",
-          "title": "L4",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L5",
-          "title": "L5",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L6",
-          "title": "L6",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::L7",
-          "title": "L7",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Large",
-          "title": "Large",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Ldexp",
           "title": "Ldexp",
           "subtitle": "func",
@@ -84654,51 +84186,6 @@
         {
           "id": "math::Ln2",
           "title": "Ln2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Ln2Half",
-          "title": "Ln2Half",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Ln2HalfX3",
-          "title": "Ln2HalfX3",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Ln2Hi",
-          "title": "Ln2Hi",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Ln2Lo",
-          "title": "Ln2Lo",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Ln2X56",
-          "title": "Ln2X56",
           "subtitle": "const",
           "kind": "const",
           "status": "unsupported",
@@ -84760,91 +84247,10 @@
           "reason": ""
         },
         {
-          "id": "math::Log2e",
-          "title": "Log2e",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Logb",
           "title": "Logb",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp1",
-          "title": "Lp1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp2",
-          "title": "Lp2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp3",
-          "title": "Lp3",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp4",
-          "title": "Lp4",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp5",
-          "title": "Lp5",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp6",
-          "title": "Lp6",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Lp7",
-          "title": "Lp7",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::MAXLOG",
-          "title": "MAXLOG",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -84915,15 +84321,6 @@
         {
           "id": "math::MaxInt8",
           "title": "MaxInt8",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::MaxStirling",
-          "title": "MaxStirling",
           "subtitle": "const",
           "kind": "const",
           "status": "unsupported",
@@ -85048,28 +84445,10 @@
           "reason": ""
         },
         {
-          "id": "math::Morebits",
-          "title": "Morebits",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::NaN",
           "title": "NaN",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::NearZero",
-          "title": "NearZero",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -85088,114 +84467,6 @@
           "title": "Nextafter32",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Othreshold",
-          "title": "Othreshold",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Overflow",
-          "title": "Overflow",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P0",
-          "title": "P0",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P1",
-          "title": "P1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P2",
-          "title": "P2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P3",
-          "title": "P3",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P4",
-          "title": "P4",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::P5",
-          "title": "P5",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::PI4",
-          "title": "PI4",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::PI4A",
-          "title": "PI4A",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::PI4B",
-          "title": "PI4B",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::PI4C",
-          "title": "PI4C",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -85237,123 +84508,6 @@
           "reason": ""
         },
         {
-          "id": "math::Q0",
-          "title": "Q0",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Q1",
-          "title": "Q1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Q2",
-          "title": "Q2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Q3",
-          "title": "Q3",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Q4",
-          "title": "Q4",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Q5",
-          "title": "Q5",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R",
-          "title": "R",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R00",
-          "title": "R00",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R01",
-          "title": "R01",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R02",
-          "title": "R02",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R03",
-          "title": "R03",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R04",
-          "title": "R04",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::R05",
-          "title": "R05",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Remainder",
           "title": "Remainder",
           "subtitle": "func",
@@ -85376,51 +84530,6 @@
           "title": "RoundToEven",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::S01",
-          "title": "S01",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::S02",
-          "title": "S02",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::S03",
-          "title": "S03",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::S04",
-          "title": "S04",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::S05",
-          "title": "S05",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -85462,15 +84571,6 @@
           "reason": ""
         },
         {
-          "id": "math::Small",
-          "title": "Small",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::SmallestNonzeroFloat32",
           "title": "SmallestNonzeroFloat32",
           "subtitle": "const",
@@ -85489,15 +84589,6 @@
           "reason": ""
         },
         {
-          "id": "math::SmallestNormal",
-          "title": "SmallestNormal",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Sqrt",
           "title": "Sqrt",
           "subtitle": "func",
@@ -85509,24 +84600,6 @@
         {
           "id": "math::Sqrt2",
           "title": "Sqrt2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Sqrt2HalfM1",
-          "title": "Sqrt2HalfM1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Sqrt2M1",
-          "title": "Sqrt2M1",
           "subtitle": "const",
           "kind": "const",
           "status": "unsupported",
@@ -85561,28 +84634,10 @@
           "reason": ""
         },
         {
-          "id": "math::SqrtTwoPi",
-          "title": "SqrtTwoPi",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Tan",
           "title": "Tan",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Tan3pio8",
-          "title": "Tan3pio8",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -85597,253 +84652,10 @@
           "reason": ""
         },
         {
-          "id": "math::Tc",
-          "title": "Tc",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Tf",
-          "title": "Tf",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Tiny",
-          "title": "Tiny",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Trunc",
           "title": "Trunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Tt",
-          "title": "Tt",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Two129",
-          "title": "Two129",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Two302",
-          "title": "Two302",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Two52",
-          "title": "Two52",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Two53",
-          "title": "Two53",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Two58",
-          "title": "Two58",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::TwoM13",
-          "title": "TwoM13",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::TwoM27",
-          "title": "TwoM27",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::TwoM29",
-          "title": "TwoM29",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::TwoM54",
-          "title": "TwoM54",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U00",
-          "title": "U00",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U01",
-          "title": "U01",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U02",
-          "title": "U02",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U03",
-          "title": "U03",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U04",
-          "title": "U04",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U05",
-          "title": "U05",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::U06",
-          "title": "U06",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::Underflow",
-          "title": "Underflow",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::V00",
-          "title": "V00",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::V01",
-          "title": "V01",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::V02",
-          "title": "V02",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::V03",
-          "title": "V03",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::V04",
-          "title": "V04",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math::VeryTiny",
-          "title": "VeryTiny",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -85867,15 +84679,6 @@
           "reason": ""
         },
         {
-          "id": "math::Ymin",
-          "title": "Ymin",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math::Yn",
           "title": "Yn",
           "subtitle": "func",
@@ -85894,21 +84697,12 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 177,
+        "caseCount": 166,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 177,
+        "unsupportedCaseCount": 166,
         "fixtureCount": 0
       },
       "cases": [
-        {
-          "id": "math/big::A",
-          "title": "A",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
         {
           "id": "math/big::Above",
           "title": "Above",
@@ -85955,42 +84749,6 @@
           "reason": ""
         },
         {
-          "id": "math/big::D",
-          "title": "D",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Ebias",
-          "title": "Ebias",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Emax",
-          "title": "Emax",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Emin",
-          "title": "Emin",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math/big::ErrNaN",
           "title": "ErrNaN",
           "subtitle": "type",
@@ -86004,15 +84762,6 @@
           "title": "ErrNaN.Error",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Esize",
-          "title": "Esize",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -86445,15 +85194,6 @@
           "title": "Float.UnmarshalText",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Fsize",
-          "title": "Fsize",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -87048,42 +85788,6 @@
           "title": "MinExp",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Msize",
-          "title": "Msize",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Msize1",
-          "title": "Msize1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::Msize2",
-          "title": "Msize2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/big::N",
-          "title": "N",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -88885,9 +87589,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 31,
+        "caseCount": 27,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 31,
+        "unsupportedCaseCount": 27,
         "fixtureCount": 0
       },
       "cases": [
@@ -89045,46 +87749,10 @@
           "reason": ""
         },
         {
-          "id": "math/cmplx::MACHEP",
-          "title": "MACHEP",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "math/cmplx::NaN",
           "title": "NaN",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/cmplx::PI1",
-          "title": "PI1",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/cmplx::PI2",
-          "title": "PI2",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/cmplx::PI3",
-          "title": "PI3",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -89180,21 +87848,12 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 43,
+        "caseCount": 40,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 43,
+        "unsupportedCaseCount": 40,
         "fixtureCount": 0
       },
       "cases": [
-        {
-          "id": "math/rand::A",
-          "title": "A",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
         {
           "id": "math/rand::ExpFloat64",
           "title": "ExpFloat64",
@@ -89317,24 +87976,6 @@
           "title": "Perm",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/rand::Q",
-          "title": "Q",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "math/rand::R",
-          "title": "R",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -92768,9 +91409,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 281,
+        "caseCount": 278,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 281,
+        "unsupportedCaseCount": 278,
         "fixtureCount": 0
       },
       "cases": [
@@ -93542,15 +92183,6 @@
         {
           "id": "net/http::Hijacker",
           "title": "Hijacker",
-          "subtitle": "type",
-          "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "net/http::I",
-          "title": "I",
           "subtitle": "type",
           "kind": "type",
           "status": "unsupported",
@@ -95281,24 +93913,6 @@
           "title": "Transport.RoundTrip",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "net/http::WSAECONNABORTED",
-          "title": "WSAECONNABORTED",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "net/http::WSAECONNRESET",
-          "title": "WSAECONNRESET",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -104429,9 +103043,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 69,
+        "caseCount": 66,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 69,
+        "unsupportedCaseCount": 66,
         "fixtureCount": 0
       },
       "cases": [
@@ -104535,28 +103149,10 @@
           "reason": ""
         },
         {
-          "id": "runtime::EBADF",
-          "title": "EBADF",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "runtime::Error",
           "title": "Error",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "runtime::F_GETFD",
-          "title": "F_GETFD",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -104823,15 +103419,6 @@
           "reason": ""
         },
         {
-          "id": "runtime::O_RDWR",
-          "title": "O_RDWR",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
           "id": "runtime::PanicNilError",
           "title": "PanicNilError",
           "subtitle": "type",
@@ -105052,31 +103639,6 @@
           "title": "Version",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        }
-      ]
-    },
-    {
-      "id": "runtime/_mkmalloc",
-      "title": "runtime/_mkmalloc",
-      "subtitle": "",
-      "fixtures": [],
-      "summary": {
-        "groupCount": 0,
-        "passingGroupCount": 0,
-        "caseCount": 1,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 1,
-        "fixtureCount": 0
-      },
-      "cases": [
-        {
-          "id": "runtime/_mkmalloc::F",
-          "title": "F",
-          "subtitle": "var",
-          "kind": "var",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -105959,9 +104521,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 70,
+        "caseCount": 69,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 70,
+        "unsupportedCaseCount": 69,
         "fixtureCount": 0
       },
       "cases": [
@@ -106585,15 +105147,6 @@
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
-        },
-        {
-          "id": "simd/archsimd/_gen/simdgen::ZeroingMask",
-          "title": "ZeroingMask",
-          "subtitle": "var",
-          "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
         }
       ]
     },
@@ -106605,9 +105158,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 18,
+        "caseCount": 17,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 18,
+        "unsupportedCaseCount": 17,
         "fixtureCount": 0
       },
       "cases": [
@@ -106634,15 +105187,6 @@
           "title": "SIMD",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "simd/archsimd/_gen/tmplgen::SIMDLogicalOP",
-          "title": "SIMDLogicalOP",
-          "subtitle": "type",
-          "kind": "type",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
@@ -114670,9 +113214,9 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 144,
+        "caseCount": 138,
         "passingCaseCount": 0,
-        "unsupportedCaseCount": 144,
+        "unsupportedCaseCount": 138,
         "fixtureCount": 0
       },
       "cases": [
@@ -115050,60 +113594,6 @@
           "title": "Month.String",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NChar",
-          "title": "NChar",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NLeap",
-          "title": "NLeap",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NStdWall",
-          "title": "NStdWall",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NTime",
-          "title": "NTime",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NUTCLocal",
-          "title": "NUTCLocal",
-          "subtitle": "const",
-          "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": ""
-        },
-        {
-          "id": "time::NZone",
-          "title": "NZone",
-          "subtitle": "const",
-          "kind": "const",
           "status": "unsupported",
           "fixtures": [],
           "reason": ""
