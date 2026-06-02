@@ -21124,13 +21124,67 @@ fn terminate_goto_state_segment_stmts(stmts: &mut [syn::Stmt]) {
 
 struct GotoStateHoistBinding {
     name: String,
+    ty: Option<syn::Type>,
+    init: Option<syn::Expr>,
 }
 
-fn goto_state_hoisted_bindings(plan: &ir::GotoStatePlan) -> Vec<GotoStateHoistBinding> {
+fn collect_goto_state_hoist_binding_types(
+    stmt: &ast::Stmt<'_>,
+    hoisted_names: &std::collections::BTreeSet<String>,
+    bindings: &mut BTreeMap<String, (syn::Type, syn::Expr)>,
+) {
+    match stmt {
+        ast::Stmt::DeclStmt(decl) if decl.decl.tok == token::Token::VAR => {
+            for spec in &decl.decl.specs {
+                let ast::Spec::ValueSpec(value) = spec else {
+                    continue;
+                };
+                let Some(type_expr) = value.type_.as_ref() else {
+                    continue;
+                };
+                let ty = local_value_type_from_expr(type_expr);
+                let init = default_expr_for_type(type_expr);
+                for name in &value.names {
+                    let rust_name = rust_safe_ident_name(name.name);
+                    if hoisted_names.contains(&rust_name) {
+                        bindings
+                            .entry(rust_name)
+                            .or_insert_with(|| (ty.clone(), init.clone()));
+                    }
+                }
+            }
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_goto_state_hoist_binding_types(&label.stmt, hoisted_names, bindings);
+        }
+        _ => {}
+    }
+}
+
+fn goto_state_hoisted_binding_types(
+    stmts: &[ast::Stmt<'_>],
+    hoisted_names: &std::collections::BTreeSet<String>,
+) -> BTreeMap<String, (syn::Type, syn::Expr)> {
+    let mut bindings = BTreeMap::new();
+    for stmt in stmts {
+        collect_goto_state_hoist_binding_types(stmt, hoisted_names, &mut bindings);
+    }
+    bindings
+}
+
+fn goto_state_hoisted_bindings(
+    plan: &ir::GotoStatePlan,
+    typed_bindings: &BTreeMap<String, (syn::Type, syn::Expr)>,
+) -> Vec<GotoStateHoistBinding> {
     plan.hoisted_names
         .iter()
-        .map(|name| GotoStateHoistBinding {
-            name: rust_safe_ident_name(name),
+        .map(|name| {
+            let name = rust_safe_ident_name(name);
+            let (ty, init) = typed_bindings
+                .get(&name)
+                .map(|(ty, init)| (Some(ty.clone()), Some(init.clone())))
+                .unwrap_or((None, None));
+            GotoStateHoistBinding { name, ty, init }
         })
         .collect()
 }
@@ -21149,8 +21203,14 @@ fn goto_state_hoist_stmts(bindings: &[GotoStateHoistBinding]) -> Vec<syn::Stmt> 
         .iter()
         .map(|binding| {
             let ident = syn::Ident::new(&binding.name, Span::mixed_site());
-            syn::parse_quote! {
-                let mut #ident = Default::default();
+            if let (Some(ty), Some(init)) = (&binding.ty, &binding.init) {
+                syn::parse_quote! {
+                    let mut #ident: #ty = #init;
+                }
+            } else {
+                syn::parse_quote! {
+                    let mut #ident = Default::default();
+                }
             }
         })
         .collect()
@@ -21216,9 +21276,10 @@ fn compile_goto_state_stmt_list_with<'a, F>(
 where
     F: FnMut(ast::Stmt<'a>) -> Result<Vec<syn::Stmt>, CompilerError>,
 {
+    let hoisted_names = goto_state_hoisted_plan_name_set(plan);
+    let typed_hoist_bindings = goto_state_hoisted_binding_types(&list, &hoisted_names);
     let segments = split_goto_state_segments(list);
     let labels = goto_state_label_map(&segments);
-    let hoisted_names = goto_state_hoisted_plan_name_set(plan);
     let (state_ident, loop_label) = next_goto_state_names();
     let context = GotoStateContext {
         state_ident: state_ident.clone(),
@@ -21250,7 +21311,7 @@ where
         });
     }
 
-    let hoist_bindings = goto_state_hoisted_bindings(plan);
+    let hoist_bindings = goto_state_hoisted_bindings(plan, &typed_hoist_bindings);
     let hoist_stmts = goto_state_hoist_stmts(&hoist_bindings);
 
     arms.push(syn::parse_quote! {
@@ -30359,6 +30420,41 @@ func main() {
         assert!(main_rs.contains("let mut greeting: String = \"go\".to_string();"));
         assert!(main_rs.contains("let mut count: i8 = (40 as i8);"));
         assert!(main_rs.contains("let mut suffix: String = Default::default();"));
+    }
+
+    #[test]
+    fn compile_program_multi_preserves_typed_goto_hoisted_array_locals() {
+        let go_source = r#"package main
+
+func main() {
+	var b [4]byte
+	b[0] = 7
+	goto Done
+	b[1] = 9
+Done:
+	println(b[0])
+}
+"#;
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec![],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("let mut b: [u8; 4] = std::array::from_fn"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("let mut b = Default::default();"));
     }
 
     #[test]

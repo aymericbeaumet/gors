@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 176,
-    "unsupportedCaseCount": 12242,
+    "passingCaseCount": 181,
+    "unsupportedCaseCount": 12237,
     "fixtureCount": 80
   },
   "groups": [
@@ -1683,8 +1683,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 99,
-        "passingCaseCount": 23,
-        "unsupportedCaseCount": 76,
+        "passingCaseCount": 28,
+        "unsupportedCaseCount": 71,
         "fixtureCount": 0
       },
       "cases": [
@@ -1951,8 +1951,10 @@
           "title": "ContainsAny",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -1969,8 +1971,10 @@
           "title": "ContainsRune",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2033,8 +2037,10 @@
           "title": "EqualFold",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2120,8 +2126,10 @@
           "title": "IndexAny",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2149,8 +2157,10 @@
           "title": "IndexRune",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {

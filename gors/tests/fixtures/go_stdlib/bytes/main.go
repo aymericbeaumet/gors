@@ -12,6 +12,10 @@ func main() {
 	case_bytes_compare()
 	fmt.Println("== bytes/contains ==")
 	case_bytes_contains()
+	fmt.Println("== bytes/contains_any ==")
+	case_bytes_contains_any()
+	fmt.Println("== bytes/contains_rune ==")
+	case_bytes_contains_rune()
 	fmt.Println("== bytes/count ==")
 	case_bytes_count()
 	fmt.Println("== bytes/cut ==")
@@ -22,14 +26,20 @@ func main() {
 	case_bytes_cut_suffix()
 	fmt.Println("== bytes/equal ==")
 	case_bytes_equal()
+	fmt.Println("== bytes/equal_fold ==")
+	case_bytes_equal_fold()
 	fmt.Println("== bytes/has_prefix ==")
 	case_bytes_has_prefix()
 	fmt.Println("== bytes/has_suffix ==")
 	case_bytes_has_suffix()
 	fmt.Println("== bytes/index ==")
 	case_bytes_index()
+	fmt.Println("== bytes/index_any ==")
+	case_bytes_index_any()
 	fmt.Println("== bytes/index_byte ==")
 	case_bytes_index_byte()
+	fmt.Println("== bytes/index_rune ==")
+	case_bytes_index_rune()
 	fmt.Println("== bytes/last_index ==")
 	case_bytes_last_index()
 	fmt.Println("== bytes/last_index_any ==")
@@ -80,6 +90,7 @@ func case_bytes_contains() {
 }
 
 func case_bytes_contains_any() {
+	// gors:stdlib-cover bytes::ContainsAny
 	fmt.Println(bytes.ContainsAny([]byte("team"), "xyzam"))
 }
 
@@ -92,6 +103,7 @@ func case_bytes_contains_func() {
 }
 
 func case_bytes_contains_rune() {
+	// gors:stdlib-cover bytes::ContainsRune
 	fmt.Println(bytes.ContainsRune([]byte("alpha"), 'p'))
 }
 
@@ -124,6 +136,7 @@ func case_bytes_equal() {
 }
 
 func case_bytes_equal_fold() {
+	// gors:stdlib-cover bytes::EqualFold
 	fmt.Println(bytes.EqualFold([]byte("GoLang"), []byte("golang")))
 }
 
@@ -155,6 +168,7 @@ func case_bytes_index() {
 }
 
 func case_bytes_index_any() {
+	// gors:stdlib-cover bytes::IndexAny
 	fmt.Println(bytes.IndexAny([]byte("alphabet"), "zxha"))
 }
 
@@ -172,6 +186,7 @@ func case_bytes_index_func() {
 }
 
 func case_bytes_index_rune() {
+	// gors:stdlib-cover bytes::IndexRune
 	fmt.Println(bytes.IndexRune([]byte("alphabet"), 'p'))
 }
 
