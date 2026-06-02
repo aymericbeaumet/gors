@@ -14703,6 +14703,128 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     }
 }
 
+fn same_lvalue_expr(left: &ast::Expr, right: &ast::Expr) -> bool {
+    match (left, right) {
+        (ast::Expr::Ident(left), ast::Expr::Ident(right)) => left.name == right.name,
+        (ast::Expr::ParenExpr(left), _) => same_lvalue_expr(&left.x, right),
+        (_, ast::Expr::ParenExpr(right)) => same_lvalue_expr(left, &right.x),
+        (ast::Expr::SelectorExpr(left), ast::Expr::SelectorExpr(right)) => {
+            left.sel.name == right.sel.name && same_lvalue_expr(&left.x, &right.x)
+        }
+        (ast::Expr::StarExpr(left), ast::Expr::StarExpr(right)) => {
+            same_lvalue_expr(&left.x, &right.x)
+        }
+        (ast::Expr::UnaryExpr(left), ast::Expr::UnaryExpr(right))
+            if left.op == token::Token::MUL && right.op == token::Token::MUL =>
+        {
+            same_lvalue_expr(&left.x, &right.x)
+        }
+        _ => false,
+    }
+}
+
+enum SelfSliceAssignmentRhs<'a> {
+    Compiled(syn::Expr),
+    Original(ast::Expr<'a>),
+}
+
+fn compile_self_slice_assignment_rhs<'a>(
+    lhs: &ast::Expr<'a>,
+    rhs: ast::Expr<'a>,
+) -> SelfSliceAssignmentRhs<'a> {
+    let ast::Expr::SliceExpr(slice_expr) = rhs else {
+        return SelfSliceAssignmentRhs::Original(rhs);
+    };
+    let Some(target) = lvalue_expr_from_ref(lhs) else {
+        return SelfSliceAssignmentRhs::Original(ast::Expr::SliceExpr(slice_expr));
+    };
+    if !same_lvalue_expr(lhs, &slice_expr.x) {
+        return SelfSliceAssignmentRhs::Original(ast::Expr::SliceExpr(slice_expr));
+    }
+
+    let base_go_type =
+        typeinfer::GoType::infer_expr(&slice_expr.x, &TYPE_ENV.with(|e| e.borrow().clone()));
+    if is_any_slice_range_type(&base_go_type) {
+        return SelfSliceAssignmentRhs::Original(ast::Expr::SliceExpr(slice_expr));
+    }
+    let is_string_slice = base_go_type.is_string();
+    let has_low = slice_expr.low.is_some();
+    let has_high = slice_expr.high.is_some();
+    let has_max = slice_expr.max.is_some();
+    let low = slice_expr.low;
+    let high = slice_expr.high;
+    let max = slice_expr.max;
+
+    let low_stmt: Option<syn::Stmt> = low.map(|low| {
+        let low: syn::Expr = syn::Expr::from(*low);
+        syn::parse_quote! { let __gors_slice_low = (#low) as usize; }
+    });
+    let high_stmt: Option<syn::Stmt> = high.map(|high| {
+        let high: syn::Expr = syn::Expr::from(*high);
+        syn::parse_quote! { let __gors_slice_high = (#high) as usize; }
+    });
+    let max_stmt: Option<syn::Stmt> = max.map(|max| {
+        let max: syn::Expr = syn::Expr::from(*max);
+        syn::parse_quote! { let __gors_slice_max = (#max) as usize; }
+    });
+
+    let start: syn::Expr = if has_low {
+        syn::parse_quote! { __gors_slice_low }
+    } else {
+        syn::parse_quote! { 0usize }
+    };
+    let end: syn::Expr = if has_high {
+        syn::parse_quote! { __gors_slice_high }
+    } else {
+        syn::parse_quote! { crate::builtin::len(&__gors_slice_source) as usize }
+    };
+
+    if has_max {
+        if is_string_slice {
+            return SelfSliceAssignmentRhs::Compiled(compile_error_expr(
+                "full slice expression is not valid for strings",
+            ));
+        }
+        return SelfSliceAssignmentRhs::Compiled(syn::parse_quote! {{
+            #low_stmt
+            #high_stmt
+            #max_stmt
+            let __gors_slice_source = std::mem::take(&mut #target);
+            let mut __gors_slice = (__gors_slice_source[#start..#end]).to_vec();
+            let __gors_cap = __gors_slice_max.saturating_sub(#start);
+            if __gors_slice.capacity() < __gors_cap {
+                __gors_slice.reserve_exact(__gors_cap - __gors_slice.capacity());
+            }
+            __gors_slice
+        }});
+    }
+
+    let slice: syn::Expr = match (has_low, has_high) {
+        (false, false) => syn::parse_quote! { (__gors_slice_source)[..] },
+        (true, false) => syn::parse_quote! { (__gors_slice_source)[__gors_slice_low..] },
+        (false, true) => syn::parse_quote! { (__gors_slice_source)[..__gors_slice_high] },
+        (true, true) => {
+            syn::parse_quote! { (__gors_slice_source)[__gors_slice_low..__gors_slice_high] }
+        }
+    };
+
+    if is_string_slice {
+        SelfSliceAssignmentRhs::Compiled(syn::parse_quote! {{
+            #low_stmt
+            #high_stmt
+            let __gors_slice_source = std::mem::take(&mut #target);
+            (#slice).to_string()
+        }})
+    } else {
+        SelfSliceAssignmentRhs::Compiled(syn::parse_quote! {{
+            #low_stmt
+            #high_stmt
+            let __gors_slice_source = std::mem::take(&mut #target);
+            (#slice).to_vec()
+        }})
+    }
+}
+
 fn named_slice_type_name(ty: &typeinfer::GoType) -> Option<String> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -26201,15 +26323,22 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     other => other,
                 };
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
-                let right_raw = if !matches!(lhs_ty, typeinfer::GoType::Error)
-                    && go_type_interface_name(&lhs_ty).is_some()
-                {
-                    compile_owned_interface_expr(rhs_ast, &lhs_ty)
-                } else {
-                    compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
-                };
+                let (self_slice_assignment, right_raw) =
+                    match compile_self_slice_assignment_rhs(&lhs_ast, rhs_ast) {
+                        SelfSliceAssignmentRhs::Compiled(right) => (true, right),
+                        SelfSliceAssignmentRhs::Original(rhs_ast) => {
+                            let right = if !matches!(lhs_ty, typeinfer::GoType::Error)
+                                && go_type_interface_name(&lhs_ty).is_some()
+                            {
+                                compile_owned_interface_expr(rhs_ast, &lhs_ty)
+                            } else {
+                                compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
+                            };
+                            (false, right)
+                        }
+                    };
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
-                if !go_type_is_copy(&lhs_ty) {
+                if !self_slice_assignment && !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &lhs_ty, &mut right);
                 }
                 if matches!(lhs_ty, typeinfer::GoType::Error) {
@@ -32269,7 +32398,11 @@ func main() {
             rust! {
                 pub fn main() {
                     let mut s = "abba".to_string();
-                    s = ((std::mem::take(&mut s))[..((crate::builtin::len(&s) as isize) - 1) as usize]).to_string();
+                    s = {
+                        let __gors_slice_high = ((crate::builtin::len(&s) as isize) - 1) as usize;
+                        let __gors_slice_source = std::mem::take(&mut s);
+                        ((__gors_slice_source)[..__gors_slice_high]).to_string()
+                    };
                 }
             },
         );
@@ -32303,8 +32436,9 @@ func main() {
             "expected named slice assignment to wrap RHS in the newtype: {output}"
         );
         assert!(
-            output.contains(") . to_vec ())"),
-            "expected sliced RHS to stay a Vec before wrapping: {output}"
+            output.contains("std :: mem :: take (& mut self . sp)")
+                && output.contains(") . to_vec ()"),
+            "expected self-slice assignment to move the source before wrapping: {output}"
         );
     }
 
