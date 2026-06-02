@@ -1319,7 +1319,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reachable_names_include_instantiated_field_type_arguments() {
+    fn reachable_names_include_instantiated_field_type_arguments()
+    -> Result<(), Box<dyn std::error::Error>> {
         let file = crate::parser::parse_file(
             "fixture.go",
             r#"
@@ -1342,24 +1343,27 @@ mod tests {
                     return false
                 }
             "#,
-        )
-        .expect("parse fixture");
+        )?;
         let parsed_files = vec![("fixture.go", file)];
         let roots = HashSet::from(["Matcher".to_string()]);
         let reachable = reachable_package_names(&parsed_files, &roots);
 
         assert!(reachable.contains("Matcher"));
         assert!(reachable.contains("dedup"));
+        Ok(())
     }
 
     #[test]
-    fn runtime_gomaxprocs_resolves_as_runtime_primitive() {
+    fn runtime_gomaxprocs_resolves_as_runtime_primitive() -> Result<(), Box<dyn std::error::Error>>
+    {
         let roots = HashSet::from(["GOMAXPROCS".to_string()]);
-        let module = resolve_with_roots("runtime", &roots).expect("resolve runtime");
+        let module = resolve_with_roots("runtime", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve runtime"))?;
         let tokens = module.to_token_stream().to_string();
 
         assert!(tokens.contains("pub fn GOMAXPROCS"));
         assert!(!tokens.contains("sched"));
         assert!(collect_resolved_imports("runtime", &roots).is_empty());
+        Ok(())
     }
 }

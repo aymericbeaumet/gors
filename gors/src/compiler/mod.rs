@@ -59,6 +59,7 @@ thread_local! {
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static BORROWED_SLICE_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
@@ -115,6 +116,10 @@ struct GotoStateContext {
 struct GotoStateContextGuard;
 
 struct BorrowedPointerParamNamesGuard {
+    previous: std::collections::HashSet<String>,
+}
+
+struct BorrowedSliceParamNamesGuard {
     previous: std::collections::HashSet<String>,
 }
 
@@ -296,6 +301,25 @@ impl BorrowedPointerParamNamesGuard {
 impl Drop for BorrowedPointerParamNamesGuard {
     fn drop(&mut self) {
         BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
+            *borrowed.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl BorrowedSliceParamNamesGuard {
+    fn set(names: std::collections::HashSet<String>) -> Self {
+        let previous = BORROWED_SLICE_PARAM_NAMES.with(|borrowed| {
+            let previous = borrowed.borrow().clone();
+            *borrowed.borrow_mut() = names;
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for BorrowedSliceParamNamesGuard {
+    fn drop(&mut self) {
+        BORROWED_SLICE_PARAM_NAMES.with(|borrowed| {
             *borrowed.borrow_mut() = self.previous.clone();
         });
     }
@@ -5078,8 +5102,7 @@ fn add_phantom_fields_for_file(file: &mut syn::File) {
             .iter()
             .map(|name| syn::Ident::new(name, Span::mixed_site()))
             .collect::<Vec<_>>();
-        let phantom_ty: syn::Type = if unused_idents.len() == 1 {
-            let ident = &unused_idents[0];
+        let phantom_ty: syn::Type = if let [ident] = unused_idents.as_slice() {
             syn::parse_quote! { std::marker::PhantomData<fn() -> #ident> }
         } else {
             syn::parse_quote! { std::marker::PhantomData<fn() -> (#(#unused_idents),*)> }
@@ -11310,6 +11333,9 @@ fn compile_method(
     }
     let borrowed_pointer_param_names =
         BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
+    let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
+        borrowed_slice_alias_param_names(&func_decl.type_.params),
+    );
     let type_param_info = TypeParamInfo::default();
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
@@ -11396,6 +11422,7 @@ fn compile_method(
     });
     let mut block = block_result?;
     drop(borrowed_pointer_param_names);
+    drop(borrowed_slice_param_names);
 
     if !recv_name.is_empty() {
         rewrite_receiver(&mut block, &recv_name, borrowed_value_receiver);
@@ -12603,6 +12630,33 @@ fn ordered_builtin_arg_expected_type(raw_args: &[ast::Expr]) -> Option<typeinfer
     all_string.then_some(typeinfer::GoType::String)
 }
 
+fn is_pointer_deref_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::StarExpr(_) => true,
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::MUL => true,
+        ast::Expr::ParenExpr(paren) => is_pointer_deref_expr(&paren.x),
+        _ => false,
+    }
+}
+
+fn compile_append_slice_arg(slice_arg: ast::Expr, slice_go_type: &typeinfer::GoType) -> syn::Expr {
+    if let ast::Expr::Ident(ident) = &slice_arg {
+        let name = rust_safe_ident_name(ident.name);
+        if is_borrowed_slice_param_name(&name) && !go_type_is_copy(slice_go_type) {
+            let ident = syn::Ident::new(&name, Span::mixed_site());
+            return syn::parse_quote! { (*#ident).clone() };
+        }
+    }
+    if is_pointer_deref_expr(&slice_arg) {
+        if !go_type_is_copy(slice_go_type)
+            && let Some(lvalue) = lvalue_expr_from_ref(&slice_arg)
+        {
+            return syn::parse_quote! { (#lvalue).clone() };
+        }
+    }
+    compile_expr_with_expected(slice_arg, None)
+}
+
 fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -> syn::Expr {
     let mut args = raw_args.into_iter();
     let Some(slice_arg) = args.next() else {
@@ -12618,7 +12672,7 @@ fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -
         _ => None,
     };
 
-    let mut out = compile_expr_with_expected(slice_arg, None);
+    let mut out = compile_append_slice_arg(slice_arg, &slice_go_type);
     let remaining: Vec<_> = args.collect();
     if remaining.is_empty() {
         return out;
@@ -13414,6 +13468,18 @@ fn coerce_assignment_expr(
     rhs_expr
 }
 
+fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
+    if let ast::Expr::Ident(ident) = inner {
+        let name = rust_safe_ident_name(ident.name);
+        if is_borrowed_pointer_param_name(&name) {
+            let ident = syn::Ident::new(&name, Span::mixed_site());
+            return Some(syn::parse_quote! { *#ident });
+        }
+    }
+    let inner = syn_expr_from_type_expr_like(inner)?;
+    Some(syn::parse_quote! { *#inner.lock().unwrap() })
+}
+
 fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     if let ast::Expr::SliceExpr(slice) = expr {
         let base = lvalue_expr_from_ref(&slice.x)?;
@@ -13484,17 +13550,10 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { (#base)[(#index) as usize] })
         }
         ast::Expr::ParenExpr(paren) => lvalue_expr_from_ref(&paren.x),
-        ast::Expr::StarExpr(star) => {
-            if let ast::Expr::Ident(ident) = &*star.x {
-                let name = rust_safe_ident_name(ident.name);
-                if is_borrowed_pointer_param_name(&name) {
-                    let ident = syn::Ident::new(&name, Span::mixed_site());
-                    return Some(syn::parse_quote! { *#ident });
-                }
-            }
-            let inner = syn_expr_from_type_expr_like(&star.x)?;
-            Some(syn::parse_quote! { *#inner.lock().unwrap() })
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::MUL => {
+            pointer_deref_lvalue_expr(&unary.x)
         }
+        ast::Expr::StarExpr(star) => pointer_deref_lvalue_expr(&star.x),
         _ => None,
     }
 }
@@ -13584,6 +13643,18 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
         replaced: bool,
     }
 
+    fn unparen_expr(expr: syn::Expr) -> syn::Expr {
+        match expr {
+            syn::Expr::Paren(paren) => *paren.expr,
+            other => other,
+        }
+    }
+
+    fn receiver_matches_target(receiver: &syn::Expr, target_key: &str) -> bool {
+        let key = receiver.to_token_stream().to_string();
+        key == target_key || key == format!("({target_key})")
+    }
+
     impl syn::visit_mut::VisitMut for TakeMatchingRead {
         fn visit_expr_index_mut(&mut self, expr: &mut syn::ExprIndex) {
             if expr.expr.to_token_stream().to_string() == self.target_key {
@@ -13600,6 +13671,17 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
         }
 
         fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+            if !self.replaced
+                && let syn::Expr::MethodCall(method_call) = expr
+                && method_call.method == "clone"
+                && method_call.args.is_empty()
+                && receiver_matches_target(&method_call.receiver, &self.target_key)
+            {
+                let inner = unparen_expr((*method_call.receiver).clone());
+                *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
+                self.replaced = true;
+                return;
+            }
             if !self.replaced && expr.to_token_stream().to_string() == self.target_key {
                 let inner = expr.clone();
                 *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
@@ -13734,6 +13816,10 @@ fn current_goto_state_loop_label() -> Option<syn::Lifetime> {
 
 fn is_borrowed_pointer_param_name(name: &str) -> bool {
     BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
+}
+
+fn is_borrowed_slice_param_name(name: &str) -> bool {
+    BORROWED_SLICE_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
 }
 
 fn is_borrowed_pointer_expr_ref(expr: &ast::Expr) -> bool {
@@ -20345,6 +20431,27 @@ fn type_from_param_expr(
     }
 }
 
+fn borrowed_slice_alias_param_names(params: &ast::FieldList) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for field in &params.list {
+        let Some(type_expr) = &field.type_ else {
+            continue;
+        };
+        if !type_expr_resolves_to_slice_alias(type_expr) {
+            continue;
+        }
+        let Some(field_names) = &field.names else {
+            continue;
+        };
+        names.extend(
+            field_names
+                .iter()
+                .map(|name| rust_safe_ident_name(name.name)),
+        );
+    }
+    names
+}
+
 fn type_kind_for_type_expr(expr: &ast::Expr) -> Option<typeinfer::TypeKind> {
     if let ast::Expr::ParenExpr(paren) = expr {
         return type_kind_for_type_expr(&paren.x);
@@ -20659,6 +20766,9 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
         let borrowed_pointer_param_names =
             BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
+        let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
+            borrowed_slice_alias_param_names(&func_decl.type_.params),
+        );
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
             for arg in compile_field_to_fn_args_with_type_params(
@@ -20763,6 +20873,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             Ok(bodyless_function_block(&output, &inputs))
         };
         drop(borrowed_pointer_param_names);
+        drop(borrowed_slice_param_names);
         BYTE_SEQ_TYPE_PARAMS.with(|params| {
             *params.borrow_mut() = previous_byte_seq_type_params;
         });
@@ -21134,9 +21245,7 @@ fn compound_inc_dec_stmt(
     syn::parse2::<syn::Stmt>(tokens.clone()).map_err(|err| {
         CompilerError::InvalidAssignment(format!(
             "invalid increment/decrement lhs{}: {} ({err})",
-            shape
-                .map(|shape| format!(" {shape}"))
-                .unwrap_or_else(String::new),
+            shape.map(|shape| format!(" {shape}")).unwrap_or_default(),
             tokens
         ))
     })
@@ -28335,6 +28444,70 @@ func main() {
                     s = crate::builtin::append(crate::builtin::append(std::mem::take(&mut s), 3), 4);
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_take_pointer_deref_append_reads() {
+        test(
+            r#"
+                package main
+
+                func push(p *[]int) {
+                    *p = append(*p, 3)
+                }
+            "#,
+            rust! {
+                fn push(mut p: &mut Vec<isize>) {
+                    *p = crate::builtin::append(std::mem::take(&mut *p), 3);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_clone_pointer_deref_append_reads() {
+        test(
+            r#"
+                package main
+
+                func push(p *[]int) []int {
+                    return append(*p, 3)
+                }
+            "#,
+            rust! {
+                fn push(mut p: &mut Vec<isize>) -> Vec<isize> {
+                    crate::builtin::append((*p).clone(), 3)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_clone_borrowed_named_slice_append_reads() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type ints []int
+
+func push(xs ints, value int) ints {
+	return append(xs, value)
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("fn push (mut xs : & mut ints , mut value : isize) -> ints"),
+            "{output}"
+        );
+        assert!(
+            output.contains("crate :: builtin :: append ((* xs) . clone () , (value) . clone ())"),
+            "{output}"
         );
     }
 
