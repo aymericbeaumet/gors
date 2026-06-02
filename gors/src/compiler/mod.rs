@@ -2508,6 +2508,17 @@ fn const_complex_binary_expr(
     }
 }
 
+fn const_named_value(
+    name: &str,
+    values: &BTreeMap<String, ConstValue>,
+    env: &typeinfer::TypeEnv,
+) -> Option<ConstValue> {
+    values
+        .get(name)
+        .cloned()
+        .or_else(|| env.get_const_integer_value(name).map(ConstValue::Int))
+}
+
 fn const_eval_expr(
     expr: &ast::Expr,
     iota_value: i64,
@@ -2543,7 +2554,14 @@ fn const_eval_expr(
         ast::Expr::Ident(ident) if ident.name == "iota" => Some(ConstValue::Int(iota_value.into())),
         ast::Expr::Ident(ident) if ident.name == "true" => Some(ConstValue::Bool(true)),
         ast::Expr::Ident(ident) if ident.name == "false" => Some(ConstValue::Bool(false)),
-        ast::Expr::Ident(ident) => values.get(ident.name).cloned(),
+        ast::Expr::Ident(ident) => const_named_value(ident.name, values, env),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = &*selector.x else {
+                return None;
+            };
+            let key = format!("{}.{}", pkg.name, selector.sel.name);
+            const_named_value(&key, values, env)
+        }
         ast::Expr::BinaryExpr(bin) => {
             let lhs = const_eval_expr(&bin.x, iota_value, values, env)?;
             let rhs = const_eval_expr(&bin.y, iota_value, values, env)?;
@@ -2928,18 +2946,38 @@ fn cast_const_numeric_expr(expr: syn::Expr, target: Option<&syn::Type>) -> syn::
     }
 }
 
-fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Option<syn::Expr> {
+fn const_expr_to_rust_expr_with_iota(
+    expr: &ast::Expr,
+    target: Option<&syn::Type>,
+    iota_value: Option<i64>,
+) -> Option<syn::Expr> {
     match expr {
         ast::Expr::BasicLit(lit) => Some(cast_const_numeric_expr(
             const_basic_lit_expr(lit, target)?,
             target,
         )),
+        ast::Expr::Ident(ident) if ident.name == "iota" => {
+            let iota_value = iota_value?;
+            let lit = syn::LitInt::new(&iota_value.to_string(), Span::mixed_site());
+            Some(cast_const_numeric_expr(syn::parse_quote! { #lit }, target))
+        }
         ast::Expr::Ident(ident) if ident.name == "true" => Some(syn::parse_quote! { true }),
         ast::Expr::Ident(ident) if ident.name == "false" => Some(syn::parse_quote! { false }),
         ast::Expr::Ident(ident) => {
             let ident = syn::Ident::new(&import_rust_name(ident.name), Span::mixed_site());
             Some(cast_const_numeric_expr(
                 syn::parse_quote! { #ident },
+                target,
+            ))
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg) = &*selector.x else {
+                return None;
+            };
+            let module = syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site());
+            let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+            Some(cast_const_numeric_expr(
+                syn::parse_quote! { #module::#sel },
                 target,
             ))
         }
@@ -2953,8 +2991,8 @@ fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Opti
                 target
             };
             let right_target = if wide_shift_left { None } else { target };
-            let left = const_expr_to_rust_expr(&binary.x, left_target)?;
-            let right = const_expr_to_rust_expr(&binary.y, right_target)?;
+            let left = const_expr_to_rust_expr_with_iota(&binary.x, left_target, iota_value)?;
+            let right = const_expr_to_rust_expr_with_iota(&binary.y, right_target, iota_value)?;
             let op: syn::BinOp = binary.op.into();
             Some(syn::Expr::Binary(syn::ExprBinary {
                 attrs: vec![],
@@ -2964,7 +3002,7 @@ fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Opti
             }))
         }
         ast::Expr::ParenExpr(paren) => {
-            let expr = const_expr_to_rust_expr(&paren.x, target)?;
+            let expr = const_expr_to_rust_expr_with_iota(&paren.x, target, iota_value)?;
             Some(syn::Expr::Paren(syn::ExprParen {
                 attrs: vec![],
                 paren_token: syn::token::Paren::default(),
@@ -2972,7 +3010,7 @@ fn const_expr_to_rust_expr(expr: &ast::Expr, target: Option<&syn::Type>) -> Opti
             }))
         }
         ast::Expr::UnaryExpr(unary) => {
-            let expr = const_expr_to_rust_expr(&unary.x, target)?;
+            let expr = const_expr_to_rust_expr_with_iota(&unary.x, target, iota_value)?;
             match unary.op {
                 token::Token::ADD => Some(expr),
                 token::Token::SUB => Some(syn::Expr::Unary(syn::ExprUnary {
@@ -3131,7 +3169,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                     }
                 } else if is_const_like_expr(expr) {
                     let target = const_numeric_cast_type_from_rust_type(&rust_type);
-                    const_expr_to_rust_expr(expr, target.as_ref())
+                    const_expr_to_rust_expr_with_iota(expr, target.as_ref(), Some(iota as i64))
                         .unwrap_or_else(|| syn::parse_quote! { 0 })
                 } else {
                     syn::parse_quote! { 0 }
@@ -22584,51 +22622,70 @@ fn inferred_function_type_for_name(name: &str) -> Option<typeinfer::GoType> {
 
 fn compile_local_const_decl(gen_decl: ast::GenDecl) -> Vec<syn::Stmt> {
     let mut stmts = vec![];
+    let mut value_specs: Vec<ast::ValueSpec> = vec![];
 
     for spec in gen_decl.specs {
-        let ast::Spec::ValueSpec(value_spec) = spec else {
+        if let ast::Spec::ValueSpec(value_spec) = spec {
+            value_specs.push(value_spec);
+        }
+    }
+
+    let mut last_valued_idx: Option<usize> = None;
+    let mut const_values: BTreeMap<String, ConstValue> = BTreeMap::new();
+
+    for (iota, spec_idx) in (0..value_specs.len()).enumerate() {
+        let Some(value_spec) = value_specs.get(spec_idx) else {
             continue;
         };
-        let type_expr = value_spec.type_;
-        let explicit_go_type = type_expr.as_ref().map(typeinfer::GoType::from_expr);
-        let explicit_type_name = match type_expr.as_ref() {
+
+        let has_own_values = value_spec.values.is_some();
+        if has_own_values {
+            last_valued_idx = Some(spec_idx);
+        }
+        let source_idx = if has_own_values {
+            Some(spec_idx)
+        } else {
+            last_valued_idx
+        };
+        let source_values = source_idx.and_then(|idx| value_specs.get(idx)?.values.as_ref());
+        let type_expr = value_spec
+            .type_
+            .as_ref()
+            .or_else(|| source_idx.and_then(|idx| value_specs.get(idx)?.type_.as_ref()));
+        let explicit_go_type = type_expr.map(typeinfer::GoType::from_expr);
+        let explicit_type_name = match type_expr {
             Some(ast::Expr::Ident(ident)) => Some(ident.name),
             _ => None,
         };
-        let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
-        for name in value_spec.names {
+        for (name_idx, name) in value_spec.names.iter().enumerate() {
             if name.name == "_" {
                 continue;
             }
 
             let go_name = name.name;
-            let ident: syn::Ident = name.into();
-            let init_ast = values_iter.next();
+            let ident = syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
+            let init_ast = source_values.and_then(|values| values.get(name_idx));
             let evaluated = init_ast
-                .as_ref()
-                .and_then(|expr| const_eval_expr_in_active_env(expr, 0, &BTreeMap::new()));
+                .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
             let inferred_go_type = explicit_go_type.clone().or_else(|| {
-                init_ast.as_ref().and_then(|expr| {
+                init_ast.and_then(|expr| {
                     TYPE_ENV.with(|env| {
                         let ty = typeinfer::GoType::infer_expr(expr, &env.borrow());
                         (!matches!(ty, typeinfer::GoType::Unknown)).then_some(ty)
                     })
                 })
             });
-            let rust_type = if let Some(type_expr) = type_expr.as_ref() {
+            let rust_type = if let Some(type_expr) = type_expr {
                 type_from_expr_ref(type_expr)
-            } else if init_ast
-                .as_ref()
-                .is_some_and(contains_wide_untyped_shift_left)
-            {
+            } else if init_ast.is_some_and(contains_wide_untyped_shift_left) {
                 syn::parse_quote! { i128 }
             } else if let Some(evaluated) = &evaluated {
                 inferred_go_type
                     .as_ref()
                     .and_then(|ty| const_rust_type_from_inferred(ty, evaluated))
                     .unwrap_or_else(|| evaluated.rust_type())
-            } else if let Some(expr) = init_ast.as_ref() {
+            } else if let Some(expr) = init_ast {
                 infer_static_type_from_init(expr)
                     .or_else(|| {
                         inferred_go_type
@@ -22640,20 +22697,17 @@ fn compile_local_const_decl(gen_decl: ast::GenDecl) -> Vec<syn::Stmt> {
                 syn::parse_quote! { isize }
             };
             let value = if let Some(expr) = init_ast {
-                let target = type_expr
-                    .as_ref()
-                    .and_then(|_| const_numeric_cast_type_from_rust_type(&rust_type));
-                if is_const_like_expr(&expr) {
-                    const_expr_to_rust_expr(&expr, target.as_ref()).unwrap_or_else(|| {
-                        evaluated
-                            .as_ref()
-                            .map(|value| const_value_to_expr_for_type(value, explicit_type_name))
-                            .unwrap_or_else(|| expr.into())
-                    })
-                } else if let Some(evaluated) = &evaluated {
+                if let Some(evaluated) = &evaluated {
                     const_value_to_expr_for_type(evaluated, explicit_type_name)
+                } else if is_const_like_expr(expr) {
+                    let target =
+                        type_expr.and_then(|_| const_numeric_cast_type_from_rust_type(&rust_type));
+                    const_expr_to_rust_expr_with_iota(expr, target.as_ref(), Some(iota as i64))
+                        .unwrap_or_else(|| {
+                            compile_error_expr("unsupported local const initializer")
+                        })
                 } else {
-                    expr.into()
+                    compile_error_expr("unsupported local const initializer")
                 }
             } else {
                 syn::parse_quote! { 0 }
@@ -22672,7 +22726,8 @@ fn compile_local_const_decl(gen_decl: ast::GenDecl) -> Vec<syn::Stmt> {
                 });
             }
             if let Some(evaluated) = evaluated {
-                set_local_const_value(go_name, evaluated);
+                set_local_const_value(go_name, evaluated.clone());
+                const_values.insert(go_name.to_string(), evaluated);
             }
         }
     }
@@ -24877,7 +24932,7 @@ var X int
             "expected untyped bit-clear rhs to wrap into the named numeric type: {output}"
         );
         assert!(
-            output.contains("__gors_switch_tag == FileMode ((cISDIR as u32))"),
+            output.contains("__gors_switch_tag == FileMode ((16384 as u32))"),
             "expected switch cases to coerce constants to the switch tag type: {output}"
         );
     }
@@ -25215,7 +25270,7 @@ var X int
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("(1 as i128) << 32"),
+            output.contains("const mask32 : i128 = 4294967295"),
             "expected large untyped shift-left constants to avoid Rust literal overflow: {output}"
         );
     }
@@ -30344,6 +30399,94 @@ func main() {
                 pub fn main() {}
             },
         )
+    }
+
+    #[test]
+    fn it_should_support_iota_in_local_const_groups() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func f() int {
+                    const (
+                        _ = iota
+                        A = iota + 10
+                        B
+                        C = iota * 2
+                        D
+                    )
+                    return A + B + C + D
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("const A: isize = 11;"), "{output}");
+        assert!(output.contains("const B: isize = 12;"), "{output}");
+        assert!(output.contains("const C: isize = 6;"), "{output}");
+        assert!(output.contains("const D: isize = 8;"), "{output}");
+        assert!(!output.contains("iota"), "{output}");
+    }
+
+    #[test]
+    fn it_should_evaluate_iota_exprs_with_previous_const_refs() {
+        test(
+            r#"
+                package main
+
+                const Base = 100
+
+                const (
+                    _ = iota
+                    A = iota + Base
+                    B
+                )
+
+                func main() {}
+            "#,
+            rust! {
+                pub const Base: isize = 100;
+                pub const A: isize = 101;
+                pub const B: isize = 102;
+                pub fn main() {}
+            },
+        )
+    }
+
+    #[test]
+    fn it_should_substitute_iota_in_forward_const_exprs() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const (
+                    _ = iota
+                    A = iota + Later
+                    B
+                )
+
+                const Later = 1 << 8
+
+                func main() {}
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(!output.contains("iota"), "{output}");
+        assert!(
+            output.contains("pub const A: isize = (1 as isize) + (Later as isize);"),
+            "{output}"
+        );
+        assert!(
+            output.contains("pub const B: isize = (2 as isize) + (Later as isize);"),
+            "{output}"
+        );
     }
 
     #[test]
