@@ -13764,7 +13764,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Int depends on io.Reader byte-slice fills, math/big pointer receiver arithmetic, rejection-sampling loops, and deterministic harness assertions for random input."
         },
         {
           "id": "crypto/rand::Prime",
@@ -13773,7 +13773,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Prime depends on secure random byte fills, math/big primality and pointer receiver arithmetic, FIPS-only checks, and long-running rejection loops."
         },
         {
           "id": "crypto/rand::Read",
@@ -13782,7 +13782,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on a generic host random-source primitive, mutation-preserving []byte lvalue reads, internal DRBG/FIPS paths, and go:linkname fatal behavior."
         },
         {
           "id": "crypto/rand::Reader",
@@ -13791,7 +13791,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader is a host random-source io.Reader value backed by internal OS/DRBG state and needs generic host-resource runtime support before behavioral coverage."
         },
         {
           "id": "crypto/rand::Text",
@@ -13800,7 +13800,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Text depends on crypto/rand.Read host randomness, byte-slice mutation, and deterministic stdout assertions for generated random base32 text."
         }
       ]
     },
