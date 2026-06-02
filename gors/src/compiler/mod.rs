@@ -7653,13 +7653,26 @@ pub(crate) fn merge_import_type_envs(
     for import in file.imports() {
         let import_path = import.path.value.trim_matches('"');
         if let Some((package_name, package_env)) = local_type_envs.get(import_path) {
-            type_env.merge_package(package_name, package_env);
+            let local_name = import_type_env_local_name(&import, package_name);
+            type_env.merge_package(&local_name, package_env);
             continue;
         }
         if let Some((package_name, package_env)) = stdlib_type_envs.get(import_path) {
-            type_env.merge_package(package_name, package_env);
+            let local_name = import_type_env_local_name(&import, package_name);
+            type_env.merge_package(&local_name, package_env);
         }
     }
+}
+
+fn import_type_env_local_name(import: &ast::ImportSpec<'_>, package_name: &str) -> String {
+    import
+        .name
+        .as_ref()
+        .and_then(|name| match name.name {
+            "." | "_" => None,
+            other => Some(other.to_string()),
+        })
+        .unwrap_or_else(|| package_name.to_string())
 }
 
 fn import_module_rewrites(
@@ -33063,6 +33076,48 @@ func main() {
         let output = compile_temp_program(tmp.path());
         assert!(output.files.contains_key("errors.rs"));
         assert!(output.files.get("lib.rs").unwrap().contains("errors"));
+    }
+
+    #[test]
+    fn compile_program_multi_merges_import_type_env_under_alias_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("ordered").join("ordered.go").as_path(),
+            r#"
+package ordered
+
+type Ordered interface {
+	~int | ~string
+}
+
+func Less[T Ordered](a T, b T) bool {
+	return a < b
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import ord "example/ordered"
+
+func orderedMin[T ord.Ordered](a T, b T) T {
+	if ord.Less(b, a) {
+		return b
+	}
+	return a
+}
+
+func main() {
+	_ = orderedMin(4, 2)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        assert!(output.files.contains_key("example__ordered.rs"));
     }
 
     #[test]

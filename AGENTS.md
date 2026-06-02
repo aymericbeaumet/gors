@@ -82,6 +82,11 @@ gors-builtin/
 - Local package names that collide with any known stdlib module use an
   import-path-derived Rust module name (`example/math` → `example__math`) and
   import rewrites preserve the original Go selector name in source lowering.
+- Imported package type environments are merged under the Go source's local
+  import name when an alias is present. Selectors and type constraints in the
+  AST use that local name (`import ord "example/ordered"` →
+  `ord.Less`, `ord.Ordered`), while later Rust module rewrites map it to the
+  generated module name.
 - Package-level vars in imported/transpiled packages are emitted as concrete
   `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
   `main()` as startup locals. Imported package-level vars initialized by
