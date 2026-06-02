@@ -16463,6 +16463,7 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
         || matches!(&resolved_range_type, typeinfer::GoType::String);
     let is_int = matches!(range_kind, ir::RangeKind::Integer) || resolved_range_type.is_integer();
     let is_pointer_array = is_pointer_array_range_type(&inferred_range_type);
+    let is_borrowed_pointer_array = is_pointer_array && is_borrowed_pointer_expr_ref(&range_stmt.x);
     let range_function_yield_params = range_function_yield_params(&inferred_range_type);
     let range_function_capture_names = if range_function_yield_params.is_some() {
         TYPE_ENV.with(|env| ir::mutable_range_function_capture_names(&range_stmt, &env.borrow()))
@@ -16522,14 +16523,22 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     body,
                 ))
             } else if is_pointer_array {
-                Ok(make_for_loop(
-                    pat,
-                    syn::parse_quote! {{
-                        let __gors_range_values = (#x).lock().unwrap().iter().cloned().collect::<Vec<_>>();
-                        __gors_range_values.into_iter().enumerate().map(|(i, v)| (i as isize, v))
-                    }},
-                    body,
-                ))
+                if is_borrowed_pointer_array {
+                    Ok(make_for_loop(
+                        pat,
+                        syn::parse_quote! { (#x).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) },
+                        body,
+                    ))
+                } else {
+                    Ok(make_for_loop(
+                        pat,
+                        syn::parse_quote! {{
+                            let __gors_range_values = (#x).lock().unwrap().iter().cloned().collect::<Vec<_>>();
+                            __gors_range_values.into_iter().enumerate().map(|(i, v)| (i as isize, v))
+                        }},
+                        body,
+                    ))
+                }
             } else if is_any_slice_range_type(&inferred_range_type) {
                 Ok(make_for_loop(
                     pat,
@@ -16580,16 +16589,24 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                         body,
                     ))
                 } else if is_pointer_array {
-                    Ok(make_for_loop(
-                        key_pat,
-                        syn::parse_quote! {
-                            0..{
-                                let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
-                                __gors_range_len
-                            }
-                        },
-                        body,
-                    ))
+                    if is_borrowed_pointer_array {
+                        Ok(make_for_loop(
+                            key_pat,
+                            syn::parse_quote! { 0..(crate::builtin::len(&*(#x)) as isize) },
+                            body,
+                        ))
+                    } else {
+                        Ok(make_for_loop(
+                            key_pat,
+                            syn::parse_quote! {
+                                0..{
+                                    let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
+                                    __gors_range_len
+                                }
+                            },
+                            body,
+                        ))
+                    }
                 } else if is_indexed_range_type(&inferred_range_type) {
                     Ok(make_for_loop(
                         key_pat,
@@ -16623,16 +16640,24 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             } else if is_string {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
             } else if is_pointer_array {
-                Ok(make_for_loop(
-                    pat,
-                    syn::parse_quote! {
-                        0..{
-                            let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
-                            __gors_range_len
-                        }
-                    },
-                    body,
-                ))
+                if is_borrowed_pointer_array {
+                    Ok(make_for_loop(
+                        pat,
+                        syn::parse_quote! { 0..(crate::builtin::len(&*(#x)) as isize) },
+                        body,
+                    ))
+                } else {
+                    Ok(make_for_loop(
+                        pat,
+                        syn::parse_quote! {
+                            0..{
+                                let __gors_range_len = crate::builtin::len(&*(#x).lock().unwrap()) as isize;
+                                __gors_range_len
+                            }
+                        },
+                        body,
+                    ))
+                }
             } else if matches!(range_kind, ir::RangeKind::Map) {
                 Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter() }, body))
             } else {
@@ -30460,6 +30485,42 @@ func main() {
         assert!(output.contains("let __gors_range_len ="), "{output}");
         assert!(
             !output.contains(".lock().unwrap().iter().cloned().collect::<Vec<_>>().into_iter()")
+        );
+    }
+
+    #[test]
+    fn it_should_compile_range_over_borrowed_pointer_array_receiver_without_lock() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type block [3]byte
+
+                func (b *block) sum() int {
+                    total := 0
+                    for i, c := range b {
+                        total += int(c) + i
+                    }
+                    return total
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("(self)")
+                && output.contains(".iter()")
+                && output.contains(".cloned()")
+                && output.contains(".enumerate()"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("(self).lock().unwrap()")
+                && !output.contains("(self) . lock () . unwrap ()"),
+            "{output}"
         );
     }
 
