@@ -7,6 +7,7 @@ import (
 
 func main() {
 	fmt.Println("== hmac/basic ==")
+	// gors:stdlib-cover crypto/hmac::Equal
 	left := []byte{1, 2, 3, 4}
 	right := []byte{1, 2, 3, 4}
 	other := []byte{1, 2, 3, 5}

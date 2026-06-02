@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 162,
-    "unsupportedCaseCount": 12256,
+    "passingCaseCount": 163,
+    "unsupportedCaseCount": 12255,
     "fixtureCount": 79
   },
   "groups": [
@@ -5746,13 +5746,15 @@
       "id": "crypto/hmac",
       "title": "crypto/hmac",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/hmac"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 2,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 2,
+        "passingCaseCount": 1,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -5761,8 +5763,10 @@
           "title": "Equal",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/hmac"
+          ],
           "reason": ""
         },
         {
