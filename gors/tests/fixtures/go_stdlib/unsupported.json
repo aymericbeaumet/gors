@@ -183,5 +183,16 @@
   "compress/lzw::Writer": "Audited 2026-06-02: Writer behavior depends on LZW encoder state with function-valued write methods, large array-backed hash tables, and buffered byte writer dispatch.",
   "compress/lzw::Writer.Close": "Audited 2026-06-02: Close depends on final code emission, bit-buffer flush, writer.Flush dispatch, and closed-writer error state.",
   "compress/lzw::Writer.Reset": "Audited 2026-06-02: Reset depends on replacing Writer state, generic io.Writer to buffered writer selection, and reinitializing function-valued bit-order methods.",
-  "compress/lzw::Writer.Write": "Audited 2026-06-02: Write depends on mutation-preserving input byte iteration, hash-table state mutation, function-valued bit emission, and ByteWriter dispatch."
+  "compress/lzw::Writer.Write": "Audited 2026-06-02: Write depends on mutation-preserving input byte iteration, hash-table state mutation, function-valued bit emission, and ByteWriter dispatch.",
+  "compress/zlib::NewReader": "Audited 2026-06-02: NewReader depends on NewReaderDict plus zlib header parsing, io.Reader to flate.Reader/bufio.Reader selection, and returned io.ReadCloser interface values.",
+  "compress/zlib::NewReaderDict": "Audited 2026-06-02: NewReaderDict depends on dictionary checksum validation, hash.Hash32 state, and the unsupported flate.NewReader/NewReaderDict decompressor graph.",
+  "compress/zlib::NewWriter": "Audited 2026-06-02: NewWriter depends on NewWriterLevelDict plus the unsupported zlib/flate writer state graph with stored io.Writer dispatch.",
+  "compress/zlib::NewWriterLevel": "Audited 2026-06-02: NewWriterLevel depends on NewWriterLevelDict, compression-level validation through fmt.Errorf, and stored writer state.",
+  "compress/zlib::NewWriterLevelDict": "Audited 2026-06-02: NewWriterLevelDict depends on generic zlib writer initialization with dictionary state, stored io.Writer values, and lazy flate.NewWriterDict creation.",
+  "compress/zlib::Resetter": "Audited 2026-06-02: Resetter coverage depends on returned ReadCloser interface values also exposing Reset with io.Reader and dictionary state replacement.",
+  "compress/zlib::Writer": "Audited 2026-06-02: Writer behavior depends on zlib header/footer emission, hash.Hash32 state, stored io.Writer dispatch, and the unsupported flate writer graph.",
+  "compress/zlib::Writer.Close": "Audited 2026-06-02: Close depends on lazy header emission, flate writer close, big-endian checksum footer writes, and stored io.Writer dispatch.",
+  "compress/zlib::Writer.Flush": "Audited 2026-06-02: Flush depends on lazy zlib header emission and the unsupported flate writer flush path.",
+  "compress/zlib::Writer.Reset": "Audited 2026-06-02: Reset depends on preserving level/dictionary state while replacing the underlying io.Writer and resetting stored flate/hash state.",
+  "compress/zlib::Writer.Write": "Audited 2026-06-02: Write depends on zlib header serialization, checksum updates through hash.Hash32, and flate writer dispatch for compressed payloads."
 }

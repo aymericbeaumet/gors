@@ -3514,7 +3514,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on NewReaderDict plus zlib header parsing, io.Reader to flate.Reader/bufio.Reader selection, and returned io.ReadCloser interface values."
         },
         {
           "id": "compress/zlib::NewReaderDict",
@@ -3523,7 +3523,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReaderDict depends on dictionary checksum validation, hash.Hash32 state, and the unsupported flate.NewReader/NewReaderDict decompressor graph."
         },
         {
           "id": "compress/zlib::NewWriter",
@@ -3532,7 +3532,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriter depends on NewWriterLevelDict plus the unsupported zlib/flate writer state graph with stored io.Writer dispatch."
         },
         {
           "id": "compress/zlib::NewWriterLevel",
@@ -3541,7 +3541,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriterLevel depends on NewWriterLevelDict, compression-level validation through fmt.Errorf, and stored writer state."
         },
         {
           "id": "compress/zlib::NewWriterLevelDict",
@@ -3550,7 +3550,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriterLevelDict depends on generic zlib writer initialization with dictionary state, stored io.Writer values, and lazy flate.NewWriterDict creation."
         },
         {
           "id": "compress/zlib::NoCompression",
@@ -3570,7 +3570,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Resetter coverage depends on returned ReadCloser interface values also exposing Reset with io.Reader and dictionary state replacement."
         },
         {
           "id": "compress/zlib::Writer",
@@ -3579,7 +3579,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on zlib header/footer emission, hash.Hash32 state, stored io.Writer dispatch, and the unsupported flate writer graph."
         },
         {
           "id": "compress/zlib::Writer.Close",
@@ -3588,7 +3588,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on lazy header emission, flate writer close, big-endian checksum footer writes, and stored io.Writer dispatch."
         },
         {
           "id": "compress/zlib::Writer.Flush",
@@ -3597,7 +3597,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on lazy zlib header emission and the unsupported flate writer flush path."
         },
         {
           "id": "compress/zlib::Writer.Reset",
@@ -3606,7 +3606,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on preserving level/dictionary state while replacing the underlying io.Writer and resetting stored flate/hash state."
         },
         {
           "id": "compress/zlib::Writer.Write",
@@ -3615,7 +3615,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on zlib header serialization, checksum updates through hash.Hash32, and flate writer dispatch for compressed payloads."
         }
       ]
     },
