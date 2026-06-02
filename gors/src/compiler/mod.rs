@@ -194,6 +194,11 @@ impl ActiveLocalNamesGuard {
             ACTIVE_LOCAL_NAMES.with(|names| std::mem::replace(&mut *names.borrow_mut(), current));
         Self { previous }
     }
+
+    fn push_scope() -> Self {
+        let current = ACTIVE_LOCAL_NAMES.with(|names| names.borrow().clone());
+        Self::set(current)
+    }
 }
 
 impl Drop for ActiveLocalNamesGuard {
@@ -202,6 +207,22 @@ impl Drop for ActiveLocalNamesGuard {
             *names.borrow_mut() = std::mem::take(&mut self.previous);
         });
     }
+}
+
+fn is_active_local_name(name: &str) -> bool {
+    ACTIVE_LOCAL_NAMES.with(|names| names.borrow().contains(name))
+}
+
+fn add_active_local_names(names: impl IntoIterator<Item = String>) {
+    ACTIVE_LOCAL_NAMES.with(|active| {
+        active
+            .borrow_mut()
+            .extend(names.into_iter().filter(|name| !name.is_empty() && name != "_"));
+    });
+}
+
+fn active_local_shadows_unqualified_name(name: &str) -> bool {
+    !name.contains('.') && is_active_local_name(&rust_safe_ident_name(name))
 }
 
 impl TypeParamKindsGuard {
@@ -2618,10 +2639,13 @@ fn const_named_value(
     values: &BTreeMap<String, ConstValue>,
     env: &typeinfer::TypeEnv,
 ) -> Option<ConstValue> {
-    values
-        .get(name)
-        .cloned()
-        .or_else(|| env.get_const_integer_value(name).map(ConstValue::Int))
+    if let Some(value) = values.get(name).cloned() {
+        return Some(value);
+    }
+    if active_local_shadows_unqualified_name(name) {
+        return None;
+    }
+    env.get_const_integer_value(name).map(ConstValue::Int)
 }
 
 fn const_eval_expr(
@@ -2796,7 +2820,8 @@ fn const_eval_builtin_name<'a>(
     let ast::Expr::Ident(ident) = call.fun.as_ref() else {
         return None;
     };
-    if env.get_var(ident.name).is_some()
+    if active_local_shadows_unqualified_name(ident.name)
+        || env.get_var(ident.name).is_some()
         || env.has_func(ident.name)
         || env.get_type_kind(ident.name).is_some()
     {
@@ -18186,7 +18211,8 @@ fn is_const_like_expr(expr: &ast::Expr) -> bool {
         ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
         ast::Expr::Ident(ident) => {
             is_local_const_name(ident.name)
-                || TYPE_ENV.with(|env| env.borrow().is_const(ident.name))
+                || (!active_local_shadows_unqualified_name(ident.name)
+                    && TYPE_ENV.with(|env| env.borrow().is_const(ident.name)))
         }
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(base) = &*selector.x {
@@ -20057,11 +20083,45 @@ fn validate_function_semantics(
     Ok(())
 }
 
+fn active_local_names_declared_by_stmt(stmt: &ast::Stmt) -> Vec<String> {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) if assign.tok == token::Token::DEFINE => assign
+            .lhs
+            .iter()
+            .filter_map(|expr| {
+                let ast::Expr::Ident(ident) = expr else {
+                    return None;
+                };
+                (ident.name != "_").then(|| rust_safe_ident_name(ident.name))
+            })
+            .collect(),
+        ast::Stmt::DeclStmt(decl)
+            if matches!(decl.decl.tok, token::Token::VAR | token::Token::CONST) =>
+        {
+            decl.decl
+                .specs
+                .iter()
+                .filter_map(|spec| {
+                    let ast::Spec::ValueSpec(value) = spec else {
+                        return None;
+                    };
+                    Some(value.names.iter())
+                })
+                .flatten()
+                .filter(|name| name.name != "_")
+                .map(|name| rust_safe_ident_name(name.name))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
     type Error = CompilerError;
 
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
         let _local_const_scope = LocalConstScopeGuard::push();
+        let _active_local_names_scope = ActiveLocalNamesGuard::push_scope();
         let shared_capture_names = TYPE_ENV
             .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
         let range_function_capture_names = TYPE_ENV.with(|env| {
@@ -20089,7 +20149,9 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
         }
         let mut stmts = vec![];
         for stmt in block_stmt.list {
+            let declared_active_local_names = active_local_names_declared_by_stmt(&stmt);
             stmts.extend(Vec::<syn::Stmt>::try_from(stmt)?);
+            add_active_local_names(declared_active_local_names);
         }
         Ok(Self {
             brace_token: syn::token::Brace::default(),
@@ -34347,6 +34409,38 @@ func main() {
         assert!(output.contains("const C: isize = 6;"), "{output}");
         assert!(output.contains("const D: isize = 8;"), "{output}");
         assert!(!output.contains("iota"), "{output}");
+    }
+
+    #[test]
+    fn it_should_not_fold_shadowed_package_consts_after_local_decl() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const s1 = 2
+                const maskx = 63
+
+                func decode(s string) int {
+                    s0 := s[0]
+                    s1 := s[1]
+                    return int(s0&31)<<6 | int(s1&maskx)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("let mut s1__local ="),
+            "expected local binding to be renamed away from package item: {output}"
+        );
+        assert!(
+            output.contains("((s1__local & (63 as u8)) as isize)")
+                || output.contains("((s1__local & (maskx as u8)) as isize)"),
+            "expected return expression to use the local binding, not the package const: {output}"
+        );
     }
 
     #[test]
