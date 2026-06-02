@@ -117,6 +117,7 @@ func case_fmt_printf_formats() {
 	fmt.Printf("%t %b %o %O %x %X\n", true, 10, 10, 10, 255, 255)
 	fmt.Printf("%q %U\n", 'A', 'A')
 	fmt.Printf("%s %q %x % X\n", []byte("go"), []byte("go"), []byte("go"), []byte("go"))
+	fmt.Printf("%q %x % X\n", "go", "go", "go")
 	fmt.Println(fmt.Sprintf("%[2]d %[1]d", 11, 22))
 	fmt.Println(fmt.Sprintf("%08d %.3s", 42, "gopher"))
 	fmt.Println(fmt.Sprintf("%8s|%-8s|", "go", "go"))

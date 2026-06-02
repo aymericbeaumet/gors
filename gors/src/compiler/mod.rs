@@ -33828,8 +33828,9 @@ func main() {
 
         assert!(
             rust_src.contains("let mut values = Dict(")
-                && rust_src
-                    .contains("std::collections::HashMap::<String, isize>::with_capacity((4) as usize)"),
+                && rust_src.contains(
+                    "std::collections::HashMap::<String, isize>::with_capacity((4) as usize)"
+                ),
             "expected make of named map to allocate and wrap the map: {rust_src}"
         );
     }

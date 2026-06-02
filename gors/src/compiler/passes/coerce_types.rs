@@ -154,16 +154,6 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if func.sig.ident == "fmtString"
-            && (block_mentions_ident(&func.block, "fmtQ")
-                || block_mentions_ident(&func.block, "fmtSx"))
-        {
-            func.block = syn::parse_quote!({
-                self.fmt.fmtS(v);
-            });
-            return;
-        }
-
         prune_static_false_branches(&mut func.block.stmts);
         let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
             && should_prune_fmt_self_value(&func.block);
@@ -1820,6 +1810,47 @@ mod tests {
         assert!(
             !tokens.contains("lock () . unwrap"),
             "expected no named padString body replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_replace_fmt_string_body_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct rawfmt;
+
+            impl rawfmt {
+                pub fn fmtS(&mut self, mut s: String) {}
+                pub fn fmtQ(&mut self, mut s: String) {}
+                pub fn fmtSx(&mut self, mut s: String, mut digits: String) {}
+            }
+
+            pub struct pp {
+                pub fmt: rawfmt,
+            }
+
+            impl pp {
+                pub fn fmtString(&mut self, mut v: String, mut verb: i32) {
+                    if verb == 113 {
+                        self.fmt.fmtQ((v).clone());
+                    } else if verb == 120 {
+                        self.fmt.fmtSx((v).clone(), "0123456789abcdefx".to_string());
+                    } else {
+                        self.fmt.fmtS((v).clone());
+                    }
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("fmtQ") && tokens.contains("fmtSx"),
+            "expected fmtString branch body to remain generic lowering output: {tokens}"
+        );
+        assert!(
+            !tokens.contains("self . fmt . fmtS (v)"),
+            "expected no named fmtString body replacement: {tokens}"
         );
     }
 
