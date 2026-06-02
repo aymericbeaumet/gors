@@ -148,5 +148,6 @@
   "bytes::ToLowerSpecial": "Audited 2026-06-02: ToLowerSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune.",
   "bytes::ToTitleSpecial": "Audited 2026-06-02: ToTitleSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune.",
   "bytes::ToUpperSpecial": "Audited 2026-06-02: ToUpperSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune.",
-  "bytes::TrimSpace": "Audited 2026-06-02: TrimSpace depends on range-over-slice lowering that does not keep an immutable borrow alive while the slice variable is reassigned."
+  "bytes::TrimSpace": "Audited 2026-06-02: TrimSpace depends on range-over-slice lowering that does not keep an immutable borrow alive while the slice variable is reassigned.",
+  "compress/bzip2::NewReader": "Audited 2026-06-02: NewReader depends on generic io.Reader to io.ByteReader assertion/fallback through bufio.Reader, interface method shims for borrowed []byte Read parameters, and slices.SortFunc callback type-parameter lowering in the reachable decompressor graph."
 }

@@ -2764,7 +2764,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on generic io.Reader to io.ByteReader assertion/fallback through bufio.Reader, interface method shims for borrowed []byte Read parameters, and slices.SortFunc callback type-parameter lowering in the reachable decompressor graph."
         },
         {
           "id": "compress/bzip2::StructuralError",
