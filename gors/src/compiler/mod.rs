@@ -8689,6 +8689,7 @@ fn collect_refs_from_item(
                     self.item_names,
                     self.top_level_return_types,
                 )
+                .or_else(|| self.receiver_type_from_iife_call(call))
                 .or_else(|| {
                     if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
                         call.args
@@ -8744,6 +8745,15 @@ fn collect_refs_from_item(
                 }
                 _ => None,
             }
+        }
+
+        fn receiver_type_from_iife_call(&self, call: &syn::ExprCall) -> Option<ReceiverTypeRef> {
+            if !call.args.is_empty() {
+                return None;
+            }
+            let closure = closure_expr_from_call_func(&call.func)?;
+            let tail = tail_expr_from_expr(&closure.body)?;
+            self.receiver_type_from_expr(tail)
         }
 
         fn insert_receiver_method_ref(&mut self, receiver_type: ReceiverTypeRef, method: &str) {
@@ -31600,6 +31610,43 @@ func main() {
 
         assert!(names.contains("block::toV7"));
         assert!(names.contains("headerV7::name"));
+    }
+
+    #[test]
+    fn it_should_collect_methods_called_on_nested_iife_receivers() {
+        let file: syn::File = rust! {
+            pub struct Writer {
+                blk: std::sync::Arc<std::sync::Mutex<block>>,
+            }
+
+            pub struct block;
+            pub struct headerUSTAR;
+
+            impl block {
+                fn toUSTAR(&mut self) -> std::sync::Arc<std::sync::Mutex<headerUSTAR>> {
+                    std::sync::Arc::new(std::sync::Mutex::new(headerUSTAR))
+                }
+            }
+
+            impl headerUSTAR {
+                fn prefix(&mut self) -> Vec<u8> {
+                    Vec::new()
+                }
+            }
+
+            impl Writer {
+                fn write(&mut self) {
+                    (|| { ((|| { (self.blk.lock().unwrap()).toUSTAR() })()).lock().unwrap().prefix() })();
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from(["Writer::write".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("block::toUSTAR"));
+        assert!(names.contains("headerUSTAR::prefix"));
     }
 
     #[test]
