@@ -13,9 +13,9 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 208,
-    "unsupportedCaseCount": 12210,
-    "fixtureCount": 80
+    "passingCaseCount": 214,
+    "unsupportedCaseCount": 12204,
+    "fixtureCount": 81
   },
   "groups": [
     {
@@ -4913,7 +4913,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey depends on mutable embedded key structs, math/big pointer receiver arithmetic, and random io.Reader byte-slice fills."
         },
         {
           "id": "crypto/dsa::GenerateParameters",
@@ -4922,7 +4922,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateParameters depends on long-running math/big primality loops, labeled control flow, random io.Reader fills, and mutation of caller-owned parameter structs."
         },
         {
           "id": "crypto/dsa::L1024N160",
@@ -4986,7 +4986,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Parameters behavior depends on math/big.Int pointer fields that are mutated and shared through embedded DSA key structs."
         },
         {
           "id": "crypto/dsa::PrivateKey",
@@ -4995,7 +4995,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey behavior depends on embedded PublicKey/Parameters fields plus math/big.Int pointer state mutated by key generation and signing."
         },
         {
           "id": "crypto/dsa::PublicKey",
@@ -5004,7 +5004,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey behavior depends on embedded Parameters fields plus math/big.Int pointer state used by verification arithmetic."
         },
         {
           "id": "crypto/dsa::Sign",
@@ -5013,7 +5013,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on random io.Reader input, math/big modular arithmetic, named result parameters, and ErrInvalidPublicKey interface returns."
         },
         {
           "id": "crypto/dsa::Verify",
@@ -5022,7 +5022,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Verify depends on math/big modular arithmetic over embedded PublicKey state and validation of shared pointer-backed integer fields."
         }
       ]
     },
@@ -5047,7 +5047,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Curve behavior depends on interface values with private methods, concrete curve singleton identity, random key generation, and byte-slice key validation."
         },
         {
           "id": "crypto/ecdh::KeyExchanger",
@@ -5056,7 +5056,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: KeyExchanger behavior depends on private-key interface dispatch returning public-key state and ECDH byte-slice secrets."
         },
         {
           "id": "crypto/ecdh::P256",
@@ -5065,7 +5065,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: P256 returns a Curve implementation backed by FIPS/NIST curve state with private interface methods and key validation methods."
         },
         {
           "id": "crypto/ecdh::P384",
@@ -5074,7 +5074,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: P384 returns a Curve implementation backed by FIPS/NIST curve state with private interface methods and key validation methods."
         },
         {
           "id": "crypto/ecdh::P521",
@@ -5083,7 +5083,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: P521 returns a Curve implementation backed by FIPS/NIST curve state with private interface methods and key validation methods."
         },
         {
           "id": "crypto/ecdh::PrivateKey",
@@ -5092,7 +5092,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey behavior depends on private curve interface state, stored byte-slice secrets, linked public keys, and optional backend key handles."
         },
         {
           "id": "crypto/ecdh::PrivateKey.Bytes",
@@ -5101,7 +5101,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on copying private byte-slice state from fixed stack buffers while preserving key ownership semantics."
         },
         {
           "id": "crypto/ecdh::PrivateKey.Curve",
@@ -5110,7 +5110,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Curve depends on returning the stored private Curve interface value with concrete singleton identity preserved."
         },
         {
           "id": "crypto/ecdh::PrivateKey.ECDH",
@@ -5119,7 +5119,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ECDH depends on Curve interface equality, private curve method dispatch, and byte-slice shared-secret return semantics."
         },
         {
           "id": "crypto/ecdh::PrivateKey.Equal",
@@ -5128,7 +5128,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PrivateKey interface type assertions, curve identity comparison, and constant-time byte-slice comparison."
         },
         {
           "id": "crypto/ecdh::PrivateKey.Public",
@@ -5137,7 +5137,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Public depends on returning the stored public-key pointer as a crypto.PublicKey interface without losing key identity."
         },
         {
           "id": "crypto/ecdh::PrivateKey.PublicKey",
@@ -5146,7 +5146,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey depends on preserving the linked public-key pointer stored inside private key state."
         },
         {
           "id": "crypto/ecdh::PublicKey",
@@ -5155,7 +5155,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey behavior depends on stored Curve interface identity, byte-slice public key state, and optional backend key handles."
         },
         {
           "id": "crypto/ecdh::PublicKey.Bytes",
@@ -5164,7 +5164,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on copying public byte-slice state from fixed stack buffers while preserving key ownership semantics."
         },
         {
           "id": "crypto/ecdh::PublicKey.Curve",
@@ -5173,7 +5173,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Curve depends on returning the stored public Curve interface value with concrete singleton identity preserved."
         },
         {
           "id": "crypto/ecdh::PublicKey.Equal",
@@ -5182,7 +5182,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PublicKey interface type assertions, curve identity comparison, and constant-time byte-slice comparison."
         },
         {
           "id": "crypto/ecdh::X25519",
@@ -5191,7 +5191,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: X25519 returns a Curve implementation backed by Curve25519 state with private interface methods, key validation, and ECDH exchange semantics."
         }
       ]
     },
@@ -5216,7 +5216,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey depends on elliptic.Curve interface state, random io.Reader input, FIPS generic curve helpers, and math/big key fields."
         },
         {
           "id": "crypto/ecdsa::ParseRawPrivateKey",
@@ -5225,7 +5225,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ParseRawPrivateKey depends on curve selection, FIPS generic private-key parsing, and returned pointer-backed key structs."
         },
         {
           "id": "crypto/ecdsa::ParseUncompressedPublicKey",
@@ -5234,7 +5234,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ParseUncompressedPublicKey depends on elliptic.Curve interface equality, FIPS generic point parsing, and byte-slice validation."
         },
         {
           "id": "crypto/ecdsa::PrivateKey",
@@ -5243,7 +5243,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey behavior depends on embedded PublicKey state, math/big scalar fields, curve interface identity, and signer interface methods."
         },
         {
           "id": "crypto/ecdsa::PrivateKey.Bytes",
@@ -5252,7 +5252,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on curve-specific FIPS generic private-key conversion and byte-slice encoding of math/big scalar state."
         },
         {
           "id": "crypto/ecdsa::PrivateKey.ECDH",
@@ -5261,7 +5261,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ECDH depends on converting elliptic.Curve-backed private keys to ecdh keys through curve interface dispatch and byte-slice validation."
         },
         {
           "id": "crypto/ecdsa::PrivateKey.Equal",
@@ -5270,7 +5270,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PrivateKey interface assertions, embedded public-key comparison, and constant-time math/big scalar comparison."
         },
         {
           "id": "crypto/ecdsa::PrivateKey.Public",
@@ -5279,7 +5279,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Public depends on returning the embedded PublicKey pointer as crypto.PublicKey while preserving receiver identity."
         },
         {
           "id": "crypto/ecdsa::PrivateKey.Sign",
@@ -5288,7 +5288,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on crypto.SignerOpts interface dispatch, random io.Reader input, FIPS signing helpers, and ASN.1 signature encoding."
         },
         {
           "id": "crypto/ecdsa::PublicKey",
@@ -5297,7 +5297,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey behavior depends on elliptic.Curve interface identity and math/big coordinate fields used by parsing and verification."
         },
         {
           "id": "crypto/ecdsa::PublicKey.Bytes",
@@ -5306,7 +5306,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on curve-specific FIPS generic public-key conversion and uncompressed point byte-slice encoding."
         },
         {
           "id": "crypto/ecdsa::PublicKey.ECDH",
@@ -5315,7 +5315,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ECDH depends on converting elliptic.Curve-backed public keys to ecdh keys through curve interface dispatch and byte-slice validation."
         },
         {
           "id": "crypto/ecdsa::PublicKey.Equal",
@@ -5324,7 +5324,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PublicKey interface assertions, curve singleton identity checks, and constant-time math/big coordinate comparison."
         },
         {
           "id": "crypto/ecdsa::Sign",
@@ -5333,7 +5333,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on random io.Reader input, math/big scalar arithmetic, FIPS signing helpers, and pointer-backed key state."
         },
         {
           "id": "crypto/ecdsa::SignASN1",
@@ -5342,7 +5342,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SignASN1 depends on FIPS signing helpers, random io.Reader input, math/big scalar state, and cryptobyte ASN.1 encoding."
         },
         {
           "id": "crypto/ecdsa::Verify",
@@ -5351,7 +5351,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Verify depends on elliptic.Curve interface state, math/big signature arithmetic, and pointer-backed public-key coordinates."
         },
         {
           "id": "crypto/ecdsa::VerifyASN1",
@@ -5360,7 +5360,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: VerifyASN1 depends on cryptobyte ASN.1 decoding plus generic ECDSA verification over curve interface and math/big state."
         }
       ]
     },
@@ -5368,13 +5368,15 @@
       "id": "crypto/ed25519",
       "title": "crypto/ed25519",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/ed25519"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 18,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 18,
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 12,
         "fixtureCount": 0
       },
       "cases": [
@@ -5385,7 +5387,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey depends on random io.Reader input, FIPS Ed25519 private-key construction, and byte-slice public/private key state."
         },
         {
           "id": "crypto/ed25519::NewKeyFromSeed",
@@ -5394,15 +5396,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewKeyFromSeed depends on FIPS private-key derivation, byte-slice seed validation, and panic semantics for invalid seed length."
         },
         {
           "id": "crypto/ed25519::Options",
           "title": "Options",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5410,8 +5414,10 @@
           "title": "Options.HashFunc",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5421,7 +5427,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey behavior depends on byte-slice key state, crypto.Signer interface methods, FIPS key caches, and public-key suffix handling."
         },
         {
           "id": "crypto/ed25519::PrivateKey.Equal",
@@ -5430,7 +5436,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PrivateKey interface assertions and constant-time comparison of private byte-slice key state."
         },
         {
           "id": "crypto/ed25519::PrivateKey.Public",
@@ -5439,7 +5445,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Public depends on copying the public-key suffix from private byte-slice state and returning it as a crypto.PublicKey interface."
         },
         {
           "id": "crypto/ed25519::PrivateKey.Seed",
@@ -5448,7 +5454,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Seed depends on copying the private-key seed prefix with append/make capacity semantics for named byte-slice keys."
         },
         {
           "id": "crypto/ed25519::PrivateKey.Sign",
@@ -5457,15 +5463,17 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on crypto.SignerOpts interface dispatch, FIPS private-key caches, Ed25519 variant selection, and byte-slice signature returns."
         },
         {
           "id": "crypto/ed25519::PrivateKeySize",
           "title": "PrivateKeySize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5475,7 +5483,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey behavior depends on byte-slice key state and crypto.PublicKey interface equality semantics."
         },
         {
           "id": "crypto/ed25519::PublicKey.Equal",
@@ -5484,15 +5492,17 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PublicKey interface assertions and constant-time comparison of public byte-slice key state."
         },
         {
           "id": "crypto/ed25519::PublicKeySize",
           "title": "PublicKeySize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5500,8 +5510,10 @@
           "title": "SeedSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5511,15 +5523,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on FIPS private-key caches, byte-slice signature allocation, and panic semantics for invalid private keys."
         },
         {
           "id": "crypto/ed25519::SignatureSize",
           "title": "SignatureSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/ed25519"
+          ],
           "reason": ""
         },
         {
@@ -5529,7 +5543,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Verify depends on FIPS public-key parsing, byte-slice signature validation, and panic semantics for invalid public-key length."
         },
         {
           "id": "crypto/ed25519::VerifyWithOptions",
@@ -5538,7 +5552,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: VerifyWithOptions depends on Options-driven Ed25519 variant selection, FIPS verification helpers, and byte-slice signature validation."
         }
       ]
     },
