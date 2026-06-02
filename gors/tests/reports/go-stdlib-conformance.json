@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 1,
     "caseCount": 12584,
-    "passingCaseCount": 150,
-    "unsupportedCaseCount": 12434,
+    "passingCaseCount": 153,
+    "unsupportedCaseCount": 12431,
     "fixtureCount": 79
   },
   "groups": [
@@ -4503,13 +4503,15 @@
       "id": "crypto/aes",
       "title": "crypto/aes",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/aes"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 4,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 4,
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -4518,8 +4520,10 @@
           "title": "BlockSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/aes"
+          ],
           "reason": ""
         },
         {
@@ -4527,8 +4531,10 @@
           "title": "KeySizeError",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/aes"
+          ],
           "reason": ""
         },
         {
@@ -4536,8 +4542,10 @@
           "title": "KeySizeError.Error",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/aes"
+          ],
           "reason": ""
         },
         {
