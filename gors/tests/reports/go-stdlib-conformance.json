@@ -981,7 +981,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadWriter construction depends on generic embedded pointer field dispatch for Reader and Writer receivers."
         },
         {
           "id": "bufio::NewReader",
@@ -990,7 +990,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader construction depends on generic io.Reader interface storage, type assertions, pointer receiver state, and byte-slice buffer mutation."
         },
         {
           "id": "bufio::NewReaderSize",
@@ -999,7 +999,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader construction depends on generic io.Reader interface storage, type assertions, pointer receiver state, and byte-slice buffer mutation."
         },
         {
           "id": "bufio::NewScanner",
@@ -1008,7 +1008,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Scanner construction depends on generic io.Reader interface storage plus stored SplitFunc function values."
         },
         {
           "id": "bufio::NewWriter",
@@ -1017,7 +1017,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer construction depends on generic io.Writer interface storage, type assertions, pointer receiver state, and byte-slice buffer mutation."
         },
         {
           "id": "bufio::NewWriterSize",
@@ -1026,7 +1026,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer construction depends on generic io.Writer interface storage, type assertions, pointer receiver state, and byte-slice buffer mutation."
         },
         {
           "id": "bufio::ReadWriter",
@@ -1035,7 +1035,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadWriter behavior depends on generic embedded pointer field dispatch for Reader and Writer receivers."
         },
         {
           "id": "bufio::Reader",
@@ -1044,7 +1044,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader behavior depends on mutation-preserving io.Reader calls into []byte lvalues, pointer receiver state, and error interface values."
         },
         {
           "id": "bufio::Reader.Buffered",
@@ -1053,7 +1053,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Buffered depends on the unsupported Reader state model."
         },
         {
           "id": "bufio::Reader.Discard",
@@ -1062,7 +1062,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Discard depends on the unsupported Reader fill path and pointer receiver state mutation."
         },
         {
           "id": "bufio::Reader.Peek",
@@ -1071,7 +1071,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Peek depends on the unsupported Reader fill path and returning slices that alias the internal buffer."
         },
         {
           "id": "bufio::Reader.Read",
@@ -1080,7 +1080,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on mutation-preserving []byte lvalue arguments for io.Reader calls and copy into caller-provided slices."
         },
         {
           "id": "bufio::Reader.ReadByte",
@@ -1089,7 +1089,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadByte depends on the unsupported Reader fill path and pointer receiver state mutation."
         },
         {
           "id": "bufio::Reader.ReadBytes",
@@ -1098,7 +1098,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadBytes depends on ReadSlice plus generic [][]byte accumulation, bytes.Clone, and copy into byte-slice results."
         },
         {
           "id": "bufio::Reader.ReadLine",
@@ -1107,7 +1107,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadLine depends on ReadSlice buffer aliasing, pointer receiver state mutation, and byte-slice reslicing."
         },
         {
           "id": "bufio::Reader.ReadRune",
@@ -1116,7 +1116,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadRune depends on the unsupported Reader fill path plus generic unicode/utf8 byte-slice decoding."
         },
         {
           "id": "bufio::Reader.ReadSlice",
@@ -1125,7 +1125,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadSlice depends on returning slices that alias the internal buffer while mutating Reader state."
         },
         {
           "id": "bufio::Reader.ReadString",
@@ -1134,7 +1134,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadString depends on ReadSlice plus generic strings.Builder writes from byte-slice fragments."
         },
         {
           "id": "bufio::Reader.Reset",
@@ -1143,7 +1143,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on generic interface self-comparison, io.Reader storage, and pointer receiver state replacement."
         },
         {
           "id": "bufio::Reader.Size",
@@ -1152,7 +1152,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Size depends on the unsupported Reader state model."
         },
         {
           "id": "bufio::Reader.UnreadByte",
@@ -1161,7 +1161,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadByte depends on pointer receiver state mutation and byte-slice element writes."
         },
         {
           "id": "bufio::Reader.UnreadRune",
@@ -1170,7 +1170,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadRune depends on pointer receiver state mutation after unicode/utf8 rune reads."
         },
         {
           "id": "bufio::Reader.WriteTo",
@@ -1179,7 +1179,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteTo depends on generic io.Writer calls, io.WriterTo/io.ReaderFrom type assertions, and Reader buffer state mutation."
         },
         {
           "id": "bufio::ScanBytes",
@@ -1188,7 +1188,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ScanBytes behavior depends on nil []byte return values and byte-slice token aliasing in function-value contexts."
         },
         {
           "id": "bufio::ScanLines",
@@ -1197,7 +1197,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ScanLines behavior depends on byte-slice token aliasing, bytes.IndexByte, and nil []byte return values in function-value contexts."
         },
         {
           "id": "bufio::ScanRunes",
@@ -1206,7 +1206,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ScanRunes behavior depends on byte-slice token aliasing and generic unicode/utf8 byte-slice decoding."
         },
         {
           "id": "bufio::ScanWords",
@@ -1215,7 +1215,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ScanWords behavior depends on byte-slice token aliasing and generic unicode/utf8 rune decoding loops."
         },
         {
           "id": "bufio::Scanner",
@@ -1224,7 +1224,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Scanner behavior depends on stored SplitFunc values, mutation-preserving io.Reader calls into []byte lvalues, and token buffer aliasing."
         },
         {
           "id": "bufio::Scanner.Buffer",
@@ -1233,7 +1233,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Buffer depends on Scanner mutable receiver state and cap-based byte-slice reslicing."
         },
         {
           "id": "bufio::Scanner.Bytes",
@@ -1242,7 +1242,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on Scanner token buffer aliasing."
         },
         {
           "id": "bufio::Scanner.Err",
@@ -1251,7 +1251,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Err depends on Scanner error interface state and io.EOF comparison."
         },
         {
           "id": "bufio::Scanner.Scan",
@@ -1260,7 +1260,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Scan depends on stored SplitFunc calls, mutation-preserving io.Reader calls into []byte lvalues, and token buffer aliasing."
         },
         {
           "id": "bufio::Scanner.Split",
@@ -1269,7 +1269,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Split depends on storing named function-type values in mutable receiver state."
         },
         {
           "id": "bufio::Scanner.Text",
@@ -1278,7 +1278,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Text depends on converting Scanner token byte slices into Go strings while preserving token state."
         },
         {
           "id": "bufio::SplitFunc",
@@ -1287,7 +1287,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SplitFunc behavior depends on named function-type values stored in structs and invoked through scanner state."
         },
         {
           "id": "bufio::Writer",
@@ -1296,7 +1296,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on mutation-preserving io.Writer calls, pointer receiver state, byte-slice buffer mutation, and error interface values."
         },
         {
           "id": "bufio::Writer.Available",
@@ -1305,7 +1305,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Available depends on the unsupported Writer state model."
         },
         {
           "id": "bufio::Writer.AvailableBuffer",
@@ -1314,7 +1314,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AvailableBuffer depends on returning a mutable slice alias of the internal Writer buffer."
         },
         {
           "id": "bufio::Writer.Buffered",
@@ -1323,7 +1323,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Buffered depends on the unsupported Writer state model."
         },
         {
           "id": "bufio::Writer.Flush",
@@ -1332,7 +1332,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on mutation-preserving io.Writer calls, byte-slice buffer compaction, and Writer error state."
         },
         {
           "id": "bufio::Writer.ReadFrom",
@@ -1341,7 +1341,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadFrom depends on generic io.Reader/io.ReaderFrom type assertions, mutation-preserving []byte lvalue reads, and Writer buffer flushing."
         },
         {
           "id": "bufio::Writer.Reset",
@@ -1350,7 +1350,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on generic interface self-comparison, io.Writer storage, and pointer receiver state replacement."
         },
         {
           "id": "bufio::Writer.Size",
@@ -1359,7 +1359,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Size depends on the unsupported Writer state model."
         },
         {
           "id": "bufio::Writer.Write",
@@ -1368,7 +1368,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on mutation-preserving io.Writer calls, byte-slice buffer copy, and pointer receiver state mutation."
         },
         {
           "id": "bufio::Writer.WriteByte",
@@ -1377,7 +1377,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteByte depends on byte-slice element writes and Writer state mutation."
         },
         {
           "id": "bufio::Writer.WriteRune",
@@ -1386,7 +1386,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteRune depends on generic unicode/utf8 EncodeRune into mutable byte slices plus Writer flushing."
         },
         {
           "id": "bufio::Writer.WriteString",
@@ -1395,7 +1395,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteString depends on generic io.StringWriter type assertions, string-to-byte copy semantics, and Writer state mutation."
         }
       ]
     },
