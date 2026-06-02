@@ -3318,7 +3318,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on generic io.Reader to io.ByteReader fallback through bufio.Reader, function-valued bit-order read methods, and returned io.ReadCloser interface values."
         },
         {
           "id": "compress/lzw::NewWriter",
@@ -3327,7 +3327,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriter depends on generic io.Writer to ByteWriter/Flush writer fallback through bufio.Writer, function-valued bit-order write methods, and returned io.WriteCloser interface values."
         },
         {
           "id": "compress/lzw::Order",
@@ -3347,7 +3347,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader behavior depends on LZW decoder state with function-valued read methods, large array-backed prefix/suffix/output buffers, and byte-slice output aliasing."
         },
         {
           "id": "compress/lzw::Reader.Close",
@@ -3356,7 +3356,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on the unsupported Reader state model and subsequent read error behavior through the returned io.ReadCloser."
         },
         {
           "id": "compress/lzw::Reader.Read",
@@ -3365,7 +3365,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on mutation-preserving []byte output copies, decoder state transitions, function-valued bit reads, and buffered toRead slice aliasing."
         },
         {
           "id": "compress/lzw::Reader.Reset",
@@ -3374,7 +3374,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on replacing Reader state, preserving generic io.ByteReader fallback semantics, and reinitializing function-valued bit-order methods."
         },
         {
           "id": "compress/lzw::Writer",
@@ -3383,7 +3383,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on LZW encoder state with function-valued write methods, large array-backed hash tables, and buffered byte writer dispatch."
         },
         {
           "id": "compress/lzw::Writer.Close",
@@ -3392,7 +3392,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on final code emission, bit-buffer flush, writer.Flush dispatch, and closed-writer error state."
         },
         {
           "id": "compress/lzw::Writer.Reset",
@@ -3401,7 +3401,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on replacing Writer state, generic io.Writer to buffered writer selection, and reinitializing function-valued bit-order methods."
         },
         {
           "id": "compress/lzw::Writer.Write",
@@ -3410,7 +3410,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on mutation-preserving input byte iteration, hash-table state mutation, function-valued bit emission, and ByteWriter dispatch."
         }
       ]
     },
