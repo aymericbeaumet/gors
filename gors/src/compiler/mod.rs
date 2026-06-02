@@ -830,6 +830,9 @@ fn collect_expr_needed_imported_interface_method_sets(
         ast::Expr::TypeAssertExpr(assert) => {
             collect_expr_needed_imported_interface_method_sets(&assert.x, env, out);
             if let Some(type_) = &assert.type_ {
+                if let Some(interface_name) = interface_name_from_type_expr(type_) {
+                    collect_named_needed_interface_method_set(&interface_name, env, out);
+                }
                 collect_expr_needed_imported_interface_method_sets(type_, env, out);
             }
         }
@@ -22906,11 +22909,14 @@ fn comma_ok_assignment_stmts(lhs: Vec<Option<syn::Expr>>, rhs_expr: syn::Expr) -
 
 fn interface_name_from_type_expr(type_expr: &ast::Expr) -> Option<String> {
     match type_expr {
+        ast::Expr::ParenExpr(paren) => interface_name_from_type_expr(&paren.x),
         ast::Expr::Ident(id) if id.name == "error" => Some(id.name.to_string()),
         ast::Expr::Ident(id) if is_type_interface(id.name) => Some(id.name.to_string()),
         ast::Expr::Ident(id) if TYPE_ENV.with(|env| env.borrow().is_interface(id.name)) => {
             Some(id.name.to_string())
         }
+        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
+            .filter(|name| TYPE_ENV.with(|env| env.borrow().is_interface(name))),
         _ => None,
     }
 }
@@ -26262,6 +26268,52 @@ func Hello() {}
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("renamed::Hello()"), "{main_rs}");
         assert!(output.files.contains_key("example__lib.rs"));
+    }
+
+    #[test]
+    fn compile_program_multi_treats_imported_type_assert_targets_as_interfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/ioish"
+
+func probe(r any) {
+	_, _ = r.(ioish.Seeker)
+}
+
+func main() {
+	probe(0)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("ioish/ioish.go").as_path(),
+            r#"
+package ioish
+
+type Seeker interface {
+	Seek(offset int64, whence int) int64
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("Box<dyn ioish::Seeker>")
+                || main_rs.contains("Box < dyn ioish :: Seeker >"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("downcast_ref::<ioish::Seeker>")
+                && !main_rs.contains("downcast_ref :: < ioish :: Seeker >"),
+            "{main_rs}"
+        );
     }
 
     #[test]

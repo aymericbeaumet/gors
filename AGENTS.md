@@ -311,7 +311,9 @@ function, method, type, constant, and variable reported by the matrix, open the
 fixture that claims each row, and add or fix integration coverage until each
 supported row is backed by an e2e generated-program check that compares Go output
 with gors output. Treat report rows and `// gors:stdlib-cover` comments as an
-audit queue, not as proof. Do not mark a package complete until every reported
+audit queue, not as proof; verify the fixture body and its observable stdout
+comparison yourself rather than relying on aggregate report status. Do not mark
+a package complete until every reported
 exported function, method, type, constant, and variable for that package has been
 audited against an actual e2e check that proves Go and gors agree. If a passing
 row cannot be tied to such a check, fix the fixture/reporter or downgrade the
