@@ -39,7 +39,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Sort helper clone | `fmtsort::Sort` | stdlib workaround | Argument value-copy should follow the callee parameter type and whether the argument is reused, not the helper name. |
 | Reflect value coercion | `reflect::ValueOf` | stdlib workaround | Boxing/moving interface arguments should come from expected parameter type `any` and argument lvalue/rvalue role. |
 | Local helpers | `parsenum`, `intFromArg`, `getField` | stdlib workaround | These are generated helper calls from stdlib lowering; their ownership contracts should be expressed in generated signatures or helper metadata. |
-| Borrow first arg | UTF-8 and reflect `TypeOf` path lists | stdlib workaround | Borrowing should be signature-driven for any function expecting string/byte-slice references, not selected by package/function name. |
+| Borrow first arg | reflect `TypeOf` path list | stdlib workaround | Borrowing should be signature-driven for any function expecting interface/reference-like values, not selected by package/function name. |
 | Local init cloning | identifiers `value`, `f`, field `fmtFlags` | stdlib workaround | Cloning should follow Go value-copy semantics, binding type, and later use/move analysis, not chosen by local variable or field name. |
 | Format flush insertion | method calls `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
@@ -70,3 +70,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | --- | --- |
 | `strconv` string value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones path, field, and index arguments according to the callee's generated `String`/cloneable value parameter types. |
 | `slices::Sort` mutable argument borrowing in `coerce_types.rs` | Cross-module mutable-reference call analysis now borrows arguments according to generated callee `&mut` parameter types. |
+| non-append `unicode/utf8` value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones `String` and `Vec<u8>` path, field, and index arguments according to generated callee parameter types. |

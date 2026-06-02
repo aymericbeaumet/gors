@@ -27408,15 +27408,16 @@ var X int
     #[test]
     fn clone_vec_value_call_args_clones_field_and_index_value_args() {
         let helper_file: syn::File = rust! {
-            pub fn take(mut first: String, mut second: String) {}
+            pub fn take(mut first: String, mut second: String, mut bytes: Vec<u8>) {}
         };
         let main_file: syn::File = rust! {
             pub struct Item {
                 pub name: String,
+                pub bytes: Vec<u8>,
             }
 
             pub fn call(mut item: Item, mut values: Vec<String>) {
-                crate::helper::take(item.name, values[0]);
+                crate::helper::take(item.name, values[0], item.bytes);
             }
         };
         let mut modules = std::collections::BTreeMap::from([
@@ -27452,9 +27453,9 @@ var X int
         let output = quote! { #main_file }.to_string();
         assert!(
             output.contains(
-                "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone ())"
+                "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone () , (item . bytes) . clone ())"
             ),
-            "expected value-copy coercions to follow callee String parameters: {output}"
+            "expected value-copy coercions to follow callee cloneable value parameters: {output}"
         );
     }
 

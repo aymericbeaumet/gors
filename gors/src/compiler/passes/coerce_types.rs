@@ -415,41 +415,7 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if is_path_call(&call.func, &["crate", "unicode__utf8", "RuneCount"])
-            || is_path_call(&call.func, &["unicode__utf8", "RuneCount"])
-            || is_path_call(&call.func, &["crate", "utf8", "RuneCount"])
-            || is_path_call(&call.func, &["utf8", "RuneCount"])
-            || is_path_call(&call.func, &["crate", "unicode__utf8", "RuneCountInString"])
-            || is_path_call(&call.func, &["unicode__utf8", "RuneCountInString"])
-            || is_path_call(&call.func, &["crate", "utf8", "RuneCountInString"])
-            || is_path_call(&call.func, &["utf8", "RuneCountInString"])
-            || is_path_call(&call.func, &["crate", "unicode__utf8", "ValidString"])
-            || is_path_call(&call.func, &["unicode__utf8", "ValidString"])
-            || is_path_call(&call.func, &["crate", "utf8", "ValidString"])
-            || is_path_call(&call.func, &["utf8", "ValidString"])
-            || is_path_call(&call.func, &["crate", "unicode__utf8", "DecodeRune"])
-            || is_path_call(&call.func, &["unicode__utf8", "DecodeRune"])
-            || is_path_call(&call.func, &["crate", "utf8", "DecodeRune"])
-            || is_path_call(&call.func, &["utf8", "DecodeRune"])
-            || is_path_call(
-                &call.func,
-                &["crate", "unicode__utf8", "DecodeRuneInString"],
-            )
-            || is_path_call(&call.func, &["unicode__utf8", "DecodeRuneInString"])
-            || is_path_call(&call.func, &["crate", "utf8", "DecodeRuneInString"])
-            || is_path_call(&call.func, &["utf8", "DecodeRuneInString"])
-            || is_path_call(
-                &call.func,
-                &["crate", "unicode__utf8", "DecodeLastRuneInString"],
-            )
-            || is_path_call(&call.func, &["unicode__utf8", "DecodeLastRuneInString"])
-            || is_path_call(&call.func, &["crate", "utf8", "DecodeLastRuneInString"])
-            || is_path_call(&call.func, &["utf8", "DecodeLastRuneInString"])
-            || is_path_call(&call.func, &["crate", "unicode__utf8", "FullRune"])
-            || is_path_call(&call.func, &["unicode__utf8", "FullRune"])
-            || is_path_call(&call.func, &["crate", "utf8", "FullRune"])
-            || is_path_call(&call.func, &["utf8", "FullRune"])
-            || is_path_call(&call.func, &["crate", "reflect", "TypeOf"])
+        if is_path_call(&call.func, &["crate", "reflect", "TypeOf"])
             || is_path_call(&call.func, &["reflect", "TypeOf"])
         {
             if let Some(first) = call.args.first_mut() {
