@@ -305,8 +305,9 @@ make a stdlib test pass by reimplementing that stdlib function, method, type, or
 constant in Rust, or by adding package-name-specific lowering rules.
 Stdlib conformance work must proceed package by package in alphabetical order
 from `gors/tests/reports/go-stdlib-conformance.json`. Before moving past a
-package, audit every package integration check row one by one, including rows
-already marked `passing`. For that package, inspect every exported package-level
+package, audit all package integration check rows one by one, including rows
+already marked `passing`; do not sample, spot-check, or infer coverage from
+report status. For that package, inspect every exported package-level
 function, method, type, constant, and variable reported by the matrix, open the
 fixture that claims each row, and add or fix integration coverage until each
 supported row is backed by an e2e generated-program check that compares Go output
@@ -481,9 +482,10 @@ use compile-only references such as `var _ = strings.Clone`, `var _ T`, or
 `var _ = (*T).M` as evidence that a package, function, method, or type is done;
 for method rows specifically, coverage requires an e2e integration check that
 invokes the method and proves Go and gors produce the same observable behavior.
-A method expression, stored method value, interface assertion, or blank
-identifier assignment only counts after the fixture invokes it and checks the
-observable result.
+A method row is covered only if the fixture invokes that method and proves Go
+and gors produce the same observable behavior. A method expression, stored
+method value, interface assertion, or blank identifier assignment only counts
+after the fixture invokes it and checks the observable result.
 Mark covered stdlib rows with explicit `// gors:stdlib-cover package::Symbol`
 comments only after the fixture contains that behavioral check. Before adding or
 keeping any coverage marker, verify the exact row one by one against the
