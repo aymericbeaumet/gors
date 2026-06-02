@@ -3150,7 +3150,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on gzip header parsing plus the unsupported flate.NewReader decompressor graph, io.Reader to flate.Reader/bufio.Reader selection, and returned pointer receiver state."
         },
         {
           "id": "compress/gzip::NewWriter",
@@ -3159,7 +3159,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriter depends on NewWriterLevel and the unsupported gzip/flate writer state graph with stored io.Writer dispatch."
         },
         {
           "id": "compress/gzip::NewWriterLevel",
@@ -3168,7 +3168,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriterLevel depends on generic gzip writer initialization, level validation through fmt.Errorf, stored io.Writer values, and lazy flate.NewWriter creation."
         },
         {
           "id": "compress/gzip::NoCompression",
@@ -3188,7 +3188,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader behavior depends on gzip header/trailer parsing, CRC state, multistream state, and the unsupported flate reader/resetter path."
         },
         {
           "id": "compress/gzip::Reader.Close",
@@ -3197,7 +3197,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on the Reader's stored io.ReadCloser decompressor and flate close semantics."
         },
         {
           "id": "compress/gzip::Reader.Multistream",
@@ -3206,7 +3206,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Multistream coverage depends on the unsupported Reader state machine and reset/read behavior for concatenated gzip streams."
         },
         {
           "id": "compress/gzip::Reader.Read",
@@ -3215,7 +3215,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on mutation-preserving []byte reads through the flate decompressor, CRC/trailer validation, io.ReadFull calls, and multistream header re-entry."
         },
         {
           "id": "compress/gzip::Reader.Reset",
@@ -3224,7 +3224,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on interface selection from io.Reader to flate.Reader or bufio.Reader, gzip header parsing, and reused flate.Resetter state."
         },
         {
           "id": "compress/gzip::Writer",
@@ -3233,7 +3233,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on gzip header/footer emission, stored io.Writer dispatch, CRC state, and the unsupported flate writer graph."
         },
         {
           "id": "compress/gzip::Writer.Close",
@@ -3242,7 +3242,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on lazy header emission, flate writer close, little-endian footer writes, and stored io.Writer dispatch."
         },
         {
           "id": "compress/gzip::Writer.Flush",
@@ -3251,7 +3251,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on lazy header emission and the unsupported flate writer flush path."
         },
         {
           "id": "compress/gzip::Writer.Reset",
@@ -3260,7 +3260,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on preserving and resetting stored flate compressor state while replacing the underlying io.Writer."
         },
         {
           "id": "compress/gzip::Writer.Write",
@@ -3269,7 +3269,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on gzip header serialization, string/byte header field validation, CRC updates, and flate writer dispatch for compressed payloads."
         }
       ]
     },

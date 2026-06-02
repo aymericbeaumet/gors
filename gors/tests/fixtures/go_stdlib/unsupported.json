@@ -160,5 +160,18 @@
   "compress/flate::Writer.Close": "Audited 2026-06-02: Close depends on compressor final-block emission, huffman bit writer state, io.Writer dispatch, and closed-writer error state.",
   "compress/flate::Writer.Flush": "Audited 2026-06-02: Flush depends on compressor sync-flush state, huffman bit writer output, and mutation-preserving io.Writer calls.",
   "compress/flate::Writer.Reset": "Audited 2026-06-02: Reset depends on interface type assertions for dictionary writers, stored io.Writer replacement, and dictionary window refill semantics.",
-  "compress/flate::Writer.Write": "Audited 2026-06-02: Write depends on compressor byte-window mutation, function-valued compression steps, and io.Writer dispatch for emitted blocks."
+  "compress/flate::Writer.Write": "Audited 2026-06-02: Write depends on compressor byte-window mutation, function-valued compression steps, and io.Writer dispatch for emitted blocks.",
+  "compress/gzip::NewReader": "Audited 2026-06-02: NewReader depends on gzip header parsing plus the unsupported flate.NewReader decompressor graph, io.Reader to flate.Reader/bufio.Reader selection, and returned pointer receiver state.",
+  "compress/gzip::NewWriter": "Audited 2026-06-02: NewWriter depends on NewWriterLevel and the unsupported gzip/flate writer state graph with stored io.Writer dispatch.",
+  "compress/gzip::NewWriterLevel": "Audited 2026-06-02: NewWriterLevel depends on generic gzip writer initialization, level validation through fmt.Errorf, stored io.Writer values, and lazy flate.NewWriter creation.",
+  "compress/gzip::Reader": "Audited 2026-06-02: Reader behavior depends on gzip header/trailer parsing, CRC state, multistream state, and the unsupported flate reader/resetter path.",
+  "compress/gzip::Reader.Close": "Audited 2026-06-02: Close depends on the Reader's stored io.ReadCloser decompressor and flate close semantics.",
+  "compress/gzip::Reader.Multistream": "Audited 2026-06-02: Multistream coverage depends on the unsupported Reader state machine and reset/read behavior for concatenated gzip streams.",
+  "compress/gzip::Reader.Read": "Audited 2026-06-02: Read depends on mutation-preserving []byte reads through the flate decompressor, CRC/trailer validation, io.ReadFull calls, and multistream header re-entry.",
+  "compress/gzip::Reader.Reset": "Audited 2026-06-02: Reset depends on interface selection from io.Reader to flate.Reader or bufio.Reader, gzip header parsing, and reused flate.Resetter state.",
+  "compress/gzip::Writer": "Audited 2026-06-02: Writer behavior depends on gzip header/footer emission, stored io.Writer dispatch, CRC state, and the unsupported flate writer graph.",
+  "compress/gzip::Writer.Close": "Audited 2026-06-02: Close depends on lazy header emission, flate writer close, little-endian footer writes, and stored io.Writer dispatch.",
+  "compress/gzip::Writer.Flush": "Audited 2026-06-02: Flush depends on lazy header emission and the unsupported flate writer flush path.",
+  "compress/gzip::Writer.Reset": "Audited 2026-06-02: Reset depends on preserving and resetting stored flate compressor state while replacing the underlying io.Writer.",
+  "compress/gzip::Writer.Write": "Audited 2026-06-02: Write depends on gzip header serialization, string/byte header field validation, CRC updates, and flate writer dispatch for compressed payloads."
 }
