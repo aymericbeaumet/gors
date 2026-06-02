@@ -222,10 +222,6 @@ impl VisitMut for CoerceTypes {
             if let Some(first) = mc.args.first_mut() {
                 coerce_print_arg(first);
             }
-        } else if mc.method == "printValue" {
-            if let Some(first) = mc.args.first_mut() {
-                coerce_print_value(first);
-            }
         }
     }
 
@@ -1459,22 +1455,6 @@ fn coerce_print_arg(expr: &mut syn::Expr) {
     }
 }
 
-fn coerce_print_value(expr: &mut syn::Expr) {
-    match expr {
-        syn::Expr::Field(field) if is_self_member(field, "value") => {
-            let inner = expr.clone();
-            *expr = syn::parse_quote! { (#inner).clone() };
-        }
-        syn::Expr::Field(field)
-            if is_named_member(field, "Key") || is_named_member(field, "Value") =>
-        {
-            let inner = expr.clone();
-            *expr = syn::parse_quote! { crate::reflect::ValueOf(#inner) };
-        }
-        _ => {}
-    }
-}
-
 fn is_self_member(field: &syn::ExprField, name: &str) -> bool {
     is_self_expr(&field.base) && is_named_member(field, name)
 }
@@ -1647,6 +1627,38 @@ mod tests {
         assert!(
             !tokens.contains("value) . clone") && !tokens.contains("f) . clone"),
             "expected no identifier-name-driven local clones: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_coerce_print_value_args_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Pair {
+                pub Key: isize,
+                pub Value: isize,
+            }
+
+            pub struct Sink;
+
+            impl Sink {
+                pub fn printValue(&mut self, value: isize) {}
+            }
+
+            pub fn call(mut sink: Sink, mut pair: Pair) {
+                sink.printValue(pair.Key);
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("sink . printValue (pair . Key)"),
+            "expected method and field names not to force reflect coercion: {tokens}"
+        );
+        assert!(
+            !tokens.contains("reflect :: ValueOf"),
+            "expected no method-name-driven reflect coercion: {tokens}"
         );
     }
 
