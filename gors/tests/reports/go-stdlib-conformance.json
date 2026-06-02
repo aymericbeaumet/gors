@@ -13,9 +13,9 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 165,
-    "unsupportedCaseCount": 12253,
-    "fixtureCount": 79
+    "passingCaseCount": 171,
+    "unsupportedCaseCount": 12247,
+    "fixtureCount": 80
   },
   "groups": [
     {
@@ -13328,13 +13328,15 @@
       "id": "crypto/mlkem",
       "title": "crypto/mlkem",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/mlkem"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 28,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 28,
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 22,
         "fixtureCount": 0
       },
       "cases": [
@@ -13343,8 +13345,10 @@
           "title": "CiphertextSize1024",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         },
         {
@@ -13352,8 +13356,10 @@
           "title": "CiphertextSize768",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         },
         {
@@ -13505,8 +13511,10 @@
           "title": "EncapsulationKeySize1024",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         },
         {
@@ -13514,8 +13522,10 @@
           "title": "EncapsulationKeySize768",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         },
         {
@@ -13577,8 +13587,10 @@
           "title": "SeedSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         },
         {
@@ -13586,8 +13598,10 @@
           "title": "SharedKeySize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/mlkem"
+          ],
           "reason": ""
         }
       ]
