@@ -14810,6 +14810,24 @@ fn compile_expr_with_expected(
             if let Some(expr) = borrowed_interface_selector_reborrow_expr(&expr) {
                 return expr;
             }
+            expr = match expr {
+                ast::Expr::CompositeLit(composite) => {
+                    let compiled = compile_composite_lit(composite);
+                    return syn::parse_quote! { Box::leak(Box::new(#compiled)) };
+                }
+                ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => match *unary.x {
+                    ast::Expr::CompositeLit(composite) => {
+                        let compiled = compile_composite_lit(composite);
+                        return syn::parse_quote! { Box::leak(Box::new(#compiled)) };
+                    }
+                    other => ast::Expr::UnaryExpr(ast::UnaryExpr {
+                        op_pos: unary.op_pos,
+                        op: unary.op,
+                        x: Box::new(other),
+                    }),
+                },
+                other => other,
+            };
             if go_type_is_interface_like(&actual) {
                 return expr.into();
             }
@@ -27338,6 +27356,55 @@ func main() {
             "{output}"
         );
         assert!(!output.contains("(self.r).clone()"), "{output}");
+    }
+
+    #[test]
+    fn interface_composite_literals_get_stable_backing_storage() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Writer interface {
+	Write([]byte) int
+}
+
+type Sink struct {
+	n int
+}
+
+func (s *Sink) Write(p []byte) int {
+	s.n += len(p)
+	return s.n
+}
+
+type Holder struct {
+	w Writer
+}
+
+func consume(w Writer) {}
+
+func main() {
+	_ = Holder{w: &Sink{}}
+	consume(&Sink{})
+}
+"#,
+        );
+        let output = compile_temp_program(tmp.path());
+        let output = output
+            .files
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            output.contains("Box::leak(Box::new(Sink")
+                || output.contains("Box :: leak (Box :: new (Sink"),
+            "{output}"
+        );
+        assert!(!output.contains("&mut Sink {"), "{output}");
     }
 
     #[test]
