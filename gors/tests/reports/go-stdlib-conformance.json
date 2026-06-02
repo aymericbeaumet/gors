@@ -3920,7 +3920,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: New depends on allocating linked Ring nodes whose next/prev fields preserve stable pointer identity back to earlier nodes."
         },
         {
           "id": "container/ring::Ring",
@@ -3929,7 +3929,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Ring behavior depends on self-referential next/prev pointer fields, nil pointer state, and alias-preserving node mutation."
         },
         {
           "id": "container/ring::Ring.Do",
@@ -3938,7 +3938,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Do depends on traversing pointer-linked Ring nodes with pointer equality termination plus stored func(any) callback invocation."
         },
         {
           "id": "container/ring::Ring.Len",
@@ -3947,7 +3947,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Len depends on pointer equality termination while traversing next links that alias existing Ring nodes."
         },
         {
           "id": "container/ring::Ring.Link",
@@ -3956,7 +3956,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Link depends on relinking next/prev pointer fields through stable aliases and preserving removed subring identity."
         },
         {
           "id": "container/ring::Ring.Move",
@@ -3965,7 +3965,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Move depends on nil-initialized self-linking receivers and traversal through next/prev pointers that preserve identity."
         },
         {
           "id": "container/ring::Ring.Next",
@@ -3974,7 +3974,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Next depends on initializing a zero Ring so next/prev point at the receiver's own stable address."
         },
         {
           "id": "container/ring::Ring.Prev",
@@ -3983,7 +3983,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Prev depends on initializing a zero Ring so next/prev point at the receiver's own stable address."
         },
         {
           "id": "container/ring::Ring.Unlink",
@@ -3992,7 +3992,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Unlink depends on Move and Link preserving alias identity while removing a subring."
         }
       ]
     },

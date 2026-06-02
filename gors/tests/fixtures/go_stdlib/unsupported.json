@@ -214,5 +214,14 @@
   "container/list::List.PushFront": "Audited 2026-06-02: PushFront depends on lazy sentinel initialization plus insertion after the root field's stable address.",
   "container/list::List.PushFrontList": "Audited 2026-06-02: PushFrontList depends on reverse traversal while inserting copied nodes without invalidating Element pointer aliases.",
   "container/list::List.Remove": "Audited 2026-06-02: Remove depends on pointer equality between e.list and the receiver plus relinking neighboring Element pointer fields.",
-  "container/list::New": "Audited 2026-06-02: New depends on Init returning a pointer to the initialized List while preserving the same receiver and sentinel field identities."
+  "container/list::New": "Audited 2026-06-02: New depends on Init returning a pointer to the initialized List while preserving the same receiver and sentinel field identities.",
+  "container/ring::New": "Audited 2026-06-02: New depends on allocating linked Ring nodes whose next/prev fields preserve stable pointer identity back to earlier nodes.",
+  "container/ring::Ring": "Audited 2026-06-02: Ring behavior depends on self-referential next/prev pointer fields, nil pointer state, and alias-preserving node mutation.",
+  "container/ring::Ring.Do": "Audited 2026-06-02: Do depends on traversing pointer-linked Ring nodes with pointer equality termination plus stored func(any) callback invocation.",
+  "container/ring::Ring.Len": "Audited 2026-06-02: Len depends on pointer equality termination while traversing next links that alias existing Ring nodes.",
+  "container/ring::Ring.Link": "Audited 2026-06-02: Link depends on relinking next/prev pointer fields through stable aliases and preserving removed subring identity.",
+  "container/ring::Ring.Move": "Audited 2026-06-02: Move depends on nil-initialized self-linking receivers and traversal through next/prev pointers that preserve identity.",
+  "container/ring::Ring.Next": "Audited 2026-06-02: Next depends on initializing a zero Ring so next/prev point at the receiver's own stable address.",
+  "container/ring::Ring.Prev": "Audited 2026-06-02: Prev depends on initializing a zero Ring so next/prev point at the receiver's own stable address.",
+  "container/ring::Ring.Unlink": "Audited 2026-06-02: Unlink depends on Move and Link preserving alias identity while removing a subring."
 }
