@@ -21107,12 +21107,90 @@ fn pointer_interface_impl_items_for_methods(
     impl_items
 }
 
+fn borrowed_pointer_interface_impl_items_for_methods(
+    trait_name: &str,
+    struct_name: &str,
+    trait_path: &syn::Path,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<syn::ImplItem> {
+    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
+        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+            None
+        }
+    }];
+    if trait_name != "error" {
+        impl_items.push(interface_clone_box_impl_item(trait_path, false));
+    }
+    if let Some(method_list) = methods.get(struct_name) {
+        for method in method_list {
+            if !method_names.contains(&method.sig.ident.to_string()) {
+                continue;
+            }
+            let method_ident = method.sig.ident.clone();
+            let method_is_pointer_receiver =
+                pointer_methods.is_some_and(|methods| methods.contains(&method_ident.to_string()));
+            let call_receiver_kind =
+                pointer_interface_call_receiver(method, method_is_pointer_receiver);
+            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+            let arg_idents = method
+                .sig
+                .inputs
+                .iter()
+                .skip(1)
+                .filter_map(|arg| match arg {
+                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                        _ => None,
+                    },
+                    syn::FnArg::Receiver(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let mut sig = method.sig.clone();
+            let immutable_error_method = trait_name == "error" && method_ident == "Error";
+            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+                if immutable_error_method {
+                    receiver.mutability = None;
+                    *receiver.ty = syn::parse_quote! { &Self };
+                } else {
+                    receiver.mutability = Some(<Token![mut]>::default());
+                    *receiver.ty = syn::parse_quote! { &mut Self };
+                }
+            }
+            let call_receiver: syn::Expr = match call_receiver_kind {
+                PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &**self },
+                PointerInterfaceCallReceiver::MutableRef => syn::parse_quote! { &mut **self },
+                PointerInterfaceCallReceiver::Owned => syn::parse_quote! { (**self).clone() },
+            };
+            let block = if matches!(sig.output, syn::ReturnType::Default) {
+                syn::parse_quote!({
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                })
+            } else {
+                syn::parse_quote!({
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                })
+            };
+            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
+                attrs: vec![],
+                vis: syn::Visibility::Inherited,
+                defaultness: None,
+                sig,
+                block,
+            }));
+        }
+    }
+    impl_items
+}
+
 fn imported_pointer_interface_impls_for_local_structs(
     struct_methods: &BTreeMap<String, Vec<String>>,
     struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     method_generics: &BTreeMap<String, Vec<syn::Ident>>,
     emitted_interface_impls: &mut std::collections::BTreeSet<(String, String, bool)>,
+    emitted_borrowed_pointer_interface_impls: &mut std::collections::BTreeSet<(String, String)>,
 ) -> Vec<syn::Item> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -21166,6 +21244,25 @@ fn imported_pointer_interface_impls_for_local_structs(
                         }
                     });
                 }
+                if emitted_borrowed_pointer_interface_impls
+                    .insert((interface_name.clone(), struct_name.clone()))
+                {
+                    let trait_path = interface_trait_path_from_name(&interface_name);
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                        &interface_name,
+                        struct_name,
+                        &trait_path,
+                        &method_set.direct_methods,
+                        methods,
+                        pointer_methods,
+                    );
+                    items.push(syn::parse_quote! {
+                        impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                            #(#impl_items)*
+                        }
+                    });
+                }
 
                 for embedded_name in &method_set.embedded_interfaces {
                     let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
@@ -21197,6 +21294,24 @@ fn imported_pointer_interface_impls_for_local_structs(
                             #(#impl_items)*
                         }
                     });
+                    if emitted_borrowed_pointer_interface_impls
+                        .insert((embedded_name.clone(), struct_name.clone()))
+                    {
+                        let trait_path = interface_trait_path_from_name(embedded_name);
+                        let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                            embedded_name,
+                            struct_name,
+                            &trait_path,
+                            &embedded_method_set.direct_methods,
+                            methods,
+                            pointer_methods,
+                        );
+                        items.push(syn::parse_quote! {
+                            impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                                #(#impl_items)*
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -21514,6 +21629,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
         // Interface satisfaction: check which structs satisfy which traits
         let mut emitted_interface_impls = std::collections::BTreeSet::new();
+        let mut emitted_borrowed_pointer_interface_impls = std::collections::BTreeSet::new();
         for (trait_name, required_methods) in &trait_methods {
             if required_methods.is_empty() {
                 continue;
@@ -21657,6 +21773,23 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             }
                         });
                     }
+                    if emitted_borrowed_pointer_interface_impls
+                        .insert((trait_name.clone(), struct_name.clone()))
+                    {
+                        let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                            trait_name,
+                            struct_name,
+                            &trait_path,
+                            &method_set.direct_methods,
+                            &methods,
+                            pointer_methods,
+                        );
+                        items.push(syn::parse_quote! {
+                            impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                                #(#impl_items)*
+                            }
+                        });
+                    }
 
                     for embedded_name in &method_set.embedded_interfaces {
                         let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
@@ -21687,6 +21820,23 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 #(#impl_items)*
                             }
                         });
+                        if emitted_borrowed_pointer_interface_impls
+                            .insert((embedded_name.clone(), struct_name.clone()))
+                        {
+                            let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                                embedded_name,
+                                struct_name,
+                                &trait_path,
+                                &embedded_method_set.direct_methods,
+                                &methods,
+                                pointer_methods,
+                            );
+                            items.push(syn::parse_quote! {
+                                impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                                    #(#impl_items)*
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -21697,6 +21847,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             &methods,
             &method_generics,
             &mut emitted_interface_impls,
+            &mut emitted_borrowed_pointer_interface_impls,
         ));
 
         items.extend(noop_interface_supertrait_impls(&items));
@@ -32110,7 +32261,7 @@ type Writer interface {
 
 type sink struct{}
 
-func (sink) Write([]byte) (int, error) {
+func (*sink) Write([]byte) (int, error) {
 	return 0, nil
 }
 
@@ -32131,6 +32282,11 @@ func main() {
             "{output}"
         );
         assert!(!output.contains("& mut s . clone ()"), "{output}");
+        assert!(
+            output.contains("impl < '__gors > Writer for & '__gors mut sink"),
+            "{output}"
+        );
+        assert!(output.contains("sink :: Write (& mut * * self"), "{output}");
     }
 
     #[test]
