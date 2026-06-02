@@ -168,10 +168,11 @@ gors-builtin/
   Preserve explicit Go types there: typed initializers must be compiled with the
   expected type and emitted with a Rust type annotation, and typed zero values
   should use the same default-expression path as local var declarations.
-- Runtime interface downcast hooks (`__gors_as_any`) are part of the generated
-  interface contract. DCE must preserve the hook on reachable traits and trait
-  impls, and any injected structural stdlib helper that implements a Go
-  interface, such as `os.File` for `io.Writer`, must implement the hook too.
+- Runtime interface hooks (`__gors_as_any` for downcasts and
+  `__gors_clone_box` for cloned boxed interface values) are part of the
+  generated interface contract. DCE must preserve the hooks on reachable traits
+  and trait impls, and any injected structural stdlib helper that implements a
+  Go interface, such as `os.File` for `io.Writer`, must implement the hooks too.
 - The predeclared `error` interface lowers to the shared
   `crate::builtin::error` trait object, not to `String`. Its nil value is the
   noop-interface sentinel `crate::builtin::__GorsNooperror`, and ordinary Go

@@ -54,6 +54,7 @@ thread_local! {
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static NAMED_RETURN_IDENTS: RefCell<Vec<syn::Ident>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
+    static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -4745,6 +4746,10 @@ fn inject_post_prune_stdlib_helpers(
                                     Some(self)
                                 }
 
+                                fn __gors_clone_box(&self) -> Box<dyn crate::io::Writer> {
+                                    Box::new(*self) as Box<dyn crate::io::Writer>
+                                }
+
                                 fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
                                     let mut stdout = std::io::stdout();
                                     match std::io::Write::write_all(&mut stdout, &b) {
@@ -5805,6 +5810,10 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             prune_unused_use_items(&mut module.file.items);
         }
 
+        for module in modules.values_mut() {
+            add_missing_interface_clone_hooks(&mut module.file.items);
+        }
+
         let empty_modules: Vec<String> = modules
             .iter()
             .filter(|&(_key, module)| !module.is_main && module.file.items.is_empty())
@@ -6679,6 +6688,7 @@ pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
         .filter(|item| !existing.contains(&item.to_token_stream().to_string()))
         .collect::<Vec<_>>();
     file.items.extend(additions);
+    add_missing_interface_clone_hooks(&mut file.items);
 }
 
 fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
@@ -8809,7 +8819,7 @@ fn is_ambient_trait_name(name: &str) -> bool {
 }
 
 fn is_runtime_interface_hook(name: &str) -> bool {
-    name == "__gors_as_any"
+    matches!(name, "__gors_as_any" | "__gors_clone_box")
 }
 
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
@@ -9782,6 +9792,32 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
     })
 }
 
+fn interface_box_clone_impl(ident: &syn::Ident) -> syn::Item {
+    syn::parse_quote! {
+        impl Clone for Box<dyn #ident> {
+            fn clone(&self) -> Self {
+                #ident::__gors_clone_box(&**self)
+            }
+        }
+    }
+}
+
+fn interface_clone_box_impl_item(trait_path: &syn::Path, can_clone_self: bool) -> syn::ImplItem {
+    if can_clone_self {
+        syn::parse_quote! {
+            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                Box::new(self.clone()) as Box<dyn #trait_path>
+            }
+        }
+    } else {
+        syn::parse_quote! {
+            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                crate::builtin::panic_value("cloned non-clone interface value")
+            }
+        }
+    }
+}
+
 fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Vec<syn::Item> {
     let noop_ident = syn::Ident::new(&format!("__GorsNoop{ident}"), Span::mixed_site());
     let mut impl_methods = Vec::new();
@@ -9792,6 +9828,8 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
         let sig = trait_fn.sig.clone();
         let block = if sig.ident == "__gors_as_any" {
             syn::parse_quote!({ None })
+        } else if sig.ident == "__gors_clone_box" {
+            syn::parse_quote!({ Box::new(#noop_ident::default()) as Box<dyn #ident> })
         } else if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({})
         } else {
@@ -9964,9 +10002,15 @@ fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<syn::ImplItem
         let Some(method_names) = env.get_interface_direct_methods(&interface_env_name) else {
             return Vec::new();
         };
-        let mut items = vec![noop_impl_item_for_signature(syn::parse_quote! {
-            fn __gors_as_any(&self) -> Option<&dyn std::any::Any>
-        })];
+        let trait_path = interface_trait_path_from_name(interface_name);
+        let mut items = vec![
+            noop_impl_item_for_signature(syn::parse_quote! {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>
+            }),
+            noop_impl_item_for_signature(syn::parse_quote! {
+                fn __gors_clone_box(&self) -> Box<dyn #trait_path>
+            }),
+        ];
         items.extend(method_names.iter().map(|method_name| {
             noop_impl_item_for_signature(interface_method_signature_from_type_env(
                 &interface_env_name,
@@ -10071,6 +10115,66 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
     }
 
     out
+}
+
+fn add_missing_interface_clone_hooks(items: &mut [syn::Item]) {
+    let clone_box_traits = items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let has_clone_box = item_trait.items.iter().any(|trait_item| {
+                matches!(trait_item, syn::TraitItem::Fn(func) if func.sig.ident == "__gors_clone_box")
+            });
+            has_clone_box.then(|| item_trait.ident.to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if clone_box_traits.is_empty() {
+        return;
+    }
+
+    for item in items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some((_, trait_path, _)) = &item_impl.trait_ else {
+            continue;
+        };
+        let Some(trait_name) = trait_path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+        else {
+            continue;
+        };
+        if !clone_box_traits.contains(&trait_name) {
+            continue;
+        }
+        if item_impl.items.iter().any(|impl_item| {
+            matches!(impl_item, syn::ImplItem::Fn(func) if func.sig.ident == "__gors_clone_box")
+        }) {
+            continue;
+        }
+
+        let item = if named_self_type(&item_impl.self_ty)
+            .as_deref()
+            .is_some_and(is_noop_interface_type_name)
+        {
+            syn::parse_quote! {
+                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                    Box::new(Self::default()) as Box<dyn #trait_path>
+                }
+            }
+        } else {
+            syn::parse_quote! {
+                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                    crate::builtin::panic_value("cloned non-clone interface value")
+                }
+            }
+        };
+        item_impl.items.push(item);
+    }
 }
 
 fn collect_trait_method_fns(items: &[syn::Item]) -> BTreeMap<String, Vec<syn::TraitItemFn>> {
@@ -10370,6 +10474,14 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
             };
+            NON_CLONE_STRUCTS.with(|structs| {
+                let mut structs = structs.borrow_mut();
+                if cannot_derive_clone {
+                    structs.insert(ident.to_string());
+                } else {
+                    structs.remove(&ident.to_string());
+                }
+            });
             attrs.push(syn::parse_quote! { #[repr(C)] });
             let struct_item = syn::Item::Struct(syn::ItemStruct {
                 attrs,
@@ -10563,6 +10675,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
                     },
                 );
+                trait_items.insert(
+                    1,
+                    syn::parse_quote! {
+                        fn __gors_clone_box(&self) -> Box<dyn #ident>;
+                    },
+                );
             }
             let has_methods = !trait_items.is_empty();
             let box_impl = has_methods.then(|| interface_box_impl(&ident, &trait_items));
@@ -10585,6 +10703,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 items.push(box_impl);
             }
             if has_methods {
+                items.push(interface_box_clone_impl(&ident));
                 items.extend(noop_interface_items(&ident, &trait_items));
             }
             if has_supertraits && !has_methods {
@@ -19632,6 +19751,7 @@ fn concrete_interface_impl_items_for_methods(
     exposes_any: bool,
 ) -> Vec<syn::ImplItem> {
     let mut impl_items: Vec<syn::ImplItem> = vec![];
+    let trait_path = interface_trait_path_from_name(trait_name);
     let as_any_method: syn::ImplItem = if exposes_any {
         syn::parse_quote! {
             fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
@@ -19646,6 +19766,11 @@ fn concrete_interface_impl_items_for_methods(
         }
     };
     impl_items.push(as_any_method);
+    if trait_name != "error" {
+        let can_clone_self =
+            NON_CLONE_STRUCTS.with(|structs| !structs.borrow().contains(struct_name));
+        impl_items.push(interface_clone_box_impl_item(&trait_path, can_clone_self));
+    }
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
             if method_names.contains(&method.sig.ident.to_string()) {
@@ -19756,7 +19881,7 @@ fn pointer_interface_call_receiver(
 fn pointer_interface_impl_items_for_methods(
     trait_name: &str,
     struct_name: &str,
-    _trait_path: &syn::Path,
+    trait_path: &syn::Path,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     pointer_methods: Option<&std::collections::BTreeSet<String>>,
@@ -19766,6 +19891,9 @@ fn pointer_interface_impl_items_for_methods(
             Some(self)
         }
     }];
+    if trait_name != "error" {
+        impl_items.push(interface_clone_box_impl_item(trait_path, true));
+    }
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
             if !method_names.contains(&method.sig.ident.to_string()) {
@@ -19853,6 +19981,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             }
         });
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
+        NON_CLONE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
         set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
         let needed_imported_interface_methods =
@@ -20338,6 +20467,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             });
         }
+        add_missing_interface_clone_hooks(&mut items);
 
         Ok(Self {
             attrs: vec![],
@@ -29525,6 +29655,60 @@ type multi struct {
         assert!(!output.contains("writers : Vec < Writer >"), "{output}");
         assert!(
             !output.contains("derive (Clone , Default)] pub struct multi"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_not_require_clone_for_non_clone_interface_impl_hooks() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Interface interface {
+	M()
+}
+
+type value struct {
+	x any
+}
+
+func (value) M() {}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("fn __gors_clone_box (& self) -> Box < dyn Interface > { crate :: builtin :: panic_value (\"cloned non-clone interface value\") }"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_add_missing_interface_clone_hooks_to_trait_impls() {
+        let mut file: syn::File = rust! {
+            pub trait State {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn __gors_clone_box(&self) -> Box<dyn State>;
+            }
+
+            pub struct Value;
+
+            impl<'a> State for &'a mut Value {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    None
+                }
+            }
+        };
+
+        super::add_missing_interface_clone_hooks(&mut file.items);
+        let output = quote! { #file }.to_string();
+
+        assert!(
+            output.contains("fn __gors_clone_box (& self) -> Box < dyn State > { crate :: builtin :: panic_value (\"cloned non-clone interface value\") }"),
             "{output}"
         );
     }
