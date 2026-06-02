@@ -37,7 +37,6 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
 | UTF-8 append rune | `unicode__utf8::AppendRune` / `utf8::AppendRune` | stdlib workaround | First-argument move/take should come from signature and lvalue role for any function that returns an updated destination slice. |
 | Sort helper clone | `fmtsort::Sort` | stdlib workaround | Argument value-copy should follow the callee parameter type and whether the argument is reused, not the helper name. |
-| Mutable slice sort | `slices::Sort` | stdlib workaround | Mutable borrowing should follow `&mut`/slice parameter type and pointer-cell analysis for any call target. |
 | Reflect value coercion | `reflect::ValueOf` | stdlib workaround | Boxing/moving interface arguments should come from expected parameter type `any` and argument lvalue/rvalue role. |
 | Local helpers | `parsenum`, `intFromArg`, `getField` | stdlib workaround | These are generated helper calls from stdlib lowering; their ownership contracts should be expressed in generated signatures or helper metadata. |
 | Borrow first arg | UTF-8 and reflect `TypeOf` path lists | stdlib workaround | Borrowing should be signature-driven for any function expecting string/byte-slice references, not selected by package/function name. |
@@ -70,3 +69,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Area | Replacement |
 | --- | --- |
 | `strconv` string value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones path, field, and index arguments according to the callee's generated `String`/cloneable value parameter types. |
+| `slices::Sort` mutable argument borrowing in `coerce_types.rs` | Cross-module mutable-reference call analysis now borrows arguments according to generated callee `&mut` parameter types. |

@@ -385,15 +385,6 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if is_path_call(&call.func, &["crate", "slices", "Sort"])
-            || is_path_call(&call.func, &["slices", "Sort"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                borrow_mut_expr(first, &self.pointer_cell_statics);
-            }
-            return;
-        }
-
         if is_path_call(&call.func, &["crate", "reflect", "ValueOf"])
             || is_path_call(&call.func, &["reflect", "ValueOf"])
         {

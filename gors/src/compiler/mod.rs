@@ -27459,6 +27459,53 @@ var X int
     }
 
     #[test]
+    fn borrow_mut_ref_call_args_borrows_cross_module_args_from_callee_signatures() {
+        let helper_file: syn::File = rust! {
+            pub fn sort(mut values: &mut [String]) {}
+        };
+        let main_file: syn::File = rust! {
+            pub fn call(mut values: Vec<String>) {
+                crate::helper::sort(values);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "helper".to_string(),
+                super::CompiledModule {
+                    mod_name: "helper".to_string(),
+                    import_path: "helper".to_string(),
+                    file: helper_file,
+                    filename: "helper.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("crate :: helper :: sort (& mut values)"),
+            "expected mutable borrow to follow callee signature: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_preserve_named_numeric_const_masks_and_method_results() {
         let parsed = parse_file(
             "test.go",
