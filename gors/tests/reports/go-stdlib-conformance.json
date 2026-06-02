@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 174,
-    "unsupportedCaseCount": 12244,
+    "passingCaseCount": 176,
+    "unsupportedCaseCount": 12242,
     "fixtureCount": 80
   },
   "groups": [
@@ -13808,13 +13808,15 @@
       "id": "crypto/rsa",
       "title": "crypto/rsa",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/rsa"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 33,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 33,
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 31,
         "fixtureCount": 0
       },
       "cases": [
@@ -13967,8 +13969,10 @@
           "title": "PSSSaltLengthAuto",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -13976,8 +13980,10 @@
           "title": "PSSSaltLengthEqualsHash",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
