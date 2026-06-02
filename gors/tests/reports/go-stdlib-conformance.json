@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 221,
-    "unsupportedCaseCount": 12197,
+    "passingCaseCount": 223,
+    "unsupportedCaseCount": 12195,
     "fixtureCount": 81
   },
   "groups": [
@@ -14219,13 +14219,15 @@
       "id": "crypto/sha1",
       "title": "crypto/sha1",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/sha1"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 4,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 4,
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 2,
         "fixtureCount": 0
       },
       "cases": [
@@ -14234,8 +14236,10 @@
           "title": "BlockSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/sha1"
+          ],
           "reason": ""
         },
         {
@@ -14245,15 +14249,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: New returns hash.Hash interface values backed by mutable digest state and currently exposes generic hash trait-object return plus boring/FIPS hash-path lowering gaps."
         },
         {
           "id": "crypto/sha1::Size",
           "title": "Size",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/sha1"
+          ],
           "reason": ""
         },
         {
@@ -14263,7 +14269,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sum depends on passing address-taken local digest values to helper functions, coercing copy result counts into Go int fields, and lowering transitive boring/FIPS/runtime modules."
         }
       ]
     },
