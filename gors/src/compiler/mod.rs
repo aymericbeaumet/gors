@@ -5283,6 +5283,9 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     if matches!(arg, syn::Expr::Reference(_)) {
         return;
     }
+    if is_box_leak_expr(arg) {
+        return;
+    }
     if let Some(name) = expr_path_ident(arg) {
         if name == "self" {
             return;
@@ -5297,6 +5300,9 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
 
 fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
     if matches!(arg, syn::Expr::Reference(_)) {
+        return;
+    }
+    if is_box_leak_expr(arg) {
         return;
     }
     if let Some(receiver) = to_vec_receiver_expr(arg) {
@@ -15638,6 +15644,9 @@ fn compile_expr_with_expected(
             }
             let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
+            if is_box_leak_expr(&expr) {
+                return expr;
+            }
             if let Some(inner) = arc_mutex_new_inner_expr(&expr) {
                 return syn::parse_quote! { &mut #inner };
             }
@@ -21677,6 +21686,9 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
     if matches!(expr, syn::Expr::Path(path) if path.path.is_ident("self")) {
         return;
     }
+    if is_box_leak_expr(expr) {
+        return;
+    }
     if let syn::Expr::Call(call) = expr
         && is_path_call_expr(&call.func, &["Box", "new"])
         && call.args.len() == 1
@@ -21714,6 +21726,10 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
     } else {
         *expr = syn::parse_quote! { &mut #inner };
     }
+}
+
+fn is_box_leak_expr(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Call(call) if is_path_call_expr(&call.func, &["Box", "leak"]))
 }
 
 fn nil_borrowed_pointer_arg_expr() -> syn::Expr {
@@ -28486,6 +28502,63 @@ func main() {
         );
         assert!(main_rs.contains("usePointer("), "{main_rs}");
         assert!(main_rs.contains("&mut {"), "{main_rs}");
+    }
+
+    #[test]
+    fn borrow_pointer_arg_expr_preserves_box_leak_refs() {
+        let mut expr: syn::Expr = syn::parse_quote! {
+            Box::leak(Box::new(Value::default()))
+        };
+
+        super::borrow_pointer_arg_expr(&mut expr, None);
+        let output = quote! { #expr }.to_string();
+
+        assert!(
+            output.contains("Box :: leak (Box :: new (Value :: default ()))"),
+            "{output}"
+        );
+        assert!(!output.contains("& mut Box :: leak"), "{output}");
+    }
+
+    #[test]
+    fn compile_program_multi_does_not_double_borrow_imported_interface_literals() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/lib"
+
+type sink struct{}
+
+func (sink) Write([]byte) (int, error) {
+	return 0, nil
+}
+
+func main() {
+	lib.Consume(sink{})
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("lib/lib.go").as_path(),
+            r#"
+package lib
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+func Consume(w Writer) {}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("Box::leak(Box::new(sink"), "{main_rs}");
+        assert!(!main_rs.contains("&mut Box::leak"), "{main_rs}");
     }
 
     #[test]
