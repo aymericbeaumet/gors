@@ -16409,9 +16409,25 @@ fn compile_assignment_lhs_checked(expr: ast::Expr) -> Result<syn::Expr, Compiler
 }
 
 fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
-    import_selector_assignment_expr(&expr)
-        .or_else(|| lvalue_expr_from_ref(&expr))
-        .unwrap_or_else(|| expr.into())
+    match expr {
+        ast::Expr::IndexExpr(index) => {
+            if let Some(expr) = compile_index_assignment_lhs(index) {
+                expr
+            } else {
+                compile_error_expr("invalid index assignment lhs")
+            }
+        }
+        other => import_selector_assignment_expr(&other)
+            .or_else(|| lvalue_expr_from_ref(&other))
+            .unwrap_or_else(|| other.into()),
+    }
+}
+
+fn compile_index_assignment_lhs(index: ast::IndexExpr<'_>) -> Option<syn::Expr> {
+    let ast::IndexExpr { x, index, .. } = index;
+    let base = lvalue_expr_from_ref(&x)?;
+    let index: syn::Expr = (*index).into();
+    Some(syn::parse_quote! { (#base)[(#index) as usize] })
 }
 
 fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
@@ -28518,6 +28534,33 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_index_assignment_with_computed_index() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    b := []byte("abc")
+                    b[len(b)-1] = 0
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(b) [((crate :: builtin :: len (& b) as isize) - 1) as usize] ="),
+            "expected computed index assignment to use lvalue indexing: {output}"
+        );
+        assert!(
+            !output.contains("__gors_index_base = & b"),
+            "expected computed index assignment not to use rvalue index lowering: {output}"
         );
     }
 
