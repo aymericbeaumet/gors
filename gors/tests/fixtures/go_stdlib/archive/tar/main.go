@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"fmt"
+	"io/fs"
+	"time"
 )
 
 func main() {
@@ -16,6 +18,8 @@ func main() {
 	caseHeader()
 	fmt.Println("== archive/tar/header-file-info ==")
 	caseHeaderFileInfo()
+	fmt.Println("== archive/tar/file-info-header ==")
+	caseFileInfoHeader()
 }
 
 func caseErrors() {
@@ -96,4 +100,54 @@ func caseHeaderFileInfo() {
 	}
 	dirInfo := dir.FileInfo()
 	fmt.Println(dirInfo.Name(), dirInfo.Size(), dirInfo.IsDir(), int64(dirInfo.Mode()))
+}
+
+type namedInfo struct {
+	name string
+	size int64
+	mode fs.FileMode
+}
+
+func (n namedInfo) Name() string {
+	return n.name
+}
+
+func (n namedInfo) Size() int64 {
+	return n.size
+}
+
+func (n namedInfo) Mode() fs.FileMode {
+	return n.mode
+}
+
+func (n namedInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (n namedInfo) IsDir() bool {
+	return n.mode.IsDir()
+}
+
+func (n namedInfo) Sys() any {
+	return nil
+}
+
+func (n namedInfo) Uname() (string, error) {
+	return "owner", nil
+}
+
+func (n namedInfo) Gname() (string, error) {
+	return "group", nil
+}
+
+func caseFileInfoHeader() {
+	// gors:stdlib-cover archive/tar::FileInfoHeader archive/tar::FileInfoNames
+	file, fileErr := tar.FileInfoHeader(namedInfo{name: "file.txt", size: 7, mode: 0644}, "")
+	fmt.Println(fileErr == nil, file.Name, file.Size, file.Mode, file.Typeflag, file.Uname, file.Gname, file.Linkname)
+
+	dir, dirErr := tar.FileInfoHeader(namedInfo{name: "subdir", mode: fs.ModeDir | 0755}, "")
+	fmt.Println(dirErr == nil, dir.Name, dir.Size, dir.Mode, dir.Typeflag, dir.Uname, dir.Gname, dir.Linkname)
+
+	link, linkErr := tar.FileInfoHeader(namedInfo{name: "shortcut", mode: fs.ModeSymlink | 0777}, "target.txt")
+	fmt.Println(linkErr == nil, link.Name, link.Size, link.Mode, link.Typeflag, link.Uname, link.Gname, link.Linkname)
 }
