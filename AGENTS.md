@@ -133,6 +133,10 @@ gors-builtin/
   bindings and avoids Rust moves such as `d := c` invalidating later uses of
   `c`. Function values and pointers stay cheap-copy through their existing
   representations.
+- Expected-type expression lowering also owns non-Copy assignment RHS cloning:
+  assigning an addressable same-type value into a field or local should be
+  cloned from Go type facts there, not patched later by Rust identifier or field
+  names.
 - Go pointer values lower to `Arc<Mutex<T>>` cells. Locals whose address is
   taken are promoted through the IR addressability analysis into the same cell
   representation, so `p := &x`, `*p = v`, and later reads of `x` observe the
