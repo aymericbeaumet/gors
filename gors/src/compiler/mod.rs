@@ -1871,6 +1871,17 @@ fn compile_go_type_params(type_params: Option<ast::FieldList>) -> syn::Generics 
 }
 
 fn compile_go_type_params_ref(type_params: Option<&ast::FieldList>) -> syn::Generics {
+    compile_go_type_params_ref_with_bounds(type_params, true)
+}
+
+fn compile_go_type_params_for_type_decl(type_params: Option<ast::FieldList>) -> syn::Generics {
+    compile_go_type_params_ref_with_bounds(type_params.as_ref(), false)
+}
+
+fn compile_go_type_params_ref_with_bounds(
+    type_params: Option<&ast::FieldList>,
+    include_bounds: bool,
+) -> syn::Generics {
     let Some(type_params) = type_params else {
         return syn::Generics::default();
     };
@@ -1879,11 +1890,15 @@ fn compile_go_type_params_ref(type_params: Option<&ast::FieldList>) -> syn::Gene
     let skipped = info.skipped_names();
     let mut params = syn::punctuated::Punctuated::new();
     for field in &type_params.list {
-        let bounds = field
-            .type_
-            .as_ref()
-            .map(go_constraint_to_rust_bounds)
-            .unwrap_or_default();
+        let bounds = if include_bounds {
+            field
+                .type_
+                .as_ref()
+                .map(go_constraint_to_rust_bounds)
+                .unwrap_or_default()
+        } else {
+            syn::punctuated::Punctuated::new()
+        };
         if let Some(names) = &field.names {
             for name in names {
                 if skipped.contains(name.name) {
@@ -1891,12 +1906,12 @@ fn compile_go_type_params_ref(type_params: Option<&ast::FieldList>) -> syn::Gene
                 }
                 let ident = syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
                 let mut bounds = bounds.clone();
-                if info.map_key_names.contains(&ident.to_string()) {
+                if include_bounds && info.map_key_names.contains(&ident.to_string()) {
                     bounds.push(syn::parse_quote! { Eq });
                     bounds.push(syn::parse_quote! { std::hash::Hash });
                     bounds = dedupe_type_param_bounds(bounds);
                 }
-                if info.map_value_names.contains(&ident.to_string()) {
+                if include_bounds && info.map_value_names.contains(&ident.to_string()) {
                     bounds.push(syn::parse_quote! { Clone });
                     bounds = dedupe_type_param_bounds(bounds);
                 }
@@ -8888,6 +8903,12 @@ fn contains_array_type(expr: &ast::Expr) -> bool {
         ast::Expr::ArrayType(array_type) if array_type.len.is_some() => true,
         ast::Expr::ArrayType(array_type) => contains_array_type(&array_type.elt),
         ast::Expr::StarExpr(star) => contains_array_type(&star.x),
+        ast::Expr::IndexExpr(index) => {
+            contains_array_type(&index.x) || contains_array_type(&index.index)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            contains_array_type(&index.x) || index.indices.iter().any(contains_array_type)
+        }
         ast::Expr::MapType(map) => contains_array_type(&map.key) || contains_array_type(&map.value),
         _ => false,
     }
@@ -8898,6 +8919,12 @@ fn contains_func_type(expr: &ast::Expr) -> bool {
         ast::Expr::FuncType(_) => true,
         ast::Expr::ArrayType(array_type) => contains_func_type(&array_type.elt),
         ast::Expr::StarExpr(star) => contains_func_type(&star.x),
+        ast::Expr::IndexExpr(index) => {
+            contains_func_type(&index.x) || contains_func_type(&index.index)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            contains_func_type(&index.x) || index.indices.iter().any(contains_func_type)
+        }
         ast::Expr::MapType(map) => contains_func_type(&map.key) || contains_func_type(&map.value),
         _ => false,
     }
@@ -8909,6 +8936,12 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
         ast::Expr::InterfaceType(_) => true,
         ast::Expr::ArrayType(array_type) => contains_any_type(&array_type.elt),
         ast::Expr::StarExpr(star) => contains_any_type(&star.x),
+        ast::Expr::IndexExpr(index) => {
+            contains_any_type(&index.x) || contains_any_type(&index.index)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            contains_any_type(&index.x) || index.indices.iter().any(contains_any_type)
+        }
         ast::Expr::MapType(map) => contains_any_type(&map.key) || contains_any_type(&map.value),
         _ => false,
     }
@@ -8924,6 +8957,12 @@ fn contains_interface_type(expr: &ast::Expr) -> bool {
         ast::Expr::InterfaceType(_) => true,
         ast::Expr::ArrayType(array_type) => contains_interface_type(&array_type.elt),
         ast::Expr::StarExpr(star) => contains_interface_type(&star.x),
+        ast::Expr::IndexExpr(index) => {
+            contains_interface_type(&index.x) || contains_interface_type(&index.index)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            contains_interface_type(&index.x) || index.indices.iter().any(contains_interface_type)
+        }
         ast::Expr::MapType(map) => {
             contains_interface_type(&map.key) || contains_interface_type(&map.value)
         }
@@ -8998,6 +9037,17 @@ fn expr_supports_derived_partial_eq(expr: &ast::Expr, self_ident: &syn::Ident) -
         }),
         ast::Expr::StarExpr(_) => self_referential_pointer_type(expr, self_ident).is_some(),
         ast::Expr::ChanType(_) => true,
+        ast::Expr::IndexExpr(index) => {
+            expr_supports_derived_partial_eq(&index.x, self_ident)
+                && expr_supports_derived_partial_eq(&index.index, self_ident)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            expr_supports_derived_partial_eq(&index.x, self_ident)
+                && index
+                    .indices
+                    .iter()
+                    .all(|arg| expr_supports_derived_partial_eq(arg, self_ident))
+        }
         ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => TYPE_ENV.with(|env| {
             go_type_supports_derived_partial_eq(
                 &typeinfer::GoType::from_expr(expr),
@@ -10149,7 +10199,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
         .ok_or_else(|| CompilerError::UnsupportedConstruct("type spec has no name".to_string()))?;
     let vis: syn::Visibility = syn::parse_quote! { pub };
     let ident: syn::Ident = name.into();
-    let mut generics = compile_go_type_params(ts.type_params);
+    let mut generics = compile_go_type_params_for_type_decl(ts.type_params);
     let is_alias_decl = ts.assign.is_some();
 
     if is_alias_decl && !matches!(ts.type_, ast::Expr::InterfaceType(_)) {
@@ -31285,5 +31335,36 @@ func main() {}
         );
         assert!(output.contains("<V>::default()"), "{output}");
         assert!(!output.contains("new(V)"), "{output}");
+    }
+
+    #[test]
+    fn it_should_not_bound_generic_type_declarations_for_any_instantiations() {
+        let go_input = r#"
+package main
+
+type Store[K comparable, V any] struct {
+	value V
+}
+
+type Holder struct {
+	m Store[any, any]
+}
+
+func main() {}
+"#;
+        let parsed = parse_file("test.go", go_input).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("pub struct Store<K, V>"), "{output}");
+        assert!(!output.contains("pub struct Store<K:"), "{output}");
+        assert!(
+            output.contains("m: Store<Box<dyn std::any::Any>, Box<dyn std::any::Any>>"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("#[derive(Clone, Default, PartialEq)]\npub struct Holder"),
+            "{output}"
+        );
     }
 }
