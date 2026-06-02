@@ -1422,7 +1422,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::FloatType",
@@ -1431,7 +1431,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::IntegerType",
@@ -1440,7 +1440,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::Type",
@@ -1449,7 +1449,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::Type1",
@@ -1458,7 +1458,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::TypeOrExpr",
@@ -1467,7 +1467,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage."
         },
         {
           "id": "builtin::any",
@@ -1630,7 +1630,7 @@
           "kind": "builtin",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: panic coverage needs generic panic/defer/recover payload semantics, including Go 1.21 nil-panic behavior, through the generated-program harness."
         },
         {
           "id": "builtin::print",
@@ -1639,7 +1639,7 @@
           "kind": "builtin",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: print writes implementation-specific output to stderr; needs generic stderr comparison/runtime formatting support before behavioral stdlib coverage."
         },
         {
           "id": "builtin::println",
@@ -1648,7 +1648,7 @@
           "kind": "builtin",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: println writes implementation-specific output to stderr; needs generic stderr comparison/runtime formatting support before behavioral stdlib coverage."
         },
         {
           "id": "builtin::real",
@@ -1668,7 +1668,7 @@
           "kind": "builtin",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: recover coverage needs generic deferred panic interception and payload restoration semantics through the generated-program harness."
         }
       ]
     },

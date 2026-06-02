@@ -88,5 +88,15 @@
   "bufio::Writer.Write": "Audited 2026-06-02: Write depends on mutation-preserving io.Writer calls, byte-slice buffer copy, and pointer receiver state mutation.",
   "bufio::Writer.WriteByte": "Audited 2026-06-02: WriteByte depends on byte-slice element writes and Writer state mutation.",
   "bufio::Writer.WriteRune": "Audited 2026-06-02: WriteRune depends on generic unicode/utf8 EncodeRune into mutable byte slices plus Writer flushing.",
-  "bufio::Writer.WriteString": "Audited 2026-06-02: WriteString depends on generic io.StringWriter type assertions, string-to-byte copy semantics, and Writer state mutation."
+  "bufio::Writer.WriteString": "Audited 2026-06-02: WriteString depends on generic io.StringWriter type assertions, string-to-byte copy semantics, and Writer state mutation.",
+  "builtin::ComplexType": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::FloatType": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::IntegerType": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::Type": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::Type1": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::TypeOrExpr": "Audited 2026-06-02: documentation-only pseudo-type in the pinned SDK builtin package; needs reporter classification separate from behavioral generated-program coverage.",
+  "builtin::panic": "Audited 2026-06-02: panic coverage needs generic panic/defer/recover payload semantics, including Go 1.21 nil-panic behavior, through the generated-program harness.",
+  "builtin::print": "Audited 2026-06-02: print writes implementation-specific output to stderr; needs generic stderr comparison/runtime formatting support before behavioral stdlib coverage.",
+  "builtin::println": "Audited 2026-06-02: println writes implementation-specific output to stderr; needs generic stderr comparison/runtime formatting support before behavioral stdlib coverage.",
+  "builtin::recover": "Audited 2026-06-02: recover coverage needs generic deferred panic interception and payload restoration semantics through the generated-program harness."
 }
