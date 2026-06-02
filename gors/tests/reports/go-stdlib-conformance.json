@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 205,
-    "unsupportedCaseCount": 12213,
+    "passingCaseCount": 208,
+    "unsupportedCaseCount": 12210,
     "fixtureCount": 80
   },
   "groups": [
@@ -4186,8 +4186,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 36,
-        "passingCaseCount": 20,
-        "unsupportedCaseCount": 16,
+        "passingCaseCount": 23,
+        "unsupportedCaseCount": 13,
         "fixtureCount": 0
       },
       "cases": [
@@ -4242,7 +4242,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decapsulator behavior depends on generic interface values whose methods return byte-slice secrets, ciphertext errors, and receiver-specific key state."
         },
         {
           "id": "crypto::Decrypter",
@@ -4251,7 +4251,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decrypter behavior depends on interface dispatch over private-key receiver state, random io.Reader inputs, byte-slice plaintext results, and DecrypterOpts interface values."
         },
         {
           "id": "crypto::DecrypterOpts",
@@ -4260,7 +4260,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: DecrypterOpts coverage depends on concrete option types carried through Decrypter interface calls and method-set based option dispatch."
         },
         {
           "id": "crypto::Encapsulator",
@@ -4269,7 +4269,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulator behavior depends on generic interface values whose methods return paired byte slices and errors while preserving receiver-specific key state."
         },
         {
           "id": "crypto::Hash",
@@ -4289,15 +4289,17 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Available depends on the hash constructor registry: package-level function-value slice state, nil function checks, and named Hash values as indexes."
         },
         {
           "id": "crypto::Hash.HashFunc",
           "title": "Hash.HashFunc",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto"
+          ],
           "reason": ""
         },
         {
@@ -4307,15 +4309,17 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: New depends on function values returning imported hash.Hash interface objects from the package-level hash constructor registry."
         },
         {
           "id": "crypto::Hash.Size",
           "title": "Hash.Size",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto"
+          ],
           "reason": ""
         },
         {
@@ -4323,8 +4327,10 @@
           "title": "Hash.String",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto"
+          ],
           "reason": ""
         },
         {
@@ -4367,7 +4373,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MessageSigner behavior depends on generic SignMessage dispatch through private-key interfaces, random io.Reader inputs, and option interface handling."
         },
         {
           "id": "crypto::PrivateKey",
@@ -4376,7 +4382,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey is an alias to any; behavioral coverage depends on concrete private-key interface dispatch through signer/decrypter/message-signer paths."
         },
         {
           "id": "crypto::PublicKey",
@@ -4385,7 +4391,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey is an alias to any; behavioral coverage depends on concrete public-key interface dispatch through encapsulator or verifier-style paths."
         },
         {
           "id": "crypto::RIPEMD160",
@@ -4405,7 +4411,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RegisterHash depends on assigning named function values into package-level registry state indexed by Hash values."
         },
         {
           "id": "crypto::SHA1",
@@ -4535,7 +4541,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SignMessage depends on method-set detection for MessageSigner versus Signer implementations, option HashFunc calls, and interface value dispatch."
         },
         {
           "id": "crypto::Signer",
@@ -4544,7 +4550,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Signer behavior depends on private-key interface dispatch, public-key return values, random io.Reader inputs, and SignerOpts interface methods."
         },
         {
           "id": "crypto::SignerOpts",
@@ -4553,7 +4559,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SignerOpts coverage depends on option interface values whose HashFunc method feeds generic signing dispatch."
         }
       ]
     },

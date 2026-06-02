@@ -49,6 +49,18 @@ func caseCryptoHashConstants() {
 	)
 }
 
+func caseCryptoHashMethods() {
+	// gors:stdlib-cover crypto::Hash.HashFunc
+	// gors:stdlib-cover crypto::Hash.Size
+	// gors:stdlib-cover crypto::Hash.String
+	fmt.Println(
+		crypto.SHA256.HashFunc() == crypto.SHA256,
+		crypto.SHA256.Size(),
+		crypto.SHA256.String(),
+	)
+}
+
 func main() {
 	caseCryptoHashConstants()
+	caseCryptoHashMethods()
 }

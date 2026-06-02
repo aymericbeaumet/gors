@@ -236,5 +236,18 @@
   "context::WithTimeout": "Audited 2026-06-02: WithTimeout depends on time.Now/Add plus the unsupported deadline timer and cancellation propagation path.",
   "context::WithTimeoutCause": "Audited 2026-06-02: WithTimeoutCause depends on time.Now/Add plus the unsupported cause-carrying deadline timer path.",
   "context::WithValue": "Audited 2026-06-02: WithValue depends on reflectlite comparability checks, interface key equality, and chained valueCtx interface traversal.",
-  "context::WithoutCancel": "Audited 2026-06-02: WithoutCancel depends on wrapper Context delegation, Cause-aware Value traversal, and full cancellation interface semantics."
+  "context::WithoutCancel": "Audited 2026-06-02: WithoutCancel depends on wrapper Context delegation, Cause-aware Value traversal, and full cancellation interface semantics.",
+  "crypto::Decapsulator": "Audited 2026-06-02: Decapsulator behavior depends on generic interface values whose methods return byte-slice secrets, ciphertext errors, and receiver-specific key state.",
+  "crypto::Decrypter": "Audited 2026-06-02: Decrypter behavior depends on interface dispatch over private-key receiver state, random io.Reader inputs, byte-slice plaintext results, and DecrypterOpts interface values.",
+  "crypto::DecrypterOpts": "Audited 2026-06-02: DecrypterOpts coverage depends on concrete option types carried through Decrypter interface calls and method-set based option dispatch.",
+  "crypto::Encapsulator": "Audited 2026-06-02: Encapsulator behavior depends on generic interface values whose methods return paired byte slices and errors while preserving receiver-specific key state.",
+  "crypto::Hash.Available": "Audited 2026-06-02: Available depends on the hash constructor registry: package-level function-value slice state, nil function checks, and named Hash values as indexes.",
+  "crypto::Hash.New": "Audited 2026-06-02: New depends on function values returning imported hash.Hash interface objects from the package-level hash constructor registry.",
+  "crypto::MessageSigner": "Audited 2026-06-02: MessageSigner behavior depends on generic SignMessage dispatch through private-key interfaces, random io.Reader inputs, and option interface handling.",
+  "crypto::PrivateKey": "Audited 2026-06-02: PrivateKey is an alias to any; behavioral coverage depends on concrete private-key interface dispatch through signer/decrypter/message-signer paths.",
+  "crypto::PublicKey": "Audited 2026-06-02: PublicKey is an alias to any; behavioral coverage depends on concrete public-key interface dispatch through encapsulator or verifier-style paths.",
+  "crypto::RegisterHash": "Audited 2026-06-02: RegisterHash depends on assigning named function values into package-level registry state indexed by Hash values.",
+  "crypto::SignMessage": "Audited 2026-06-02: SignMessage depends on method-set detection for MessageSigner versus Signer implementations, option HashFunc calls, and interface value dispatch.",
+  "crypto::Signer": "Audited 2026-06-02: Signer behavior depends on private-key interface dispatch, public-key return values, random io.Reader inputs, and SignerOpts interface methods.",
+  "crypto::SignerOpts": "Audited 2026-06-02: SignerOpts coverage depends on option interface values whose HashFunc method feeds generic signing dispatch."
 }

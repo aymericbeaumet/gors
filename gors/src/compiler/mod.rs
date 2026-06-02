@@ -2781,6 +2781,13 @@ fn set_local_const_value(name: &str, value: ConstValue) {
     });
 }
 
+fn set_package_const_integer_value(name: &str, value: &ConstValue) {
+    let Some(value) = value.as_i128() else {
+        return;
+    };
+    TYPE_ENV.with(|env| env.borrow_mut().set_const_integer_value(name, value));
+}
+
 fn is_local_const_name(name: &str) -> bool {
     LOCAL_CONST_VALUES.with(|values| {
         values
@@ -3356,6 +3363,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                 });
             }
             if let Some(evaluated) = evaluated {
+                set_package_const_integer_value(name.name, &evaluated);
                 const_values.insert(name.name.to_string(), evaluated);
             }
             if let Some(bytes) = evaluated_string_bytes {
@@ -12731,6 +12739,42 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
     }
 
     impl VisitMut for RewriteReceiver<'_> {
+        fn visit_stmt_mut(&mut self, stmt: &mut syn::Stmt) {
+            syn::visit_mut::visit_stmt_mut(self, stmt);
+            if !self.borrowed_receiver {
+                return;
+            }
+            if let syn::Stmt::Expr(expr, _) = stmt
+                && matches!(expr, syn::Expr::Path(path) if path.path.is_ident("self"))
+            {
+                *expr = syn::parse_quote! { (*self).clone() };
+            }
+        }
+
+        fn visit_local_mut(&mut self, local: &mut syn::Local) {
+            syn::visit_mut::visit_local_mut(self, local);
+            if !self.borrowed_receiver {
+                return;
+            }
+            if let Some(init) = &mut local.init
+                && matches!(&*init.expr, syn::Expr::Path(path) if path.path.is_ident("self"))
+            {
+                init.expr = Box::new(syn::parse_quote! { (*self).clone() });
+            }
+        }
+
+        fn visit_expr_return_mut(&mut self, ret: &mut syn::ExprReturn) {
+            syn::visit_mut::visit_expr_return_mut(self, ret);
+            if !self.borrowed_receiver {
+                return;
+            }
+            if let Some(expr) = &mut ret.expr
+                && matches!(&**expr, syn::Expr::Path(path) if path.path.is_ident("self"))
+            {
+                *expr = Box::new(syn::parse_quote! { (*self).clone() });
+            }
+        }
+
         fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
             syn::visit_mut::visit_expr_binary_mut(self, binary);
             if !self.borrowed_receiver {
@@ -12826,6 +12870,12 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
         borrowed_receiver,
     }
     .visit_block_mut(block);
+    if borrowed_receiver
+        && let Some(syn::Stmt::Expr(expr, _)) = block.stmts.last_mut()
+        && matches!(expr, syn::Expr::Path(path) if path.path.is_ident("self"))
+    {
+        *expr = syn::parse_quote! { (*self).clone() };
+    }
 }
 
 fn value_receiver_body_mutates_receiver(
@@ -15222,29 +15272,53 @@ fn compile_array_literal(array_type: &ast::ArrayType, raw_elts: Vec<ast::Expr>) 
         .as_ref()
         .map(|array_len| array_literal_len_expr(array_len, &raw_elts));
     let mut indexed_elts: Vec<(proc_macro2::TokenStream, syn::Expr)> = vec![];
+    let mut keyed_slice_elts: BTreeMap<usize, syn::Expr> = BTreeMap::new();
+    let mut has_keyed_elt = false;
+    let mut all_slice_indexes_known = true;
     let mut next_index = 0usize;
     for elt in raw_elts {
         if let ast::Expr::KeyValueExpr(kv) = elt {
+            has_keyed_elt = true;
             let key_ast = *kv.key;
             let key_value = const_eval_expr_in_active_env(&key_ast, 0, &BTreeMap::new())
                 .and_then(|value| value.as_u128())
                 .and_then(|value| usize::try_from(value).ok());
             let key: syn::Expr = key_ast.into();
             let value = compile_array_literal_element(*kv.value, &array_type.elt, &elem_go_type);
+            if let Some(key_value) = key_value {
+                keyed_slice_elts.insert(key_value, value.clone());
+            } else {
+                all_slice_indexes_known = false;
+            }
             indexed_elts.push((quote::quote! { (#key) as usize }, value));
             if let Some(key_value) = key_value {
                 next_index = key_value.saturating_add(1);
             }
         } else {
-            let index = syn::Index::from(next_index);
-            next_index = next_index.saturating_add(1);
+            let index_value = next_index;
+            let index = syn::Index::from(index_value);
             let value = compile_array_literal_element(elt, &array_type.elt, &elem_go_type);
+            keyed_slice_elts.insert(index_value, value.clone());
+            next_index = index_value.saturating_add(1);
             indexed_elts.push((quote::quote! { #index }, value));
         }
     }
     if array_type.len.is_none() {
         if indexed_elts.is_empty() {
             syn::parse_quote! { Vec::new() }
+        } else if has_keyed_elt && all_slice_indexes_known {
+            let len = keyed_slice_elts
+                .keys()
+                .next_back()
+                .map_or(0usize, |index| index.saturating_add(1));
+            let elts = (0..len)
+                .map(|index| {
+                    keyed_slice_elts
+                        .remove(&index)
+                        .unwrap_or_else(|| default_expr_for_type(&array_type.elt))
+                })
+                .collect::<Vec<_>>();
+            syn::parse_quote! { Vec::from([#(#elts),*]) }
         } else {
             let elts = indexed_elts.into_iter().map(|(_, elt)| elt);
             syn::parse_quote! { Vec::from([#(#elts),*]) }
@@ -28325,6 +28399,50 @@ var X int
     }
 
     #[test]
+    fn it_should_clone_borrowed_value_receiver_used_as_standalone_value() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Hash uint
+
+                const SHA256 Hash = 5
+
+                func (h Hash) HashFunc() Hash {
+                    return h
+                }
+
+                func (h Hash) String() string {
+                    switch h {
+                    case SHA256:
+                        return "SHA-256"
+                    default:
+                        return "unknown"
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("pub fn HashFunc (& self) -> Hash { (* self) . clone () }"),
+            "expected value receiver return to materialize the receiver value: {output}"
+        );
+        assert!(
+            output.contains("let __gors_switch_tag = (* self) . clone ()"),
+            "expected switch over value receiver to materialize the receiver value: {output}"
+        );
+        assert!(
+            !output.contains("let __gors_switch_tag = self"),
+            "expected switch tag not to keep borrowed receiver reference: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_preserve_named_integer_map_keys_and_receiver_bitwise_methods() {
         let parsed = parse_file(
             "test.go",
@@ -34046,6 +34164,43 @@ func main() {
                     let _ = s;
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_keyed_slice_literal_indexes_with_zero_holes() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Index uint
+                const (
+                    A Index = 1 + iota
+                    B
+                    C
+                    D
+                )
+
+                func main() {
+                    values := []uint8{A: 7, 8, D: 9}
+                    _ = values
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = (quote! {#compiled}).to_string();
+
+        assert!(
+            output.contains(
+                "Vec :: from ([Default :: default () , (7 as u8) , (8 as u8) , Default :: default () , (9 as u8)])"
+            ),
+            "{output}"
+        );
+        assert!(
+            !output.contains("Vec :: from ([(7 as u8) , (8 as u8) , (9 as u8)])"),
+            "{output}"
         );
     }
 
