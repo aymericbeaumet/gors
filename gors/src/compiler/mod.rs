@@ -11733,61 +11733,74 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
     .visit_block_mut(block);
 }
 
-fn value_receiver_body_mutates_receiver(body: &ast::BlockStmt, recv_name: &str) -> bool {
+fn value_receiver_body_mutates_receiver(
+    body: &ast::BlockStmt,
+    recv_name: &str,
+    recv_type_name: &str,
+) -> bool {
     if recv_name.is_empty() {
         return false;
     }
     body.list
         .iter()
-        .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+        .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
 }
 
-fn stmt_mutates_receiver(stmt: &ast::Stmt, recv_name: &str) -> bool {
+fn stmt_mutates_receiver(stmt: &ast::Stmt, recv_name: &str, recv_type_name: &str) -> bool {
     match stmt {
         ast::Stmt::AssignStmt(assign) => assign
             .lhs
             .iter()
             .any(|expr| expr_targets_receiver(expr, recv_name)),
-        ast::Stmt::BlockStmt(block) => value_receiver_body_mutates_receiver(block, recv_name),
+        ast::Stmt::BlockStmt(block) => {
+            value_receiver_body_mutates_receiver(block, recv_name, recv_type_name)
+        }
         ast::Stmt::CaseClause(case) => case
             .body
             .iter()
-            .any(|stmt| stmt_mutates_receiver(stmt, recv_name)),
+            .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name)),
         ast::Stmt::CommClause(comm) => {
             comm.comm
                 .as_ref()
-                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
                 || comm
                     .body
                     .iter()
-                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
         }
         ast::Stmt::ForStmt(for_stmt) => {
             for_stmt
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
+                || for_stmt
+                    .cond
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
                 || for_stmt
                     .post
                     .as_ref()
-                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
-                || value_receiver_body_mutates_receiver(&for_stmt.body, recv_name)
+                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
+                || value_receiver_body_mutates_receiver(&for_stmt.body, recv_name, recv_type_name)
         }
         ast::Stmt::IfStmt(if_stmt) => {
             if_stmt
                 .init
                 .as_ref()
                 .as_ref()
-                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
-                || value_receiver_body_mutates_receiver(&if_stmt.body, recv_name)
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
+                || expr_mutates_receiver(&if_stmt.cond, recv_name, recv_type_name)
+                || value_receiver_body_mutates_receiver(&if_stmt.body, recv_name, recv_type_name)
                 || if_stmt
                     .else_
                     .as_ref()
                     .as_ref()
-                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                    .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
         }
         ast::Stmt::IncDecStmt(inc_dec) => expr_targets_receiver(&inc_dec.x, recv_name),
-        ast::Stmt::LabeledStmt(labeled) => stmt_mutates_receiver(&labeled.stmt, recv_name),
+        ast::Stmt::LabeledStmt(labeled) => {
+            stmt_mutates_receiver(&labeled.stmt, recv_name, recv_type_name)
+        }
         ast::Stmt::RangeStmt(range) => {
             range
                 .key
@@ -11797,45 +11810,139 @@ fn stmt_mutates_receiver(stmt: &ast::Stmt, recv_name: &str) -> bool {
                     .value
                     .as_ref()
                     .is_some_and(|expr| expr_targets_receiver(expr, recv_name))
-                || value_receiver_body_mutates_receiver(&range.body, recv_name)
+                || expr_mutates_receiver(&range.x, recv_name, recv_type_name)
+                || value_receiver_body_mutates_receiver(&range.body, recv_name, recv_type_name)
         }
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .any(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name)),
         ast::Stmt::SelectStmt(select) => select
             .body
             .list
             .iter()
-            .any(|stmt| stmt_mutates_receiver(stmt, recv_name)),
+            .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name)),
+        ast::Stmt::SendStmt(send) => {
+            expr_mutates_receiver(&send.chan, recv_name, recv_type_name)
+                || expr_mutates_receiver(&send.value, recv_name, recv_type_name)
+        }
         ast::Stmt::SwitchStmt(switch) => {
             switch
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
+                || switch
+                    .tag
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
                 || switch
                     .body
                     .list
                     .iter()
-                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
             type_switch
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name))
-                || stmt_mutates_receiver(&type_switch.assign, recv_name)
+                .is_some_and(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
+                || stmt_mutates_receiver(&type_switch.assign, recv_name, recv_type_name)
                 || type_switch
                     .body
                     .list
                     .iter()
-                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name))
+                    .any(|stmt| stmt_mutates_receiver(stmt, recv_name, recv_type_name))
         }
         ast::Stmt::BranchStmt(_)
         | ast::Stmt::DeclStmt(_)
         | ast::Stmt::DeferStmt(_)
         | ast::Stmt::EmptyStmt(_)
-        | ast::Stmt::ExprStmt(_)
-        | ast::Stmt::GoStmt(_)
-        | ast::Stmt::ReturnStmt(_)
-        | ast::Stmt::SendStmt(_) => false,
+        | ast::Stmt::GoStmt(_) => false,
+        ast::Stmt::ExprStmt(expr) => expr_mutates_receiver(&expr.x, recv_name, recv_type_name),
     }
+}
+
+fn expr_mutates_receiver(expr: &ast::Expr, recv_name: &str, recv_type_name: &str) -> bool {
+    match expr {
+        ast::Expr::BinaryExpr(binary) => {
+            expr_mutates_receiver(&binary.x, recv_name, recv_type_name)
+                || expr_mutates_receiver(&binary.y, recv_name, recv_type_name)
+        }
+        ast::Expr::CallExpr(call) => {
+            call_mutates_receiver(call, recv_name, recv_type_name)
+                || expr_mutates_receiver(&call.fun, recv_name, recv_type_name)
+                || call.args.as_ref().is_some_and(|args| {
+                    args.iter()
+                        .any(|arg| expr_mutates_receiver(arg, recv_name, recv_type_name))
+                })
+        }
+        ast::Expr::CompositeLit(lit) => lit.elts.as_ref().is_some_and(|elts| {
+            elts.iter()
+                .any(|elt| expr_mutates_receiver(elt, recv_name, recv_type_name))
+        }),
+        ast::Expr::IndexExpr(index) => {
+            expr_mutates_receiver(&index.x, recv_name, recv_type_name)
+                || expr_mutates_receiver(&index.index, recv_name, recv_type_name)
+        }
+        ast::Expr::IndexListExpr(index) => {
+            expr_mutates_receiver(&index.x, recv_name, recv_type_name)
+                || index
+                    .indices
+                    .iter()
+                    .any(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            expr_mutates_receiver(&kv.key, recv_name, recv_type_name)
+                || expr_mutates_receiver(&kv.value, recv_name, recv_type_name)
+        }
+        ast::Expr::ParenExpr(paren) => expr_mutates_receiver(&paren.x, recv_name, recv_type_name),
+        ast::Expr::SelectorExpr(selector) => {
+            expr_mutates_receiver(&selector.x, recv_name, recv_type_name)
+        }
+        ast::Expr::SliceExpr(slice) => {
+            expr_mutates_receiver(&slice.x, recv_name, recv_type_name)
+                || slice
+                    .low
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
+                || slice
+                    .high
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
+                || slice
+                    .max
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_receiver(expr, recv_name, recv_type_name))
+        }
+        ast::Expr::StarExpr(star) => expr_mutates_receiver(&star.x, recv_name, recv_type_name),
+        ast::Expr::TypeAssertExpr(assert) => {
+            expr_mutates_receiver(&assert.x, recv_name, recv_type_name)
+        }
+        ast::Expr::UnaryExpr(unary) => expr_mutates_receiver(&unary.x, recv_name, recv_type_name),
+        ast::Expr::ArrayType(_)
+        | ast::Expr::BasicLit(_)
+        | ast::Expr::ChanType(_)
+        | ast::Expr::Ellipsis(_)
+        | ast::Expr::FuncLit(_)
+        | ast::Expr::FuncType(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::InterfaceType(_)
+        | ast::Expr::MapType(_)
+        | ast::Expr::StructType(_) => false,
+    }
+}
+
+fn call_mutates_receiver(call: &ast::CallExpr, recv_name: &str, recv_type_name: &str) -> bool {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return false;
+    };
+    if !expr_targets_receiver(&selector.x, recv_name) {
+        return false;
+    }
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .method_has_pointer_receiver(&method_key(recv_type_name, selector.sel.name))
+    })
 }
 
 fn expr_targets_receiver(expr: &ast::Expr, recv_name: &str) -> bool {
@@ -12178,11 +12285,9 @@ fn compile_method(
     let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) =
         if is_pointer || is_slice_receiver || has_borrowed_interface_field {
             (syn::parse_quote! { &mut self }, false)
-        } else if func_decl
-            .body
-            .as_ref()
-            .is_some_and(|body| value_receiver_body_mutates_receiver(body, &recv_name))
-        {
+        } else if func_decl.body.as_ref().is_some_and(|body| {
+            value_receiver_body_mutates_receiver(body, recv_source_name, &type_name)
+        }) {
             (syn::parse_quote! { mut self }, false)
         } else {
             (syn::parse_quote! { &self }, true)
@@ -14604,6 +14709,32 @@ fn method_call_expr(
         turbofish: None,
         paren_token: syn::token::Paren::default(),
         args,
+    })
+}
+
+fn value_method_call_receiver_should_clone(receiver: &ast::Expr, method_name: &str) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let receiver_type = typeinfer::GoType::infer_expr(receiver, &env);
+        if matches!(
+            resolved_go_type(&receiver_type),
+            typeinfer::GoType::Pointer(_)
+        ) {
+            return false;
+        }
+        let resolved_receiver_type = env.resolve_alias(&receiver_type);
+        if go_type_is_interface_like(&receiver_type)
+            || go_type_is_interface_like(&resolved_receiver_type)
+        {
+            return false;
+        }
+        let Some(receiver_name) = receiver_method_type_name_for_call(receiver_type.clone(), &env)
+        else {
+            return false;
+        };
+        env.has_method_func(&receiver_name, method_name)
+            && !env.method_has_pointer_receiver(&method_key(&receiver_name, method_name))
+            && !go_type_is_copy(&receiver_type)
     })
 }
 
@@ -19937,7 +20068,14 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 });
                 if is_method_call {
                     if let ast::Expr::SelectorExpr(sel) = *call_expr.fun {
+                        let should_clone_receiver =
+                            value_method_call_receiver_should_clone(&sel.x, sel.sel.name);
                         let receiver = method_receiver_expr_from_ref(*sel.x);
+                        let receiver = if should_clone_receiver {
+                            syn::parse_quote! { (#receiver).clone() }
+                        } else {
+                            receiver
+                        };
                         let method: syn::Ident = sel.sel.into();
                         let mut args = syn::punctuated::Punctuated::new();
                         if let Some(cargs) = call_expr.args {
@@ -28793,6 +28931,71 @@ func (enc Encoding) WithPadding(padding int) *Encoding {
         assert!(main_rs.contains("std::sync::Mutex::new(self)"), "{main_rs}");
         assert!(
             !main_rs.contains("std::sync::Mutex::new(&self)"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_value_receiver_pointer_method_calls_use_owned_self() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/data"
+
+func main() {
+	v := data.Value{}
+	_ = v.StepThenRead()
+	_ = v.ReturnStep()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("data/data.go").as_path(),
+            r#"
+package data
+
+type Value struct {
+	n int
+}
+
+func (v Value) StepThenRead() int {
+	v.step()
+	return v.n
+}
+
+func (v Value) ReturnStep() int {
+	return v.step()
+}
+
+func (v *Value) step() int {
+	v.n++
+	return v.n
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("example__data.rs").unwrap();
+        assert!(
+            main_rs.contains("pub fn StepThenRead(mut self)"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("pub fn ReturnStep(mut self)"), "{main_rs}");
+        assert!(!main_rs.contains("pub fn StepThenRead(&self)"), "{main_rs}");
+        assert!(!main_rs.contains("pub fn ReturnStep(&self)"), "{main_rs}");
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("(v).clone().StepThenRead()")
+                || main_rs.contains("((v) . clone ()) . StepThenRead ()"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("(v).clone().ReturnStep()")
+                || main_rs.contains("((v) . clone ()) . ReturnStep ()"),
             "{main_rs}"
         );
     }
