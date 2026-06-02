@@ -10226,6 +10226,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             // Generate trait with method signatures
             let mut trait_items: Vec<syn::TraitItem> = vec![];
             let mut supertraits = syn::punctuated::Punctuated::new();
+            supertraits.push(syn::parse_quote! { Send });
+            supertraits.push(syn::parse_quote! { Sync });
 
             if let Some(methods_list) = iface.methods {
                 for field in methods_list.list {
@@ -29213,7 +29215,8 @@ func main() {
                 type Stringer interface {}
             "#,
             rust! {
-                pub trait Stringer {}
+                pub trait Stringer: Send + Sync {}
+                impl<T> Stringer for T where T: Send + Sync {}
             },
         );
     }
