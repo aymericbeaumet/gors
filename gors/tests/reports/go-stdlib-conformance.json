@@ -13447,7 +13447,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decapsulation key behavior depends on transitive crypto/internal/fips140/mlkem roots, imported pointer-backed key state, and generated crypto.Decapsulator interface impls with Send/Sync requirements."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey1024.Bytes",
@@ -13456,7 +13456,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on dispatch through imported pointer-backed FIPS key state after crypto/internal/fips140/mlkem module reachability is preserved."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey1024.Decapsulate",
@@ -13465,7 +13465,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decapsulate depends on imported FIPS ML-KEM key dispatch, byte-slice ciphertext validation, shared-key byte-slice returns, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey1024.EncapsulationKey",
@@ -13474,7 +13474,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: EncapsulationKey depends on returning pointer-backed public key wrappers while preserving transitive FIPS ML-KEM module roots."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey1024.Encapsulator",
@@ -13483,7 +13483,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulator depends on crypto.Encapsulator interface values for pointer-backed key wrappers and generated Send/Sync-compatible interface impls."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey768",
@@ -13492,7 +13492,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decapsulation key behavior depends on transitive crypto/internal/fips140/mlkem roots, imported pointer-backed key state, and generated crypto.Decapsulator interface impls with Send/Sync requirements."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey768.Bytes",
@@ -13501,7 +13501,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on dispatch through imported pointer-backed FIPS key state after crypto/internal/fips140/mlkem module reachability is preserved."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey768.Decapsulate",
@@ -13510,7 +13510,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decapsulate depends on imported FIPS ML-KEM key dispatch, byte-slice ciphertext validation, shared-key byte-slice returns, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey768.EncapsulationKey",
@@ -13519,7 +13519,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: EncapsulationKey depends on returning pointer-backed public key wrappers while preserving transitive FIPS ML-KEM module roots."
         },
         {
           "id": "crypto/mlkem::DecapsulationKey768.Encapsulator",
@@ -13528,7 +13528,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulator depends on crypto.Encapsulator interface values for pointer-backed key wrappers and generated Send/Sync-compatible interface impls."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey1024",
@@ -13537,7 +13537,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulation key behavior depends on imported pointer-backed FIPS key state, transitive crypto/internal/fips140/mlkem roots, and crypto.Encapsulator interface impls."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey1024.Bytes",
@@ -13546,7 +13546,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on dispatch through imported pointer-backed FIPS key state after crypto/internal/fips140/mlkem module reachability is preserved."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey1024.Encapsulate",
@@ -13555,7 +13555,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulate depends on random-source key encapsulation, byte-slice shared-key/ciphertext returns, and imported FIPS ML-KEM key dispatch."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey768",
@@ -13564,7 +13564,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulation key behavior depends on imported pointer-backed FIPS key state, transitive crypto/internal/fips140/mlkem roots, and crypto.Encapsulator interface impls."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey768.Bytes",
@@ -13573,7 +13573,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on dispatch through imported pointer-backed FIPS key state after crypto/internal/fips140/mlkem module reachability is preserved."
         },
         {
           "id": "crypto/mlkem::EncapsulationKey768.Encapsulate",
@@ -13582,7 +13582,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulate depends on random-source key encapsulation, byte-slice shared-key/ciphertext returns, and imported FIPS ML-KEM key dispatch."
         },
         {
           "id": "crypto/mlkem::EncapsulationKeySize1024",
@@ -13613,7 +13613,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey1024 depends on crypto/internal/fips140/mlkem key generation roots, random-source byte filling, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::GenerateKey768",
@@ -13622,7 +13622,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey768 depends on crypto/internal/fips140/mlkem key generation roots, random-source byte filling, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::NewDecapsulationKey1024",
@@ -13631,7 +13631,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewDecapsulationKey1024 depends on preserving transitive FIPS ML-KEM roots, seed byte-slice validation, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::NewDecapsulationKey768",
@@ -13640,7 +13640,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewDecapsulationKey768 depends on preserving transitive FIPS ML-KEM roots, seed byte-slice validation, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::NewEncapsulationKey1024",
@@ -13649,7 +13649,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewEncapsulationKey1024 depends on preserving transitive FIPS ML-KEM roots, public-key byte-slice validation, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::NewEncapsulationKey768",
@@ -13658,7 +13658,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewEncapsulationKey768 depends on preserving transitive FIPS ML-KEM roots, public-key byte-slice validation, pointer-backed key wrappers, and error interface propagation."
         },
         {
           "id": "crypto/mlkem::SeedSize",
@@ -13705,7 +13705,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulate1024 is a test-helper path that depends on crypto/internal/fips140/mlkem reachability, unsafe []byte to *[32]byte conversion, and FIPS enforcement error behavior."
         },
         {
           "id": "crypto/mlkem/mlkemtest::Encapsulate768",
@@ -13714,7 +13714,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Encapsulate768 is a test-helper path that depends on crypto/internal/fips140/mlkem reachability, unsafe []byte to *[32]byte conversion, and FIPS enforcement error behavior."
         }
       ]
     },
