@@ -60,6 +60,11 @@ thread_local! {
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static BORROWED_POINTER_VIEW_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static BORROWED_POINTER_VIEW_METHODS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static MUTABLE_SLICE_VIEW_METHODS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static BORROWED_POINTER_VIEW_RETURN: RefCell<Option<BorrowedPointerViewReturn>> = const { RefCell::new(None) };
+    static MUTABLE_SLICE_VIEW_RETURN: RefCell<Option<MutableSliceViewReturn>> = const { RefCell::new(None) };
     static BORROWED_SLICE_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
@@ -120,8 +125,31 @@ struct BorrowedPointerParamNamesGuard {
     previous: std::collections::HashSet<String>,
 }
 
+struct BorrowedPointerViewNamesGuard {
+    previous: std::collections::HashSet<String>,
+}
+
+struct BorrowedPointerViewReturnGuard {
+    previous: Option<BorrowedPointerViewReturn>,
+}
+
+struct MutableSliceViewReturnGuard {
+    previous: Option<MutableSliceViewReturn>,
+}
+
 struct BorrowedSliceParamNamesGuard {
     previous: std::collections::HashSet<String>,
+}
+
+#[derive(Clone)]
+struct BorrowedPointerViewReturn {
+    target_name: String,
+    target_ty: syn::Type,
+}
+
+#[derive(Clone)]
+struct MutableSliceViewReturn {
+    elem_ty: syn::Type,
 }
 
 #[derive(Clone)]
@@ -303,6 +331,54 @@ impl Drop for BorrowedPointerParamNamesGuard {
     fn drop(&mut self) {
         BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
             *borrowed.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl BorrowedPointerViewNamesGuard {
+    fn clear() -> Self {
+        let previous = BORROWED_POINTER_VIEW_NAMES
+            .with(|borrowed| std::mem::take(&mut *borrowed.borrow_mut()));
+        Self { previous }
+    }
+}
+
+impl Drop for BorrowedPointerViewNamesGuard {
+    fn drop(&mut self) {
+        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
+            *borrowed.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl BorrowedPointerViewReturnGuard {
+    fn set(current: Option<BorrowedPointerViewReturn>) -> Self {
+        let previous = BORROWED_POINTER_VIEW_RETURN
+            .with(|info| std::mem::replace(&mut *info.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+impl Drop for BorrowedPointerViewReturnGuard {
+    fn drop(&mut self) {
+        BORROWED_POINTER_VIEW_RETURN.with(|info| {
+            *info.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
+impl MutableSliceViewReturnGuard {
+    fn set(current: Option<MutableSliceViewReturn>) -> Self {
+        let previous = MUTABLE_SLICE_VIEW_RETURN
+            .with(|info| std::mem::replace(&mut *info.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+impl Drop for MutableSliceViewReturnGuard {
+    fn drop(&mut self) {
+        MUTABLE_SLICE_VIEW_RETURN.with(|info| {
+            *info.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -10864,11 +10940,13 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let rust_type: syn::Type = other.into();
             let struct_item: syn::Item = if is_fixed_array_alias && is_copy_alias {
                 syn::parse_quote! {
+                    #[repr(transparent)]
                     #[derive(Clone, Copy, PartialEq, PartialOrd)]
                     #vis struct #ident #generics(pub #rust_type);
                 }
             } else if is_fixed_array_alias {
                 syn::parse_quote! {
+                    #[repr(transparent)]
                     #[derive(Clone)]
                     #vis struct #ident #generics(pub #rust_type);
                 }
@@ -11695,6 +11773,274 @@ fn expr_targets_receiver(expr: &ast::Expr, recv_name: &str) -> bool {
     }
 }
 
+fn func_decl_receiver_type_name(func_decl: &ast::FuncDecl) -> Option<(String, bool)> {
+    let recv_type = func_decl.recv.as_ref()?.list.first()?.type_.as_ref()?;
+    match recv_type {
+        ast::Expr::Ident(id) => Some((id.name.to_string(), false)),
+        ast::Expr::StarExpr(star) => type_env_name_from_type_expr(&star.x).map(|name| (name, true)),
+        _ => None,
+    }
+}
+
+fn func_decl_receiver_name<'a>(func_decl: &'a ast::FuncDecl<'a>) -> Option<&'a str> {
+    func_decl
+        .recv
+        .as_ref()?
+        .list
+        .first()?
+        .names
+        .as_ref()?
+        .first()
+        .map(|name| name.name)
+        .filter(|name| !name.is_empty() && *name != "_")
+}
+
+fn single_result_type_expr<'a>(func_type: &'a ast::FuncType<'a>) -> Option<&'a ast::Expr<'a>> {
+    let results = func_type.results.as_ref()?;
+    let [field] = results.list.as_slice() else {
+        return None;
+    };
+    if field.names.as_ref().is_some_and(|names| names.len() > 1) {
+        return None;
+    }
+    field.type_.as_ref()
+}
+
+fn single_return_expr<'a>(body: &'a ast::BlockStmt<'a>) -> Option<&'a ast::Expr<'a>> {
+    let [ast::Stmt::ReturnStmt(return_stmt)] = body.list.as_slice() else {
+        return None;
+    };
+    let [expr] = return_stmt.results.as_slice() else {
+        return None;
+    };
+    Some(expr)
+}
+
+fn mutable_slice_result_elem_type(func_type: &ast::FuncType) -> Option<syn::Type> {
+    let ast::Expr::ArrayType(array) = single_result_type_expr(func_type)? else {
+        return None;
+    };
+    array.len.is_none().then(|| type_from_expr_ref(&array.elt))
+}
+
+fn slice_expr_rooted_in_name(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name == name,
+        ast::Expr::ParenExpr(paren) => slice_expr_rooted_in_name(&paren.x, name),
+        ast::Expr::SliceExpr(slice) => {
+            slice.max.is_none() && slice_expr_rooted_in_name(&slice.x, name)
+        }
+        _ => false,
+    }
+}
+
+fn mutable_slice_view_return_info(
+    func_decl: &ast::FuncDecl,
+    recv_name: &str,
+) -> Option<MutableSliceViewReturn> {
+    let elem_ty = mutable_slice_result_elem_type(&func_decl.type_)?;
+    let body = func_decl.body.as_ref()?;
+    let return_expr = single_return_expr(body)?;
+    let ast::Expr::SliceExpr(_) = return_expr else {
+        return None;
+    };
+    slice_expr_rooted_in_name(return_expr, recv_name).then_some(MutableSliceViewReturn { elem_ty })
+}
+
+fn pointer_result_target_name(func_type: &ast::FuncType) -> Option<String> {
+    let ast::Expr::StarExpr(star) = single_result_type_expr(func_type)? else {
+        return None;
+    };
+    type_env_name_from_type_expr(&star.x)
+}
+
+fn fixed_array_alias_elem(name: &str, env: &typeinfer::TypeEnv) -> Option<typeinfer::GoType> {
+    let kind = env.get_type_kind(name)?;
+    let typeinfer::TypeKind::Alias(alias) = kind else {
+        return None;
+    };
+    let typeinfer::GoType::Array(elem) = env.resolve_alias(alias) else {
+        return None;
+    };
+    Some((*elem).clone())
+}
+
+fn pointer_conversion_target_name(fun: &ast::Expr) -> Option<String> {
+    match fun {
+        ast::Expr::ParenExpr(paren) => pointer_conversion_target_name(&paren.x),
+        ast::Expr::StarExpr(star) => type_env_name_from_type_expr(&star.x),
+        _ => None,
+    }
+}
+
+fn borrowed_pointer_view_return_arg<'a>(
+    expr: &'a ast::Expr<'a>,
+    target_name: &str,
+) -> Option<&'a ast::Expr<'a>> {
+    let ast::Expr::CallExpr(call) = expr else {
+        return None;
+    };
+    if pointer_conversion_target_name(&call.fun).as_deref() != Some(target_name) {
+        return None;
+    }
+    let [arg] = call.args.as_deref()? else {
+        return None;
+    };
+    Some(arg)
+}
+
+fn borrowed_pointer_view_return_info(
+    func_decl: &ast::FuncDecl,
+    receiver_type_name: &str,
+    recv_name: &str,
+) -> Option<BorrowedPointerViewReturn> {
+    let target_name = pointer_result_target_name(&func_decl.type_)?;
+    let body = func_decl.body.as_ref()?;
+    let return_expr = single_return_expr(body)?;
+    let arg = borrowed_pointer_view_return_arg(return_expr, &target_name)?;
+    if !slice_expr_rooted_in_name(arg, recv_name) {
+        return None;
+    }
+    let target_ty = named_go_type_path(&target_name);
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let source_elem = fixed_array_alias_elem(receiver_type_name, &env)?;
+        let target_elem = fixed_array_alias_elem(&target_name, &env)?;
+        (source_elem == target_elem).then_some(BorrowedPointerViewReturn {
+            target_name,
+            target_ty,
+        })
+    })
+}
+
+fn method_key(type_name: &str, method_name: &str) -> String {
+    format!("{type_name}.{method_name}")
+}
+
+fn view_method_key_for_selector(selector: &ast::SelectorExpr) -> Option<String> {
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let type_name = named_method_receiver_type_name(receiver_type)?;
+    Some(method_key(&type_name, selector.sel.name))
+}
+
+fn named_method_receiver_type_name(receiver_type: typeinfer::GoType) -> Option<String> {
+    match receiver_type {
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+        typeinfer::GoType::Pointer(inner) => match *inner {
+            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            _ => None,
+        },
+        other => match resolved_go_type(&other) {
+            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            typeinfer::GoType::Pointer(inner) => match *inner {
+                typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        },
+    }
+}
+
+fn call_view_method_key(call: &ast::CallExpr) -> Option<String> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    view_method_key_for_selector(selector)
+}
+
+fn call_returns_borrowed_pointer_view(call: &ast::CallExpr) -> bool {
+    let Some(key) = call_view_method_key(call) else {
+        return false;
+    };
+    if BORROWED_POINTER_VIEW_METHODS.with(|methods| methods.borrow().contains(&key)) {
+        return true;
+    }
+    call_returns_borrowed_pointer_view_by_type(call)
+}
+
+fn call_returns_mutable_slice_view(call: &ast::CallExpr) -> bool {
+    let Some(key) = call_view_method_key(call) else {
+        return false;
+    };
+    if MUTABLE_SLICE_VIEW_METHODS.with(|methods| methods.borrow().contains(&key)) {
+        return true;
+    }
+    call_returns_mutable_slice_view_by_type(call)
+}
+
+fn call_returns_borrowed_pointer_view_by_type(call: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return false;
+    };
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
+        let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
+            return false;
+        };
+        fixed_array_alias_elem(&receiver_name, &env).is_some()
+            && matches!(
+                env.get_method_return(&receiver_name, selector.sel.name),
+                typeinfer::GoType::Pointer(inner)
+                    if matches!(*inner, typeinfer::GoType::Named(ref name)
+                        if fixed_array_alias_elem(name, &env).is_some())
+            )
+    })
+}
+
+fn call_returns_mutable_slice_view_by_type(call: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return false;
+    };
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
+        let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
+            return false;
+        };
+        fixed_array_alias_elem(&receiver_name, &env).is_some()
+            && matches!(
+                env.get_method_return(&receiver_name, selector.sel.name),
+                typeinfer::GoType::Slice(_)
+            )
+    })
+}
+
+fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
+    let mut borrowed_pointer_methods = std::collections::HashSet::new();
+    let mut mutable_slice_methods = std::collections::HashSet::new();
+    for decl in decls {
+        let ast::Decl::FuncDecl(func_decl) = decl else {
+            continue;
+        };
+        let Some((receiver_type_name, is_pointer_receiver)) =
+            func_decl_receiver_type_name(func_decl)
+        else {
+            continue;
+        };
+        if !is_pointer_receiver {
+            continue;
+        }
+        let Some(recv_name) = func_decl_receiver_name(func_decl) else {
+            continue;
+        };
+        let key = method_key(&receiver_type_name, func_decl.name.name);
+        if borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name).is_some() {
+            borrowed_pointer_methods.insert(key.clone());
+        }
+        if mutable_slice_view_return_info(func_decl, recv_name).is_some() {
+            mutable_slice_methods.insert(key);
+        }
+    }
+    BORROWED_POINTER_VIEW_METHODS.with(|methods| {
+        *methods.borrow_mut() = borrowed_pointer_methods;
+    });
+    MUTABLE_SLICE_VIEW_METHODS.with(|methods| {
+        *methods.borrow_mut() = mutable_slice_methods;
+    });
+}
+
 fn compile_method(
     func_decl: ast::FuncDecl,
 ) -> Result<(String, Vec<syn::Ident>, syn::ImplItemFn), CompilerError> {
@@ -11702,6 +12048,7 @@ fn compile_method(
 
     let recv = func_decl
         .recv
+        .as_ref()
         .ok_or_else(|| CompilerError::UnsupportedConstruct("method has no receiver".to_string()))?;
 
     let recv_field = recv
@@ -11714,6 +12061,12 @@ fn compile_method(
         .as_ref()
         .and_then(|n| n.first())
         .map(|n| rust_safe_ident_name(n.name))
+        .unwrap_or_default();
+    let recv_source_name = recv_field
+        .names
+        .as_ref()
+        .and_then(|n| n.first())
+        .map(|n| n.name)
         .unwrap_or_default();
 
     let recv_type = recv_field
@@ -11732,6 +12085,12 @@ fn compile_method(
     let has_borrowed_interface_field =
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
     let type_args = receiver_type_args(recv_type);
+    let mutable_slice_view_return = (!recv_source_name.is_empty())
+        .then(|| mutable_slice_view_return_info(&func_decl, recv_source_name))
+        .flatten();
+    let borrowed_pointer_view_return = (is_pointer && !recv_source_name.is_empty())
+        .then(|| borrowed_pointer_view_return_info(&func_decl, &type_name, recv_source_name))
+        .flatten();
     let mut active_local_names = func_type_local_binding_names(&func_decl.type_);
     if !recv_name.is_empty() {
         active_local_names.insert(recv_name.clone());
@@ -11781,7 +12140,7 @@ fn compile_method(
     let mut borrow_pointer_params =
         pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
     if let Some(body) = func_decl.body.as_ref() {
-        validate_function_semantics(Some(&recv), &func_decl.type_, body)?;
+        validate_function_semantics(Some(recv), &func_decl.type_, body)?;
     }
     if is_pointer && !recv_name.is_empty() {
         borrow_pointer_params.insert(recv_name.clone());
@@ -11791,6 +12150,11 @@ fn compile_method(
     let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
         borrowed_slice_alias_param_names(&func_decl.type_.params),
     );
+    let borrowed_pointer_view_names = BorrowedPointerViewNamesGuard::clear();
+    let borrowed_pointer_view_return_guard =
+        BorrowedPointerViewReturnGuard::set(borrowed_pointer_view_return.clone());
+    let mutable_slice_view_return_guard =
+        MutableSliceViewReturnGuard::set(mutable_slice_view_return.clone());
     let type_param_info = TypeParamInfo::default();
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
@@ -11805,7 +12169,10 @@ fn compile_method(
     }
 
     let vis: syn::Visibility = (&func_decl.name).into();
-    let attrs = comment_group_to_attrs(&func_decl.doc);
+    let mut attrs = comment_group_to_attrs(&func_decl.doc);
+    if borrowed_pointer_view_return.is_some() {
+        attrs.push(syn::parse_quote! { #[allow(unsafe_code)] });
+    }
     let mut named_return_info: Vec<(syn::Ident, Option<syn::Type>, syn::Expr)> = vec![];
     let mut named_return_idents: Vec<syn::Ident> = vec![];
     if let Some(ref results) = func_decl.type_.results {
@@ -11876,6 +12243,9 @@ fn compile_method(
         *idents.borrow_mut() = previous_named_return_idents;
     });
     let mut block = block_result?;
+    drop(mutable_slice_view_return_guard);
+    drop(borrowed_pointer_view_return_guard);
+    drop(borrowed_pointer_view_names);
     drop(borrowed_pointer_param_names);
     drop(borrowed_slice_param_names);
 
@@ -11894,7 +12264,21 @@ fn compile_method(
         wrap_named_return_block(&mut block, &named_return_info, &named_return_idents);
     }
 
-    let mut output = compile_return_type(func_decl.type_.results)?;
+    let mut output = if let Some(info) = mutable_slice_view_return {
+        let elem = info.elem_ty;
+        syn::ReturnType::Type(
+            <Token![->]>::default(),
+            Box::new(syn::parse_quote! { &mut [#elem] }),
+        )
+    } else if let Some(info) = borrowed_pointer_view_return {
+        let target_ty = info.target_ty;
+        syn::ReturnType::Type(
+            <Token![->]>::default(),
+            Box::new(syn::parse_quote! { &mut #target_ty }),
+        )
+    } else {
+        compile_return_type(func_decl.type_.results)?
+    };
     add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
     let sig = syn::Signature {
@@ -12886,7 +13270,7 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             };
             let src_ty =
                 TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
-            let dst = match lvalue_expr_from_ref(&dst_raw).ok_or_else(|| {
+            let dst = match lvalue_expr_from_owned(dst_raw).ok_or_else(|| {
                 CompilerError::InvalidAssignment("copy destination is not addressable".to_string())
             }) {
                 Ok(dst) => dst,
@@ -14046,6 +14430,35 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     }
 }
 
+fn lvalue_expr_from_owned(expr: ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::CallExpr(call) if call_returns_mutable_slice_view(&call) => {
+            let call: syn::Expr = ast::Expr::CallExpr(call).into();
+            Some(syn::parse_quote! { *#call })
+        }
+        ast::Expr::SliceExpr(slice) => {
+            let base = lvalue_expr_from_owned(*slice.x)?;
+            let low = slice
+                .low
+                .as_ref()
+                .and_then(|expr| lvalue_index_component_expr(expr));
+            let high = slice
+                .high
+                .as_ref()
+                .and_then(|expr| lvalue_index_component_expr(expr));
+            match (low, high) {
+                (Some(low), Some(high)) => {
+                    Some(syn::parse_quote! { (#base)[(#low) as usize..(#high) as usize] })
+                }
+                (Some(low), None) => Some(syn::parse_quote! { (#base)[(#low) as usize..] }),
+                (None, Some(high)) => Some(syn::parse_quote! { (#base)[..(#high) as usize] }),
+                (None, None) => Some(syn::parse_quote! { (#base)[..] }),
+            }
+        }
+        other => lvalue_expr_from_ref(&other),
+    }
+}
+
 fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     if let Some(expr) = syn_expr_from_type_expr_like(expr) {
         return Some(expr);
@@ -14313,8 +14726,11 @@ fn is_borrowed_slice_param_name(name: &str) -> bool {
 fn is_borrowed_pointer_expr_ref(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::Ident(ident) => {
-            is_borrowed_pointer_param_name(&rust_safe_ident_name(ident.name))
+            let name = rust_safe_ident_name(ident.name);
+            is_borrowed_pointer_param_name(&name)
+                || BORROWED_POINTER_VIEW_NAMES.with(|borrowed| borrowed.borrow().contains(&name))
         }
+        ast::Expr::CallExpr(call) => call_returns_borrowed_pointer_view(call),
         ast::Expr::ParenExpr(paren) => is_borrowed_pointer_expr_ref(&paren.x),
         _ => false,
     }
@@ -14577,12 +14993,39 @@ fn maybe_clone_binding_init(should_clone: bool, init: syn::Expr) -> syn::Expr {
     }
 }
 
+fn compile_borrowed_pointer_view_return_expr(
+    expr: &ast::Expr,
+    info: &BorrowedPointerViewReturn,
+) -> Option<syn::Expr> {
+    let arg = borrowed_pointer_view_return_arg(expr, &info.target_name)?;
+    let base = lvalue_expr_from_ref(arg)?;
+    let target_ty = &info.target_ty;
+    Some(syn::parse_quote! {
+        unsafe { &mut *((&mut *#base) as *mut _ as *mut #target_ty) }
+    })
+}
+
+fn compile_mutable_slice_view_return_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let lvalue = lvalue_expr_from_ref(expr)?;
+    Some(syn::parse_quote! { &mut #lvalue })
+}
+
 fn compile_return_expr_with_expected(
     expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
 ) -> syn::Expr {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
         return compile_expr_with_expected(expr, expected);
+    }
+    if let Some(info) = BORROWED_POINTER_VIEW_RETURN.with(|info| info.borrow().clone())
+        && let Some(expr) = compile_borrowed_pointer_view_return_expr(&expr, &info)
+    {
+        return expr;
+    }
+    if MUTABLE_SLICE_VIEW_RETURN.with(|info| info.borrow().is_some())
+        && let Some(expr) = compile_mutable_slice_view_return_expr(&expr)
+    {
+        return expr;
     }
     if let Some(expected) = expected
         && let Some(interface_name) = go_type_interface_name(expected)
@@ -16958,7 +17401,7 @@ fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
 
 fn compile_index_assignment_lhs(index: ast::IndexExpr<'_>) -> Option<syn::Expr> {
     let ast::IndexExpr { x, index, .. } = index;
-    let base = lvalue_expr_from_ref(&x)?;
+    let base = lvalue_expr_from_owned(*x)?;
     let index: syn::Expr = (*index).into();
     Some(syn::parse_quote! { (#base)[(#index) as usize] })
 }
@@ -20237,6 +20680,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
         NON_CLONE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
         set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
+        preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods =
             collect_needed_imported_interface_method_sets(&file.decls);
 
@@ -21630,6 +22074,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let _panic_returns_through_defer =
             PanicReturnsThroughDeferGuard::set(panic_returns_through_defer);
         let _slice_alias_targets = SliceAliasTargetsGuard::clear();
+        let borrowed_pointer_view_names = BorrowedPointerViewNamesGuard::clear();
         let block_result = if let Some(block) = intrinsic_block {
             Ok(block)
         } else if let Some(body) = func_decl.body {
@@ -21637,6 +22082,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         } else {
             Ok(bodyless_function_block(&output, &inputs))
         };
+        drop(borrowed_pointer_view_names);
         drop(borrowed_pointer_param_names);
         drop(borrowed_slice_param_names);
         BYTE_SEQ_TYPE_PARAMS.with(|params| {
@@ -24088,6 +24534,53 @@ fn direct_assignment_ident_name<'a>(expr: &ast::Expr<'a>) -> Option<&'a str> {
     }
 }
 
+fn expr_returns_borrowed_pointer_view(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::CallExpr(call) => call_returns_borrowed_pointer_view(call),
+        ast::Expr::ParenExpr(paren) => expr_returns_borrowed_pointer_view(&paren.x),
+        _ => false,
+    }
+}
+
+fn update_borrowed_pointer_view_names_for_assignment(assign_stmt: &ast::AssignStmt) {
+    let assigned_names = assign_stmt
+        .lhs
+        .iter()
+        .filter_map(direct_assignment_ident_name)
+        .map(rust_safe_ident_name)
+        .collect::<Vec<_>>();
+
+    if !assigned_names.is_empty() {
+        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
+            let mut borrowed = borrowed.borrow_mut();
+            for name in &assigned_names {
+                borrowed.remove(name);
+            }
+        });
+    }
+
+    if assign_stmt.lhs.len() != 1 || assign_stmt.rhs.len() != 1 {
+        return;
+    }
+    let Some(lhs_name) = assign_stmt
+        .lhs
+        .first()
+        .and_then(direct_assignment_ident_name)
+        .map(rust_safe_ident_name)
+    else {
+        return;
+    };
+    if assign_stmt
+        .rhs
+        .first()
+        .is_some_and(expr_returns_borrowed_pointer_view)
+    {
+        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
+            borrowed.borrow_mut().insert(lhs_name);
+        });
+    }
+}
+
 fn update_slice_alias_targets_for_assignment(assign_stmt: &ast::AssignStmt) {
     let assigned_names = assign_stmt
         .lhs
@@ -24213,6 +24706,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
 
     fn try_from(assign_stmt: ast::AssignStmt) -> Result<Self, Self::Error> {
         update_slice_alias_targets_for_assignment(&assign_stmt);
+        update_borrowed_pointer_view_names_for_assignment(&assign_stmt);
         if assign_stmt.tok == token::Token::DEFINE && assign_stmt.lhs.len() == assign_stmt.rhs.len()
         {
             TYPE_ENV.with(|env| {
@@ -28958,12 +29452,79 @@ func main() {
         let output = quote::quote!(#compiled).to_string();
 
         assert!(
-            output.contains("std :: sync :: Arc :: new (std :: sync :: Mutex :: new (header"),
-            "expected pointer conversion to construct target newtype: {output}"
+            output.contains("# [repr (transparent)]"),
+            "expected fixed array aliases to have transparent layout: {output}"
         );
         assert!(
-            !output.contains("as header"),
-            "expected fixed array pointer conversion not to emit a Rust cast: {output}"
+            output.contains("fn header (& mut self) -> & mut header"),
+            "expected pointer conversion view method to return a borrowed target: {output}"
+        );
+        assert!(
+            output.contains("& mut * ((& mut * self) as * mut _ as * mut header)"),
+            "expected pointer conversion to borrow existing storage: {output}"
+        );
+        assert!(
+            !output.contains("std :: sync :: Arc :: new (std :: sync :: Mutex :: new (header"),
+            "expected fixed array pointer conversion not to allocate a copied pointer cell: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_fixed_array_slice_view_methods() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) name() []byte {
+                    return h[1:][:3]
+                }
+
+                func fill(b *block) {
+                    h := b.header()
+                    h.name()[0] = 'A'
+                    copy(h.name()[1:], "bc")
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("fn header (& mut self) -> & mut header"),
+            "expected pointer view method: {output}"
+        );
+        assert!(
+            output.contains("fn name (& mut self) -> & mut [u8]"),
+            "expected slice view method: {output}"
+        );
+        assert!(
+            output.contains("(* h . name ()) [(0) as usize] ="),
+            "expected index assignment through returned slice view: {output}"
+        );
+        assert!(
+            output.contains("crate :: builtin :: copy_slice"),
+            "expected copy into returned slice view: {output}"
+        );
+        assert!(
+            !output.contains("invalid index assignment lhs")
+                && !output.contains("copy destination is not addressable"),
+            "expected returned slice views to be addressable: {output}"
+        );
+        assert!(
+            !output.contains(". lock () . unwrap ()"),
+            "expected borrowed pointer view local not to use pointer-cell locking: {output}"
         );
     }
 
