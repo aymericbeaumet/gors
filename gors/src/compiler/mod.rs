@@ -6385,7 +6385,46 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
         *arg = syn::parse_quote! { (#inner).to_vec() };
         return;
     }
+    if matches!(kind, CloneValueParamKind::Vec) && take_deref_value_arg(arg) {
+        return;
+    }
     clone_value_arg(arg);
+}
+
+fn take_deref_value_arg(arg: &mut syn::Expr) -> bool {
+    let syn::Expr::Unary(unary) = arg else {
+        return false;
+    };
+    if !matches!(unary.op, syn::UnOp::Deref(_)) {
+        return false;
+    }
+    if is_self_path_expr(&unary.expr) {
+        *arg = syn::parse_quote! { std::mem::take(&mut *self) };
+        return true;
+    }
+    if is_self_field_expr(&unary.expr) {
+        let inner = unary.expr.clone();
+        *arg = syn::parse_quote! { std::mem::take(&mut *#inner) };
+        return true;
+    }
+    false
+}
+
+fn is_self_path_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::Path(path)
+            if path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
+    )
+}
+
+fn is_self_field_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::Field(field) if is_self_path_expr(&field.base)
+    )
 }
 
 fn take_value_arg(arg: &mut syn::Expr) {
@@ -28397,6 +28436,60 @@ var X int
         assert!(
             output.contains("crate :: helper :: bytes ((data) . clone ())"),
             "expected ordinary Vec argument to keep cloneable-value behavior: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_takes_deref_self_vec_args() {
+        let helper_file: syn::File = rust! {
+            pub fn append_rune(mut values: Vec<u8>, mut r: i32) -> Vec<u8> {
+                values
+            }
+        };
+        let main_file: syn::File = rust! {
+            pub struct buffer(pub Vec<u8>);
+
+            impl buffer {
+                pub fn write_rune(&mut self, mut r: i32) {
+                    *self = buffer(crate::helper::append_rune(*self, r));
+                }
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "helper".to_string(),
+                super::CompiledModule {
+                    mod_name: "helper".to_string(),
+                    import_path: "helper".to_string(),
+                    file: helper_file,
+                    filename: "helper.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output
+                .contains("crate :: helper :: append_rune (std :: mem :: take (& mut * self) , r)"),
+            "expected by-value Vec helper arg to take dereferenced receiver lvalue: {output}"
         );
     }
 

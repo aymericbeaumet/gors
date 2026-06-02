@@ -352,17 +352,6 @@ impl VisitMut for CoerceTypes {
             }
             return;
         }
-
-        if is_path_call(&call.func, &["crate", "unicode__utf8", "AppendRune"])
-            || is_path_call(&call.func, &["unicode__utf8", "AppendRune"])
-            || is_path_call(&call.func, &["crate", "utf8", "AppendRune"])
-            || is_path_call(&call.func, &["utf8", "AppendRune"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                replace_self_deref_with_take(first);
-            }
-            return;
-        }
     }
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
