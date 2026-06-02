@@ -8774,6 +8774,23 @@ fn contains_any_type(expr: &ast::Expr) -> bool {
     }
 }
 
+fn contains_interface_type(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => contains_interface_type(&paren.x),
+        ast::Expr::Ident(ident) if ident.name == "error" || is_type_interface(ident.name) => true,
+        ast::Expr::Ident(ident) => TYPE_ENV.with(|env| env.borrow().is_interface(ident.name)),
+        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
+            .is_some_and(|name| TYPE_ENV.with(|env| env.borrow().is_interface(&name))),
+        ast::Expr::InterfaceType(_) => true,
+        ast::Expr::ArrayType(array_type) => contains_interface_type(&array_type.elt),
+        ast::Expr::StarExpr(star) => contains_interface_type(&star.x),
+        ast::Expr::MapType(map) => {
+            contains_interface_type(&map.key) || contains_interface_type(&map.value)
+        }
+        _ => false,
+    }
+}
+
 fn go_type_supports_derived_partial_eq(
     go_type: &typeinfer::GoType,
     env: &typeinfer::TypeEnv,
@@ -9152,7 +9169,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
             syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#inner>> }
         }
         ast::Expr::ArrayType(array_type) => {
-            let elem = type_from_expr_ref(&array_type.elt);
+            let elem = container_value_type_from_expr(&array_type.elt);
             if let Some(len) = &array_type.len {
                 let len_expr = array_len_expr(len);
                 syn::parse_quote! { [#elem; #len_expr] }
@@ -9166,7 +9183,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
         }
         ast::Expr::Ellipsis(ellipsis) => {
             if let Some(elt) = &ellipsis.elt {
-                let inner = type_from_expr_ref(elt);
+                let inner = container_value_type_from_expr(elt);
                 syn::parse_quote! { Vec<#inner> }
             } else {
                 syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
@@ -9512,6 +9529,10 @@ fn self_referential_pointer_type(expr: &ast::Expr, self_ident: &syn::Ident) -> O
 
 fn type_from_struct_field_expr(expr: &ast::Expr, self_ident: &syn::Ident) -> syn::Type {
     self_referential_pointer_type(expr, self_ident).unwrap_or_else(|| type_from_expr_ref(expr))
+}
+
+fn container_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
+    boxed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
 }
 
 fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
@@ -10028,8 +10049,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     let field_contains_func = contains_func_type(&field_type);
                     let field_needs_manual_default =
                         contains_array_type(&field_type) || field_contains_func || field_is_error;
-                    let field_cannot_derive_clone =
-                        contains_any_type(&field_type) || interface_trait_path.is_some();
+                    let field_cannot_derive_clone = contains_any_type(&field_type)
+                        || contains_interface_type(&field_type)
+                        || interface_trait_path.is_some();
                     let field_cannot_derive_partial_eq =
                         !expr_supports_derived_partial_eq(&field_type, &ident);
                     let field_cannot_default = borrowed_interface_trait_path.is_some();
@@ -10399,6 +10421,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 resolved_go_type(&underlying_go_type),
                 typeinfer::GoType::String
             );
+            let generics_for_impl = generics.clone();
+            let (impl_generics, ty_generics, where_clause) = generics_for_impl.split_for_impl();
             let fixed_array_default = match &other {
                 ast::Expr::ArrayType(array_type) if array_type.len.is_some() => {
                     Some(default_expr_for_array_type(array_type))
@@ -10434,30 +10458,30 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 }
             };
             let deref_impl: syn::Item = syn::parse_quote! {
-                impl std::ops::Deref for #ident {
+                impl #impl_generics std::ops::Deref for #ident #ty_generics #where_clause {
                     type Target = #rust_type;
                     fn deref(&self) -> &#rust_type { &self.0 }
                 }
             };
             let deref_mut_impl: syn::Item = syn::parse_quote! {
-                impl std::ops::DerefMut for #ident {
+                impl #impl_generics std::ops::DerefMut for #ident #ty_generics #where_clause {
                     fn deref_mut(&mut self) -> &mut #rust_type { &mut self.0 }
                 }
             };
             let mut items = vec![struct_item, deref_impl, deref_mut_impl];
             if let Some(default_expr) = fixed_array_default {
                 items.push(syn::parse_quote! {
-                    impl Default for #ident {
+                    impl #impl_generics Default for #ident #ty_generics #where_clause {
                         fn default() -> Self { Self(#default_expr) }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::Len for #ident {
+                    impl #impl_generics crate::builtin::Len for #ident #ty_generics #where_clause {
                         fn len_value(&self) -> usize { self.0.len() }
                     }
                 });
                 items.push(syn::parse_quote! {
-                    impl crate::builtin::Cap for #ident {
+                    impl #impl_generics crate::builtin::Cap for #ident #ty_generics #where_clause {
                         fn cap_value(&self) -> usize { self.0.len() }
                     }
                 });
@@ -13081,65 +13105,16 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                     }
                     return syn::parse_quote! { #type_ident(#(#elts),*) };
                 }
-                let field_values = raw_elts_to_field_values(Some(&type_name), raw_elts);
-                if field_values.is_empty() || has_unnamed_field_values(&field_values) {
-                    syn::parse_quote! { #type_ident::default() }
-                } else {
-                    let all_struct_fields_set = TYPE_ENV.with(|env| {
-                        let count = env.borrow().get_struct_fields(&type_name).len();
-                        count > 0 && field_values.len() == count
-                    });
-                    let mut fields = syn::punctuated::Punctuated::new();
-                    for fv in field_values {
-                        fields.push(fv);
-                    }
-                    if !fields.trailing_punct() {
-                        fields.push_punct(<syn::Token![,]>::default());
-                    }
-                    syn::Expr::Struct(syn::ExprStruct {
-                        attrs: vec![],
-                        qself: None,
-                        path: syn::parse_quote! { #type_ident },
-                        brace_token: syn::token::Brace::default(),
-                        fields,
-                        dot2_token: (!all_struct_fields_set).then(<syn::Token![..]>::default),
-                        rest: (!all_struct_fields_set)
-                            .then(|| Box::new(syn::parse_quote! { Default::default() })),
-                    })
-                }
+                compile_struct_composite_lit(
+                    syn::parse_quote! { #type_ident },
+                    Some(&type_name),
+                    raw_elts,
+                )
             }
             ast::Expr::SelectorExpr(sel) => {
                 let type_name = selector_type_env_name(&sel);
                 let path: syn::ExprPath = sel.into();
-                let field_values = raw_elts_to_field_values(type_name.as_deref(), raw_elts);
-                if field_values.is_empty() || has_unnamed_field_values(&field_values) {
-                    let p = &path.path;
-                    syn::parse_quote! { #p::default() }
-                } else {
-                    let all_struct_fields_set = type_name.as_deref().is_some_and(|type_name| {
-                        TYPE_ENV.with(|env| {
-                            let count = env.borrow().get_struct_fields(type_name).len();
-                            count > 0 && field_values.len() == count
-                        })
-                    });
-                    let mut fields = syn::punctuated::Punctuated::new();
-                    for fv in field_values {
-                        fields.push(fv);
-                    }
-                    if !fields.trailing_punct() {
-                        fields.push_punct(<syn::Token![,]>::default());
-                    }
-                    syn::Expr::Struct(syn::ExprStruct {
-                        attrs: vec![],
-                        qself: None,
-                        path: path.path,
-                        brace_token: syn::token::Brace::default(),
-                        fields,
-                        dot2_token: (!all_struct_fields_set).then(<syn::Token![..]>::default),
-                        rest: (!all_struct_fields_set)
-                            .then(|| Box::new(syn::parse_quote! { Default::default() })),
-                    })
-                }
+                compile_struct_composite_lit(path.path, type_name.as_deref(), raw_elts)
             }
             ast::Expr::IndexExpr(index) => {
                 let type_expr = ast::Expr::IndexExpr(index);
@@ -28509,6 +28484,98 @@ func push(xs ints, value int) ints {
             output.contains("crate :: builtin :: append ((* xs) . clone () , (value) . clone ())"),
             "{output}"
         );
+    }
+
+    #[test]
+    fn it_should_fill_named_struct_literal_missing_fields_without_rest_default() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type state struct {
+	r Reader
+	n int
+	err error
+}
+
+func makeState(r Reader) state {
+	return state{r: r}
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("state { r : r , n : Default :: default () , err : Box :: new (crate :: builtin :: __GorsNooperror :: default ()) as Box < dyn crate :: builtin :: error > , }"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("state { r : r , .. Default :: default () }"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_box_named_interface_slice_struct_fields() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+type multi struct {
+	writers []Writer
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("writers : Vec < Box < dyn Writer > >"),
+            "{output}"
+        );
+        assert!(!output.contains("writers : Vec < Writer >"), "{output}");
+        assert!(
+            !output.contains("derive (Clone , Default)] pub struct multi"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_emit_generic_newtype_deref_impls() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Seq[V any] func(func(V) bool)
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("impl < V > std :: ops :: Deref for Seq < V >"),
+            "{output}"
+        );
+        assert!(
+            output.contains("impl < V > std :: ops :: DerefMut for Seq < V >"),
+            "{output}"
+        );
+        assert!(!output.contains("Deref for Seq {"), "{output}");
     }
 
     #[test]
