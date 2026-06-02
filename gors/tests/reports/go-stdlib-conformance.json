@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 37,
-    "unsupportedCaseCount": 12547,
+    "passingCaseCount": 47,
+    "unsupportedCaseCount": 12537,
     "fixtureCount": 76
   },
   "groups": [
@@ -852,13 +852,15 @@
       "id": "bufio",
       "title": "bufio",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "bufio"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 57,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 57,
+        "passingCaseCount": 10,
+        "unsupportedCaseCount": 47,
         "fixtureCount": 0
       },
       "cases": [
@@ -867,8 +869,10 @@
           "title": "ErrAdvanceTooFar",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -876,8 +880,10 @@
           "title": "ErrBadReadCount",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -885,8 +891,10 @@
           "title": "ErrBufferFull",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -894,8 +902,10 @@
           "title": "ErrFinalToken",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -903,8 +913,10 @@
           "title": "ErrInvalidUnreadByte",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -912,8 +924,10 @@
           "title": "ErrInvalidUnreadRune",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -921,8 +935,10 @@
           "title": "ErrNegativeAdvance",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -930,8 +946,10 @@
           "title": "ErrNegativeCount",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -939,8 +957,10 @@
           "title": "ErrTooLong",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
@@ -948,8 +968,10 @@
           "title": "MaxScanTokenSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bufio"
+          ],
           "reason": ""
         },
         {
