@@ -175,6 +175,10 @@ pub fn write_go_stdlib_conformance(
 ) -> Result<(), String> {
     let fixture_root = fixtures_dir().join("go_stdlib");
     let mut symbols_by_package = collect_stdlib_symbols()?;
+    let mut unsupported_reasons = load_stdlib_unsupported_reasons(
+        &fixture_root.join("unsupported.json"),
+        &symbols_by_package,
+    )?;
     let discovered_fixture_names = collect_fixture_names(&fixture_root)?;
     let passed_fixture_names = if retain_unattempted_fixture_names {
         merge_existing_passing_fixture_names(
@@ -208,14 +212,20 @@ pub fn write_go_stdlib_conformance(
                     } else {
                         ReportStatus::Passing
                     };
+                    let id = format!("{package_path}::{}", symbol.name);
+                    let reason = if status == ReportStatus::Unsupported {
+                        unsupported_reasons.remove(&id).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
                     ReportCase {
-                        id: format!("{package_path}::{}", symbol.name),
+                        id,
                         title: symbol.name,
                         subtitle: symbol.kind.clone(),
                         kind: symbol.kind,
                         status,
                         fixtures,
-                        reason: String::new(),
+                        reason,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -230,6 +240,7 @@ pub fn write_go_stdlib_conformance(
             }
         })
         .collect::<Vec<_>>();
+    reject_stale_unsupported_reasons(&fixture_root.join("unsupported.json"), &unsupported_reasons)?;
 
     let mut summary = summarize_groups(&groups);
     summary.fixture_count = discovered_fixture_names.len();
@@ -382,6 +393,56 @@ fn collect_stdlib_symbols() -> Result<BTreeMap<String, BTreeMap<String, StdlibSy
         add_symbol(&mut symbols_by_package, "builtin", builtin, "builtin");
     }
     Ok(symbols_by_package)
+}
+
+fn load_stdlib_unsupported_reasons(
+    path: &Path,
+    symbols_by_package: &BTreeMap<String, BTreeMap<String, StdlibSymbol>>,
+) -> Result<BTreeMap<String, String>, String> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let reasons: BTreeMap<String, String> = serde_json::from_str(
+        &fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+    )
+    .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+    for (id, reason) in &reasons {
+        if reason.trim().is_empty() {
+            return Err(format!(
+                "{}: unsupported reason for {id} must not be empty",
+                path.display()
+            ));
+        }
+        let Some((package_path, symbol_name)) = id.split_once("::") else {
+            return Err(format!(
+                "{}: malformed unsupported reason id {id}",
+                path.display()
+            ));
+        };
+        if !symbols_by_package
+            .get(package_path)
+            .is_some_and(|symbols| symbols.contains_key(symbol_name))
+        {
+            return Err(format!(
+                "{}: unsupported reason references unknown stdlib symbol {id}",
+                path.display()
+            ));
+        }
+    }
+    Ok(reasons)
+}
+
+fn reject_stale_unsupported_reasons(
+    path: &Path,
+    reasons: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(id) = reasons.keys().next() {
+        return Err(format!(
+            "{}: unsupported reason for passing stdlib symbol {id}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn collect_go_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -1050,6 +1111,76 @@ func main() {
         assert_eq!(
             err,
             "archive/tar: behavioral coverage marker references unknown stdlib symbol archive/tar::Missing"
+        );
+    }
+
+    #[test]
+    fn unsupported_reasons_load_known_symbols() {
+        let symbols = symbol_map(&["NewReader", "Reader.Next"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unsupported.json");
+        fs::write(
+            &path,
+            r#"{
+  "archive/tar::NewReader": "reader construction currently roots unsupported mutable io.Reader lowering",
+  "archive/tar::Reader.Next": "reader iteration currently roots unsupported mutable []byte lvalue lowering"
+}"#,
+        )
+        .unwrap();
+
+        let reasons = load_stdlib_unsupported_reasons(&path, &symbols).unwrap();
+
+        assert_eq!(
+            reasons.get("archive/tar::NewReader").map(String::as_str),
+            Some("reader construction currently roots unsupported mutable io.Reader lowering")
+        );
+        assert_eq!(
+            reasons.get("archive/tar::Reader.Next").map(String::as_str),
+            Some("reader iteration currently roots unsupported mutable []byte lvalue lowering")
+        );
+    }
+
+    #[test]
+    fn unsupported_reasons_reject_unknown_symbols() {
+        let symbols = symbol_map(&["NewReader"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unsupported.json");
+        fs::write(&path, r#"{ "archive/tar::Missing": "not implemented" }"#).unwrap();
+
+        let err = load_stdlib_unsupported_reasons(&path, &symbols).unwrap_err();
+
+        assert!(
+            err.contains(
+                "unsupported reason references unknown stdlib symbol archive/tar::Missing"
+            )
+        );
+    }
+
+    #[test]
+    fn unsupported_reasons_reject_empty_reasons() {
+        let symbols = symbol_map(&["NewReader"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unsupported.json");
+        fs::write(&path, r#"{ "archive/tar::NewReader": " " }"#).unwrap();
+
+        let err = load_stdlib_unsupported_reasons(&path, &symbols).unwrap_err();
+
+        assert!(err.contains("unsupported reason for archive/tar::NewReader must not be empty"));
+    }
+
+    #[test]
+    fn unsupported_reasons_reject_stale_passing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unsupported.json");
+        let reasons = BTreeMap::from([(
+            "archive/tar::NewReader".to_string(),
+            "reader path is not covered".to_string(),
+        )]);
+
+        let err = reject_stale_unsupported_reasons(&path, &reasons).unwrap_err();
+
+        assert!(
+            err.contains("unsupported reason for passing stdlib symbol archive/tar::NewReader")
         );
     }
 }

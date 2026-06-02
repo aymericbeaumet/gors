@@ -1,0 +1,13 @@
+{
+  "archive/tar::NewReader": "Audited 2026-06-02: reader behavior roots generic gaps in mutable []byte lvalue arguments, nullable pointer comparisons, FnMut closure captures, and sync/atomic lowering.",
+  "archive/tar::NewWriter": "Audited 2026-06-02: writer behavior still needs generic io.Writer mutation, []byte lvalue writes, and archive reader/writer control-flow lowering.",
+  "archive/tar::Reader": "Audited 2026-06-02: reader behavior roots generic gaps in mutable []byte lvalue arguments, nullable pointer comparisons, FnMut closure captures, and sync/atomic lowering.",
+  "archive/tar::Reader.Next": "Audited 2026-06-02: Next roots mutable slice/interface Read lowering, nullable pointer equality, labeled-block continue, and default-type inference gaps.",
+  "archive/tar::Reader.Read": "Audited 2026-06-02: Read needs generic mutation-preserving []byte lvalue arguments for io.Reader implementations.",
+  "archive/tar::Writer": "Audited 2026-06-02: writer behavior still needs generic io.Writer mutation, []byte lvalue writes, and archive reader/writer control-flow lowering.",
+  "archive/tar::Writer.AddFS": "Audited 2026-06-02: AddFS depends on the unsupported archive/tar writer path plus fs traversal/write behavior.",
+  "archive/tar::Writer.Close": "Audited 2026-06-02: Close depends on the unsupported archive/tar writer path.",
+  "archive/tar::Writer.Flush": "Audited 2026-06-02: Flush depends on the unsupported archive/tar writer path.",
+  "archive/tar::Writer.Write": "Audited 2026-06-02: Write needs generic mutation-preserving []byte lvalue arguments for io.Writer implementations.",
+  "archive/tar::Writer.WriteHeader": "Audited 2026-06-02: WriteHeader depends on generic io.Writer mutation, []byte lvalue writes, and archive header encoding control-flow lowering."
+}

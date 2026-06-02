@@ -20813,8 +20813,80 @@ fn interface_direct_methods_from_import(trait_name: &str) -> Option<Vec<String>>
     env.get_interface_direct_methods(type_name)
 }
 
+fn interface_methods_from_import(trait_name: &str) -> Option<Vec<String>> {
+    let (package_name, type_name) = trait_name.split_once('.')?;
+    let (_, env) = crate::resolve::scan_type_env(package_name)?;
+    env.get_interface_methods(type_name)
+}
+
 fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
-    TYPE_ENV.with(|env| env.borrow().get_interface_embedded_interfaces(trait_name))
+    let embedded = TYPE_ENV.with(|env| env.borrow().get_interface_embedded_interfaces(trait_name));
+    if !embedded.is_empty() {
+        return embedded;
+    }
+    interface_embedded_interfaces_from_import(trait_name).unwrap_or_default()
+}
+
+fn interface_embedded_interfaces_from_import(trait_name: &str) -> Option<Vec<String>> {
+    let (package_name, type_name) = trait_name.split_once('.')?;
+    let (_, env) = crate::resolve::scan_type_env(package_name)?;
+    Some(
+        env.get_interface_embedded_interfaces(type_name)
+            .into_iter()
+            .map(|name| {
+                if name.contains('.') {
+                    name
+                } else {
+                    format!("{package_name}.{name}")
+                }
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceImplMethodSet {
+    direct_methods: Vec<String>,
+    required_methods: Vec<String>,
+    embedded_interfaces: Vec<String>,
+}
+
+fn interface_method_set_for_impl(
+    trait_name: &str,
+    fallback_required_methods: &[String],
+) -> InterfaceImplMethodSet {
+    let direct_methods = interface_direct_methods_for_impl(trait_name, fallback_required_methods);
+    let required_methods = TYPE_ENV
+        .with(|env| env.borrow().get_interface_methods(trait_name))
+        .or_else(|| interface_methods_from_import(trait_name))
+        .unwrap_or_else(|| fallback_required_methods.to_vec());
+    let embedded_interfaces = interface_embedded_interfaces_for_impl(trait_name);
+
+    InterfaceImplMethodSet {
+        direct_methods,
+        required_methods,
+        embedded_interfaces,
+    }
+}
+
+fn pointer_method_list_satisfies_interface(
+    struct_method_list: &[String],
+    required_methods: &[String],
+) -> bool {
+    required_methods
+        .iter()
+        .all(|method| struct_method_list.contains(method))
+}
+
+fn value_method_list_satisfies_interface(
+    struct_method_list: &[String],
+    pointer_methods: Option<&std::collections::BTreeSet<String>>,
+    required_methods: &[String],
+) -> bool {
+    required_methods.iter().all(|method| {
+        struct_method_list.contains(method)
+            && pointer_methods.is_none_or(|methods| !methods.contains(method))
+    })
 }
 
 fn concrete_interface_impl_items_for_methods(
@@ -21055,12 +21127,7 @@ fn imported_pointer_interface_impls_for_local_structs(
             if required_methods.is_empty() {
                 continue;
             }
-            let direct_required_methods =
-                interface_direct_methods_for_impl(&interface_name, &required_methods);
-            if direct_required_methods.is_empty() {
-                continue;
-            }
-            let embedded_interfaces = env.get_interface_embedded_interfaces(&interface_name);
+            let method_set = interface_method_set_for_impl(&interface_name, &required_methods);
             for (struct_name, struct_method_list) in struct_methods {
                 if BORROWED_INTERFACE_STRUCTS
                     .with(|structs| structs.borrow().contains_key(struct_name))
@@ -21070,9 +21137,10 @@ fn imported_pointer_interface_impls_for_local_structs(
                 {
                     continue;
                 }
-                let pointer_satisfies = required_methods
-                    .iter()
-                    .all(|method| struct_method_list.contains(method));
+                let pointer_satisfies = pointer_method_list_satisfies_interface(
+                    struct_method_list,
+                    &method_set.required_methods,
+                );
                 if !pointer_satisfies {
                     continue;
                 }
@@ -21088,7 +21156,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                         &interface_name,
                         struct_name,
                         &trait_path,
-                        &direct_required_methods,
+                        &method_set.direct_methods,
                         methods,
                         pointer_methods,
                     );
@@ -21099,7 +21167,14 @@ fn imported_pointer_interface_impls_for_local_structs(
                     });
                 }
 
-                for embedded_name in &embedded_interfaces {
+                for embedded_name in &method_set.embedded_interfaces {
+                    let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
+                    if !pointer_method_list_satisfies_interface(
+                        struct_method_list,
+                        &embedded_method_set.required_methods,
+                    ) {
+                        continue;
+                    }
                     if !emitted_interface_impls.insert((
                         embedded_name.clone(),
                         struct_name.clone(),
@@ -21107,17 +21182,13 @@ fn imported_pointer_interface_impls_for_local_structs(
                     )) {
                         continue;
                     }
-                    let embedded_methods = env
-                        .get_interface_direct_methods(embedded_name)
-                        .or_else(|| interface_direct_methods_from_import(embedded_name))
-                        .unwrap_or_default();
                     let trait_path = interface_trait_path_from_name(embedded_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
                     let impl_items = pointer_interface_impl_items_for_methods(
                         embedded_name,
                         struct_name,
                         &trait_path,
-                        &embedded_methods,
+                        &embedded_method_set.direct_methods,
                         methods,
                         pointer_methods,
                     );
@@ -21427,7 +21498,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
         }
 
         for (trait_name, method_names) in needed_imported_interface_methods {
-            trait_methods.entry(trait_name).or_insert(method_names);
+            trait_methods
+                .entry(trait_name)
+                .and_modify(|existing| {
+                    if existing.is_empty() {
+                        *existing = method_names.clone();
+                    }
+                })
+                .or_insert(method_names);
         }
 
         trait_methods
@@ -21440,24 +21518,19 @@ impl TryFrom<ast::File<'_>> for syn::File {
             if required_methods.is_empty() {
                 continue;
             }
-            let direct_required_methods =
-                interface_direct_methods_for_impl(trait_name, required_methods);
-            let embedded_interfaces = interface_embedded_interfaces_for_impl(trait_name);
+            let method_set = interface_method_set_for_impl(trait_name, required_methods);
             for (struct_name, struct_method_list) in &struct_methods {
                 let pointer_methods = struct_pointer_methods.get(struct_name);
-                let pointer_satisfies = required_methods
-                    .iter()
-                    .all(|m| struct_method_list.contains(m));
-                let value_satisfies = required_methods.iter().all(|method| {
-                    struct_method_list.contains(method)
-                        && pointer_methods.is_none_or(|methods| !methods.contains(method))
-                });
-                // Most pointer shims also keep the concrete impl for existing interface-object
-                // paths. The predeclared error interface has an immutable trait method, so
-                // pointer-only error types must not gain a concrete value impl.
-                let emit_concrete_trait_impl =
-                    value_satisfies || (pointer_satisfies && trait_name != "error");
-                if emit_concrete_trait_impl {
+                let pointer_satisfies = pointer_method_list_satisfies_interface(
+                    struct_method_list,
+                    &method_set.required_methods,
+                );
+                let value_satisfies = value_method_list_satisfies_interface(
+                    struct_method_list,
+                    pointer_methods,
+                    &method_set.required_methods,
+                );
+                if value_satisfies {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
 
@@ -21474,7 +21547,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         let impl_items = concrete_interface_impl_items_for_methods(
                             trait_name,
                             struct_name,
-                            &direct_required_methods,
+                            &method_set.direct_methods,
                             &methods,
                             exposes_any,
                         );
@@ -21505,7 +21578,15 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         }));
                     }
 
-                    for embedded_name in &embedded_interfaces {
+                    for embedded_name in &method_set.embedded_interfaces {
+                        let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
+                        if !value_method_list_satisfies_interface(
+                            struct_method_list,
+                            pointer_methods,
+                            &embedded_method_set.required_methods,
+                        ) {
+                            continue;
+                        }
                         if !emitted_interface_impls.insert((
                             embedded_name.clone(),
                             struct_name.clone(),
@@ -21513,17 +21594,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         )) {
                             continue;
                         }
-                        let embedded_methods = TYPE_ENV.with(|env| {
-                            env.borrow()
-                                .get_interface_direct_methods(embedded_name)
-                                .or_else(|| interface_direct_methods_from_import(embedded_name))
-                                .unwrap_or_default()
-                        });
                         let trait_path = interface_trait_path_from_name(embedded_name);
                         let impl_items = concrete_interface_impl_items_for_methods(
                             embedded_name,
                             struct_name,
-                            &embedded_methods,
+                            &embedded_method_set.direct_methods,
                             &methods,
                             exposes_any,
                         );
@@ -21572,7 +21647,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             trait_name,
                             struct_name,
                             &trait_path,
-                            &direct_required_methods,
+                            &method_set.direct_methods,
                             &methods,
                             pointer_methods,
                         );
@@ -21583,7 +21658,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         });
                     }
 
-                    for embedded_name in &embedded_interfaces {
+                    for embedded_name in &method_set.embedded_interfaces {
+                        let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
+                        if !pointer_method_list_satisfies_interface(
+                            struct_method_list,
+                            &embedded_method_set.required_methods,
+                        ) {
+                            continue;
+                        }
                         if !emitted_interface_impls.insert((
                             embedded_name.clone(),
                             struct_name.clone(),
@@ -21591,18 +21673,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         )) {
                             continue;
                         }
-                        let embedded_methods = TYPE_ENV.with(|env| {
-                            env.borrow()
-                                .get_interface_direct_methods(embedded_name)
-                                .or_else(|| interface_direct_methods_from_import(embedded_name))
-                                .unwrap_or_default()
-                        });
                         let trait_path = interface_trait_path_from_name(embedded_name);
                         let impl_items = pointer_interface_impl_items_for_methods(
                             embedded_name,
                             struct_name,
                             &trait_path,
-                            &embedded_methods,
+                            &embedded_method_set.direct_methods,
                             &methods,
                             pointer_methods,
                         );
@@ -28371,6 +28447,88 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
                 || stream_rs.contains("Reader :: Seek (& mut * __gors_guard , offset , whence)"),
             "{stream_rs}"
         );
+    }
+
+    #[test]
+    fn interface_method_set_for_impl_uses_embedded_methods_for_satisfaction() {
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("Reader", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("Reader", vec!["Read".to_string()]);
+        env.set_type_kind("Writer", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("Writer", vec!["Write".to_string()]);
+        env.set_type_kind("ReadWriter", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("ReadWriter", vec![]);
+        env.set_interface_embedded(
+            "ReadWriter",
+            vec!["Reader".to_string(), "Writer".to_string()],
+        );
+
+        super::set_type_env(env);
+        let method_set = super::interface_method_set_for_impl("ReadWriter", &[]);
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(method_set.direct_methods, Vec::<String>::new());
+        assert_eq!(
+            method_set.required_methods,
+            vec!["Read".to_string(), "Write".to_string()]
+        );
+        assert_eq!(
+            method_set.embedded_interfaces,
+            vec!["Reader".to_string(), "Writer".to_string()]
+        );
+    }
+
+    #[test]
+    fn compile_emits_pointer_only_impls_for_embedded_interface_method_sets() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Reader interface {
+                    Read() int
+                }
+
+                type Writer interface {
+                    Write(int)
+                }
+
+                type ReadWriter interface {
+                    Reader
+                    Writer
+                }
+
+                type Source struct{}
+
+                func (s *Source) Read() int { return 1 }
+                func (s *Source) Write(n int) {}
+
+                func main() {
+                    var src Source
+                    var i any = &src
+                    _, _ = i.(ReadWriter)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("impl ReadWriter for std::sync::Arc<std::sync::Mutex<Source>>"),
+            "{output}"
+        );
+        assert!(
+            output.contains("impl Reader for std::sync::Arc<std::sync::Mutex<Source>>"),
+            "{output}"
+        );
+        assert!(
+            output.contains("impl Writer for std::sync::Arc<std::sync::Mutex<Source>>"),
+            "{output}"
+        );
+        assert!(!output.contains("impl ReadWriter for Source"), "{output}");
+        assert!(!output.contains("impl Reader for Source"), "{output}");
+        assert!(!output.contains("impl Writer for Source"), "{output}");
     }
 
     #[test]

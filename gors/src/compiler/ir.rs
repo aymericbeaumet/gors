@@ -662,6 +662,7 @@ fn seed_func_bindings(
     sig: &ast::FuncType<'_>,
     env: &mut TypeEnv,
 ) {
+    env.extend_scoped_type_param_constraints_from_fields(sig.type_params.as_ref());
     if let Some(recv) = recv {
         for field in &recv.list {
             let ty = field
@@ -21339,6 +21340,48 @@ mod tests {
         };
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn accepts_type_parameter_argument_when_scoped_constraint_satisfies_generic_call() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Ordered interface {
+                    int | string
+                }
+
+                func Less[T Ordered](a T, b T) bool { return false }
+                func Other[T comparable](value T) {}
+
+                func orderedMin[T Ordered](a T, b T) T {
+                    if Less(b, a) {
+                        return b
+                    }
+                    return a
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "orderedMin" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected orderedMin function");
+        };
+
+        assert_eq!(
+            super::invalid_statement_in_func_with_type(
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env
+            ),
             None
         );
     }

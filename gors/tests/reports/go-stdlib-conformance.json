@@ -206,7 +206,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: reader behavior roots generic gaps in mutable []byte lvalue arguments, nullable pointer comparisons, FnMut closure captures, and sync/atomic lowering."
         },
         {
           "id": "archive/tar::NewWriter",
@@ -215,7 +215,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: writer behavior still needs generic io.Writer mutation, []byte lvalue writes, and archive reader/writer control-flow lowering."
         },
         {
           "id": "archive/tar::Reader",
@@ -224,7 +224,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: reader behavior roots generic gaps in mutable []byte lvalue arguments, nullable pointer comparisons, FnMut closure captures, and sync/atomic lowering."
         },
         {
           "id": "archive/tar::Reader.Next",
@@ -233,7 +233,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Next roots mutable slice/interface Read lowering, nullable pointer equality, labeled-block continue, and default-type inference gaps."
         },
         {
           "id": "archive/tar::Reader.Read",
@@ -242,7 +242,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read needs generic mutation-preserving []byte lvalue arguments for io.Reader implementations."
         },
         {
           "id": "archive/tar::TypeBlock",
@@ -405,7 +405,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: writer behavior still needs generic io.Writer mutation, []byte lvalue writes, and archive reader/writer control-flow lowering."
         },
         {
           "id": "archive/tar::Writer.AddFS",
@@ -414,7 +414,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AddFS depends on the unsupported archive/tar writer path plus fs traversal/write behavior."
         },
         {
           "id": "archive/tar::Writer.Close",
@@ -423,7 +423,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on the unsupported archive/tar writer path."
         },
         {
           "id": "archive/tar::Writer.Flush",
@@ -432,7 +432,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on the unsupported archive/tar writer path."
         },
         {
           "id": "archive/tar::Writer.Write",
@@ -441,7 +441,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write needs generic mutation-preserving []byte lvalue arguments for io.Writer implementations."
         },
         {
           "id": "archive/tar::Writer.WriteHeader",
@@ -450,7 +450,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteHeader depends on generic io.Writer mutation, []byte lvalue writes, and archive header encoding control-flow lowering."
         }
       ]
     },

@@ -874,6 +874,8 @@ pub struct TypeEnv {
     /// Function/method name → type parameter name → accepted constraint terms.
     func_type_param_constraints:
         HashMap<std::string::String, HashMap<std::string::String, Vec<GoType>>>,
+    /// Type parameter constraints currently in lexical scope while validating/lowering a body.
+    scoped_type_param_constraints: HashMap<std::string::String, Vec<GoType>>,
     /// Function/method name → index where a variadic parameter starts
     func_variadic_start: HashMap<std::string::String, usize>,
     /// Function/method name → named interfaces asserted in the function body.
@@ -1667,7 +1669,24 @@ impl TypeEnv {
             .cloned()
     }
 
+    fn extend_scoped_type_param_constraints(
+        &mut self,
+        constraints: HashMap<std::string::String, Vec<GoType>>,
+    ) {
+        self.scoped_type_param_constraints.extend(constraints);
+    }
+
+    pub(crate) fn extend_scoped_type_param_constraints_from_fields(
+        &mut self,
+        type_params: Option<&ast::FieldList<'_>>,
+    ) {
+        self.extend_scoped_type_param_constraints(type_param_constraints(type_params));
+    }
+
     pub fn get_type_param_constraints(&self, type_param: &str) -> Option<Vec<GoType>> {
+        if let Some(constraints) = self.scoped_type_param_constraints.get(type_param) {
+            return Some(constraints.clone());
+        }
         self.func_type_param_constraints
             .values()
             .find_map(|constraints| constraints.get(type_param))
