@@ -31447,6 +31447,44 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_clones_addressable_noncopy_assignment_rhs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type value struct {
+	name string
+}
+
+type holder struct {
+	current value
+}
+
+func save(v value) value {
+	var h holder
+	h.current = v
+	return v
+}
+
+func main() {
+	_ = save(value{name: "x"})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("h.current = (v).clone();"), "{main_rs}");
+        assert!(
+            !main_rs.contains("h.current = v;"),
+            "expected assignment from addressable non-Copy value to preserve Go copy semantics: {main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_boxes_interface_field_rhs_reads() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");

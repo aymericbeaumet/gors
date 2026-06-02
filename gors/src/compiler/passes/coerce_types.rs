@@ -251,12 +251,6 @@ impl VisitMut for CoerceTypes {
     fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
         visit_mut::visit_expr_assign_mut(self, assign);
 
-        if matches!(&*assign.left, syn::Expr::Field(field) if is_self_member(field, "value"))
-            && is_path_ident(&assign.right, "value")
-        {
-            clone_expr(&mut assign.right);
-        }
-
         if let Some(self_ty) = self.impl_self_types.last()
             && self.tuple_newtypes.contains(self_ty)
             && is_deref_self_expr(&assign.left)
@@ -1415,14 +1409,6 @@ fn clone_expr(expr: &mut syn::Expr) {
     *expr = syn::parse_quote! { (#inner).clone() };
 }
 
-fn is_self_member(field: &syn::ExprField, name: &str) -> bool {
-    is_self_expr(&field.base) && is_named_member(field, name)
-}
-
-fn is_named_member(field: &syn::ExprField, name: &str) -> bool {
-    matches!(&field.member, syn::Member::Named(member) if member == name)
-}
-
 fn is_rune_self_path(expr: &syn::Expr) -> bool {
     let syn::Expr::Path(path) = expr else {
         return false;
@@ -1751,6 +1737,33 @@ mod tests {
         assert!(
             !tokens.contains("Box :: new (())"),
             "expected no field-name-driven empty any replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_clone_self_value_assignment_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink {
+                value: isize,
+            }
+
+            impl Sink {
+                pub fn save(&mut self, mut value: isize) {
+                    self.value = value;
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . value = value"),
+            "expected self.value assignment to remain name independent: {tokens}"
+        );
+        assert!(
+            !tokens.contains("(value) . clone"),
+            "expected no field-name-driven value clone: {tokens}"
         );
     }
 
