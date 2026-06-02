@@ -6835,6 +6835,7 @@ fn reachable_stdlib_items(
     let top_level_names = top_level_item_names(items);
     let top_level_types = top_level_item_types(items, module_names);
     let top_level_field_types = top_level_item_field_types(items, module_names);
+    let top_level_element_types = top_level_collection_element_types(items, module_names);
     let top_level_return_types = top_level_item_return_types(items, module_names);
     let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
     let trait_supertraits = trait_supertrait_names(items);
@@ -6860,6 +6861,7 @@ fn reachable_stdlib_items(
                 top_level_names: &top_level_names,
                 top_level_types: &top_level_types,
                 top_level_field_types: &top_level_field_types,
+                top_level_element_types: &top_level_element_types,
                 top_level_return_types: &top_level_return_types,
                 top_level_tuple_return_types: &top_level_tuple_return_types,
             };
@@ -7438,6 +7440,7 @@ fn collect_external_refs(
     let mut external_refs = std::collections::HashMap::new();
     let empty_types = std::collections::HashMap::new();
     let empty_field_types = std::collections::HashMap::new();
+    let empty_element_types = std::collections::HashMap::new();
     let empty_return_types = std::collections::HashMap::new();
     let empty_tuple_return_types = std::collections::HashMap::new();
     for item in items {
@@ -7450,6 +7453,7 @@ fn collect_external_refs(
             top_level_names: &empty_top_level_names,
             top_level_types: &empty_types,
             top_level_field_types: &empty_field_types,
+            top_level_element_types: &empty_element_types,
             top_level_return_types: &empty_return_types,
             top_level_tuple_return_types: &empty_tuple_return_types,
         };
@@ -7477,6 +7481,7 @@ struct RefCollectionContext<'a> {
     top_level_names: &'a ReachabilityNameSet,
     top_level_types: &'a ReceiverTypeMap,
     top_level_field_types: &'a ReceiverFieldTypeMap,
+    top_level_element_types: &'a ReceiverTypeMap,
     top_level_return_types: &'a ReceiverTypeMap,
     top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
 }
@@ -7529,6 +7534,64 @@ fn top_level_item_field_types(
         }
     }
     types
+}
+
+fn top_level_collection_element_types(
+    items: &[syn::Item],
+    module_names: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, ReceiverTypeRef> {
+    let mut types = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Struct(item_struct) = item else {
+            continue;
+        };
+        let syn::Fields::Unnamed(fields) = &item_struct.fields else {
+            continue;
+        };
+        let Some(field) = fields.unnamed.first() else {
+            continue;
+        };
+        if fields.unnamed.len() != 1 {
+            continue;
+        }
+        if let Some(element_type) =
+            collection_element_receiver_type_from_type(&field.ty, module_names)
+        {
+            types.insert(item_struct.ident.to_string(), element_type);
+        }
+    }
+    types
+}
+
+fn collection_element_receiver_type_from_type(
+    ty: &syn::Type,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    match ty {
+        syn::Type::Group(group) => {
+            collection_element_receiver_type_from_type(&group.elem, module_names)
+        }
+        syn::Type::Paren(paren) => {
+            collection_element_receiver_type_from_type(&paren.elem, module_names)
+        }
+        syn::Type::Path(path) => {
+            let segment = path.path.segments.last()?;
+            if segment.ident != "Vec" {
+                return None;
+            }
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return None;
+            };
+            args.args.iter().find_map(|arg| match arg {
+                syn::GenericArgument::Type(ty) => receiver_type_from_type(ty, module_names),
+                _ => None,
+            })
+        }
+        syn::Type::Reference(reference) => {
+            collection_element_receiver_type_from_type(&reference.elem, module_names)
+        }
+        _ => None,
+    }
 }
 
 fn top_level_item_return_types(
@@ -7975,6 +8038,7 @@ fn collect_refs_from_item(
         module_names: &'a ReachabilityNameSet,
         item_names: &'a ReachabilityNameSet,
         top_level_field_types: &'a ReceiverFieldTypeMap,
+        top_level_element_types: &'a ReceiverTypeMap,
         top_level_return_types: &'a ReceiverTypeMap,
         top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
         current_self_type: Option<ReceiverTypeRef>,
@@ -7998,6 +8062,10 @@ fn collect_refs_from_item(
                         .cloned()
                 }
                 syn::Expr::Group(group) => self.bound_receiver_type_from_expr(&group.expr),
+                syn::Expr::Index(index) => {
+                    let base_type = self.bound_receiver_type_from_expr(&index.expr)?;
+                    self.top_level_element_types.get(&base_type.name).cloned()
+                }
                 syn::Expr::MethodCall(method)
                     if matches!(
                         method.method.to_string().as_str(),
@@ -8279,6 +8347,7 @@ fn collect_refs_from_item(
             String,
             std::collections::HashMap<String, ReceiverTypeRef>,
         >,
+        top_level_element_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
         top_level_return_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
         bound_names: std::collections::HashSet<String>,
         bound_types: std::collections::HashMap<String, ReceiverTypeRef>,
@@ -8354,6 +8423,10 @@ fn collect_refs_from_item(
                         .get(&base_type.name)
                         .and_then(|fields| fields.get(&member.to_string()))
                         .cloned()
+                }
+                syn::Expr::Index(index) => {
+                    let base_type = self.receiver_type_from_expr(&index.expr)?;
+                    self.top_level_element_types.get(&base_type.name).cloned()
                 }
                 syn::Expr::Reference(reference) => self.receiver_type_from_expr(&reference.expr),
                 syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
@@ -8552,6 +8625,7 @@ fn collect_refs_from_item(
         module_names: context.module_names,
         item_names: context.item_names,
         top_level_field_types: context.top_level_field_types,
+        top_level_element_types: context.top_level_element_types,
         top_level_return_types: context.top_level_return_types,
         top_level_tuple_return_types: context.top_level_tuple_return_types,
         current_self_type: None,
@@ -8565,6 +8639,7 @@ fn collect_refs_from_item(
         top_level_names: context.top_level_names,
         top_level_types: context.top_level_types,
         top_level_field_types: context.top_level_field_types,
+        top_level_element_types: context.top_level_element_types,
         top_level_return_types: context.top_level_return_types,
         bound_names: bound_collector.names,
         bound_types: bound_collector.types,
@@ -29516,6 +29591,41 @@ func main() {
     }
 
     #[test]
+    fn it_should_collect_methods_called_on_indexed_newtype_elements() {
+        let file: syn::File = rust! {
+            pub struct sparseEntry {
+                Length: i64,
+            }
+
+            pub struct sparseDatas(pub Vec<sparseEntry>);
+
+            impl sparseEntry {
+                fn endOffset(&mut self) -> i64 {
+                    self.Length
+                }
+            }
+
+            pub struct sparseFileWriter {
+                sp: sparseDatas,
+            }
+
+            impl sparseFileWriter {
+                fn logicalRemaining(&mut self) -> i64 {
+                    (self.sp)[0].endOffset()
+                }
+            }
+        };
+        let roots =
+            std::collections::HashSet::from(["sparseFileWriter::logicalRemaining".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("sparseEntry"));
+        assert!(names.contains("sparseEntry::endOffset"));
+    }
+
+    #[test]
     fn it_should_collect_external_methods_called_on_associated_constructors() {
         let mut item: syn::Item = rust! {
             pub fn main() {
@@ -29528,6 +29638,7 @@ func main() {
         let top_level_names = std::collections::HashSet::new();
         let top_level_types = std::collections::HashMap::new();
         let top_level_field_types = std::collections::HashMap::new();
+        let top_level_element_types = std::collections::HashMap::new();
         let top_level_return_types = std::collections::HashMap::new();
         let top_level_tuple_return_types = std::collections::HashMap::new();
 
@@ -29537,6 +29648,7 @@ func main() {
             top_level_names: &top_level_names,
             top_level_types: &top_level_types,
             top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
             top_level_return_types: &top_level_return_types,
             top_level_tuple_return_types: &top_level_tuple_return_types,
         };
@@ -29562,6 +29674,7 @@ func main() {
         let top_level_names = std::collections::HashSet::new();
         let top_level_types = std::collections::HashMap::new();
         let top_level_field_types = std::collections::HashMap::new();
+        let top_level_element_types = std::collections::HashMap::new();
         let top_level_return_types = std::collections::HashMap::new();
         let top_level_tuple_return_types = std::collections::HashMap::new();
 
@@ -29571,6 +29684,7 @@ func main() {
             top_level_names: &top_level_names,
             top_level_types: &top_level_types,
             top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
             top_level_return_types: &top_level_return_types,
             top_level_tuple_return_types: &top_level_tuple_return_types,
         };
