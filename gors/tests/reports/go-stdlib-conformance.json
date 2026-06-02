@@ -4619,7 +4619,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCipher behavior depends on returning crypto/cipher.Block interface values backed by package-private AES state, fixed-array key schedules, and block Encrypt/Decrypt methods."
         }
       ]
     },
@@ -4644,7 +4644,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AEAD behavior depends on interface dispatch over authenticated-encryption implementations with nonce, associated-data, and byte-slice output aliasing semantics."
         },
         {
           "id": "crypto/cipher::Block",
@@ -4653,7 +4653,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Block behavior depends on interface dispatch over concrete cipher state whose Encrypt and Decrypt methods mutate caller-provided byte slices."
         },
         {
           "id": "crypto/cipher::BlockMode",
@@ -4662,7 +4662,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: BlockMode behavior depends on stateful interface values whose CryptBlocks methods mutate byte-slice destinations while preserving block-size validation."
         },
         {
           "id": "crypto/cipher::NewCBCDecrypter",
@@ -4671,7 +4671,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCBCDecrypter depends on generic Block interface calls, IV slice copying, and mutation-preserving byte-slice output for block-mode state."
         },
         {
           "id": "crypto/cipher::NewCBCEncrypter",
@@ -4680,7 +4680,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCBCEncrypter depends on generic Block interface calls, IV slice copying, and mutation-preserving byte-slice output for block-mode state."
         },
         {
           "id": "crypto/cipher::NewCFBDecrypter",
@@ -4689,7 +4689,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCFBDecrypter depends on stream state built from Block interface calls, IV copying, and XORKeyStream byte-slice mutation semantics."
         },
         {
           "id": "crypto/cipher::NewCFBEncrypter",
@@ -4698,7 +4698,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCFBEncrypter depends on stream state built from Block interface calls, IV copying, and XORKeyStream byte-slice mutation semantics."
         },
         {
           "id": "crypto/cipher::NewCTR",
@@ -4707,7 +4707,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCTR depends on counter-mode stream state, Block interface dispatch, counter byte-slice mutation, and XORKeyStream output aliasing semantics."
         },
         {
           "id": "crypto/cipher::NewGCM",
@@ -4716,7 +4716,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewGCM depends on AEAD state construction from Block interface values plus generic GCM authentication tables and byte-slice seal/open mutation."
         },
         {
           "id": "crypto/cipher::NewGCMWithNonceSize",
@@ -4725,7 +4725,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewGCMWithNonceSize depends on NewGCM plus nonce-size validation and AEAD byte-slice seal/open semantics."
         },
         {
           "id": "crypto/cipher::NewGCMWithRandomNonce",
@@ -4734,7 +4734,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewGCMWithRandomNonce depends on AEAD construction plus random nonce generation through io.Reader and seal/open byte-slice mutation."
         },
         {
           "id": "crypto/cipher::NewGCMWithTagSize",
@@ -4743,7 +4743,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewGCMWithTagSize depends on NewGCM plus tag-size validation and AEAD byte-slice seal/open semantics."
         },
         {
           "id": "crypto/cipher::NewOFB",
@@ -4752,7 +4752,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewOFB depends on stream state built from Block interface calls, IV copying, and XORKeyStream byte-slice mutation semantics."
         },
         {
           "id": "crypto/cipher::Stream",
@@ -4761,7 +4761,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Stream behavior depends on interface dispatch for XORKeyStream methods that mutate caller-provided byte-slice destinations."
         },
         {
           "id": "crypto/cipher::StreamReader",
@@ -4770,7 +4770,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: StreamReader behavior depends on mutation-preserving io.Reader calls into byte-slice lvalues followed by Stream XORKeyStream mutation."
         },
         {
           "id": "crypto/cipher::StreamReader.Read",
@@ -4779,7 +4779,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on mutable []byte lvalue arguments through io.Reader dispatch and in-place XORKeyStream transformation."
         },
         {
           "id": "crypto/cipher::StreamWriter",
@@ -4788,7 +4788,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: StreamWriter behavior depends on Stream XORKeyStream mutation, io.Writer dispatch, and preservation of error state across writes."
         },
         {
           "id": "crypto/cipher::StreamWriter.Close",
@@ -4797,7 +4797,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on optional underlying io.Closer interface dispatch from the stored StreamWriter writer value."
         },
         {
           "id": "crypto/cipher::StreamWriter.Write",
@@ -4806,7 +4806,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on copying input bytes, applying XORKeyStream mutation, and forwarding through generic io.Writer dispatch."
         }
       ]
     },
@@ -4866,7 +4866,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCipher behavior depends on returning crypto/cipher.Block interface values backed by package-private DES key schedule state and block Encrypt/Decrypt methods."
         },
         {
           "id": "crypto/des::NewTripleDESCipher",
@@ -4875,7 +4875,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewTripleDESCipher behavior depends on composing DES block state, returning cipher.Block interface values, and mutating caller-provided byte-slice blocks."
         }
       ]
     },
