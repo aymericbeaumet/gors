@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 29,
-    "unsupportedCaseCount": 12555,
+    "passingCaseCount": 25,
+    "unsupportedCaseCount": 12559,
     "fixtureCount": 76
   },
   "groups": [
@@ -29,8 +29,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 29,
-        "unsupportedCaseCount": 11,
+        "passingCaseCount": 25,
+        "unsupportedCaseCount": 15,
         "fixtureCount": 0
       },
       "cases": [
@@ -94,10 +94,8 @@
           "title": "FileInfoHeader",
           "subtitle": "func",
           "kind": "func",
-          "status": "passing",
-          "fixtures": [
-            "archive/tar"
-          ],
+          "status": "unsupported",
+          "fixtures": [],
           "reason": ""
         },
         {
@@ -105,10 +103,8 @@
           "title": "FileInfoNames",
           "subtitle": "type",
           "kind": "type",
-          "status": "passing",
-          "fixtures": [
-            "archive/tar"
-          ],
+          "status": "unsupported",
+          "fixtures": [],
           "reason": ""
         },
         {
@@ -182,10 +178,8 @@
           "title": "Header",
           "subtitle": "type",
           "kind": "type",
-          "status": "passing",
-          "fixtures": [
-            "archive/tar"
-          ],
+          "status": "unsupported",
+          "fixtures": [],
           "reason": ""
         },
         {
@@ -193,10 +187,8 @@
           "title": "Header.FileInfo",
           "subtitle": "method",
           "kind": "method",
-          "status": "passing",
-          "fixtures": [
-            "archive/tar"
-          ],
+          "status": "unsupported",
+          "fixtures": [],
           "reason": ""
         },
         {

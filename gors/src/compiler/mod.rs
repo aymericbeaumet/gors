@@ -4499,12 +4499,6 @@ fn compile_program_impl(
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
-    {
-        let files = std::iter::once(&program.main_package.ast)
-            .chain(program.imports.iter().map(|pkg| &pkg.ast))
-            .collect::<Vec<_>>();
-        set_borrow_pointer_arg_indices_for_files(&files);
-    }
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
     collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
@@ -4551,6 +4545,14 @@ fn compile_program_impl(
         if let Some((package_name, env)) = crate::resolve::scan_type_env(stdlib_path) {
             stdlib_type_envs.insert(stdlib_path.clone(), (package_name, env));
         }
+    }
+    let stdlib_borrow_pointer_files = parse_stdlib_borrow_pointer_files(&stdlib_type_env_paths);
+    {
+        let files = std::iter::once(&program.main_package.ast)
+            .chain(program.imports.iter().map(|pkg| &pkg.ast))
+            .chain(stdlib_borrow_pointer_files.iter())
+            .collect::<Vec<_>>();
+        set_borrow_pointer_arg_indices_for_files(&files);
     }
 
     let import_package_names: BTreeMap<String, String> = local_type_envs
@@ -4775,6 +4777,25 @@ fn compile_program_impl(
         modules,
         has_main: has_main_fn,
     })
+}
+
+fn parse_stdlib_borrow_pointer_files(import_paths: &[String]) -> Vec<ast::File<'static>> {
+    let mut parsed = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for import_path in import_paths {
+        if !seen.insert(import_path) {
+            continue;
+        }
+        let Some(files) = crate::resolve::package_files(import_path) else {
+            continue;
+        };
+        for (filename, content) in files.iter() {
+            if let Ok(ast) = crate::parser::parse_file(filename, content) {
+                parsed.push(ast);
+            }
+        }
+    }
+    parsed
 }
 
 fn inject_post_prune_stdlib_helpers(
@@ -5629,8 +5650,8 @@ fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
 }
 
 fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
-    let targets = collect_mut_ref_targets(modules);
-    if targets.is_empty() {
+    let (targets, method_targets) = collect_mut_ref_targets(modules);
+    if targets.is_empty() && method_targets.is_empty() {
         return;
     }
     for module in modules.values_mut() {
@@ -5638,6 +5659,7 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
             &mut BorrowMutRefCallArgs {
                 module_name: module.mod_name.clone(),
                 targets: &targets,
+                method_targets: &method_targets,
             },
             &mut module.file,
         );
@@ -5646,24 +5668,48 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
 
 fn collect_mut_ref_targets(
     modules: &BTreeMap<String, CompiledModule>,
-) -> BTreeMap<String, std::collections::HashSet<usize>> {
+) -> (
+    BTreeMap<String, std::collections::HashSet<usize>>,
+    BTreeMap<String, std::collections::HashSet<usize>>,
+) {
     let mut targets = BTreeMap::new();
+    let mut method_targets = BTreeMap::new();
     for module in modules.values() {
         for item in &module.file.items {
-            let syn::Item::Fn(item_fn) = item else {
-                continue;
-            };
-            let indices = mut_ref_param_indices(&item_fn.sig);
-            if indices.is_empty() {
-                continue;
+            match item {
+                syn::Item::Fn(item_fn) => {
+                    let indices = mut_ref_param_indices(&item_fn.sig);
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    targets.insert(
+                        format!("{}::{}", module.mod_name, item_fn.sig.ident),
+                        indices,
+                    );
+                }
+                syn::Item::Impl(item_impl) => {
+                    if item_impl.trait_.is_some() {
+                        continue;
+                    }
+                    for item in &item_impl.items {
+                        let syn::ImplItem::Fn(item_fn) = item else {
+                            continue;
+                        };
+                        let indices = mut_ref_param_indices(&item_fn.sig)
+                            .into_iter()
+                            .filter_map(|index| index.checked_sub(1))
+                            .collect::<std::collections::HashSet<_>>();
+                        if indices.is_empty() {
+                            continue;
+                        }
+                        method_targets.insert(item_fn.sig.ident.to_string(), indices);
+                    }
+                }
+                _ => {}
             }
-            targets.insert(
-                format!("{}::{}", module.mod_name, item_fn.sig.ident),
-                indices,
-            );
         }
     }
-    targets
+    (targets, method_targets)
 }
 
 fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
@@ -5683,6 +5729,7 @@ fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usiz
 struct BorrowMutRefCallArgs<'a> {
     module_name: String,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    method_targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
 }
 
 impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
@@ -5692,6 +5739,18 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
             return;
         };
         let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                borrow_mut_vec_call_arg(arg);
+            }
+        }
+    }
+
+    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
+        syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let Some(indices) = self.method_targets.get(&call.method.to_string()) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
@@ -7933,6 +7992,23 @@ fn top_level_item_return_types(
                     if let Some(return_type) = receiver_type_from_type(ty, module_names) {
                         types.insert(
                             impl_method_reachability_name(&self_name, &func.sig.ident.to_string()),
+                            return_type,
+                        );
+                    }
+                }
+            }
+            syn::Item::Trait(item_trait) => {
+                let trait_name = item_trait.ident.to_string();
+                for trait_item in &item_trait.items {
+                    let syn::TraitItem::Fn(func) = trait_item else {
+                        continue;
+                    };
+                    let syn::ReturnType::Type(_, ty) = &func.sig.output else {
+                        continue;
+                    };
+                    if let Some(return_type) = receiver_type_from_type(ty, module_names) {
+                        types.insert(
+                            impl_method_reachability_name(&trait_name, &func.sig.ident.to_string()),
                             return_type,
                         );
                     }
@@ -11682,7 +11758,11 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
                 && reference.mutability.is_some()
                 && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident("self"))
             {
-                *expr = syn::parse_quote! { self };
+                *expr = if self.borrowed_receiver {
+                    syn::parse_quote! { &mut (self).clone() }
+                } else {
+                    syn::parse_quote! { self }
+                };
                 return;
             }
 
@@ -15649,6 +15729,9 @@ fn compile_expr_with_expected(
             }
             if let Some(inner) = arc_mutex_new_inner_expr(&expr) {
                 return syn::parse_quote! { &mut #inner };
+            }
+            if expr_path_ident(&expr).as_deref() == Some("self") {
+                return syn::parse_quote! { &mut (#expr).clone() };
             }
             if needs_owned_temp {
                 return syn::parse_quote! { &mut (#expr).clone() };
@@ -22294,6 +22377,24 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         // Register parameter types in the type environment
         TYPE_ENV.with(|env| {
             let mut e = env.borrow_mut();
+            if let Some(recv) = &func_decl.recv
+                && let Some(recv_field) = recv.list.first()
+            {
+                let ty = recv_field
+                    .type_
+                    .as_ref()
+                    .map(|expr| {
+                        generic_slice_param_go_type(expr, &type_param_info)
+                            .or_else(|| generic_map_param_go_type(expr, &type_param_info))
+                            .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+                    })
+                    .unwrap_or(typeinfer::GoType::Unknown);
+                if let Some(ref names) = recv_field.names {
+                    for name in names {
+                        e.set_var(name.name, ty.clone());
+                    }
+                }
+            }
             for param in &func_decl.type_.params.list {
                 let ty = param
                     .type_
@@ -28606,6 +28707,175 @@ func (w *Writer) Use(h *Header) {
     }
 
     #[test]
+    fn compile_program_multi_borrows_imported_method_pointer_value_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/lib"
+
+func main() {
+	var w lib.Writer
+	h := &lib.Header{}
+	w.Use(h)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("lib/lib.go").as_path(),
+            r#"
+package lib
+
+type Header struct {
+	Name string
+}
+
+type Writer struct{}
+
+func (w *Writer) Use(h *Header) {
+	h.Name = "used"
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Use(&mut *(h).lock().unwrap())")
+                || main_rs.contains("Use (& mut * (h) . lock () . unwrap ())"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("Use(&mut h)"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_stdlib_method_pointer_value_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "archive/tar"
+
+func main() {
+	var w tar.Writer
+	h := &tar.Header{Name: "fixture.txt"}
+	_ = w.WriteHeader(h)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("WriteHeader(&mut *(h).lock().unwrap())")
+                || main_rs.contains("WriteHeader (& mut * (h) . lock () . unwrap ())"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("WriteHeader(&mut h)"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_coerces_value_receiver_to_imported_interface_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/tar"
+
+func main() {
+	_ = tar.Header{}.String()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("fs/fs.go").as_path(),
+            r#"
+package fs
+
+type FileInfo interface {
+	Name() string
+}
+
+func FormatFileInfo(info FileInfo) string {
+	return info.Name()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("tar/tar.go").as_path(),
+            r#"
+package tar
+
+import "example/fs"
+
+type Header struct{}
+
+func (h Header) Name() string {
+	return "header"
+}
+
+func (h Header) String() string {
+	return fs.FormatFileInfo(h)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let tar_rs = output.files.get("example__tar.rs").unwrap();
+        assert!(
+            tar_rs.contains("FormatFileInfo(&mut (self).clone())"),
+            "{tar_rs}"
+        );
+        assert!(!tar_rs.contains("FormatFileInfo(self)"), "{tar_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_method_pointer_value_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Header struct {
+	Name string
+}
+
+type Writer struct{}
+
+func (w *Writer) Use(h *Header) {
+	h.Name = "used"
+}
+
+func main() {
+	var w Writer
+	h := &Header{}
+	w.Use(h)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains(".Use(&mut *(h).lock().unwrap())")
+                || main_rs.contains(". Use (& mut * (h) . lock () . unwrap ())"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains(".Use(h)"), "{main_rs}");
+    }
+
+    #[test]
     fn compile_program_multi_keeps_error_struct_fields_owned() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -32076,6 +32346,30 @@ func main() {
 
         assert!(names.contains("block::toUSTAR"));
         assert!(names.contains("headerUSTAR::prefix"));
+    }
+
+    #[test]
+    fn it_should_collect_external_methods_called_on_trait_method_returns() {
+        let file: syn::File = rust! {
+            pub trait FileInfo {
+                fn ModTime(&mut self) -> crate::time::Time;
+            }
+
+            pub fn FormatFileInfo(mut info: &mut dyn FileInfo) -> String {
+                (info.ModTime()).clone().Format(crate::time::DateTime())
+            }
+        };
+        let roots = std::collections::HashSet::from(["FormatFileInfo".to_string()]);
+        let module_names = std::collections::HashSet::from(["time".to_string()]);
+
+        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("FileInfo::ModTime"));
+        assert!(
+            refs.get("time")
+                .is_some_and(|refs| refs.contains("Time::Format")),
+            "{refs:?}"
+        );
     }
 
     #[test]
