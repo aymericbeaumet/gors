@@ -8168,6 +8168,18 @@ fn collect_refs_from_item(
             syn::visit_mut::visit_fn_arg_mut(self, arg);
         }
 
+        fn visit_expr_closure_mut(&mut self, closure: &mut syn::ExprClosure) {
+            for input in &closure.inputs {
+                if let syn::Pat::Type(pat_type) = input
+                    && let Some(name) = pat_ident_name(&pat_type.pat)
+                    && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
+                {
+                    self.types.insert(name, ty);
+                }
+            }
+            syn::visit_mut::visit_expr_closure_mut(self, closure);
+        }
+
         fn visit_local_mut(&mut self, local: &mut syn::Local) {
             if let Some(init) = &local.init
                 && let syn::Pat::Tuple(tuple_pat) = &local.pat
@@ -29806,6 +29818,41 @@ func main() {
         let tar_refs = refs.get("archive__tar").expect("archive/tar refs");
         assert!(tar_refs.contains("Header"));
         assert!(tar_refs.contains("Header::FileInfo"));
+    }
+
+    #[test]
+    fn it_should_collect_external_methods_called_on_typed_closure_params() {
+        let mut item: syn::Item = rust! {
+            pub fn main() {
+                let verify = |mut ts: crate::time::Time| {
+                    ts.String();
+                };
+            }
+        };
+        let module_names = std::collections::HashSet::from(["time".to_string()]);
+        let item_names = std::collections::HashSet::new();
+        let top_level_names = std::collections::HashSet::new();
+        let top_level_types = std::collections::HashMap::new();
+        let top_level_field_types = std::collections::HashMap::new();
+        let top_level_element_types = std::collections::HashMap::new();
+        let top_level_return_types = std::collections::HashMap::new();
+        let top_level_tuple_return_types = std::collections::HashMap::new();
+
+        let context = super::RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let (_, refs) = super::collect_refs_from_item(&mut item, &context);
+
+        let time_refs = refs.get("time").expect("time refs");
+        assert!(time_refs.contains("Time"));
+        assert!(time_refs.contains("Time::String"));
     }
 
     #[test]
