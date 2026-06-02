@@ -388,5 +388,21 @@
   "crypto/hpke::Seal": "Audited 2026-06-02: Seal depends on PublicKey/KEM interface dispatch, NewSender context creation, AEAD seal mutation, and byte-slice concatenation.",
   "crypto/hpke::Sender": "Audited 2026-06-02: Sender behavior depends on embedded context pointer state, AEAD interface values, exporter function values, and sequence counters.",
   "crypto/hpke::Sender.Export": "Audited 2026-06-02: Export depends on stored exporter function values, length validation, and byte-slice secret derivation.",
-  "crypto/hpke::Sender.Seal": "Audited 2026-06-02: Seal depends on stateful AEAD interface calls, nonce counter mutation, byte-slice ciphertext output, and error propagation."
+  "crypto/hpke::Sender.Seal": "Audited 2026-06-02: Seal depends on stateful AEAD interface calls, nonce counter mutation, byte-slice ciphertext output, and error propagation.",
+  "crypto/internal/boring::BigInt": "Audited 2026-06-02: BigInt is internal boring-crypto glue; direct fixture coverage is blocked by Go internal import visibility and behavioral use depends on parent crypto packages.",
+  "crypto/internal/boring::Enabled": "Audited 2026-06-02: Enabled is internal boring-crypto build-state glue; direct fixture coverage is blocked by Go internal import visibility and parent package paths exercise it indirectly.",
+  "crypto/internal/boring/bbig::Dec": "Audited 2026-06-02: Dec depends on internal boring BigInt representation and math/big.Int byte-slice conversion, with direct fixtures blocked by Go internal import visibility.",
+  "crypto/internal/boring/bbig::Enc": "Audited 2026-06-02: Enc depends on internal boring BigInt representation and math/big.Int byte-slice conversion, with direct fixtures blocked by Go internal import visibility.",
+  "crypto/internal/boring/bcache::Cache": "Audited 2026-06-02: Cache behavior depends on generic type-parameterized key/value state, pointer identity, finalizers, and mutex-protected internal cache maps.",
+  "crypto/internal/boring/bcache::V].Clear": "Audited 2026-06-02: Clear depends on mutating type-parameterized internal cache maps with pointer identity keys under mutex state.",
+  "crypto/internal/boring/bcache::V].Get": "Audited 2026-06-02: Get depends on type-parameterized internal cache lookup, pointer identity keys, finalizers, and callback-created values.",
+  "crypto/internal/boring/bcache::V].Put": "Audited 2026-06-02: Put depends on type-parameterized internal cache mutation, pointer identity keys, and finalizer-managed lifetime state.",
+  "crypto/internal/boring/bcache::V].Register": "Audited 2026-06-02: Register depends on type-parameterized internal cache registration plus runtime finalizer behavior for pointer-keyed values.",
+  "crypto/internal/boring/sig::BoringCrypto": "Audited 2026-06-02: BoringCrypto is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/boring/sig::FIPSOnly": "Audited 2026-06-02: FIPSOnly is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/boring/sig::StandardCrypto": "Audited 2026-06-02: StandardCrypto is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/constanttime::ByteEq": "Audited 2026-06-02: ByteEq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/constanttime::Eq": "Audited 2026-06-02: Eq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/constanttime::LessOrEq": "Audited 2026-06-02: LessOrEq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility.",
+  "crypto/internal/constanttime::Select": "Audited 2026-06-02: Select depends on compiler-intrinsic boolToUint8 lowering and integer bitwise semantics; direct fixture coverage is blocked by Go internal import visibility."
 }

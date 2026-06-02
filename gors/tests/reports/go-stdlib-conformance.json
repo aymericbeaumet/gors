@@ -6246,7 +6246,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: BigInt is internal boring-crypto glue; direct fixture coverage is blocked by Go internal import visibility and behavioral use depends on parent crypto packages."
         },
         {
           "id": "crypto/internal/boring::Enabled",
@@ -6255,7 +6255,7 @@
           "kind": "const",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Enabled is internal boring-crypto build-state glue; direct fixture coverage is blocked by Go internal import visibility and parent package paths exercise it indirectly."
         }
       ]
     },
@@ -6280,7 +6280,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Dec depends on internal boring BigInt representation and math/big.Int byte-slice conversion, with direct fixtures blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/boring/bbig::Enc",
@@ -6289,7 +6289,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Enc depends on internal boring BigInt representation and math/big.Int byte-slice conversion, with direct fixtures blocked by Go internal import visibility."
         }
       ]
     },
@@ -6314,7 +6314,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Cache behavior depends on generic type-parameterized key/value state, pointer identity, finalizers, and mutex-protected internal cache maps."
         },
         {
           "id": "crypto/internal/boring/bcache::V].Clear",
@@ -6323,7 +6323,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Clear depends on mutating type-parameterized internal cache maps with pointer identity keys under mutex state."
         },
         {
           "id": "crypto/internal/boring/bcache::V].Get",
@@ -6332,7 +6332,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Get depends on type-parameterized internal cache lookup, pointer identity keys, finalizers, and callback-created values."
         },
         {
           "id": "crypto/internal/boring/bcache::V].Put",
@@ -6341,7 +6341,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Put depends on type-parameterized internal cache mutation, pointer identity keys, and finalizer-managed lifetime state."
         },
         {
           "id": "crypto/internal/boring/bcache::V].Register",
@@ -6350,7 +6350,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Register depends on type-parameterized internal cache registration plus runtime finalizer behavior for pointer-keyed values."
         }
       ]
     },
@@ -6375,7 +6375,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: BoringCrypto is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/boring/sig::FIPSOnly",
@@ -6384,7 +6384,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FIPSOnly is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/boring/sig::StandardCrypto",
@@ -6393,7 +6393,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: StandardCrypto is internal build-signature metadata; direct fixture coverage is blocked by Go internal import visibility."
         }
       ]
     },
@@ -6418,7 +6418,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ByteEq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/constanttime::Eq",
@@ -6427,7 +6427,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Eq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/constanttime::LessOrEq",
@@ -6436,7 +6436,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: LessOrEq depends on compiler-intrinsic boolToUint8 lowering; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/constanttime::Select",
@@ -6445,7 +6445,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Select depends on compiler-intrinsic boolToUint8 lowering and integer bitwise semantics; direct fixture coverage is blocked by Go internal import visibility."
         }
       ]
     },
