@@ -170,19 +170,10 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if func.sig.ident != "printArg" {
-            prune_static_false_branches(&mut func.block.stmts);
-            let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
-                && should_prune_fmt_self_value(&func.block);
-            prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
-            return;
-        }
-
         prune_static_false_branches(&mut func.block.stmts);
         let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
             && should_prune_fmt_self_value(&func.block);
         prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
-        prune_print_arg_unsupported_cases(func);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
@@ -380,64 +371,6 @@ impl VisitMut for CoerceTypes {
             }
         }
     }
-}
-
-fn prune_print_arg_unsupported_cases(func: &mut syn::ImplItemFn) {
-    let old_stmts = std::mem::take(&mut func.block.stmts);
-    func.block.stmts = old_stmts
-        .into_iter()
-        .filter_map(prune_print_arg_unsupported_stmt)
-        .collect();
-}
-
-fn prune_print_arg_unsupported_stmt(stmt: syn::Stmt) -> Option<syn::Stmt> {
-    match stmt {
-        syn::Stmt::Expr(expr, semi) => {
-            prune_print_arg_unsupported_expr(expr).map(|expr| syn::Stmt::Expr(expr, semi))
-        }
-        other => Some(other),
-    }
-}
-
-fn prune_print_arg_unsupported_expr(expr: syn::Expr) -> Option<syn::Expr> {
-    match expr {
-        syn::Expr::Block(expr_block) => prune_print_arg_unsupported_expr_block(expr_block),
-        syn::Expr::If(expr_if) => prune_print_arg_unsupported_if(expr_if),
-        other if print_arg_tokens_need_unsupported_fmt(&other) => None,
-        other => Some(other),
-    }
-}
-
-fn prune_print_arg_unsupported_expr_block(mut expr_block: syn::ExprBlock) -> Option<syn::Expr> {
-    expr_block.block = prune_print_arg_unsupported_block(expr_block.block);
-    (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
-}
-
-fn prune_print_arg_unsupported_if(mut expr_if: syn::ExprIf) -> Option<syn::Expr> {
-    let fallback = expr_if
-        .else_branch
-        .take()
-        .and_then(|(_, else_expr)| prune_print_arg_unsupported_expr(*else_expr));
-
-    if is_false_lit_expr(&expr_if.cond)
-        || print_arg_tokens_need_unsupported_fmt(&expr_if.then_branch)
-    {
-        return fallback;
-    }
-
-    expr_if.then_branch = prune_print_arg_unsupported_block(expr_if.then_branch);
-    expr_if.else_branch = fallback.map(|expr| (<Token![else]>::default(), Box::new(expr)));
-
-    Some(syn::Expr::If(expr_if))
-}
-
-fn prune_print_arg_unsupported_block(mut block: syn::Block) -> syn::Block {
-    block.stmts = block
-        .stmts
-        .into_iter()
-        .filter_map(prune_print_arg_unsupported_stmt)
-        .collect();
-    block
 }
 
 fn should_prune_fmt_self_value<T: quote::ToTokens>(node: &T) -> bool {
@@ -705,11 +638,6 @@ fn print_arg_tokens_need_reflection<T: quote::ToTokens>(node: &T, prune_self_val
         || (prune_self_value && tokens.contains("self . value"))
         || tokens.contains("self . printValue")
         || tokens.contains("self . fmtPointer")
-}
-
-fn print_arg_tokens_need_unsupported_fmt<T: quote::ToTokens>(node: &T) -> bool {
-    let _ = node;
-    false
 }
 
 fn is_false_lit_expr(expr: &syn::Expr) -> bool {
