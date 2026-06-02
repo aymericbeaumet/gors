@@ -36,7 +36,6 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `Box::new` field clone | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
 | `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
 | UTF-8 append rune | `unicode__utf8::AppendRune` / `utf8::AppendRune` | stdlib workaround | First-argument move/take should come from signature and lvalue role for any function that returns an updated destination slice. |
-| Sort helper clone | `fmtsort::Sort` | stdlib workaround | Argument value-copy should follow the callee parameter type and whether the argument is reused, not the helper name. |
 | Reflect value coercion | `reflect::ValueOf` | stdlib workaround | Boxing/moving interface arguments should come from expected parameter type `any` and argument lvalue/rvalue role. |
 | Local helpers | `intFromArg` | stdlib workaround | Generated helper ownership contracts should be expressed in generated signatures, IR expression roles, or helper metadata; `intFromArg` still needs a generic move/take rule for consumed local values. |
 | Borrow first arg | reflect `TypeOf` path list | stdlib workaround | Borrowing should be signature-driven for any function expecting interface/reference-like values, not selected by package/function name. |
@@ -75,3 +74,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `argNumber` second method value argument cloning in `coerce_types.rs` | Receiver-qualified method call analysis now applies the same signature-driven cloneable value argument rule to non-first method arguments. |
 | `parsenum`/`getField` function value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now handles these generated helper calls according to their generated `String`/cloneable value parameter types. |
 | `Write` method slice-to-`Vec<u8>` argument coercion in `coerce_types.rs` | Receiver-qualified method call analysis now materializes range-index slice arguments with `.to_vec()` when the resolved method signature expects a `Vec<T>` value parameter. |
+| stale `fmtsort::Sort` argument cloning in `coerce_types.rs` | The package-specific branch was removed; current generated calls are handled by generic call-signature borrowing and cloneable-value analysis. |

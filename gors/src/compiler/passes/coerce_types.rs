@@ -364,15 +364,6 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if is_path_call(&call.func, &["crate", "fmtsort", "Sort"])
-            || is_path_call(&call.func, &["fmtsort", "Sort"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                clone_field_or_path(first);
-            }
-            return;
-        }
-
         if is_path_call(&call.func, &["crate", "reflect", "ValueOf"])
             || is_path_call(&call.func, &["reflect", "ValueOf"])
         {
