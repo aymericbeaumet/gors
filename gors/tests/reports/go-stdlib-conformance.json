@@ -3724,7 +3724,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Element behavior depends on generic stable pointer identity for addressable struct fields and raw pointer fields that alias list nodes."
         },
         {
           "id": "container/list::Element.Next",
@@ -3733,7 +3733,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Next depends on nullable pointer identity comparisons against the owning list sentinel field without cloning that field into a fresh cell."
         },
         {
           "id": "container/list::Element.Prev",
@@ -3742,7 +3742,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Prev depends on nullable pointer identity comparisons against the owning list sentinel field without cloning that field into a fresh cell."
         },
         {
           "id": "container/list::List",
@@ -3751,7 +3751,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: List behavior depends on self-referential sentinel state where root.next/root.prev point at the addressable root field with stable identity."
         },
         {
           "id": "container/list::List.Back",
@@ -3760,7 +3760,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Back depends on preserving root.prev as an alias to an existing Element pointer rather than a cloned Element value."
         },
         {
           "id": "container/list::List.Front",
@@ -3769,7 +3769,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Front depends on preserving root.next as an alias to an existing Element pointer rather than a cloned Element value."
         },
         {
           "id": "container/list::List.Init",
@@ -3778,7 +3778,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Init depends on assigning pointers to the receiver's root field and preserving that field address across later mutations."
         },
         {
           "id": "container/list::List.InsertAfter",
@@ -3787,7 +3787,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: InsertAfter depends on pointer equality between mark.list and the receiver plus insertion after a stable Element alias."
         },
         {
           "id": "container/list::List.InsertBefore",
@@ -3796,7 +3796,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: InsertBefore depends on pointer equality between mark.list and the receiver plus insertion before a stable Element alias."
         },
         {
           "id": "container/list::List.Len",
@@ -3805,7 +3805,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Len itself is simple, but behavioral coverage needs a valid List state; current List construction depends on unsupported sentinel pointer identity."
         },
         {
           "id": "container/list::List.MoveAfter",
@@ -3814,7 +3814,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MoveAfter depends on comparing Element pointer identity and relinking prev/next pointer fields through stable aliases."
         },
         {
           "id": "container/list::List.MoveBefore",
@@ -3823,7 +3823,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MoveBefore depends on comparing Element pointer identity and relinking prev/next pointer fields through stable aliases."
         },
         {
           "id": "container/list::List.MoveToBack",
@@ -3832,7 +3832,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MoveToBack depends on receiver-owned Element aliases and pointer identity checks against root.prev."
         },
         {
           "id": "container/list::List.MoveToFront",
@@ -3841,7 +3841,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MoveToFront depends on receiver-owned Element aliases and pointer identity checks against root.next."
         },
         {
           "id": "container/list::List.PushBack",
@@ -3850,7 +3850,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PushBack depends on lazy sentinel initialization plus insertion after root.prev while preserving node alias identity."
         },
         {
           "id": "container/list::List.PushBackList",
@@ -3859,7 +3859,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PushBackList depends on traversing one list while inserting copied nodes into another without invalidating Element pointer aliases."
         },
         {
           "id": "container/list::List.PushFront",
@@ -3868,7 +3868,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PushFront depends on lazy sentinel initialization plus insertion after the root field's stable address."
         },
         {
           "id": "container/list::List.PushFrontList",
@@ -3877,7 +3877,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PushFrontList depends on reverse traversal while inserting copied nodes without invalidating Element pointer aliases."
         },
         {
           "id": "container/list::List.Remove",
@@ -3886,7 +3886,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Remove depends on pointer equality between e.list and the receiver plus relinking neighboring Element pointer fields."
         },
         {
           "id": "container/list::New",
@@ -3895,7 +3895,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: New depends on Init returning a pointer to the initialized List while preserving the same receiver and sentinel field identities."
         }
       ]
     },
