@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 26,
-    "unsupportedCaseCount": 12558,
+    "passingCaseCount": 27,
+    "unsupportedCaseCount": 12557,
     "fixtureCount": 76
   },
   "groups": [
@@ -29,8 +29,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 26,
-        "unsupportedCaseCount": 14,
+        "passingCaseCount": 27,
+        "unsupportedCaseCount": 13,
         "fixtureCount": 0
       },
       "cases": [
@@ -189,8 +189,10 @@
           "title": "Header.FileInfo",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/tar"
+          ],
           "reason": ""
         },
         {

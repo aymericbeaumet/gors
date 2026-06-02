@@ -7616,8 +7616,7 @@ fn reachable_item_for_names(
         }
         if let Some((_, path, _)) = &item_impl.trait_
             && let Some(trait_name) = path.segments.last().map(|seg| seg.ident.to_string())
-            && top_level_names.contains(&trait_name)
-            && !names.contains(&trait_name)
+            && !trait_impl_can_follow_self_reachability(path, &trait_name, names, top_level_names)
         {
             return None;
         }
@@ -7674,6 +7673,38 @@ fn qualified_external_trait_path(
 ) -> bool {
     !top_level_names.contains(trait_name)
         && (path.leading_colon.is_some() || path.segments.len() > 1)
+}
+
+fn trait_impl_can_follow_self_reachability(
+    path: &syn::Path,
+    trait_name: &str,
+    names: &std::collections::HashSet<String>,
+    top_level_names: &std::collections::HashSet<String>,
+) -> bool {
+    if names.contains(trait_name)
+        || names
+            .iter()
+            .any(|name| name.starts_with(&format!("{trait_name}::")))
+    {
+        return true;
+    }
+    if trait_name == "Display" && path_starts_with(path, &["std", "fmt"]) {
+        return false;
+    }
+    if trait_name == "Stringer" && path_starts_with(path, &["crate", "fmt"]) {
+        return false;
+    }
+    !top_level_names.contains(trait_name)
+}
+
+fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
+    if path.segments.len() < expected.len() {
+        return false;
+    }
+    path.segments
+        .iter()
+        .zip(expected)
+        .all(|(segment, expected)| segment.ident == *expected)
 }
 
 fn is_noop_interface_type_name(name: &str) -> bool {
@@ -32447,6 +32478,93 @@ func main() {
         assert!(!names.contains("headerFileInfo::String"));
         assert!(
             refs.get("time").is_some_and(|refs| refs.contains("Time")),
+            "{refs:?}"
+        );
+        assert!(
+            !refs
+                .get("io__fs")
+                .is_some_and(|refs| refs.contains("FormatFileInfo")),
+            "{refs:?}"
+        );
+    }
+
+    #[test]
+    fn it_should_prune_unrequested_external_trait_impls_for_reachable_types() {
+        let file: syn::File = rust! {
+            pub struct headerFileInfo;
+
+            impl crate::io__fs::FileInfo for headerFileInfo {
+                fn Name(&mut self) -> String {
+                    "file.txt".to_string()
+                }
+
+                fn Size(&mut self) -> i64 {
+                    7
+                }
+
+                fn IsDir(&mut self) -> bool {
+                    false
+                }
+
+                fn Mode(&mut self) -> crate::io__fs::FileMode {
+                    crate::io__fs::FileMode(0)
+                }
+
+                fn ModTime(&mut self) -> crate::time::Time {
+                    Default::default()
+                }
+
+                fn Sys(&mut self) -> Box<dyn std::any::Any> {
+                    Box::new(())
+                }
+
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn __gors_clone_box(&self) -> Box<dyn crate::io__fs::FileInfo> {
+                    Box::new(self.clone()) as Box<dyn crate::io__fs::FileInfo>
+                }
+            }
+
+            impl crate::fmt::Stringer for headerFileInfo {
+                fn String(&mut self) -> String {
+                    crate::io__fs::FormatFileInfo(&mut (self).clone())
+                }
+
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn __gors_clone_box(&self) -> Box<dyn crate::fmt::Stringer> {
+                    Box::new(self.clone()) as Box<dyn crate::fmt::Stringer>
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from([
+            "headerFileInfo".to_string(),
+            "FileInfo".to_string(),
+            "FileInfo::Name".to_string(),
+        ]);
+        let module_names = std::collections::HashSet::from([
+            "fmt".to_string(),
+            "io__fs".to_string(),
+            "time".to_string(),
+        ]);
+
+        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("headerFileInfo"));
+        assert!(names.contains("FileInfo"));
+        assert!(
+            refs.get("io__fs")
+                .is_some_and(|refs| refs.contains("FileInfo")),
+            "{refs:?}"
+        );
+        assert!(
+            !refs
+                .get("fmt")
+                .is_some_and(|refs| refs.contains("Stringer")),
             "{refs:?}"
         );
         assert!(

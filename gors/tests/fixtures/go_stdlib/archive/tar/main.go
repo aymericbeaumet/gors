@@ -14,6 +14,8 @@ func main() {
 	caseFormats()
 	fmt.Println("== archive/tar/header ==")
 	caseHeader()
+	fmt.Println("== archive/tar/header-file-info ==")
+	caseHeaderFileInfo()
 }
 
 func caseErrors() {
@@ -74,4 +76,24 @@ func caseHeader() {
 	}
 	fmt.Println(h.Name, h.Mode, h.Uid, h.Gid, h.Size, h.Typeflag, h.Linkname, h.Uname, h.Gname)
 	fmt.Println(tar.Format.String(h.Format), h.PAXRecords["comment"])
+}
+
+func caseHeaderFileInfo() {
+	// gors:stdlib-cover archive/tar::Header.FileInfo
+	file := tar.Header{
+		Name:     "dir/file.txt",
+		Mode:     0644,
+		Size:     7,
+		Typeflag: tar.TypeReg,
+	}
+	fileInfo := file.FileInfo()
+	fmt.Println(fileInfo.Name(), fileInfo.Size(), fileInfo.IsDir(), int64(fileInfo.Mode()))
+
+	dir := tar.Header{
+		Name:     "top/sub/",
+		Mode:     0755,
+		Typeflag: tar.TypeDir,
+	}
+	dirInfo := dir.FileInfo()
+	fmt.Println(dirInfo.Name(), dirInfo.Size(), dirInfo.IsDir(), int64(dirInfo.Mode()))
 }
