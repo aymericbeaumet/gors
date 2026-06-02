@@ -259,6 +259,11 @@ gors-builtin/
 - Named `[]byte` types are newtypes, but the compiler also emits helper impls
   (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
   variants) so stdlib code can use them like Go byte slices.
+- Builtin `make` for named container types must allocate the underlying
+  slice/map/channel representation and wrap it in the named Rust newtype. Do
+  not lower `make(MySlice, n)` or `make(MyMap, n)` to `Default::default()`,
+  because Go expects the requested length/capacity to be observable through
+  subsequent slice/map operations.
 - Named `string` types are also newtypes and must implement `StringValue` for
   owned, shared-reference, and mutable-reference receivers. Method receiver
   rewriting must avoid turning `string(r)` into `builtin::string(&self)` because

@@ -164,13 +164,6 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if func.sig.ident == "padString" && block_mentions_ident(&func.block, "RuneCountInString") {
-            func.block = syn::parse_quote!({
-                self.buf.lock().unwrap().writeString((s).clone());
-            });
-            return;
-        }
-
         prune_static_false_branches(&mut func.block.stmts);
         let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
             && should_prune_fmt_self_value(&func.block);
@@ -1774,6 +1767,59 @@ mod tests {
         assert!(
             !tokens.contains("pp :: default") && !tokens.contains("fmtS (v)"),
             "expected no token-string-driven body replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_replace_pad_string_body_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Buffer;
+
+            impl Buffer {
+                pub fn writeString(&mut self, mut s: String) {}
+            }
+
+            pub struct fmt {
+                pub buf: Buffer,
+                pub widPresent: bool,
+                pub wid: isize,
+                pub minus: bool,
+            }
+
+            pub fn RuneCountInString(mut s: String) -> isize {
+                0
+            }
+
+            impl fmt {
+                pub fn writePadding(&mut self, mut width: isize) {}
+
+                pub fn padString(&mut self, mut s: String) {
+                    if !self.widPresent || self.wid == 0 {
+                        self.buf.writeString((s).clone());
+                        return;
+                    }
+                    let width = self.wid - RuneCountInString((s).clone());
+                    if !self.minus {
+                        self.writePadding(width);
+                        self.buf.writeString((s).clone());
+                    } else {
+                        self.buf.writeString((s).clone());
+                        self.writePadding(width);
+                    }
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("RuneCountInString") && tokens.contains("writePadding"),
+            "expected padString body to remain generic lowering output: {tokens}"
+        );
+        assert!(
+            !tokens.contains("lock () . unwrap"),
+            "expected no named padString body replacement: {tokens}"
         );
     }
 

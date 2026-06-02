@@ -14592,9 +14592,8 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                     [] => syn::parse_quote! { crate::builtin::make_chan(0) },
                     [cap_arg, ..] => syn::parse_quote! { crate::builtin::make_chan(#cap_arg) },
                 },
-                _ => {
-                    syn::parse_quote! { Default::default() }
-                }
+                other => compile_named_make_call(&other, &remaining)
+                    .unwrap_or_else(|| syn::parse_quote! { Default::default() }),
             }
         }
         ir::BuiltinCallKind::New => compile_new_builtin(raw_args),
@@ -14704,6 +14703,56 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 _ => compile_error_expr(format!("invalid builtin call: {name}")),
             }
         }
+    }
+}
+
+fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<syn::Expr> {
+    let go_type = typeinfer::GoType::from_expr(type_arg);
+    let typeinfer::GoType::Named(name) = go_type else {
+        return None;
+    };
+
+    let resolved = TYPE_ENV.with(|env| {
+        env.borrow()
+            .resolve_alias(&typeinfer::GoType::Named(name.clone()))
+    });
+    let named_type = named_go_type_path(&name);
+
+    match resolved {
+        typeinfer::GoType::Slice(elem) => {
+            let elem_type = rust_type_from_inferred_go_type(&elem);
+            let inner: syn::Expr = match args {
+                [] => syn::parse_quote! { Vec::<#elem_type>::new() },
+                [size] => {
+                    syn::parse_quote! { crate::builtin::make_vec::<#elem_type>((#size) as usize) }
+                }
+                [size, cap_arg, ..] => {
+                    syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity((#cap_arg) as usize); v.resize_with((#size) as usize, Default::default); v } }
+                }
+            };
+            Some(syn::parse_quote! { #named_type(#inner) })
+        }
+        typeinfer::GoType::Map(key, value) => {
+            let key_type = rust_type_from_inferred_go_type(&key);
+            let value_type = rust_type_from_inferred_go_type(&value);
+            let inner: syn::Expr = match args {
+                [] => {
+                    syn::parse_quote! { std::collections::HashMap::<#key_type, #value_type>::new() }
+                }
+                [cap_arg, ..] => {
+                    syn::parse_quote! { std::collections::HashMap::<#key_type, #value_type>::with_capacity((#cap_arg) as usize) }
+                }
+            };
+            Some(syn::parse_quote! { #named_type(#inner) })
+        }
+        typeinfer::GoType::Chan { .. } => {
+            let inner: syn::Expr = match args {
+                [] => syn::parse_quote! { crate::builtin::make_chan(0) },
+                [cap_arg, ..] => syn::parse_quote! { crate::builtin::make_chan(#cap_arg) },
+            };
+            Some(syn::parse_quote! { #named_type(#inner) })
+        }
+        _ => None,
     }
 }
 
@@ -33739,6 +33788,49 @@ func main() {
                     m.insert("a".to_string(), 1);
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_make_named_slice_type() {
+        let rust_src = go_to_rust(
+            r#"
+                package main
+
+                type Buffer []byte
+
+                func grow(n int) Buffer {
+                    return make(Buffer, n)
+                }
+            "#,
+        );
+
+        assert!(
+            rust_src.contains("Buffer(crate::builtin::make_vec::<u8>((n) as usize))"),
+            "expected make of named slice to allocate and wrap the slice: {rust_src}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_make_named_map_type() {
+        let rust_src = go_to_rust(
+            r#"
+                package main
+
+                type Dict map[string]int
+
+                func main() {
+                    values := make(Dict, 4)
+                    values["a"] = 1
+                }
+            "#,
+        );
+
+        assert!(
+            rust_src.contains("let mut values = Dict(")
+                && rust_src
+                    .contains("std::collections::HashMap::<String, isize>::with_capacity((4) as usize)"),
+            "expected make of named map to allocate and wrap the map: {rust_src}"
         );
     }
 
