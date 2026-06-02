@@ -1440,17 +1440,6 @@ fn coerce_print_arg(expr: &mut syn::Expr) {
             let inner = expr.clone();
             *expr = syn::parse_quote! { std::mem::replace(&mut #inner, Box::new(())) };
         }
-        syn::Expr::Path(path)
-            if path.path.segments.len() == 1
-                && path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|seg| seg.ident == "err") =>
-        {
-            let inner = expr.clone();
-            *expr = syn::parse_quote! { Box::new(#inner) as Box<dyn std::any::Any> };
-        }
         _ => {}
     }
 }
@@ -1659,6 +1648,33 @@ mod tests {
         assert!(
             !tokens.contains("reflect :: ValueOf"),
             "expected no method-name-driven reflect coercion: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_box_print_arg_err_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink;
+
+            impl Sink {
+                pub fn printArg(&mut self, value: isize) {}
+            }
+
+            pub fn call(mut sink: Sink, mut err: isize) {
+                sink.printArg(err);
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("sink . printArg (err)"),
+            "expected local name err not to force boxing: {tokens}"
+        );
+        assert!(
+            !tokens.contains("Box :: new (err)"),
+            "expected no method-name-driven err boxing: {tokens}"
         );
     }
 
