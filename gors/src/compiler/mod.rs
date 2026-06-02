@@ -5004,7 +5004,7 @@ fn mut_ref_vec_inner(ty: &syn::Type) -> Option<syn::Type> {
         return None;
     };
     reference.mutability.as_ref()?;
-    vec_type_inner(&reference.elem)
+    vec_type_inner(&reference.elem).or_else(|| slice_type_inner(&reference.elem))
 }
 
 fn return_type_is_vec(output: &syn::ReturnType) -> bool {
@@ -5084,6 +5084,9 @@ fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     fn expr_base_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
         match expr {
             syn::Expr::Path(path) => path.path.is_ident(ident),
+            syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+                expr_base_is_ident(&unary.expr, ident)
+            }
             syn::Expr::Field(field) => expr_base_is_ident(&field.base, ident),
             syn::Expr::Index(index) => expr_base_is_ident(&index.expr, ident),
             syn::Expr::Paren(paren) => expr_base_is_ident(&paren.expr, ident),
@@ -5108,6 +5111,13 @@ fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     }
 
     impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_call(&mut self, call: &syn::ExprCall) {
+            if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
+                return;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
         fn visit_expr_assign(&mut self, assign: &syn::ExprAssign) {
             if lhs_mutates_vec_param(&assign.left, self.ident) {
                 self.found = true;
@@ -5125,9 +5135,7 @@ fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
         }
 
         fn visit_expr_reference(&mut self, reference: &syn::ExprReference) {
-            if reference.mutability.is_some()
-                && matches!(&*reference.expr, syn::Expr::Path(path) if path.path.is_ident(self.ident))
-            {
+            if reference.mutability.is_some() && expr_base_is_ident(&reference.expr, self.ident) {
                 self.found = true;
                 return;
             }
@@ -5163,6 +5171,13 @@ fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
     Some(inner.clone())
 }
 
+fn slice_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Slice(slice) = ty else {
+        return None;
+    };
+    Some((*slice.elem).clone())
+}
+
 fn rewrite_vec_params_as_mut_refs(
     sig: &mut syn::Signature,
     params: &[(usize, syn::Ident, syn::Type)],
@@ -5171,7 +5186,7 @@ fn rewrite_vec_params_as_mut_refs(
         let Some(syn::FnArg::Typed(pat_type)) = sig.inputs.iter_mut().nth(*index) else {
             continue;
         };
-        *pat_type.ty = syn::parse_quote! { &mut Vec<#inner> };
+        *pat_type.ty = syn::parse_quote! { &mut [#inner] };
     }
 }
 
@@ -5223,7 +5238,7 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
             if indices.contains(&index) {
-                borrow_mut_vec_call_arg(arg);
+                borrow_mut_slice_call_arg(arg);
             }
         }
     }
@@ -5235,7 +5250,7 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
             if indices.contains(&index) {
-                borrow_mut_vec_call_arg(arg);
+                borrow_mut_slice_call_arg(arg);
             }
         }
     }
@@ -5272,6 +5287,41 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     }
     let inner = arg.clone();
     *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
+    if matches!(arg, syn::Expr::Reference(_)) {
+        return;
+    }
+    if let Some(receiver) = to_vec_receiver_expr(arg) {
+        *arg = syn::parse_quote! { &mut #receiver };
+        return;
+    }
+    if let Some(name) = expr_path_ident(arg) {
+        if name == "self" {
+            return;
+        }
+        let ident = syn::Ident::new(&name, Span::mixed_site());
+        *arg = syn::parse_quote! { &mut *#ident };
+        return;
+    }
+    if matches!(arg, syn::Expr::MethodCall(_) | syn::Expr::Call(_)) {
+        let inner = arg.clone();
+        *arg = syn::parse_quote! { &mut *#inner };
+        return;
+    }
+    let inner = arg.clone();
+    *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn to_vec_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::MethodCall(method) = expr else {
+        return None;
+    };
+    if method.method != "to_vec" || !method.args.is_empty() {
+        return None;
+    }
+    Some((*method.receiver).clone())
 }
 
 fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -9655,6 +9705,9 @@ fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
 }
 
 fn func_param_type_from_ast_expr(expr: &ast::Expr) -> syn::Type {
+    if let Some(elem) = byte_slice_elem_type_from_expr(expr) {
+        return syn::parse_quote! { &mut [#elem] };
+    }
     let ty = type_from_expr_ref(expr);
     if is_interface_expr(expr) {
         syn::parse_quote! { &mut dyn #ty }
@@ -9895,6 +9948,20 @@ fn slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
         ast::Expr::ArrayType(array) if array.len.is_none() => Some(type_from_expr_ref(&array.elt)),
         _ => None,
     }
+}
+
+fn byte_slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    let ast::Expr::ArrayType(array) = expr else {
+        return None;
+    };
+    if array.len.is_some() {
+        return None;
+    }
+    matches!(
+        array.elt.as_ref(),
+        ast::Expr::Ident(ident) if ident.name == "byte" || ident.name == "uint8"
+    )
+    .then(|| type_from_expr_ref(&array.elt))
 }
 
 fn self_referential_pointer_type(expr: &ast::Expr, self_ident: &syn::Ident) -> Option<syn::Type> {
@@ -12951,6 +13018,12 @@ fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
         let trait_path = named_go_type_path(&interface_name);
         return syn::parse_quote! { &mut dyn #trait_path };
     }
+    if let typeinfer::GoType::Slice(elem) = resolved_go_type(go_type)
+        && *elem == typeinfer::GoType::Uint8
+    {
+        let elem = rust_type_from_inferred_go_type(&elem);
+        return syn::parse_quote! { &mut [#elem] };
+    }
     rust_type_from_inferred_go_type(go_type)
 }
 
@@ -14080,7 +14153,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     let mut param_types = Vec::new();
 
     for field in func_lit.type_.params.list {
-        let ty: Option<syn::Type> = field.type_.map(syn::Type::from);
+        let ty: Option<syn::Type> = field.type_.map(|expr| func_param_type_from_ast_expr(&expr));
         let names = field.names.unwrap_or_else(|| {
             vec![ast::Ident {
                 name_pos: token::Position::default(),
@@ -15663,7 +15736,7 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
     let param_idents = (0..info.params.len())
         .map(|idx| syn::Ident::new(&format!("__gors_method_arg_{idx}"), Span::mixed_site()))
         .collect::<Vec<_>>();
-    let param_types = info.params.iter().map(rust_type_from_inferred_go_type);
+    let param_types = info.params.iter().map(rust_func_param_type_from_go_type);
     let param_pats = param_idents
         .iter()
         .zip(param_types)
@@ -15848,6 +15921,9 @@ fn compile_function_value_arg_with_expected(
     arg: ast::Expr,
     expected: Option<&typeinfer::GoType>,
 ) -> syn::Expr {
+    if expected.is_some_and(is_go_byte_slice_type) {
+        return compile_borrowed_slice_arg_expr(arg);
+    }
     let should_clone = expected.map(resolved_go_type).is_some_and(|expected| {
         matches!(
             expected,
@@ -15861,6 +15937,31 @@ fn compile_function_value_arg_with_expected(
         syn::parse_quote! { (#expr).clone() }
     } else {
         expr
+    }
+}
+
+fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
+    match arg {
+        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => {
+            let expr: syn::Expr = arg.into();
+            syn::parse_quote! { &mut *#expr }
+        }
+        ast::Expr::CallExpr(call) if call_returns_mutable_slice_view(&call) => {
+            let expr: syn::Expr = ast::Expr::CallExpr(call).into();
+            syn::parse_quote! { &mut *#expr }
+        }
+        ast::Expr::SliceExpr(slice) => {
+            let expr = ast::Expr::SliceExpr(slice);
+            if let Some(lvalue) = lvalue_expr_from_owned(expr) {
+                syn::parse_quote! { &mut #lvalue }
+            } else {
+                compile_error_expr("slice argument is not addressable")
+            }
+        }
+        other => {
+            let expr: syn::Expr = other.into();
+            syn::parse_quote! { &mut #expr }
+        }
     }
 }
 
@@ -30057,10 +30158,10 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("fn writeByte(mut p: &mut Vec<u8>) -> isize"),
+            main_rs.contains("fn writeByte(mut p: &mut [u8]) -> isize"),
             "{main_rs}"
         );
-        assert!(main_rs.contains("writeByte(&mut buf);"), "{main_rs}");
+        assert!(main_rs.contains("writeByte(&mut *buf);"), "{main_rs}");
         assert!(!main_rs.contains("writeByte(buf.clone());"), "{main_rs}");
     }
 
@@ -30089,12 +30190,12 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("fn Fill(&mut self, mut p: &mut Vec<u8>)")
-                || main_rs.contains("fn Fill (& mut self , mut p : & mut Vec < u8 >)"),
+            main_rs.contains("fn Fill(&mut self, mut p: &mut [u8])")
+                || main_rs.contains("fn Fill (& mut self , mut p : & mut [u8])"),
             "{main_rs}"
         );
         assert!(
-            main_rs.contains(".Fill(&mut buf)") || main_rs.contains(". Fill (& mut buf)"),
+            main_rs.contains(".Fill(&mut *buf)") || main_rs.contains(". Fill (& mut * buf)"),
             "{main_rs}"
         );
         assert!(!main_rs.contains(".Fill(buf.clone())"), "{main_rs}");
@@ -30126,13 +30227,90 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("mut __gors_method_arg_0: Vec<u8>")
-                || main_rs.contains("mut __gors_method_arg_0 : Vec < u8 >"),
+            main_rs.contains("mut __gors_method_arg_0: &mut [u8]")
+                || main_rs.contains("mut __gors_method_arg_0 : & mut [u8]"),
             "{main_rs}"
         );
         assert!(
-            main_rs.contains(".Fill(&mut __gors_method_arg_0)")
-                || main_rs.contains(". Fill (& mut __gors_method_arg_0)"),
+            main_rs.contains(".Fill(&mut *__gors_method_arg_0)")
+                || main_rs.contains(". Fill (& mut * __gors_method_arg_0)"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_function_value_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Formatter func([]byte, string)
+
+func writeByte(p []byte, s string) {
+	p[0] = s[0]
+}
+
+func main() {
+	var f Formatter = writeByte
+	buf := []byte{0}
+	f(buf, "x")
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("dyn Fn(&mut [u8], String)")
+                || main_rs.contains("dyn Fn (& mut [u8] , String)"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("fn writeByte(mut p: &mut [u8], mut s: String)")
+                || main_rs.contains("fn writeByte (mut p : & mut [u8] , mut s : String)"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("(&*__gors_func)(&mut *buf")
+                || main_rs.contains("(& * __gors_func) (& mut * buf"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_slice_params_forwarded_to_mutator() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func inner(p []byte) {
+	p[0] = 1
+}
+
+func outer(p []byte) {
+	inner(p)
+}
+
+func main() {
+	buf := []byte{0}
+	outer(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("fn outer(mut p: &mut [u8])")
+                || main_rs.contains("fn outer (mut p : & mut [u8])"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("inner(&mut *p)") || main_rs.contains("inner (& mut * p)"),
             "{main_rs}"
         );
     }
