@@ -13739,7 +13739,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Key depends on generic hash constructor function values constrained by hash.Hash, FIPS hash unwrapping, internal PBKDF2/HMAC state, and byte-slice derived-key output."
         }
       ]
     },

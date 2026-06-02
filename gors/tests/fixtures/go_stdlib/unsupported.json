@@ -465,5 +465,6 @@
   "crypto/mlkem::NewDecapsulationKey1024": "Audited 2026-06-02: NewDecapsulationKey1024 depends on preserving transitive FIPS ML-KEM roots, seed byte-slice validation, pointer-backed key wrappers, and error interface propagation.",
   "crypto/mlkem::NewDecapsulationKey768": "Audited 2026-06-02: NewDecapsulationKey768 depends on preserving transitive FIPS ML-KEM roots, seed byte-slice validation, pointer-backed key wrappers, and error interface propagation.",
   "crypto/mlkem::NewEncapsulationKey1024": "Audited 2026-06-02: NewEncapsulationKey1024 depends on preserving transitive FIPS ML-KEM roots, public-key byte-slice validation, pointer-backed key wrappers, and error interface propagation.",
-  "crypto/mlkem::NewEncapsulationKey768": "Audited 2026-06-02: NewEncapsulationKey768 depends on preserving transitive FIPS ML-KEM roots, public-key byte-slice validation, pointer-backed key wrappers, and error interface propagation."
+  "crypto/mlkem::NewEncapsulationKey768": "Audited 2026-06-02: NewEncapsulationKey768 depends on preserving transitive FIPS ML-KEM roots, public-key byte-slice validation, pointer-backed key wrappers, and error interface propagation.",
+  "crypto/pbkdf2::Key": "Audited 2026-06-02: Key depends on generic hash constructor function values constrained by hash.Hash, FIPS hash unwrapping, internal PBKDF2/HMAC state, and byte-slice derived-key output."
 }
