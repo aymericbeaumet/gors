@@ -4020,6 +4020,7 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    clear_borrow_pointer_arg_indices();
     set_import_renames(BTreeMap::new());
     set_dot_import_renames(BTreeMap::new());
     set_import_package_names(BTreeMap::new());
@@ -4058,6 +4059,7 @@ pub fn compile_with_type_env_and_import_renames(
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    clear_borrow_pointer_arg_indices();
     set_import_renames(import_renames);
     set_dot_import_renames(BTreeMap::new());
     set_import_package_names(BTreeMap::new());
@@ -4354,6 +4356,12 @@ fn compile_program_impl(
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    {
+        let files = std::iter::once(&program.main_package.ast)
+            .chain(program.imports.iter().map(|pkg| &pkg.ast))
+            .collect::<Vec<_>>();
+        set_borrow_pointer_arg_indices_for_files(&files);
+    }
     let mut modules = BTreeMap::new();
     let mut stdlib_imports = program.stdlib_imports.clone();
     collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
@@ -10050,10 +10058,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     let field_needs_manual_default =
                         contains_array_type(&field_type) || field_contains_func || field_is_error;
                     let field_cannot_derive_clone = contains_any_type(&field_type)
-                        || contains_interface_type(&field_type)
-                        || interface_trait_path.is_some();
+                        || (!field_is_error && contains_interface_type(&field_type))
+                        || (!field_is_error && interface_trait_path.is_some());
                     let field_cannot_derive_partial_eq =
-                        !expr_supports_derived_partial_eq(&field_type, &ident);
+                        field_is_error || !expr_supports_derived_partial_eq(&field_type, &ident);
                     let field_cannot_default = borrowed_interface_trait_path.is_some();
                     let field_can_derive_copy = !field_contains_func
                         && interface_trait_path.is_none()
@@ -12810,11 +12818,34 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
 
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
     let func_ty = shared_func_box_type_from_go_type(expected)?;
-    Some(syn::parse_quote! {
+    let value: syn::Expr = syn::parse_quote! {
         {
             let __gors_func: #func_ty = std::sync::Arc::new(#compiled);
             std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
         }
+    };
+    Some(wrap_named_func_cell_expr(expected, value))
+}
+
+fn wrap_named_func_cell_expr(expected: &typeinfer::GoType, value: syn::Expr) -> syn::Expr {
+    if let Some(wrapper) = named_func_newtype(expected) {
+        syn::parse_quote! { #wrapper(#value) }
+    } else {
+        value
+    }
+}
+
+fn named_func_newtype(go_type: &typeinfer::GoType) -> Option<syn::Type> {
+    let typeinfer::GoType::Named(name) = go_type else {
+        return None;
+    };
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if env.is_type_alias(name) {
+            return None;
+        }
+        matches!(env.resolve_alias(go_type), typeinfer::GoType::Func { .. })
+            .then(|| named_go_type_path(name))
     })
 }
 
@@ -14226,6 +14257,24 @@ fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
     mutex_call.args.first().cloned()
 }
 
+fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::UnaryExpr(unary) = expr else {
+        return None;
+    };
+    if unary.op != token::Token::AND {
+        return None;
+    }
+    let ast::Expr::Ident(ident) = &*unary.x else {
+        return None;
+    };
+    let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+    if is_shared_capture_name(ident.to_string().as_str()) {
+        Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
+    } else {
+        Some(syn::parse_quote! { &mut #ident })
+    }
+}
+
 fn compile_expr_with_expected(
     mut expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
@@ -14271,7 +14320,11 @@ fn compile_expr_with_expected(
             });
             if is_func_var {
                 let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-                return syn::parse_quote! { #ident.clone() };
+                let value = syn::parse_quote! { #ident.clone() };
+                if let Some(expected) = expected {
+                    return wrap_named_func_cell_expr(expected, value);
+                }
+                return value;
             }
         }
 
@@ -14361,6 +14414,9 @@ fn compile_expr_with_expected(
             let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
             if go_type_is_interface_like(&actual) {
                 return expr.into();
+            }
+            if let Some(expr) = borrowed_interface_address_of_ident_expr(&expr) {
+                return expr;
             }
             let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
@@ -20078,35 +20134,42 @@ pub(crate) fn clear_borrow_pointer_arg_indices() {
 }
 
 fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet<usize> {
-    let name = match fun {
-        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
+    let names = match fun {
+        ast::Expr::Ident(ident) => vec![ident.name.to_string()],
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(receiver) = &*selector.x {
                 TYPE_ENV.with(|env| {
                     let env = env.borrow();
                     let package_key = format!("{}.{}", receiver.name, selector.sel.name);
                     if env.has_func(&package_key) {
-                        return Some(package_key);
+                        return vec![package_key];
                     }
-                    env.get_var(receiver.name)
+                    if let Some(name) = env
+                        .get_var(receiver.name)
                         .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
-                        .map(|name| format!("{name}.{}", selector.sel.name))
-                        .or_else(|| Some(selector.sel.name.to_string()))
+                    {
+                        let mut names = vec![format!("{name}.{}", selector.sel.name)];
+                        if let Some(base_name) = name.rsplit('.').next()
+                            && base_name != name
+                        {
+                            names.push(format!("{base_name}.{}", selector.sel.name));
+                        }
+                        names.push(selector.sel.name.to_string());
+                        return names;
+                    }
+                    vec![selector.sel.name.to_string()]
                 })
             } else {
-                Some(selector.sel.name.to_string())
+                vec![selector.sel.name.to_string()]
             }
         }
-        _ => None,
-    };
-    let Some(name) = name else {
-        return std::collections::HashSet::new();
+        _ => vec![],
     };
     BORROW_POINTER_ARG_INDICES.with(|indices| {
-        indices
-            .borrow()
-            .get(&name)
-            .cloned()
+        let indices = indices.borrow();
+        names
+            .iter()
+            .find_map(|name| indices.get(name).cloned())
             .unwrap_or_else(std::collections::HashSet::new)
     })
 }
@@ -20196,6 +20259,9 @@ fn should_borrow_pointer_arg_by_shape(
     }
     match expr {
         ast::Expr::ParenExpr(paren) => should_borrow_pointer_arg_by_shape(&paren.x, expected),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
+            matches!(&*unary.x, ast::Expr::Ident(ident) if is_shared_capture_name(ident.name))
+        }
         ast::Expr::SelectorExpr(selector) => matches!(
             &*selector.x,
             ast::Expr::Ident(pkg)
@@ -26550,6 +26616,50 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_borrows_imported_method_pointer_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/lib"
+
+func main() {
+	var w lib.Writer
+	var h lib.Header
+	w.Use(&h)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("lib/lib.go").as_path(),
+            r#"
+package lib
+
+type Header struct {
+	Name string
+}
+
+type Writer struct{}
+
+func (w *Writer) Use(h *Header) {
+	h.Name = "used"
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Use(&mut *h.lock().unwrap())"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("Use(h.clone())"), "{main_rs}");
+    }
+
+    #[test]
     fn compile_program_multi_keeps_error_struct_fields_owned() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -26564,6 +26674,7 @@ type wrapError struct {
 
 func main() {
 	var w wrapError
+	_ = w.clone()
 	_ = w.err
 }
 "#,
@@ -26580,6 +26691,8 @@ func main() {
             "{main_rs}"
         );
         assert!(main_rs.contains("impl Default for wrapError"), "{main_rs}");
+        assert!(main_rs.contains("#[derive(Clone"), "{main_rs}");
+        assert!(main_rs.contains("let _ = w.clone();"), "{main_rs}");
     }
 
     #[test]
@@ -28361,6 +28474,47 @@ func main() {
     }
 
     #[test]
+    fn it_should_wrap_named_function_type_values() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Formatter func(int) int
+type AliasFormatter = func(int) int
+
+func inc(x int) int { return x + 1 }
+func useFormatter(Formatter) {}
+
+func main() {
+	var formatter Formatter = inc
+	var alias AliasFormatter = inc
+	local := func(x int) int { return x + 2 }
+	useFormatter(local)
+	_, _ = formatter, alias
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let mut formatter : Formatter = Formatter"),
+            "{output}"
+        );
+        assert!(
+            output.contains("let mut alias : AliasFormatter = {"),
+            "{output}"
+        );
+        assert!(!output.contains("AliasFormatter ({"), "{output}");
+        assert!(
+            output.contains("useFormatter (Formatter (local . clone ()))"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn it_should_compile_builtin_len() {
         test(
             r#"
@@ -28576,6 +28730,42 @@ type Seq[V any] func(func(V) bool)
             "{output}"
         );
         assert!(!output.contains("Deref for Seq {"), "{output}");
+    }
+
+    #[test]
+    fn it_should_borrow_address_taken_idents_for_interface_args() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+type sink struct{}
+
+func (sink) Write([]byte) (int, error) {
+	return 0, nil
+}
+
+func use(Writer) {}
+
+func main() {
+	var s sink
+	use(&s)
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("use_ (& mut * s . lock () . unwrap ())"),
+            "{output}"
+        );
+        assert!(!output.contains("& mut s . clone ()"), "{output}");
     }
 
     #[test]
