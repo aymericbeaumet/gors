@@ -38,7 +38,6 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | UTF-8 append rune | `unicode__utf8::AppendRune` / `utf8::AppendRune` | stdlib workaround | First-argument move/take should come from signature and lvalue role for any function that returns an updated destination slice. |
 | Reflect value coercion | `reflect::ValueOf` | stdlib workaround | Boxing/moving interface arguments should come from expected parameter type `any` and argument lvalue/rvalue role. |
 | Local helpers | `intFromArg` | stdlib workaround | Generated helper ownership contracts should be expressed in generated signatures, IR expression roles, or helper metadata; `intFromArg` still needs a generic move/take rule for consumed local values. |
-| Borrow first arg | reflect `TypeOf` path list | stdlib workaround | Borrowing should be signature-driven for any function expecting interface/reference-like values, not selected by package/function name. |
 | Local init cloning | identifiers `value`, `f`, field `fmtFlags` | stdlib workaround | Cloning should follow Go value-copy semantics, binding type, and later use/move analysis, not chosen by local variable or field name. |
 | Format flush insertion | method calls `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
@@ -75,3 +74,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `parsenum`/`getField` function value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now handles these generated helper calls according to their generated `String`/cloneable value parameter types. |
 | `Write` method slice-to-`Vec<u8>` argument coercion in `coerce_types.rs` | Receiver-qualified method call analysis now materializes range-index slice arguments with `.to_vec()` when the resolved method signature expects a `Vec<T>` value parameter. |
 | stale `fmtsort::Sort` argument cloning in `coerce_types.rs` | The package-specific branch was removed; current generated calls are handled by generic call-signature borrowing and cloneable-value analysis. |
+| stale `reflect::TypeOf` argument borrowing in `coerce_types.rs` | The package-specific branch and its private borrow helpers were removed; current supported generated paths do not require name-selected `TypeOf` borrowing. |

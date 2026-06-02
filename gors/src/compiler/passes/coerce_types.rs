@@ -379,15 +379,6 @@ impl VisitMut for CoerceTypes {
             }
             return;
         }
-
-        if is_path_call(&call.func, &["crate", "reflect", "TypeOf"])
-            || is_path_call(&call.func, &["reflect", "TypeOf"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                borrow_expr(first);
-            }
-            return;
-        }
     }
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
@@ -1196,18 +1187,6 @@ fn is_owned_to_string_expr(expr: &syn::Expr) -> bool {
         || matches!(expr, syn::Expr::Group(group) if is_owned_to_string_expr(&group.expr))
 }
 
-fn is_owned_value_expr(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::MethodCall(method) => matches!(
-            method.method.to_string().as_str(),
-            "clone" | "to_vec" | "to_string"
-        ),
-        syn::Expr::Paren(paren) => is_owned_value_expr(&paren.expr),
-        syn::Expr::Group(group) => is_owned_value_expr(&group.expr),
-        _ => false,
-    }
-}
-
 fn path_ident_name(expr: &syn::Expr) -> Option<String> {
     match expr {
         syn::Expr::Path(path) => {
@@ -1375,21 +1354,6 @@ fn expr_contains_method_call(expr: &syn::Expr, method: &str) -> bool {
     };
     syn::visit::Visit::visit_expr(&mut finder, expr);
     finder.found
-}
-
-fn borrow_expr(expr: &mut syn::Expr) {
-    if matches!(expr, syn::Expr::Reference(_)) || is_owned_value_expr(expr) {
-        return;
-    }
-    if matches!(
-        expr,
-        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_)
-    ) {
-        clone_expr(expr);
-        return;
-    }
-    let inner = expr.clone();
-    *expr = syn::parse_quote! { &#inner };
 }
 
 fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections::HashSet<String>) {
