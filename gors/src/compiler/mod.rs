@@ -8744,6 +8744,17 @@ fn collect_refs_from_item(
         module_names: &std::collections::HashSet<String>,
     ) -> Option<(String, String)> {
         match expr {
+            syn::Expr::Call(call) => external_path_symbol_from_expr(&call.func, module_names),
+            syn::Expr::Cast(cast) => external_path_symbol_from_expr(&cast.expr, module_names),
+            syn::Expr::Group(group) => external_path_symbol_from_expr(&group.expr, module_names),
+            syn::Expr::Paren(paren) => external_path_symbol_from_expr(&paren.expr, module_names),
+            syn::Expr::Reference(reference) => {
+                external_path_symbol_from_expr(&reference.expr, module_names)
+            }
+            syn::Expr::Try(try_expr) => {
+                external_path_symbol_from_expr(&try_expr.expr, module_names)
+            }
+            syn::Expr::Unary(unary) => external_path_symbol_from_expr(&unary.expr, module_names),
             syn::Expr::MethodCall(method)
                 if matches!(
                     method.method.to_string().as_str(),
@@ -29931,6 +29942,39 @@ func main() {
             refs.get("os")
                 .is_some_and(|roots| roots.contains("PathListSeparator"))
         );
+    }
+
+    #[test]
+    fn collect_external_refs_follows_wrapped_imported_value_method_receivers() {
+        let file: syn::File = rust! {
+            pub fn main() {
+                let mut buf = Vec::from([4_u8, 3_u8, 2_u8, 1_u8]);
+                let _ = (encoding__binary::LittleEndian).clone().Uint32(buf);
+            }
+        };
+        let module_names = std::collections::HashSet::from(["encoding__binary".to_string()]);
+
+        let refs = super::collect_external_refs(&file.items, &module_names);
+        let binary_refs = refs.get("encoding__binary").expect("encoding/binary refs");
+
+        assert!(binary_refs.contains("LittleEndian"), "{refs:?}");
+        assert!(binary_refs.contains("LittleEndian::Uint32"), "{refs:?}");
+    }
+
+    #[test]
+    fn collect_external_refs_follows_locked_imported_value_method_receivers() {
+        let file: syn::File = rust! {
+            pub fn main() {
+                let _ = (encoding__base64::StdEncoding.lock().unwrap()).EncodedLen(4);
+            }
+        };
+        let module_names = std::collections::HashSet::from(["encoding__base64".to_string()]);
+
+        let refs = super::collect_external_refs(&file.items, &module_names);
+        let base64_refs = refs.get("encoding__base64").expect("encoding/base64 refs");
+
+        assert!(base64_refs.contains("StdEncoding"), "{refs:?}");
+        assert!(base64_refs.contains("StdEncoding::EncodedLen"), "{refs:?}");
     }
 
     #[test]
