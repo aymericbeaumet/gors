@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 203,
-    "unsupportedCaseCount": 12215,
+    "passingCaseCount": 205,
+    "unsupportedCaseCount": 12213,
     "fixtureCount": 80
   },
   "groups": [
@@ -4007,8 +4007,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 15,
+        "passingCaseCount": 4,
+        "unsupportedCaseCount": 13,
         "fixtureCount": 0
       },
       "cases": [
@@ -4019,15 +4019,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AfterFunc depends on cancellation propagation, sync.Once state, goroutine launch, and stored func() callbacks."
         },
         {
           "id": "context::Background",
           "title": "Background",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
           "reason": ""
         },
         {
@@ -4037,7 +4039,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CancelCauseFunc behavior depends on stored function values mutating shared cancelCtx state with optional error causes."
         },
         {
           "id": "context::CancelFunc",
@@ -4046,7 +4048,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CancelFunc behavior depends on stored function values mutating shared cancelCtx state and idempotent cancellation."
         },
         {
           "id": "context::Canceled",
@@ -4066,7 +4068,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Cause depends on interface Value lookup, pointer type assertions to cancelCtx, mutex-protected state, and atomic.Value error storage."
         },
         {
           "id": "context::Context",
@@ -4075,7 +4077,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Full Context behavior depends on nil/closed channel semantics, cancellation propagation, time deadlines, and interface value traversal."
         },
         {
           "id": "context::DeadlineExceeded",
@@ -4093,8 +4095,10 @@
           "title": "TODO",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
           "reason": ""
         },
         {
@@ -4104,7 +4108,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithCancel depends on cancelCtx propagation, channel close semantics, child maps keyed by interfaces, and returned CancelFunc closures."
         },
         {
           "id": "context::WithCancelCause",
@@ -4113,7 +4117,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithCancelCause depends on WithCancel plus cause-carrying error interface state shared through derived contexts."
         },
         {
           "id": "context::WithDeadline",
@@ -4122,7 +4126,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithDeadline depends on time.Time comparison, timerCtx state, time.AfterFunc timers, and cancellation channel propagation."
         },
         {
           "id": "context::WithDeadlineCause",
@@ -4131,7 +4135,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithDeadlineCause depends on timerCtx, time.AfterFunc callbacks, deadline cancellation, and stored error causes."
         },
         {
           "id": "context::WithTimeout",
@@ -4140,7 +4144,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithTimeout depends on time.Now/Add plus the unsupported deadline timer and cancellation propagation path."
         },
         {
           "id": "context::WithTimeoutCause",
@@ -4149,7 +4153,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithTimeoutCause depends on time.Now/Add plus the unsupported cause-carrying deadline timer path."
         },
         {
           "id": "context::WithValue",
@@ -4158,7 +4162,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithValue depends on reflectlite comparability checks, interface key equality, and chained valueCtx interface traversal."
         },
         {
           "id": "context::WithoutCancel",
@@ -4167,7 +4171,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WithoutCancel depends on wrapper Context delegation, Cause-aware Value traversal, and full cancellation interface semantics."
         }
       ]
     },

@@ -22145,6 +22145,230 @@ fn value_method_list_satisfies_interface(
     })
 }
 
+fn value_type_satisfies_interface_for_impl(
+    struct_name: &str,
+    trait_name: &str,
+    struct_method_list: &[String],
+    pointer_methods: Option<&std::collections::BTreeSet<String>>,
+    required_methods: &[String],
+) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if env.is_interface(trait_name) {
+            env.named_type_implements_interface(struct_name, trait_name, false)
+        } else {
+            value_method_list_satisfies_interface(
+                struct_method_list,
+                pointer_methods,
+                required_methods,
+            )
+        }
+    })
+}
+
+#[derive(Clone)]
+struct PromotedMethodStep {
+    field_name: String,
+    field_is_pointer: bool,
+}
+
+#[derive(Clone)]
+struct PromotedMethodInfo {
+    owner_type: String,
+    steps: Vec<PromotedMethodStep>,
+    method_is_pointer_receiver: bool,
+}
+
+fn direct_method_key_for_impl(
+    env: &typeinfer::TypeEnv,
+    type_name: &str,
+    method_name: &str,
+    include_pointer_receiver_methods: bool,
+) -> Option<String> {
+    let method_key = format!("{type_name}.{method_name}");
+    let has_method = if include_pointer_receiver_methods {
+        env.has_func(&method_key)
+    } else {
+        env.has_value_method(&method_key)
+    };
+    has_method.then_some(method_key)
+}
+
+fn promoted_method_info_for_impl(
+    struct_name: &str,
+    method_name: &str,
+    include_pointer_receiver_methods: bool,
+) -> Option<PromotedMethodInfo> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        promoted_method_info_for_impl_inner(
+            &env,
+            struct_name,
+            method_name,
+            include_pointer_receiver_methods,
+            &mut std::collections::HashSet::new(),
+        )
+    })
+}
+
+fn promoted_method_info_for_impl_inner(
+    env: &typeinfer::TypeEnv,
+    struct_name: &str,
+    method_name: &str,
+    include_pointer_receiver_methods: bool,
+    visiting: &mut std::collections::HashSet<String>,
+) -> Option<PromotedMethodInfo> {
+    if !visiting.insert(struct_name.to_string()) {
+        return None;
+    }
+    for (field_name, field_ty) in env.get_struct_fields(struct_name) {
+        if !env.is_struct_embedded_field(struct_name, &field_name) {
+            continue;
+        }
+        let Some((owner_type, field_is_pointer)) = embedded_field_target(&field_ty, env) else {
+            continue;
+        };
+        let include_owner_pointer_methods = include_pointer_receiver_methods || field_is_pointer;
+        if let Some(method_key) =
+            direct_method_key_for_impl(env, &owner_type, method_name, include_owner_pointer_methods)
+        {
+            visiting.remove(struct_name);
+            return Some(PromotedMethodInfo {
+                owner_type,
+                steps: vec![PromotedMethodStep {
+                    field_name,
+                    field_is_pointer,
+                }],
+                method_is_pointer_receiver: env.method_has_pointer_receiver(&method_key),
+            });
+        }
+        if let Some(mut nested) = promoted_method_info_for_impl_inner(
+            env,
+            &owner_type,
+            method_name,
+            include_owner_pointer_methods,
+            visiting,
+        ) {
+            let mut steps = vec![PromotedMethodStep {
+                field_name,
+                field_is_pointer,
+            }];
+            steps.append(&mut nested.steps);
+            nested.steps = steps;
+            visiting.remove(struct_name);
+            return Some(nested);
+        }
+    }
+    visiting.remove(struct_name);
+    None
+}
+
+fn promoted_method_receiver_expr(
+    steps: &[PromotedMethodStep],
+    call_receiver_kind: PointerInterfaceCallReceiver,
+) -> syn::Expr {
+    let mut expr: syn::Expr = syn::parse_quote! { self };
+    for step in steps {
+        let field_ident =
+            syn::Ident::new(&rust_safe_ident_name(&step.field_name), Span::mixed_site());
+        expr = if step.field_is_pointer {
+            syn::parse_quote! { (*#expr.#field_ident.lock().unwrap()) }
+        } else {
+            syn::parse_quote! { #expr.#field_ident }
+        };
+    }
+    match call_receiver_kind {
+        PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &#expr },
+        PointerInterfaceCallReceiver::MutableRef => syn::parse_quote! { &mut #expr },
+        PointerInterfaceCallReceiver::Owned => syn::parse_quote! { (#expr).clone() },
+    }
+}
+
+fn promoted_concrete_interface_impl_item(
+    struct_name: &str,
+    method_name: &str,
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Option<syn::ImplItem> {
+    let promoted = promoted_method_info_for_impl(struct_name, method_name, false)?;
+    let method = methods
+        .get(&promoted.owner_type)?
+        .iter()
+        .find(|method| method.sig.ident == method_name)?
+        .clone();
+    let method_ident = method.sig.ident.clone();
+    let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
+    let call_receiver_kind = pointer_interface_call_receiver(&method, method_is_pointer_receiver);
+    let owner_ident = syn::Ident::new(
+        &rust_safe_ident_name(&promoted.owner_type),
+        Span::mixed_site(),
+    );
+    let arg_idents = method
+        .sig
+        .inputs
+        .iter()
+        .skip(1)
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                _ => None,
+            },
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let mut sig = method.sig.clone();
+    if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+        receiver.mutability = Some(<Token![mut]>::default());
+        *receiver.ty = syn::parse_quote! { &mut Self };
+    }
+    let receiver = promoted_method_receiver_expr(&promoted.steps, call_receiver_kind);
+    let block = if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({
+            #owner_ident::#method_ident(#receiver, #(#arg_idents),*);
+        })
+    } else {
+        syn::parse_quote!({
+            #owner_ident::#method_ident(#receiver, #(#arg_idents),*)
+        })
+    };
+    Some(syn::ImplItem::Fn(syn::ImplItemFn {
+        attrs: vec![],
+        vis: syn::Visibility::Inherited,
+        defaultness: None,
+        sig,
+        block,
+    }))
+}
+
+fn concrete_interface_impl_can_emit_method(
+    struct_name: &str,
+    method_name: &str,
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> bool {
+    methods.get(struct_name).is_some_and(|method_list| {
+        method_list
+            .iter()
+            .any(|method| method.sig.ident == method_name)
+    }) || promoted_method_info_for_impl(struct_name, method_name, false).is_some_and(|promoted| {
+        methods
+            .get(&promoted.owner_type)
+            .is_some_and(|method_list| {
+                method_list
+                    .iter()
+                    .any(|method| method.sig.ident == method_name)
+            })
+    })
+}
+
+fn concrete_interface_impl_can_emit_methods(
+    struct_name: &str,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> bool {
+    method_names.iter().all(|method_name| {
+        concrete_interface_impl_can_emit_method(struct_name, method_name, methods)
+    })
+}
+
 fn concrete_interface_impl_items_for_methods(
     trait_name: &str,
     struct_name: &str,
@@ -22250,6 +22474,22 @@ fn concrete_interface_impl_items_for_methods(
                 }
                 impl_items.push(syn::ImplItem::Fn(m));
             }
+        }
+    }
+    let emitted_method_names = impl_items
+        .iter()
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(func) => Some(func.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for method_name in method_names {
+        if emitted_method_names.contains(method_name) {
+            continue;
+        }
+        if let Some(item) = promoted_concrete_interface_impl_item(struct_name, method_name, methods)
+        {
+            impl_items.push(item);
         }
     }
     impl_items
@@ -22814,6 +23054,13 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     } else if gen_decl.tok == token::Token::TYPE {
                         for spec in gen_decl.specs {
                             if let ast::Spec::TypeSpec(ts) = spec {
+                                if matches!(ts.type_, ast::Expr::StructType(_))
+                                    && let Some(name_ident) = &ts.name
+                                {
+                                    struct_methods
+                                        .entry(name_ident.name.to_string())
+                                        .or_default();
+                                }
                                 // Track interface methods for satisfaction checking
                                 if let ast::Expr::InterfaceType(ref iface) = ts.type_ {
                                     if let Some(ref name_ident) = ts.name {
@@ -22934,10 +23181,16 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     struct_method_list,
                     &method_set.required_methods,
                 );
-                let value_satisfies = value_method_list_satisfies_interface(
+                let value_satisfies = value_type_satisfies_interface_for_impl(
+                    struct_name,
+                    trait_name,
                     struct_method_list,
                     pointer_methods,
                     &method_set.required_methods,
+                ) && concrete_interface_impl_can_emit_methods(
+                    struct_name,
+                    &method_set.direct_methods,
+                    &methods,
                 );
                 if value_satisfies {
                     let trait_path = interface_trait_path_from_name(trait_name);
@@ -22989,11 +23242,17 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
                     for embedded_name in &method_set.embedded_interfaces {
                         let embedded_method_set = interface_method_set_for_impl(embedded_name, &[]);
-                        if !value_method_list_satisfies_interface(
+                        if !(value_type_satisfies_interface_for_impl(
+                            struct_name,
+                            embedded_name,
                             struct_method_list,
                             pointer_methods,
                             &embedded_method_set.required_methods,
-                        ) {
+                        ) && concrete_interface_impl_can_emit_methods(
+                            struct_name,
+                            &embedded_method_set.direct_methods,
+                            &methods,
+                        )) {
                             continue;
                         }
                         if !emitted_interface_impls.insert((
@@ -30757,6 +31016,49 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
             stream_rs.contains("Reader::Seek(&mut *__gors_guard, offset, whence)")
                 || stream_rs.contains("Reader :: Seek (& mut * __gors_guard , offset , whence)"),
             "{stream_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_emits_interface_impl_for_promoted_embedded_methods() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Reader interface {
+                    Read() int
+                }
+
+                type Base struct{}
+
+                func (Base) Read() int {
+                    return 1
+                }
+
+                type Wrapper struct {
+                    Base
+                }
+
+                func Make() Reader {
+                    return Wrapper{}
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.scan_file(&parsed);
+        super::set_type_env(env);
+        let file: syn::File = parsed.try_into().unwrap();
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+        let output = prettyplease::unparse(&file);
+
+        assert!(output.contains("impl Reader for Wrapper"), "{output}");
+        assert!(
+            output.contains("Base::Read(&self.Base)")
+                || output.contains("Base :: Read (& self . Base)"),
+            "{output}"
         );
     }
 
