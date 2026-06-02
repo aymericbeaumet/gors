@@ -121,7 +121,7 @@ impl VisitMut for CoerceTypes {
         prune_static_false_branches(&mut func.block.stmts);
         prune_print_arg_reflection_fallback(&mut func.block.stmts, false);
 
-        if func.sig.ident == "newPrinter" && tokens_contain(&func.block, "ppFree") {
+        if func.sig.ident == "newPrinter" && block_mentions_ident(&func.block, "ppFree") {
             *func.block = syn::parse_quote!({
                 let mut p = std::sync::Arc::new(std::sync::Mutex::new(pp::default()));
                 {
@@ -149,13 +149,14 @@ impl VisitMut for CoerceTypes {
         self.generic_value_params.pop();
         self.mutable_ref_params.pop();
 
-        if func.sig.ident == "free" && tokens_contain(&func.block, "ppFree") {
+        if func.sig.ident == "free" && block_mentions_ident(&func.block, "ppFree") {
             func.block = syn::parse_quote!({});
             return;
         }
 
         if func.sig.ident == "fmtString"
-            && (tokens_contain(&func.block, "fmtQ") || tokens_contain(&func.block, "fmtSx"))
+            && (block_mentions_ident(&func.block, "fmtQ")
+                || block_mentions_ident(&func.block, "fmtSx"))
         {
             func.block = syn::parse_quote!({
                 self.fmt.fmtS(v);
@@ -163,7 +164,7 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if func.sig.ident == "padString" && tokens_contain(&func.block, "RuneCountInString") {
+        if func.sig.ident == "padString" && block_mentions_ident(&func.block, "RuneCountInString") {
             func.block = syn::parse_quote!({
                 self.buf.lock().unwrap().writeString((s).clone());
             });
@@ -348,12 +349,37 @@ impl VisitMut for CoerceTypes {
     }
 }
 
-fn should_prune_fmt_self_value<T: quote::ToTokens>(node: &T) -> bool {
-    let tokens = quote::quote!(#node).to_string();
-    tokens.contains("self . printArg")
-        || tokens.contains("self . printValue")
-        || tokens.contains("self . fmtPointer")
-        || tokens.contains("self . value .")
+fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
+    struct Finder {
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if is_self_expr(&call.receiver)
+                && matches!(
+                    call.method.to_string().as_str(),
+                    "printArg" | "printValue" | "fmtPointer"
+                )
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_field(&mut self, field: &syn::ExprField) {
+            if is_self_field_named(field, "value") {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_field(self, field);
+        }
+    }
+
+    let mut finder = Finder { found: false };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
 }
 
 fn prune_print_arg_reflection_fallback(stmts: &mut Vec<syn::Stmt>, prune_self_value: bool) {
@@ -365,7 +391,7 @@ fn prune_print_arg_reflection_fallback(stmts: &mut Vec<syn::Stmt>, prune_self_va
 }
 
 fn prune_print_arg_stmt(stmt: syn::Stmt, prune_self_value: bool) -> Option<syn::Stmt> {
-    if print_arg_tokens_need_reflection(&stmt, prune_self_value) {
+    if print_arg_stmt_needs_reflection(&stmt, prune_self_value) {
         match stmt {
             syn::Stmt::Expr(expr, semi) => {
                 prune_print_arg_expr(expr, prune_self_value).map(|expr| syn::Stmt::Expr(expr, semi))
@@ -392,7 +418,7 @@ fn prune_print_arg_expr(expr: syn::Expr, prune_self_value: bool) -> Option<syn::
     match expr {
         syn::Expr::Block(expr_block) => prune_print_arg_expr_block(expr_block, prune_self_value),
         syn::Expr::If(expr_if) => prune_print_arg_if(expr_if, prune_self_value),
-        other if print_arg_tokens_need_reflection(&other, prune_self_value) => None,
+        other if print_arg_expr_needs_reflection(&other, prune_self_value) => None,
         other => Some(other),
     }
 }
@@ -406,14 +432,14 @@ fn prune_print_arg_expr_block(
 }
 
 fn prune_print_arg_if(mut expr_if: syn::ExprIf, prune_self_value: bool) -> Option<syn::Expr> {
-    if print_arg_tokens_need_reflection(&expr_if.cond, prune_self_value) {
+    if print_arg_expr_needs_reflection(&expr_if.cond, prune_self_value) {
         return expr_if
             .else_branch
             .and_then(|(_, else_expr)| prune_print_arg_expr(*else_expr, prune_self_value));
     }
 
     let then_had_reflection =
-        print_arg_tokens_need_reflection(&expr_if.then_branch, prune_self_value);
+        print_arg_block_needs_reflection(&expr_if.then_branch, prune_self_value);
     expr_if.then_branch = prune_print_arg_block(expr_if.then_branch, prune_self_value);
     let then_is_empty = expr_if.then_branch.stmts.is_empty();
 
@@ -606,13 +632,155 @@ fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<St
     visitor.found
 }
 
-fn print_arg_tokens_need_reflection<T: quote::ToTokens>(node: &T, prune_self_value: bool) -> bool {
-    let tokens = quote::quote!(#node).to_string();
-    tokens.contains("crate :: reflect ::")
-        || tokens.contains("reflect ::")
-        || (prune_self_value && tokens.contains("self . value"))
-        || tokens.contains("self . printValue")
-        || tokens.contains("self . fmtPointer")
+fn print_arg_stmt_needs_reflection(stmt: &syn::Stmt, prune_self_value: bool) -> bool {
+    let mut finder = PrintArgReflectionFinder {
+        prune_self_value,
+        found: false,
+    };
+    syn::visit::Visit::visit_stmt(&mut finder, stmt);
+    finder.found
+}
+
+fn print_arg_expr_needs_reflection(expr: &syn::Expr, prune_self_value: bool) -> bool {
+    let mut finder = PrintArgReflectionFinder {
+        prune_self_value,
+        found: false,
+    };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
+fn print_arg_block_needs_reflection(block: &syn::Block, prune_self_value: bool) -> bool {
+    let mut finder = PrintArgReflectionFinder {
+        prune_self_value,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+struct PrintArgReflectionFinder {
+    prune_self_value: bool,
+    found: bool,
+}
+
+impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
+    fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+        if path
+            .path
+            .segments
+            .iter()
+            .any(|segment| segment.ident == "reflect")
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_type_path(&mut self, path: &syn::TypePath) {
+        if path
+            .path
+            .segments
+            .iter()
+            .any(|segment| segment.ident == "reflect")
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_type_path(self, path);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+        if is_self_expr(&call.receiver)
+            && matches!(
+                call.method.to_string().as_str(),
+                "printValue" | "fmtPointer"
+            )
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_field(&mut self, field: &syn::ExprField) {
+        if self.prune_self_value && is_self_field_named(field, "value") {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_field(self, field);
+    }
+}
+
+fn block_mentions_ident(block: &syn::Block, ident: &str) -> bool {
+    struct Finder<'a> {
+        ident: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+            if path
+                .path
+                .segments
+                .iter()
+                .any(|segment| segment.ident == self.ident)
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_path(self, path);
+        }
+
+        fn visit_type_path(&mut self, path: &syn::TypePath) {
+            if path
+                .path
+                .segments
+                .iter()
+                .any(|segment| segment.ident == self.ident)
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_type_path(self, path);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if call.method == self.ident {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_field(&mut self, field: &syn::ExprField) {
+            if member_ident_name(&field.member).is_some_and(|member| member == self.ident) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_field(self, field);
+        }
+    }
+
+    let mut finder = Finder {
+        ident,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
+    match member {
+        syn::Member::Named(ident) => Some(ident),
+        syn::Member::Unnamed(_) => None,
+    }
+}
+
+fn is_self_field_named(field: &syn::ExprField, name: &str) -> bool {
+    is_self_expr(&field.base)
+        && member_ident_name(&field.member).is_some_and(|member| member == name)
 }
 
 fn is_false_lit_expr(expr: &syn::Expr) -> bool {
@@ -623,10 +791,6 @@ fn is_false_lit_expr(expr: &syn::Expr) -> bool {
             ..
         }) if !lit.value
     )
-}
-
-fn tokens_contain<T: quote::ToTokens>(node: &T, needle: &str) -> bool {
-    quote::quote!(#node).to_string().contains(needle)
 }
 
 fn collect_tuple_newtypes(file: &syn::File) -> std::collections::HashSet<String> {
@@ -1548,6 +1712,68 @@ mod tests {
         assert!(
             !tokens.contains("crate :: reflect"),
             "expected reflect dependency to be pruned: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_prune_reflect_mentions_inside_literals() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            let msg = "crate :: reflect :: ValueOf";
+        }];
+
+        prune_print_arg_reflection_fallback(&mut stmts, false);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            tokens.contains("let msg"),
+            "expected string-literal reflect mention to remain: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_reflect_type_paths_inside_generated_fallbacks() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            value.is::<crate::reflect::Value>();
+        }];
+
+        prune_print_arg_reflection_fallback(&mut stmts, false);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            !tokens.contains("crate :: reflect"),
+            "expected reflect type-path fallback to be pruned: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_replace_named_bodies_from_literal_mentions() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct pp;
+
+            pub fn newPrinter() -> String {
+                "ppFree".to_string()
+            }
+
+            pub struct Sink;
+
+            impl Sink {
+                pub fn fmtString(&mut self, mut v: String) {
+                    let marker = "fmtQ";
+                    let _ = (marker, v);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("to_string") && tokens.contains("let marker"),
+            "expected literal mentions not to trigger body replacements: {tokens}"
+        );
+        assert!(
+            !tokens.contains("pp :: default") && !tokens.contains("fmtS (v)"),
+            "expected no token-string-driven body replacement: {tokens}"
         );
     }
 
