@@ -13538,19 +13538,24 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     }
 }
 
-fn named_byte_slice_type_name(ty: &typeinfer::GoType) -> Option<String> {
+fn named_slice_type_name(ty: &typeinfer::GoType) -> Option<String> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         let typeinfer::GoType::Named(name) = ty else {
             return None;
         };
+        if env.is_type_alias(name) {
+            return None;
+        }
         match env.resolve_alias(ty) {
-            typeinfer::GoType::Slice(elem) if *elem == typeinfer::GoType::Uint8 => {
-                Some(name.clone())
-            }
+            typeinfer::GoType::Slice(_) => Some(name.clone()),
             _ => None,
         }
     })
+}
+
+fn is_go_slice_type(ty: &typeinfer::GoType) -> bool {
+    TYPE_ENV.with(|env| matches!(env.borrow().resolve_alias(ty), typeinfer::GoType::Slice(_)))
 }
 
 fn is_go_byte_slice_type(ty: &typeinfer::GoType) -> bool {
@@ -13591,8 +13596,8 @@ fn coerce_assignment_expr(
     rhs_ty: &typeinfer::GoType,
     mut rhs_expr: syn::Expr,
 ) -> syn::Expr {
-    if let Some(type_name) = named_byte_slice_type_name(lhs_ty) {
-        if is_go_byte_slice_type(rhs_ty) && !matches!(rhs_ty, typeinfer::GoType::Named(_)) {
+    if let Some(type_name) = named_slice_type_name(lhs_ty) {
+        if is_go_slice_type(rhs_ty) && !matches!(rhs_ty, typeinfer::GoType::Named(_)) {
             let ident = syn::Ident::new(&type_name, Span::mixed_site());
             rhs_expr = syn::parse_quote! { #ident(#rhs_expr) };
         }
@@ -28773,6 +28778,39 @@ func main() {
                     s = ((std::mem::take(&mut s))[..((crate::builtin::len(&s) as isize) - 1) as usize]).to_string();
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_wrap_plain_slice_assignment_to_named_slice_newtype() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type entry struct{}
+                type entries []entry
+
+                type writer struct {
+                    sp entries
+                }
+
+                func (w *writer) trim() {
+                    w.sp = w.sp[1:]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("self . sp = entries ("),
+            "expected named slice assignment to wrap RHS in the newtype: {output}"
+        );
+        assert!(
+            output.contains(") . to_vec ())"),
+            "expected sliced RHS to stay a Vec before wrapping: {output}"
         );
     }
 
