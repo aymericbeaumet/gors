@@ -82,6 +82,19 @@ impl Clone for Box<dyn error> {
     }
 }
 
+impl PartialEq for Box<dyn error> {
+    fn eq(&self, other: &Self) -> bool {
+        match (
+            self.__gors_as_any().is_none(),
+            other.__gors_as_any().is_none(),
+        ) {
+            (true, true) => true,
+            (true, false) | (false, true) => false,
+            (false, false) => self.Error() == other.Error(),
+        }
+    }
+}
+
 impl error for Box<dyn error> {
     fn __gors_as_any(&self) -> Option<&dyn Any> {
         (**self).__gors_as_any()
@@ -1423,6 +1436,20 @@ mod tests {
         assert!(!false_value);
         assert_eq!(iota, 0);
         assert_eq!(nil, None);
+    }
+
+    #[test]
+    fn boxed_errors_compare_by_nilness_and_message() {
+        let nil_a: Box<dyn error> = Box::new(__GorsNooperror);
+        let nil_b: Box<dyn error> = Box::new(__GorsNooperror);
+        let err_a: Box<dyn error> = Box::new(__GorsStringError("same".to_string()));
+        let err_b: Box<dyn error> = Box::new(__GorsStringError("same".to_string()));
+        let err_c: Box<dyn error> = Box::new(__GorsStringError("other".to_string()));
+
+        assert!(PartialEq::eq(&nil_a, &nil_b));
+        assert!(PartialEq::eq(&err_a, &err_b));
+        assert!(!PartialEq::eq(&nil_a, &err_c));
+        assert!(!PartialEq::eq(&err_b, &err_c));
     }
 
     #[test]
