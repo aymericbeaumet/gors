@@ -28109,12 +28109,12 @@ var X int
         let main_file: syn::File = rust! {
             pub struct NeedsClone;
             impl NeedsClone {
-                pub fn put(&self, mut value: String) {}
+                pub fn put(&self, tag: usize, mut value: String) {}
             }
 
             pub struct TakesCopy;
             impl TakesCopy {
-                pub fn put(&self, value: usize) {}
+                pub fn put(&self, tag: usize, value: usize) {}
             }
 
             pub struct Holder {
@@ -28128,8 +28128,8 @@ var X int
             }
 
             pub fn call(mut holder: Holder, mut item: Item) {
-                holder.needs.put(item.name);
-                holder.plain.put(item.count);
+                holder.needs.put(item.count, item.name);
+                holder.plain.put(item.count, item.count);
             }
         };
         let mut modules = std::collections::BTreeMap::from([(
@@ -28150,15 +28150,15 @@ var X int
         let main_file = &modules.get("__main__").expect("main module").file;
         let output = quote! { #main_file }.to_string();
         assert!(
-            output.contains("holder . needs . put ((item . name) . clone ())"),
+            output.contains("holder . needs . put (item . count , (item . name) . clone ())"),
             "expected clone to follow NeedsClone::put value signature: {output}"
         );
         assert!(
-            output.contains("holder . plain . put (item . count)"),
+            output.contains("holder . plain . put (item . count , item . count)"),
             "expected TakesCopy::put argument to remain unchanged: {output}"
         );
         assert!(
-            !output.contains("holder . plain . put ((item . count) . clone ())"),
+            !output.contains("holder . plain . put (item . count , (item . count) . clone ())"),
             "expected same-named method not to inherit NeedsClone::put coercion: {output}"
         );
     }

@@ -231,10 +231,6 @@ impl VisitMut for CoerceTypes {
             if let Some(first) = mc.args.first_mut() {
                 coerce_write_arg(first);
             }
-        } else if mc.method == "argNumber" {
-            if let Some(second) = mc.args.iter_mut().nth(1) {
-                clone_field_or_path(second);
-            }
         } else if mc.method == "printArg" {
             if let Some(first) = mc.args.first_mut() {
                 coerce_print_arg(first);
