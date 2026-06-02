@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 171,
-    "unsupportedCaseCount": 12247,
+    "passingCaseCount": 174,
+    "unsupportedCaseCount": 12244,
     "fixtureCount": 80
   },
   "groups": [
@@ -13730,13 +13730,15 @@
       "id": "crypto/rc4",
       "title": "crypto/rc4",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/rc4"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 6,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 6,
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 3,
         "fixtureCount": 0
       },
       "cases": [
@@ -13745,8 +13747,10 @@
           "title": "Cipher",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rc4"
+          ],
           "reason": ""
         },
         {
@@ -13772,8 +13776,10 @@
           "title": "KeySizeError",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rc4"
+          ],
           "reason": ""
         },
         {
@@ -13781,8 +13787,10 @@
           "title": "KeySizeError.Error",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rc4"
+          ],
           "reason": ""
         },
         {
