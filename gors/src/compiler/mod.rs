@@ -28105,6 +28105,42 @@ var X int
     }
 
     #[test]
+    fn clone_vec_value_call_args_clones_same_module_value_args() {
+        let main_file: syn::File = rust! {
+            pub struct Item {
+                pub name: String,
+            }
+
+            pub fn take(mut value: String) {}
+
+            pub fn call(mut item: Item) {
+                take(item.name);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("take ((item . name) . clone ())"),
+            "expected same-module value-copy coercion to follow callee parameter type: {output}"
+        );
+    }
+
+    #[test]
     fn clone_vec_value_call_args_keys_method_value_args_by_receiver_type() {
         let main_file: syn::File = rust! {
             pub struct NeedsClone;

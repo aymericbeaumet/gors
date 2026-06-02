@@ -386,23 +386,9 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if is_path_call(&call.func, &["parsenum"]) {
-            if let Some(first) = call.args.first_mut() {
-                clone_field_or_path(first);
-            }
-            return;
-        }
-
         if is_path_call(&call.func, &["intFromArg"]) {
             if let Some(first) = call.args.first_mut() {
                 replace_path_with_take(first, "a");
-            }
-            return;
-        }
-
-        if is_path_call(&call.func, &["getField"]) {
-            if let Some(first) = call.args.first_mut() {
-                clone_field_or_path(first);
             }
             return;
         }
