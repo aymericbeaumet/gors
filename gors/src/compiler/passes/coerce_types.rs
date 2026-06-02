@@ -359,12 +359,6 @@ impl VisitMut for CoerceTypes {
 
         if let Some(init) = &mut local.init {
             replace_self_deref_with_take(&mut init.expr);
-            if is_path_ident(&init.expr, "value")
-                || is_path_ident(&init.expr, "f")
-                || matches!(&*init.expr, syn::Expr::Field(field) if is_named_member(field, "fmtFlags"))
-            {
-                clone_expr(&mut init.expr);
-            }
         }
 
         // Fix: let mut max: isize = 1e6; → 1e6 is f64, needs cast
@@ -1689,6 +1683,42 @@ mod tests {
         assert!(
             tokens.contains("let mut v = self . value"),
             "expected ordinary self.value local binding to remain: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_clone_local_initializers_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct State {
+                pub fmtFlags: isize,
+            }
+
+            pub fn use_names(mut value: isize, mut f: isize, mut state: State) -> isize {
+                let mut from_value = value;
+                let mut from_f = f;
+                let mut from_field = state.fmtFlags;
+                from_value + from_f + from_field
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("let mut from_value = value"),
+            "expected local named value not to force cloning: {tokens}"
+        );
+        assert!(
+            tokens.contains("let mut from_f = f"),
+            "expected local named f not to force cloning: {tokens}"
+        );
+        assert!(
+            tokens.contains("let mut from_field = state . fmtFlags"),
+            "expected field named fmtFlags not to force cloning: {tokens}"
+        );
+        assert!(
+            !tokens.contains("value) . clone") && !tokens.contains("f) . clone"),
+            "expected no identifier-name-driven local clones: {tokens}"
         );
     }
 

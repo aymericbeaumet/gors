@@ -34264,7 +34264,7 @@ func main() {
                             std::sync::Arc::new(move || { let mut x = 1; let _ = x; });
                         std::sync::Arc::new(std::sync::Mutex::new(Some(__gors_func)))
                     };
-                    let _ = (f).clone();
+                    let _ = f;
                 }
             },
         );
@@ -35825,7 +35825,7 @@ func main() {
                 }
                 pub fn main() {
                     let mut f = Flags::default();
-                    let _ = (f).clone();
+                    let _ = f;
                 }
             },
         );
