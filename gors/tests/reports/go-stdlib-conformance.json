@@ -13838,7 +13838,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on clear over array-field slices through pointer receiver state and method rooting for pointer-cell receiver values."
         },
         {
           "id": "crypto/rc4::Cipher.XORKeyStream",
@@ -13847,7 +13847,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: XORKeyStream depends on mutation-preserving dst []byte arguments, alias checks over slices, indexed array-field swaps, and receiver state mutation."
         },
         {
           "id": "crypto/rc4::KeySizeError",
@@ -13878,7 +13878,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewCipher depends on array-field element writes through pointer cells and indexed multiple-assignment swap lowering; current generated code emits invalid array dereference and c::s.swap syntax."
         }
       ]
     },

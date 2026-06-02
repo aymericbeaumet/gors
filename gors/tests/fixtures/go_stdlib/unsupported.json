@@ -471,5 +471,8 @@
   "crypto/rand::Prime": "Audited 2026-06-02: Prime depends on secure random byte fills, math/big primality and pointer receiver arithmetic, FIPS-only checks, and long-running rejection loops.",
   "crypto/rand::Read": "Audited 2026-06-02: Read depends on a generic host random-source primitive, mutation-preserving []byte lvalue reads, internal DRBG/FIPS paths, and go:linkname fatal behavior.",
   "crypto/rand::Reader": "Audited 2026-06-02: Reader is a host random-source io.Reader value backed by internal OS/DRBG state and needs generic host-resource runtime support before behavioral coverage.",
-  "crypto/rand::Text": "Audited 2026-06-02: Text depends on crypto/rand.Read host randomness, byte-slice mutation, and deterministic stdout assertions for generated random base32 text."
+  "crypto/rand::Text": "Audited 2026-06-02: Text depends on crypto/rand.Read host randomness, byte-slice mutation, and deterministic stdout assertions for generated random base32 text.",
+  "crypto/rc4::Cipher.Reset": "Audited 2026-06-02: Reset depends on clear over array-field slices through pointer receiver state and method rooting for pointer-cell receiver values.",
+  "crypto/rc4::Cipher.XORKeyStream": "Audited 2026-06-02: XORKeyStream depends on mutation-preserving dst []byte arguments, alias checks over slices, indexed array-field swaps, and receiver state mutation.",
+  "crypto/rc4::NewCipher": "Audited 2026-06-02: NewCipher depends on array-field element writes through pointer cells and indexed multiple-assignment swap lowering; current generated code emits invalid array dereference and c::s.swap syntax."
 }
