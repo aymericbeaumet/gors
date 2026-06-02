@@ -14892,7 +14892,7 @@ fn token_text(tok: token::Token) -> String {
 }
 
 pub fn func_lit_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capture> {
-    let uses = func_lit_free_name_uses(func_lit);
+    let uses = func_lit_free_name_uses(func_lit, env);
     uses.referenced
         .into_iter()
         .filter(|name| !is_predeclared_name(name))
@@ -14917,23 +14917,39 @@ struct ScopedNameUses {
     mutated: BTreeSet<String>,
 }
 
-fn func_lit_free_name_uses(func_lit: &ast::FuncLit<'_>) -> ScopedNameUses {
+fn func_lit_free_name_uses(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> ScopedNameUses {
     let mut scopes = vec![BTreeSet::new()];
     if let Some(scope) = scopes.last_mut() {
         collect_signature_bindings(&func_lit.type_, scope);
     }
     let mut uses = ScopedNameUses::default();
-    collect_free_name_uses_in_stmt_list(&func_lit.body.list, &mut scopes, &mut uses);
+    collect_free_name_uses_in_stmt_list(&func_lit.body.list, &mut scopes, &mut uses, env);
     uses
+}
+
+fn receiver_uses_pointer_method(receiver: &str, method: &str, env: &TypeEnv) -> bool {
+    env.get_var(receiver)
+        .is_some_and(|ty| go_type_has_pointer_method(&ty, method, env))
+}
+
+fn go_type_has_pointer_method(ty: &GoType, method: &str, env: &TypeEnv) -> bool {
+    match env.resolve_alias(ty) {
+        GoType::Named(name) | GoType::Interface(name) => {
+            env.method_has_pointer_receiver(&format!("{name}.{method}"))
+        }
+        GoType::Pointer(inner) => go_type_has_pointer_method(&inner, method, env),
+        _ => false,
+    }
 }
 
 fn collect_free_name_uses_in_stmt_list(
     stmts: &[ast::Stmt<'_>],
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     for stmt in stmts {
-        collect_free_name_uses_in_stmt(stmt, scopes, uses);
+        collect_free_name_uses_in_stmt(stmt, scopes, uses, env);
     }
 }
 
@@ -14941,9 +14957,10 @@ fn collect_free_name_uses_in_nested_block(
     block: &ast::BlockStmt<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     scopes.push(BTreeSet::new());
-    collect_free_name_uses_in_stmt_list(&block.list, scopes, uses);
+    collect_free_name_uses_in_stmt_list(&block.list, scopes, uses, env);
     scopes.pop();
 }
 
@@ -14978,50 +14995,53 @@ fn collect_free_name_uses_in_stmt(
     stmt: &ast::Stmt<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
             if assign.tok == token::Token::DEFINE {
                 for expr in &assign.rhs {
-                    collect_free_name_uses_in_expr(expr, scopes, uses);
+                    collect_free_name_uses_in_expr(expr, scopes, uses, env);
                 }
                 for expr in &assign.lhs {
                     match ident_name(expr) {
                         Some(name) if scoped_name_is_bound_in_current_scope(scopes, &name) => {}
                         Some(name) => scoped_declare_name(scopes, name),
-                        None => collect_free_name_uses_in_expr(expr, scopes, uses),
+                        None => collect_free_name_uses_in_expr(expr, scopes, uses, env),
                     }
                 }
             } else {
                 for expr in &assign.lhs {
-                    collect_free_name_uses_in_assignment_lhs(expr, scopes, uses);
+                    collect_free_name_uses_in_assignment_lhs(expr, scopes, uses, env);
                 }
                 for expr in &assign.rhs {
-                    collect_free_name_uses_in_expr(expr, scopes, uses);
+                    collect_free_name_uses_in_expr(expr, scopes, uses, env);
                 }
             }
         }
-        ast::Stmt::BlockStmt(block) => collect_free_name_uses_in_nested_block(block, scopes, uses),
+        ast::Stmt::BlockStmt(block) => {
+            collect_free_name_uses_in_nested_block(block, scopes, uses, env)
+        }
         ast::Stmt::CaseClause(case_clause) => {
             if let Some(exprs) = &case_clause.list {
                 for expr in exprs {
-                    collect_free_name_uses_in_expr(expr, scopes, uses);
+                    collect_free_name_uses_in_expr(expr, scopes, uses, env);
                 }
             }
-            collect_free_name_uses_in_nested_stmt_list(&case_clause.body, scopes, uses);
+            collect_free_name_uses_in_nested_stmt_list(&case_clause.body, scopes, uses, env);
         }
         ast::Stmt::CommClause(comm_clause) => {
             if let Some(comm) = &comm_clause.comm {
-                collect_free_name_uses_in_stmt(comm, scopes, uses);
+                collect_free_name_uses_in_stmt(comm, scopes, uses, env);
             }
-            collect_free_name_uses_in_nested_stmt_list(&comm_clause.body, scopes, uses);
+            collect_free_name_uses_in_nested_stmt_list(&comm_clause.body, scopes, uses, env);
         }
         ast::Stmt::DeclStmt(decl) => {
             for spec in &decl.decl.specs {
                 if let ast::Spec::ValueSpec(value) = spec {
                     if let Some(values) = &value.values {
                         for expr in values {
-                            collect_free_name_uses_in_expr(expr, scopes, uses);
+                            collect_free_name_uses_in_expr(expr, scopes, uses, env);
                         }
                     }
                     for name in &value.names {
@@ -15031,41 +15051,43 @@ fn collect_free_name_uses_in_stmt(
             }
         }
         ast::Stmt::DeferStmt(defer_stmt) => {
-            collect_free_name_uses_in_call(&defer_stmt.call, scopes, uses);
+            collect_free_name_uses_in_call(&defer_stmt.call, scopes, uses, env);
         }
-        ast::Stmt::ExprStmt(expr) => collect_free_name_uses_in_expr(&expr.x, scopes, uses),
+        ast::Stmt::ExprStmt(expr) => collect_free_name_uses_in_expr(&expr.x, scopes, uses, env),
         ast::Stmt::ForStmt(for_stmt) => {
             let has_clause_scope = for_stmt.init.is_some();
             if has_clause_scope {
                 scopes.push(BTreeSet::new());
             }
             if let Some(init) = &for_stmt.init {
-                collect_free_name_uses_in_stmt(init, scopes, uses);
+                collect_free_name_uses_in_stmt(init, scopes, uses, env);
             }
             if let Some(cond) = &for_stmt.cond {
-                collect_free_name_uses_in_expr(cond, scopes, uses);
+                collect_free_name_uses_in_expr(cond, scopes, uses, env);
             }
             if let Some(post) = &for_stmt.post {
-                collect_free_name_uses_in_stmt(post, scopes, uses);
+                collect_free_name_uses_in_stmt(post, scopes, uses, env);
             }
-            collect_free_name_uses_in_nested_block(&for_stmt.body, scopes, uses);
+            collect_free_name_uses_in_nested_block(&for_stmt.body, scopes, uses, env);
             if has_clause_scope {
                 scopes.pop();
             }
         }
-        ast::Stmt::GoStmt(go_stmt) => collect_free_name_uses_in_call(&go_stmt.call, scopes, uses),
+        ast::Stmt::GoStmt(go_stmt) => {
+            collect_free_name_uses_in_call(&go_stmt.call, scopes, uses, env)
+        }
         ast::Stmt::IfStmt(if_stmt) => {
             let has_clause_scope = if_stmt.init.as_ref().as_ref().is_some();
             if has_clause_scope {
                 scopes.push(BTreeSet::new());
             }
             if let Some(init) = if_stmt.init.as_ref().as_ref() {
-                collect_free_name_uses_in_stmt(init, scopes, uses);
+                collect_free_name_uses_in_stmt(init, scopes, uses, env);
             }
-            collect_free_name_uses_in_expr(&if_stmt.cond, scopes, uses);
-            collect_free_name_uses_in_nested_block(&if_stmt.body, scopes, uses);
+            collect_free_name_uses_in_expr(&if_stmt.cond, scopes, uses, env);
+            collect_free_name_uses_in_nested_block(&if_stmt.body, scopes, uses, env);
             if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
-                collect_free_name_uses_in_stmt(else_branch, scopes, uses);
+                collect_free_name_uses_in_stmt(else_branch, scopes, uses, env);
             }
             if has_clause_scope {
                 scopes.pop();
@@ -15075,14 +15097,14 @@ fn collect_free_name_uses_in_stmt(
             if let Some(name) = ident_name(&inc_dec.x) {
                 scoped_record_mutation(scopes, uses, &name);
             } else {
-                collect_free_name_uses_in_expr(&inc_dec.x, scopes, uses);
+                collect_free_name_uses_in_expr(&inc_dec.x, scopes, uses, env);
             }
         }
         ast::Stmt::LabeledStmt(label) => {
-            collect_free_name_uses_in_stmt(&label.stmt, scopes, uses);
+            collect_free_name_uses_in_stmt(&label.stmt, scopes, uses, env);
         }
         ast::Stmt::RangeStmt(range) => {
-            collect_free_name_uses_in_expr(&range.x, scopes, uses);
+            collect_free_name_uses_in_expr(&range.x, scopes, uses, env);
             let has_range_scope = matches!(range.tok, Some(token::Token::DEFINE));
             if has_range_scope {
                 scopes.push(BTreeSet::new());
@@ -15098,28 +15120,28 @@ fn collect_free_name_uses_in_stmt(
                 }
             } else {
                 if let Some(key) = &range.key {
-                    collect_free_name_uses_in_assignment_lhs(key, scopes, uses);
+                    collect_free_name_uses_in_assignment_lhs(key, scopes, uses, env);
                 }
                 if let Some(value) = &range.value {
-                    collect_free_name_uses_in_assignment_lhs(value, scopes, uses);
+                    collect_free_name_uses_in_assignment_lhs(value, scopes, uses, env);
                 }
             }
-            collect_free_name_uses_in_nested_block(&range.body, scopes, uses);
+            collect_free_name_uses_in_nested_block(&range.body, scopes, uses, env);
             if has_range_scope {
                 scopes.pop();
             }
         }
         ast::Stmt::ReturnStmt(ret) => {
             for expr in &ret.results {
-                collect_free_name_uses_in_expr(expr, scopes, uses);
+                collect_free_name_uses_in_expr(expr, scopes, uses, env);
             }
         }
         ast::Stmt::SendStmt(send) => {
-            collect_free_name_uses_in_expr(&send.chan, scopes, uses);
-            collect_free_name_uses_in_expr(&send.value, scopes, uses);
+            collect_free_name_uses_in_expr(&send.chan, scopes, uses, env);
+            collect_free_name_uses_in_expr(&send.value, scopes, uses, env);
         }
         ast::Stmt::SelectStmt(select_stmt) => {
-            collect_free_name_uses_in_nested_block(&select_stmt.body, scopes, uses);
+            collect_free_name_uses_in_nested_block(&select_stmt.body, scopes, uses, env);
         }
         ast::Stmt::SwitchStmt(switch_stmt) => {
             let has_clause_scope = switch_stmt.init.is_some();
@@ -15127,12 +15149,12 @@ fn collect_free_name_uses_in_stmt(
                 scopes.push(BTreeSet::new());
             }
             if let Some(init) = &switch_stmt.init {
-                collect_free_name_uses_in_stmt(init, scopes, uses);
+                collect_free_name_uses_in_stmt(init, scopes, uses, env);
             }
             if let Some(tag) = &switch_stmt.tag {
-                collect_free_name_uses_in_expr(tag, scopes, uses);
+                collect_free_name_uses_in_expr(tag, scopes, uses, env);
             }
-            collect_free_name_uses_in_nested_block(&switch_stmt.body, scopes, uses);
+            collect_free_name_uses_in_nested_block(&switch_stmt.body, scopes, uses, env);
             if has_clause_scope {
                 scopes.pop();
             }
@@ -15143,10 +15165,10 @@ fn collect_free_name_uses_in_stmt(
                 scopes.push(BTreeSet::new());
             }
             if let Some(init) = &type_switch.init {
-                collect_free_name_uses_in_stmt(init, scopes, uses);
+                collect_free_name_uses_in_stmt(init, scopes, uses, env);
             }
-            collect_free_name_uses_in_stmt(&type_switch.assign, scopes, uses);
-            collect_free_name_uses_in_nested_block(&type_switch.body, scopes, uses);
+            collect_free_name_uses_in_stmt(&type_switch.assign, scopes, uses, env);
+            collect_free_name_uses_in_nested_block(&type_switch.body, scopes, uses, env);
             if has_clause_scope {
                 scopes.pop();
             }
@@ -15159,9 +15181,10 @@ fn collect_free_name_uses_in_nested_stmt_list(
     stmts: &[ast::Stmt<'_>],
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     scopes.push(BTreeSet::new());
-    collect_free_name_uses_in_stmt_list(stmts, scopes, uses);
+    collect_free_name_uses_in_stmt_list(stmts, scopes, uses, env);
     scopes.pop();
 }
 
@@ -15169,11 +15192,12 @@ fn collect_free_name_uses_in_assignment_lhs(
     expr: &ast::Expr<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     if let Some(name) = ident_name(expr) {
         scoped_record_mutation(scopes, uses, &name);
     } else {
-        collect_free_name_uses_in_expr(expr, scopes, uses);
+        collect_free_name_uses_in_expr(expr, scopes, uses, env);
     }
 }
 
@@ -15181,11 +15205,12 @@ fn collect_free_name_uses_in_call(
     call: &ast::CallExpr<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
-    collect_free_name_uses_in_expr(&call.fun, scopes, uses);
+    collect_free_name_uses_in_expr(&call.fun, scopes, uses, env);
     if let Some(args) = &call.args {
         for arg in args {
-            collect_free_name_uses_in_expr(arg, scopes, uses);
+            collect_free_name_uses_in_expr(arg, scopes, uses, env);
         }
     }
 }
@@ -15194,38 +15219,41 @@ fn collect_free_name_uses_in_expr(
     expr: &ast::Expr<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
     uses: &mut ScopedNameUses,
+    env: &TypeEnv,
 ) {
     match expr {
         ast::Expr::Ident(ident) => scoped_record_reference(scopes, uses, ident.name),
         ast::Expr::ArrayType(array) => {
             if let Some(len) = &array.len {
-                collect_free_name_uses_in_expr(len, scopes, uses);
+                collect_free_name_uses_in_expr(len, scopes, uses, env);
             }
-            collect_free_name_uses_in_expr(&array.elt, scopes, uses);
+            collect_free_name_uses_in_expr(&array.elt, scopes, uses, env);
         }
         ast::Expr::BinaryExpr(binary) => {
-            collect_free_name_uses_in_expr(&binary.x, scopes, uses);
-            collect_free_name_uses_in_expr(&binary.y, scopes, uses);
+            collect_free_name_uses_in_expr(&binary.x, scopes, uses, env);
+            collect_free_name_uses_in_expr(&binary.y, scopes, uses, env);
         }
-        ast::Expr::CallExpr(call) => collect_free_name_uses_in_call(call, scopes, uses),
-        ast::Expr::ChanType(chan) => collect_free_name_uses_in_expr(&chan.value, scopes, uses),
+        ast::Expr::CallExpr(call) => collect_free_name_uses_in_call(call, scopes, uses, env),
+        ast::Expr::ChanType(chan) => {
+            collect_free_name_uses_in_expr(&chan.value, scopes, uses, env);
+        }
         ast::Expr::CompositeLit(comp) => {
             if let Some(ty) = &comp.type_ {
-                collect_free_name_uses_in_expr(ty, scopes, uses);
+                collect_free_name_uses_in_expr(ty, scopes, uses, env);
             }
             if let Some(elts) = &comp.elts {
                 for elt in elts {
-                    collect_free_name_uses_in_expr(elt, scopes, uses);
+                    collect_free_name_uses_in_expr(elt, scopes, uses, env);
                 }
             }
         }
         ast::Expr::Ellipsis(ellipsis) => {
             if let Some(elt) = &ellipsis.elt {
-                collect_free_name_uses_in_expr(elt, scopes, uses);
+                collect_free_name_uses_in_expr(elt, scopes, uses, env);
             }
         }
         ast::Expr::FuncLit(func_lit) => {
-            let nested_uses = func_lit_free_name_uses(func_lit);
+            let nested_uses = func_lit_free_name_uses(func_lit, env);
             for name in nested_uses.referenced {
                 if nested_uses.mutated.contains(&name) {
                     scoped_record_mutation(scopes, uses, &name);
@@ -15235,47 +15263,52 @@ fn collect_free_name_uses_in_expr(
             }
         }
         ast::Expr::IndexExpr(index) => {
-            collect_free_name_uses_in_expr(&index.x, scopes, uses);
-            collect_free_name_uses_in_expr(&index.index, scopes, uses);
+            collect_free_name_uses_in_expr(&index.x, scopes, uses, env);
+            collect_free_name_uses_in_expr(&index.index, scopes, uses, env);
         }
         ast::Expr::IndexListExpr(index) => {
-            collect_free_name_uses_in_expr(&index.x, scopes, uses);
+            collect_free_name_uses_in_expr(&index.x, scopes, uses, env);
             for index in &index.indices {
-                collect_free_name_uses_in_expr(index, scopes, uses);
+                collect_free_name_uses_in_expr(index, scopes, uses, env);
             }
         }
         ast::Expr::KeyValueExpr(kv) => {
-            collect_free_name_uses_in_expr(&kv.key, scopes, uses);
-            collect_free_name_uses_in_expr(&kv.value, scopes, uses);
+            collect_free_name_uses_in_expr(&kv.key, scopes, uses, env);
+            collect_free_name_uses_in_expr(&kv.value, scopes, uses, env);
         }
         ast::Expr::MapType(map) => {
-            collect_free_name_uses_in_expr(&map.key, scopes, uses);
-            collect_free_name_uses_in_expr(&map.value, scopes, uses);
+            collect_free_name_uses_in_expr(&map.key, scopes, uses, env);
+            collect_free_name_uses_in_expr(&map.value, scopes, uses, env);
         }
-        ast::Expr::ParenExpr(paren) => collect_free_name_uses_in_expr(&paren.x, scopes, uses),
+        ast::Expr::ParenExpr(paren) => collect_free_name_uses_in_expr(&paren.x, scopes, uses, env),
         ast::Expr::SelectorExpr(selector) => {
-            collect_free_name_uses_in_expr(&selector.x, scopes, uses);
+            if let ast::Expr::Ident(receiver) = selector.x.as_ref()
+                && receiver_uses_pointer_method(receiver.name, selector.sel.name, env)
+            {
+                scoped_record_mutation(scopes, uses, receiver.name);
+            }
+            collect_free_name_uses_in_expr(&selector.x, scopes, uses, env);
         }
         ast::Expr::SliceExpr(slice) => {
-            collect_free_name_uses_in_expr(&slice.x, scopes, uses);
+            collect_free_name_uses_in_expr(&slice.x, scopes, uses, env);
             if let Some(low) = &slice.low {
-                collect_free_name_uses_in_expr(low, scopes, uses);
+                collect_free_name_uses_in_expr(low, scopes, uses, env);
             }
             if let Some(high) = &slice.high {
-                collect_free_name_uses_in_expr(high, scopes, uses);
+                collect_free_name_uses_in_expr(high, scopes, uses, env);
             }
             if let Some(max) = &slice.max {
-                collect_free_name_uses_in_expr(max, scopes, uses);
+                collect_free_name_uses_in_expr(max, scopes, uses, env);
             }
         }
-        ast::Expr::StarExpr(star) => collect_free_name_uses_in_expr(&star.x, scopes, uses),
+        ast::Expr::StarExpr(star) => collect_free_name_uses_in_expr(&star.x, scopes, uses, env),
         ast::Expr::TypeAssertExpr(assert) => {
-            collect_free_name_uses_in_expr(&assert.x, scopes, uses);
+            collect_free_name_uses_in_expr(&assert.x, scopes, uses, env);
             if let Some(ty) = &assert.type_ {
-                collect_free_name_uses_in_expr(ty, scopes, uses);
+                collect_free_name_uses_in_expr(ty, scopes, uses, env);
             }
         }
-        ast::Expr::UnaryExpr(unary) => collect_free_name_uses_in_expr(&unary.x, scopes, uses),
+        ast::Expr::UnaryExpr(unary) => collect_free_name_uses_in_expr(&unary.x, scopes, uses, env),
         ast::Expr::BasicLit(_)
         | ast::Expr::FuncType(_)
         | ast::Expr::InterfaceType(_)
@@ -15339,7 +15372,7 @@ pub fn mutable_range_function_capture_names(
     if !matches!(range_kind(&range.x, env), RangeKind::Function) {
         return BTreeSet::new();
     }
-    range_function_body_free_name_uses(range)
+    range_function_body_free_name_uses(range, env)
         .mutated
         .into_iter()
         .filter(|name| !is_predeclared_name(name))
@@ -16408,7 +16441,7 @@ fn collect_mutable_range_function_capture_names_in_expr(
     }
 }
 
-fn range_function_body_free_name_uses(range: &ast::RangeStmt<'_>) -> ScopedNameUses {
+fn range_function_body_free_name_uses(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> ScopedNameUses {
     let mut scopes = vec![BTreeSet::new()];
     if matches!(range.tok, Some(token::Token::DEFINE)) {
         if let Some(key) = &range.key
@@ -16423,7 +16456,7 @@ fn range_function_body_free_name_uses(range: &ast::RangeStmt<'_>) -> ScopedNameU
         }
     }
     let mut uses = ScopedNameUses::default();
-    collect_free_name_uses_in_stmt_list(&range.body.list, &mut scopes, &mut uses);
+    collect_free_name_uses_in_stmt_list(&range.body.list, &mut scopes, &mut uses, env);
     uses
 }
 
@@ -19088,6 +19121,157 @@ mod tests {
         assert_eq!(capture.name, "count");
         assert_eq!(capture.mode, CaptureMode::BorrowMut);
         assert_eq!(capture.ty, GoType::Int);
+    }
+
+    #[test]
+    fn lower_func_lit_records_pointer_method_call_captures_as_mutable() {
+        let ir = lower(
+            r#"
+                package main
+
+                type formatter struct {
+                    value int
+                }
+
+                func (f *formatter) write(x int) {
+                    f.value = x
+                }
+
+                func main() {
+                    var f formatter
+                    cb := func() {
+                        f.write(7)
+                    }
+                    _ = cb
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.iter().find(|item| match item {
+            Item::Func(func) => func.name.as_deref() == Some("main"),
+            Item::GenDecl(_) => false,
+        }) else {
+            panic!("expected main function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected closure assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected closure rhs");
+        };
+        let ExprKind::FuncLit(func_lit) = &expr.kind else {
+            panic!("expected function literal");
+        };
+        let Some(capture) = func_lit.captures.first() else {
+            panic!("expected capture");
+        };
+        assert_eq!(capture.name, "f");
+        assert_eq!(capture.mode, CaptureMode::BorrowMut);
+        assert_eq!(capture.ty, GoType::Named("formatter".to_string()));
+    }
+
+    #[test]
+    fn lower_func_lit_records_pointer_method_value_captures_as_mutable() {
+        let ir = lower(
+            r#"
+                package main
+
+                type formatter struct {
+                    value int
+                }
+
+                func (f *formatter) write(x int) {
+                    f.value = x
+                }
+
+                func main() {
+                    var f formatter
+                    cb := func() {
+                        saved := f.write
+                        _ = saved
+                    }
+                    _ = cb
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.iter().find(|item| match item {
+            Item::Func(func) => func.name.as_deref() == Some("main"),
+            Item::GenDecl(_) => false,
+        }) else {
+            panic!("expected main function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected closure assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected closure rhs");
+        };
+        let ExprKind::FuncLit(func_lit) = &expr.kind else {
+            panic!("expected function literal");
+        };
+        let Some(capture) = func_lit.captures.first() else {
+            panic!("expected capture");
+        };
+        assert_eq!(capture.name, "f");
+        assert_eq!(capture.mode, CaptureMode::BorrowMut);
+        assert_eq!(capture.ty, GoType::Named("formatter".to_string()));
+    }
+
+    #[test]
+    fn lower_func_lit_keeps_shadowed_pointer_method_calls_local() {
+        let ir = lower(
+            r#"
+                package main
+
+                type formatter struct {
+                    value int
+                }
+
+                func (f *formatter) write(x int) {
+                    f.value = x
+                }
+
+                func main() {
+                    var f formatter
+                    cb := func() int {
+                        if true {
+                            var f formatter
+                            f.write(7)
+                        }
+                        return f.value
+                    }
+                    _ = cb
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.iter().find(|item| match item {
+            Item::Func(func) => func.name.as_deref() == Some("main"),
+            Item::GenDecl(_) => false,
+        }) else {
+            panic!("expected main function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected closure assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected closure rhs");
+        };
+        let ExprKind::FuncLit(func_lit) = &expr.kind else {
+            panic!("expected function literal");
+        };
+        let Some(capture) = func_lit.captures.first() else {
+            panic!("expected capture");
+        };
+        assert_eq!(capture.name, "f");
+        assert_eq!(capture.mode, CaptureMode::Borrow);
     }
 
     #[test]
