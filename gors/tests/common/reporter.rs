@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const REPORT_SCHEMA_VERSION: u32 = 1;
+const GO_INTERNAL_UNSUPPORTED_REASON: &str = "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support.";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,7 +215,7 @@ pub fn write_go_stdlib_conformance(
                     };
                     let id = format!("{package_path}::{}", symbol.name);
                     let reason = if status == ReportStatus::Unsupported {
-                        unsupported_reasons.remove(&id).unwrap_or_default()
+                        stdlib_unsupported_reason(&package_path, &id, &mut unsupported_reasons)
                     } else {
                         String::new()
                     };
@@ -443,6 +444,25 @@ fn reject_stale_unsupported_reasons(
         ));
     }
     Ok(())
+}
+
+fn stdlib_unsupported_reason(
+    package_path: &str,
+    id: &str,
+    unsupported_reasons: &mut BTreeMap<String, String>,
+) -> String {
+    unsupported_reasons
+        .remove(id)
+        .or_else(|| default_stdlib_unsupported_reason(package_path))
+        .unwrap_or_default()
+}
+
+fn default_stdlib_unsupported_reason(package_path: &str) -> Option<String> {
+    is_go_internal_package(package_path).then(|| GO_INTERNAL_UNSUPPORTED_REASON.to_string())
+}
+
+fn is_go_internal_package(package_path: &str) -> bool {
+    package_path.split('/').any(|part| part == "internal")
 }
 
 fn collect_go_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -1181,6 +1201,56 @@ func main() {
 
         assert!(
             err.contains("unsupported reason for passing stdlib symbol archive/tar::NewReader")
+        );
+    }
+
+    #[test]
+    fn unsupported_reason_defaults_for_go_internal_packages() {
+        let mut reasons = BTreeMap::new();
+
+        assert_eq!(
+            stdlib_unsupported_reason(
+                "crypto/internal/fips140/aes",
+                "crypto/internal/fips140/aes::New",
+                &mut reasons
+            ),
+            GO_INTERNAL_UNSUPPORTED_REASON
+        );
+        assert_eq!(
+            stdlib_unsupported_reason(
+                "internal/testenv",
+                "internal/testenv::Builder",
+                &mut reasons
+            ),
+            GO_INTERNAL_UNSUPPORTED_REASON
+        );
+    }
+
+    #[test]
+    fn unsupported_reason_keeps_explicit_internal_package_reason() {
+        let mut reasons = BTreeMap::from([(
+            "crypto/internal/fips140/aes::New".to_string(),
+            "AES lowering still needs generic array-addressability support".to_string(),
+        )]);
+
+        assert_eq!(
+            stdlib_unsupported_reason(
+                "crypto/internal/fips140/aes",
+                "crypto/internal/fips140/aes::New",
+                &mut reasons
+            ),
+            "AES lowering still needs generic array-addressability support"
+        );
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
+    fn unsupported_reason_stays_empty_for_non_internal_packages() {
+        let mut reasons = BTreeMap::new();
+
+        assert_eq!(
+            stdlib_unsupported_reason("crypto/hmac", "crypto/hmac::New", &mut reasons),
+            ""
         );
     }
 }
