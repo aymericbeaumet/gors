@@ -4918,6 +4918,7 @@ struct ReceiverMethodArgTargets {
 #[derive(Clone, Copy)]
 enum CloneValueParamKind {
     Clone,
+    Take,
     Vec,
 }
 
@@ -6207,7 +6208,11 @@ fn cloneable_value_param_kind(
         return None;
     }
     if let Some(inner) = vec_type_inner(ty) {
-        return (!is_box_dyn_any_type(&inner)).then_some(CloneValueParamKind::Vec);
+        return Some(if is_box_dyn_any_type(&inner) {
+            CloneValueParamKind::Take
+        } else {
+            CloneValueParamKind::Vec
+        });
     }
     let syn::Type::Path(type_path) = ty else {
         return None;
@@ -6369,6 +6374,10 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
     {
         *arg = (*reference.expr).clone();
     }
+    if matches!(kind, CloneValueParamKind::Take) {
+        take_value_arg(arg);
+        return;
+    }
     if matches!(kind, CloneValueParamKind::Vec)
         && (is_slice_range_index_expr(arg) || matches!(arg, syn::Expr::Block(_)))
     {
@@ -6377,6 +6386,20 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
         return;
     }
     clone_value_arg(arg);
+}
+
+fn take_value_arg(arg: &mut syn::Expr) {
+    if !matches!(
+        arg,
+        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_)
+    ) {
+        return;
+    }
+    if matches!(expr_path_ident(arg).as_deref(), Some("self")) {
+        return;
+    }
+    let inner = arg.clone();
+    *arg = syn::parse_quote! { std::mem::take(&mut #inner) };
 }
 
 fn is_slice_range_index_expr(expr: &syn::Expr) -> bool {
@@ -28312,6 +28335,68 @@ var X int
         assert!(
             output.contains("take ((item . name) . clone ())"),
             "expected same-module value-copy coercion to follow callee parameter type: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_takes_nonclone_any_vec_args() {
+        let helper_file: syn::File = rust! {
+            pub fn inspect(mut values: Vec<Box<dyn std::any::Any>>, mut index: isize) {}
+            pub fn bytes(mut values: Vec<u8>) {}
+        };
+        let main_file: syn::File = rust! {
+            pub fn make_values() -> Vec<Box<dyn std::any::Any>> {
+                Vec::<Box<dyn std::any::Any>>::new()
+            }
+
+            pub fn call(mut values: Vec<Box<dyn std::any::Any>>, mut data: Vec<u8>) {
+                crate::helper::inspect(values, 0);
+                crate::helper::inspect(make_values(), 1);
+                crate::helper::bytes(data);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "helper".to_string(),
+                super::CompiledModule {
+                    mod_name: "helper".to_string(),
+                    import_path: "helper".to_string(),
+                    file: helper_file,
+                    filename: "helper.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("crate :: helper :: inspect (std :: mem :: take (& mut values) , 0)"),
+            "expected non-clone any Vec lvalue argument to be taken from the caller: {output}"
+        );
+        assert!(
+            output.contains("crate :: helper :: inspect (make_values () , 1)"),
+            "expected temporary non-clone any Vec argument to remain unchanged: {output}"
+        );
+        assert!(
+            output.contains("crate :: helper :: bytes ((data) . clone ())"),
+            "expected ordinary Vec argument to keep cloneable-value behavior: {output}"
         );
     }
 

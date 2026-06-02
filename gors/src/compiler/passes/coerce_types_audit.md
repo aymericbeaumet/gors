@@ -36,7 +36,6 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `Box::new` field clone | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
 | `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
 | UTF-8 append rune | `unicode__utf8::AppendRune` / `utf8::AppendRune` | stdlib workaround | First-argument move/take should come from signature and lvalue role for any function that returns an updated destination slice. |
-| Local helpers | `intFromArg` | stdlib workaround | Generated helper ownership contracts should be expressed in generated signatures, IR expression roles, or helper metadata; `intFromArg` still needs a generic move/take rule for consumed local values. |
 | Local init cloning | identifiers `value`, `f`, field `fmtFlags` | stdlib workaround | Cloning should follow Go value-copy semantics, binding type, and later use/move analysis, not chosen by local variable or field name. |
 | Format flush insertion | method calls `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
@@ -75,3 +74,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | stale `fmtsort::Sort` argument cloning in `coerce_types.rs` | The package-specific branch was removed; current generated calls are handled by generic call-signature borrowing and cloneable-value analysis. |
 | stale `reflect::TypeOf` argument borrowing in `coerce_types.rs` | The package-specific branch and its private borrow helpers were removed; current supported generated paths do not require name-selected `TypeOf` borrowing. |
 | stale `reflect::ValueOf` argument coercion in `coerce_types.rs` | The package-specific branch and helper were removed; current supported generated paths prune the reflection fallback before this name-selected coercion is needed. |
+| `intFromArg` local argument move in `coerce_types.rs` | Cross-module value-argument analysis now treats by-value `Vec<Box<dyn Any>>` parameters as non-cloneable lvalue takes, driven by the callee signature rather than helper name. |

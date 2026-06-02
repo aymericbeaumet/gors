@@ -363,13 +363,6 @@ impl VisitMut for CoerceTypes {
             }
             return;
         }
-
-        if is_path_call(&call.func, &["intFromArg"]) {
-            if let Some(first) = call.args.first_mut() {
-                replace_path_with_take(first, "a");
-            }
-            return;
-        }
     }
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
@@ -1517,15 +1510,6 @@ fn replace_self_field_with_take(expr: &mut syn::Expr) {
 
     let inner = expr.clone();
     *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
-}
-
-fn replace_path_with_take(expr: &mut syn::Expr, name: &str) {
-    if !is_path_ident(expr, name) {
-        return;
-    }
-
-    let ident = syn::Ident::new(name, proc_macro2::Span::mixed_site());
-    *expr = syn::parse_quote! { std::mem::take(&mut #ident) };
 }
 
 fn clone_field_or_path(expr: &mut syn::Expr) {
