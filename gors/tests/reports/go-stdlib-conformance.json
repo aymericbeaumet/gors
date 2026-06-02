@@ -1695,7 +1695,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Buffer behavior depends on generic mutable slice-backed struct state, capacity-preserving reslices, returned slice aliases, and io interface lowering."
         },
         {
           "id": "bytes::Buffer.Available",
@@ -1704,7 +1704,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Available depends on the unsupported Buffer capacity/state model."
         },
         {
           "id": "bytes::Buffer.AvailableBuffer",
@@ -1713,7 +1713,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AvailableBuffer depends on returning a mutable slice alias of the internal Buffer storage."
         },
         {
           "id": "bytes::Buffer.Bytes",
@@ -1722,7 +1722,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Bytes depends on returning a slice alias of unread Buffer storage while preserving later receiver mutations."
         },
         {
           "id": "bytes::Buffer.Cap",
@@ -1731,7 +1731,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Cap depends on the unsupported Buffer capacity/state model."
         },
         {
           "id": "bytes::Buffer.Grow",
@@ -1740,7 +1740,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Grow depends on generic capacity-preserving byte-slice reslices, buffer compaction, and panic/recover behavior for allocation failure."
         },
         {
           "id": "bytes::Buffer.Len",
@@ -1749,7 +1749,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Len depends on the unsupported Buffer state model."
         },
         {
           "id": "bytes::Buffer.Next",
@@ -1758,7 +1758,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Next depends on returning a slice alias of unread Buffer storage while advancing receiver state."
         },
         {
           "id": "bytes::Buffer.Peek",
@@ -1767,7 +1767,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Peek depends on returning a slice alias of unread Buffer storage without advancing receiver state."
         },
         {
           "id": "bytes::Buffer.Read",
@@ -1776,7 +1776,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on mutation-preserving []byte lvalue arguments and Buffer receiver state updates."
         },
         {
           "id": "bytes::Buffer.ReadByte",
@@ -1785,7 +1785,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadByte depends on Buffer receiver state updates and unread-byte bookkeeping."
         },
         {
           "id": "bytes::Buffer.ReadBytes",
@@ -1794,7 +1794,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadBytes depends on Buffer readSlice aliasing plus copied byte-slice result construction."
         },
         {
           "id": "bytes::Buffer.ReadFrom",
@@ -1803,7 +1803,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadFrom depends on generic io.Reader calls into mutable internal []byte storage and Buffer growth semantics."
         },
         {
           "id": "bytes::Buffer.ReadRune",
@@ -1812,7 +1812,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadRune depends on Buffer receiver state updates plus generic unicode/utf8 byte-slice decoding."
         },
         {
           "id": "bytes::Buffer.ReadString",
@@ -1821,7 +1821,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadString depends on Buffer readSlice aliasing and string conversion from unread byte slices."
         },
         {
           "id": "bytes::Buffer.Reset",
@@ -1830,7 +1830,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on the unsupported Buffer state model and capacity-preserving reslice semantics."
         },
         {
           "id": "bytes::Buffer.String",
@@ -1839,7 +1839,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: String depends on nil receiver handling and conversion of unread Buffer storage to a Go string."
         },
         {
           "id": "bytes::Buffer.Truncate",
@@ -1848,7 +1848,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Truncate depends on Buffer receiver state mutation and capacity-preserving byte-slice reslices."
         },
         {
           "id": "bytes::Buffer.UnreadByte",
@@ -1857,7 +1857,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadByte depends on Buffer receiver state updates and last-read bookkeeping."
         },
         {
           "id": "bytes::Buffer.UnreadRune",
@@ -1866,7 +1866,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadRune depends on Buffer receiver state updates and last-rune-size bookkeeping."
         },
         {
           "id": "bytes::Buffer.Write",
@@ -1875,7 +1875,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on Buffer growth, byte-slice copy into internal storage, and receiver state mutation."
         },
         {
           "id": "bytes::Buffer.WriteByte",
@@ -1884,7 +1884,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteByte depends on Buffer growth, byte-slice element writes, and receiver state mutation."
         },
         {
           "id": "bytes::Buffer.WriteRune",
@@ -1893,7 +1893,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteRune depends on Buffer growth plus generic unicode/utf8 AppendRune into mutable byte slices."
         },
         {
           "id": "bytes::Buffer.WriteString",
@@ -1902,7 +1902,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteString depends on Buffer growth and string-to-byte copy into internal storage."
         },
         {
           "id": "bytes::Buffer.WriteTo",
@@ -1911,7 +1911,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteTo depends on generic io.Writer calls from Buffer storage and receiver state reset after drain."
         },
         {
           "id": "bytes::Clone",
@@ -2085,7 +2085,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FieldsFuncSeq depends on Go iter.Seq, range-over-function, and yield-closure control-flow lowering."
         },
         {
           "id": "bytes::FieldsSeq",
@@ -2094,7 +2094,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FieldsSeq depends on Go iter.Seq, range-over-function, and yield-closure control-flow lowering."
         },
         {
           "id": "bytes::HasPrefix",
@@ -2235,7 +2235,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Lines depends on Go iter.Seq, range-over-function, and yield-closure control-flow lowering."
         },
         {
           "id": "bytes::Map",
@@ -2266,7 +2266,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewBuffer depends on the unsupported Buffer slice-backed receiver state and ownership/aliasing model."
         },
         {
           "id": "bytes::NewBufferString",
@@ -2275,7 +2275,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewBufferString depends on the unsupported Buffer state model plus string-to-byte slice initialization."
         },
         {
           "id": "bytes::NewReader",
@@ -2284,7 +2284,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on Reader pointer receiver state and borrowed []byte parameter method shims."
         },
         {
           "id": "bytes::Reader",
@@ -2293,7 +2293,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader behavior depends on borrowed []byte method parameters, copy count type unification, and io trait shim lowering."
         },
         {
           "id": "bytes::Reader.Len",
@@ -2302,7 +2302,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Len depends on the unsupported Reader state model."
         },
         {
           "id": "bytes::Reader.Read",
@@ -2311,7 +2311,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Read depends on borrowed []byte parameter lowering; current generated interface shims pass Vec<u8> instead of &mut [u8]."
         },
         {
           "id": "bytes::Reader.ReadAt",
@@ -2320,7 +2320,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadAt depends on borrowed []byte parameter lowering and copy count type unification for ReaderAt semantics."
         },
         {
           "id": "bytes::Reader.ReadByte",
@@ -2329,7 +2329,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadByte depends on Reader pointer receiver state and previous-rune bookkeeping."
         },
         {
           "id": "bytes::Reader.ReadRune",
@@ -2338,7 +2338,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadRune depends on Reader pointer receiver state plus generic unicode/utf8 byte-slice decoding."
         },
         {
           "id": "bytes::Reader.Reset",
@@ -2347,7 +2347,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on Reader pointer receiver state replacement."
         },
         {
           "id": "bytes::Reader.Seek",
@@ -2356,7 +2356,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Seek depends on Reader pointer receiver state mutation and io.Seeker whence semantics."
         },
         {
           "id": "bytes::Reader.Size",
@@ -2365,7 +2365,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Size depends on the unsupported Reader state model."
         },
         {
           "id": "bytes::Reader.UnreadByte",
@@ -2374,7 +2374,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadByte depends on Reader pointer receiver state and previous-byte bookkeeping."
         },
         {
           "id": "bytes::Reader.UnreadRune",
@@ -2383,7 +2383,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: UnreadRune depends on Reader pointer receiver state and previous-rune bookkeeping."
         },
         {
           "id": "bytes::Reader.WriteTo",
@@ -2392,7 +2392,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: WriteTo depends on Reader state plus generic io.Writer trait dispatch for pointer-cell local implementors."
         },
         {
           "id": "bytes::Repeat",
@@ -2401,7 +2401,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Repeat depends on generic usize/isize unification for make/copy slice indices; current lowering mixes copy_slice usize with Go int isize."
         },
         {
           "id": "bytes::Replace",
@@ -2476,7 +2476,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SplitAfterSeq depends on Go iter.Seq, range-over-function, and yield-closure control-flow lowering."
         },
         {
           "id": "bytes::SplitN",
@@ -2496,7 +2496,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SplitSeq depends on Go iter.Seq, range-over-function, and yield-closure control-flow lowering."
         },
         {
           "id": "bytes::Title",
@@ -2527,7 +2527,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ToLowerSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune."
         },
         {
           "id": "bytes::ToTitle",
@@ -2547,7 +2547,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ToTitleSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune."
         },
         {
           "id": "bytes::ToUpper",
@@ -2567,7 +2567,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ToUpperSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune."
         },
         {
           "id": "bytes::ToValidUTF8",
@@ -2664,7 +2664,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TrimSpace depends on range-over-slice lowering that does not keep an immutable borrow alive while the slice variable is reassigned."
         },
         {
           "id": "bytes::TrimSuffix",
