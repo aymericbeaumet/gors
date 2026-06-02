@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 163,
-    "unsupportedCaseCount": 12255,
+    "passingCaseCount": 165,
+    "unsupportedCaseCount": 12253,
     "fixtureCount": 79
   },
   "groups": [
@@ -13209,13 +13209,15 @@
       "id": "crypto/md5",
       "title": "crypto/md5",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/md5"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 4,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 4,
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 2,
         "fixtureCount": 0
       },
       "cases": [
@@ -13224,8 +13226,10 @@
           "title": "BlockSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/md5"
+          ],
           "reason": ""
         },
         {
@@ -13242,8 +13246,10 @@
           "title": "Size",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/md5"
+          ],
           "reason": ""
         },
         {

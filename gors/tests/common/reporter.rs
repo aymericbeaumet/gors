@@ -175,6 +175,7 @@ pub fn write_go_stdlib_conformance(
 ) -> Result<(), String> {
     let fixture_root = fixtures_dir().join("go_stdlib");
     let mut symbols_by_package = collect_stdlib_symbols()?;
+    let discovered_fixture_names = collect_fixture_names(&fixture_root)?;
     let passed_fixture_names = if retain_unattempted_fixture_names {
         merge_existing_passing_fixture_names(
             "go-stdlib-conformance.json",
@@ -189,7 +190,7 @@ pub fn write_go_stdlib_conformance(
             .into_iter()
             .collect()
     };
-    let fixture_names = add_fixture_usage(
+    let _fixture_names = add_fixture_usage(
         &fixture_root,
         &passed_fixture_names,
         &mut symbols_by_package,
@@ -231,15 +232,7 @@ pub fn write_go_stdlib_conformance(
         .collect::<Vec<_>>();
 
     let mut summary = summarize_groups(&groups);
-    summary.fixture_count = if retain_unattempted_fixture_names {
-        merge_existing_fixture_count(
-            "go-stdlib-conformance.json",
-            &fixture_names,
-            attempted_fixture_names,
-        )?
-    } else {
-        fixture_names.len()
-    };
+    summary.fixture_count = discovered_fixture_names.len();
     let report = ConformanceReport {
         schema_version: REPORT_SCHEMA_VERSION,
         kind: "go-stdlib".to_string(),
@@ -355,53 +348,6 @@ fn merge_existing_passing_fixture_names(
     Ok(fixtures.into_iter().collect())
 }
 
-fn merge_existing_fixture_count(
-    filename: &str,
-    passed_fixture_names: &[String],
-    attempted_fixture_names: &[String],
-) -> Result<usize, String> {
-    let Some((existing_count, existing_fixtures)) = existing_report_fixture_snapshot(filename)?
-    else {
-        return Ok(passed_fixture_names.len());
-    };
-    let passed = passed_fixture_names
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let attempted = attempted_fixture_names
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let added = passed
-        .iter()
-        .filter(|fixture| attempted.contains(*fixture) && !existing_fixtures.contains(*fixture))
-        .count();
-    let removed = attempted
-        .iter()
-        .filter(|fixture| !passed.contains(*fixture) && existing_fixtures.contains(*fixture))
-        .count();
-    Ok(existing_count.saturating_add(added).saturating_sub(removed))
-}
-
-fn existing_report_fixture_snapshot(
-    filename: &str,
-) -> Result<Option<(usize, BTreeSet<String>)>, String> {
-    let path = report_path(filename);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let existing: ConformanceReport = serde_json::from_str(
-        &fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
-    )
-    .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
-    let fixtures = existing
-        .groups
-        .iter()
-        .flat_map(|group| group.fixtures.iter().cloned())
-        .collect::<BTreeSet<_>>();
-    Ok(Some((existing.summary.fixture_count, fixtures)))
-}
-
 fn collect_stdlib_symbols() -> Result<BTreeMap<String, BTreeMap<String, StdlibSymbol>>, String> {
     let mut symbols_by_package = BTreeMap::new();
     let src_root = Path::new(gors::GO_SDK_PATH).join("src");
@@ -480,6 +426,46 @@ fn add_fixture_usage(
         add_behavioral_fixture_usage(symbols_by_package, &source, fixture)?;
     }
     Ok(fixtures)
+}
+
+fn collect_fixture_names(root: &Path) -> Result<Vec<String>, String> {
+    let mut fixtures = Vec::new();
+    collect_fixture_names_recursive(root, "", &mut fixtures)?;
+    fixtures.sort();
+    fixtures.dedup();
+    Ok(fixtures)
+}
+
+fn collect_fixture_names_recursive(
+    root: &Path,
+    relative: &str,
+    fixtures: &mut Vec<String>,
+) -> Result<(), String> {
+    let dir = if relative.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(relative)
+    };
+    for entry in fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('_') {
+            continue;
+        }
+        let next = if relative.is_empty() {
+            name
+        } else {
+            format!("{relative}/{name}")
+        };
+        if root.join(&next).join("main.go").exists() {
+            fixtures.push(next.clone());
+        }
+        collect_fixture_names_recursive(root, &next, fixtures)?;
+    }
+    Ok(())
 }
 
 fn add_symbol(
