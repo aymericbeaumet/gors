@@ -2121,6 +2121,13 @@ fn const_value_to_expr_for_type(value: &ConstValue, type_name: Option<&str>) -> 
             let im = ConstValue::Float(*im).to_expr();
             syn::parse_quote! { crate::builtin::complex64((#re as f32), (#im as f32)) }
         }
+        (ConstValue::Float(value), Some(type_name))
+            if value.is_finite()
+                && value.fract() == 0.0
+                && typeinfer::GoType::from_name(type_name).is_integer() =>
+        {
+            ConstValue::Int(*value as i128).to_expr()
+        }
         _ => value.to_expr(),
     }
 }
@@ -30620,6 +30627,26 @@ func main() {
                 pub fn main() {}
             },
         )
+    }
+
+    #[test]
+    fn it_should_emit_integer_literal_for_integer_typed_float_const() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func tooLarge(x int) bool {
+                    const max int = 1e6
+                    return x > max
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("const max: isize = 1000000;"), "{output}");
     }
 
     #[test]
