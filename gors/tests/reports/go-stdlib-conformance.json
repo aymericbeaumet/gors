@@ -477,7 +477,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: compressor registry behavior depends on named function-type values stored in maps and invoked through io.Writer interfaces."
         },
         {
           "id": "archive/zip::Decompressor",
@@ -486,7 +486,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: decompressor registry behavior depends on named function-type values stored in maps and invoked through io.Reader interfaces."
         },
         {
           "id": "archive/zip::Deflate",
@@ -550,7 +550,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: zip file behavior depends on generic io.ReaderAt/SectionReader lowering, decompressor function values, checksum readers, and archive byte parsing."
         },
         {
           "id": "archive/zip::File.DataOffset",
@@ -559,7 +559,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: DataOffset depends on generic archive byte parsing over io.ReaderAt/SectionReader state."
         },
         {
           "id": "archive/zip::File.Open",
@@ -568,7 +568,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Open depends on generic io.ReaderAt/SectionReader lowering, decompressor function values, and checksum reader interface behavior."
         },
         {
           "id": "archive/zip::File.OpenRaw",
@@ -577,7 +577,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: OpenRaw depends on generic io.ReaderAt/SectionReader lowering for compressed archive entry data."
         },
         {
           "id": "archive/zip::FileHeader",
@@ -597,7 +597,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FileInfo depends on generic fs.FileInfo interface values, time.Time conversion, and mode metadata lowering."
         },
         {
           "id": "archive/zip::FileHeader.ModTime",
@@ -606,7 +606,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ModTime depends on generic time.Time and MS-DOS timestamp conversion lowering."
         },
         {
           "id": "archive/zip::FileHeader.Mode",
@@ -615,7 +615,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Mode depends on generic fs.FileMode conversion from external archive attributes."
         },
         {
           "id": "archive/zip::FileHeader.SetModTime",
@@ -624,7 +624,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SetModTime depends on generic time.Time and MS-DOS timestamp conversion lowering."
         },
         {
           "id": "archive/zip::FileHeader.SetMode",
@@ -644,7 +644,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FileInfoHeader depends on generic fs.FileInfo interface calls, time.Time conversion, and mode metadata lowering."
         },
         {
           "id": "archive/zip::NewReader",
@@ -653,7 +653,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on generic io.ReaderAt/SectionReader lowering, sync.Once state, decompressor function-value maps, and archive byte parsing."
         },
         {
           "id": "archive/zip::NewWriter",
@@ -662,7 +662,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriter depends on generic io.Writer mutation, bufio.Writer state, pointer-field archive writer state, and compressor registry behavior."
         },
         {
           "id": "archive/zip::OpenReader",
@@ -671,7 +671,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: OpenReader depends on generic os.File host-resource lowering, File.Stat metadata, io.ReaderAt behavior, and the unsupported zip reader path."
         },
         {
           "id": "archive/zip::ReadCloser",
@@ -680,7 +680,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ReadCloser depends on generic os.File host-resource lowering plus the unsupported zip Reader path."
         },
         {
           "id": "archive/zip::ReadCloser.Close",
@@ -689,7 +689,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on generic os.File host-resource lowering and receiver state preserved through the zip ReadCloser."
         },
         {
           "id": "archive/zip::Reader",
@@ -698,7 +698,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader behavior depends on generic io.ReaderAt/SectionReader lowering, sync.Once state, decompressor function-value maps, and archive byte parsing."
         },
         {
           "id": "archive/zip::Reader.Open",
@@ -707,7 +707,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Open depends on generic fs.ValidPath path checks plus zip File.Open reader/decompressor behavior."
         },
         {
           "id": "archive/zip::Reader.RegisterDecompressor",
@@ -716,7 +716,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RegisterDecompressor depends on generic map assignment of named function-type values on mutable receiver state."
         },
         {
           "id": "archive/zip::RegisterCompressor",
@@ -725,7 +725,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RegisterCompressor depends on generic sync.Map storage of named function-type values and io.Writer interface calls."
         },
         {
           "id": "archive/zip::RegisterDecompressor",
@@ -734,7 +734,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RegisterDecompressor depends on generic sync.Map storage of named function-type values and io.Reader interface calls."
         },
         {
           "id": "archive/zip::Store",
@@ -754,7 +754,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on generic io.Writer mutation, bufio.Writer state, compressor function values, and archive byte encoding control flow."
         },
         {
           "id": "archive/zip::Writer.AddFS",
@@ -763,7 +763,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AddFS depends on the unsupported zip Writer path plus generic fs traversal and file open/read behavior."
         },
         {
           "id": "archive/zip::Writer.Close",
@@ -772,7 +772,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on the unsupported zip Writer path and central-directory byte encoding."
         },
         {
           "id": "archive/zip::Writer.Copy",
@@ -781,7 +781,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Copy depends on the unsupported zip File reader path, raw archive entry copying, and mutable Writer state."
         },
         {
           "id": "archive/zip::Writer.Create",
@@ -790,7 +790,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Create depends on the unsupported zip Writer path and header byte encoding."
         },
         {
           "id": "archive/zip::Writer.CreateHeader",
@@ -799,7 +799,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CreateHeader depends on generic io.Writer mutation, compressor function values, and archive header byte encoding."
         },
         {
           "id": "archive/zip::Writer.CreateRaw",
@@ -808,7 +808,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CreateRaw depends on generic io.Writer mutation and raw archive header byte encoding."
         },
         {
           "id": "archive/zip::Writer.Flush",
@@ -817,7 +817,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on generic bufio.Writer state and mutation-preserving io.Writer lowering."
         },
         {
           "id": "archive/zip::Writer.RegisterCompressor",
@@ -826,7 +826,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RegisterCompressor depends on generic map assignment of named function-type values on mutable receiver state."
         },
         {
           "id": "archive/zip::Writer.SetComment",
@@ -835,7 +835,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SetComment depends on the unsupported zip Writer path and archive metadata state validation."
         },
         {
           "id": "archive/zip::Writer.SetOffset",
@@ -844,7 +844,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SetOffset depends on the unsupported zip Writer path and mutable countWriter offset state."
         }
       ]
     },
