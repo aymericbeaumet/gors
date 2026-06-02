@@ -255,16 +255,6 @@ impl VisitMut for CoerceTypes {
             && is_path_ident(&assign.right, "value")
         {
             clone_expr(&mut assign.right);
-        } else if matches!(&*assign.left, syn::Expr::Field(field) if is_self_member(field, "arg"))
-            && is_path_ident(&assign.right, "arg")
-        {
-            *assign.right = syn::parse_quote! {
-                Box::new(()) as Box<dyn std::any::Any>
-            };
-        } else if is_path_ident(&assign.left, "err") && is_path_ident(&assign.right, "w") {
-            *assign.right = syn::parse_quote! {{
-                w.lock().unwrap().err.clone()
-            }};
         }
 
         if let Some(self_ty) = self.impl_self_types.last()
@@ -1713,6 +1703,54 @@ mod tests {
         assert!(
             !tokens.contains("Box :: new (())"),
             "expected no method-name-driven empty any replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_rewrite_err_assignment_from_w_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub fn call(mut err: isize, mut w: isize) {
+                err = w;
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("err = w"),
+            "expected local names not to force field extraction: {tokens}"
+        );
+        assert!(
+            !tokens.contains("w . lock () . unwrap () . err"),
+            "expected no method-name-driven err field extraction: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_rewrite_self_arg_assignment_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink {
+                arg: isize,
+            }
+
+            impl Sink {
+                pub fn save(&mut self, mut arg: isize) {
+                    self.arg = arg;
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . arg = arg"),
+            "expected self.arg assignment to remain name independent: {tokens}"
+        );
+        assert!(
+            !tokens.contains("Box :: new (())"),
+            "expected no field-name-driven empty any replacement: {tokens}"
         );
     }
 
