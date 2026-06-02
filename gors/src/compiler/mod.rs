@@ -16358,6 +16358,7 @@ fn compile_top_level_value_spec(
             continue;
         }
 
+        let go_name = name.name;
         let vis: syn::Visibility = (&name).into();
         let ident: syn::Ident = name.into();
         let explicit_go_type = vs.type_.as_ref().map(typeinfer::GoType::from_expr);
@@ -16369,6 +16370,13 @@ fn compile_top_level_value_spec(
                 })
             })
         });
+        if tok != token::Token::CONST
+            && let Some(go_type) = inferred_go_type.as_ref()
+        {
+            TYPE_ENV.with(|env| {
+                env.borrow_mut().set_top_level_var(go_name, go_type.clone());
+            });
+        }
         let inferred_type = vs
             .type_
             .as_ref()
@@ -27213,6 +27221,65 @@ var StdEncoding = NewEncoding()
             "{main_rs}"
         );
         assert!(!main_rs.contains("Box<dyn std::any::Any"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_locks_package_pointer_var_method_receivers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/debugpkg"
+
+func main() {
+	_ = debugpkg.Debug.Value()
+	_ = debugpkg.Read()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("debugpkg/debugpkg.go").as_path(),
+            r#"
+package debugpkg
+
+type Setting struct {
+	value string
+}
+
+var Debug = NewSetting("on")
+
+func NewSetting(value string) *Setting {
+	return &Setting{value: value}
+}
+
+func (s *Setting) Value() string {
+	return s.value
+}
+
+func Read() string {
+	return Debug.Value()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        let debugpkg_rs = output.files.get("example__debugpkg.rs").unwrap();
+        assert!(
+            debugpkg_rs.contains("std::sync::Arc<std::sync::Mutex<Setting>>"),
+            "{debugpkg_rs}"
+        );
+        assert!(
+            main_rs.contains("(debugpkg::Debug.lock().unwrap()).Value()"),
+            "{main_rs}"
+        );
+        assert!(
+            debugpkg_rs.contains("(Debug.lock().unwrap()).Value()"),
+            "{debugpkg_rs}"
+        );
     }
 
     #[test]

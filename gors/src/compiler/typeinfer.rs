@@ -246,19 +246,22 @@ impl GoType {
             ast::Expr::Ident(id) => match id.name {
                 "true" | "false" => GoType::Bool,
                 "nil" => GoType::Any,
-                name => env.get_var(name).unwrap_or_else(|| {
-                    if name == "iota" {
-                        GoType::Int
-                    } else if env.has_func(name) {
-                        GoType::Func {
-                            params: env.get_func_params(name),
-                            results: env.get_func_returns(name),
-                            variadic_start: env.get_func_variadic_start(name),
+                name => env
+                    .get_var(name)
+                    .or_else(|| env.get_top_level_var(name))
+                    .unwrap_or_else(|| {
+                        if name == "iota" {
+                            GoType::Int
+                        } else if env.has_func(name) {
+                            GoType::Func {
+                                params: env.get_func_params(name),
+                                results: env.get_func_returns(name),
+                                variadic_start: env.get_func_variadic_start(name),
+                            }
+                        } else {
+                            GoType::Unknown
                         }
-                    } else {
-                        GoType::Unknown
-                    }
-                }),
+                    }),
             },
             ast::Expr::FuncLit(func_lit) => GoType::from_func_type(&func_lit.type_),
             ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {
@@ -452,7 +455,10 @@ impl GoType {
                 }
                 if let ast::Expr::Ident(id) = &*sel.x {
                     let package_key = format!("{}.{}", id.name, sel.sel.name);
-                    if let Some(ty) = env.get_var(&package_key) {
+                    if let Some(ty) = env
+                        .get_var(&package_key)
+                        .or_else(|| env.get_top_level_var(&package_key))
+                    {
                         return ty;
                     }
                     if env.has_func(&package_key) {
@@ -2400,36 +2406,72 @@ impl TypeEnv {
         for decl in &file.decls {
             match decl {
                 ast::Decl::GenDecl(gd) => {
-                    let mut inherited_const_type = None;
                     for spec in &gd.specs {
-                        match spec {
-                            ast::Spec::TypeSpec(ts) => {
-                                self.scan_type_spec(ts);
-                            }
-                            ast::Spec::ValueSpec(vs) => {
-                                self.scan_value_spec(vs, gd.tok, inherited_const_type.as_ref());
-                                if gd.tok == token::Token::CONST {
-                                    if let Some(type_expr) = &vs.type_ {
-                                        inherited_const_type = Some(GoType::from_expr(type_expr));
-                                    } else if let Some(values) = &vs.values
-                                        && let Some(first) = values.first()
-                                    {
-                                        inherited_const_type =
-                                            Some(GoType::infer_expr(first, self));
-                                    }
-                                }
-                                for name in &vs.names {
-                                    if let Some(ty) = self.get_var(name.name) {
-                                        self.set_top_level_var(name.name, ty);
-                                    }
-                                }
-                            }
-                            _ => {}
+                        if let ast::Spec::TypeSpec(ts) = spec {
+                            self.scan_type_spec(ts);
                         }
                     }
                 }
                 ast::Decl::FuncDecl(fd) => {
                     self.scan_func_decl(fd);
+                }
+            }
+        }
+        for decl in &file.decls {
+            let ast::Decl::GenDecl(gd) = decl else {
+                continue;
+            };
+            let mut inherited_const_type = None;
+            for spec in &gd.specs {
+                let ast::Spec::ValueSpec(vs) = spec else {
+                    continue;
+                };
+                self.scan_value_spec(vs, gd.tok, inherited_const_type.as_ref());
+                if gd.tok == token::Token::CONST {
+                    if let Some(type_expr) = &vs.type_ {
+                        inherited_const_type = Some(GoType::from_expr(type_expr));
+                    } else if let Some(values) = &vs.values
+                        && let Some(first) = values.first()
+                    {
+                        inherited_const_type = Some(GoType::infer_expr(first, self));
+                    }
+                }
+                for name in &vs.names {
+                    if let Some(ty) = self.get_var(name.name) {
+                        self.set_top_level_var(name.name, ty);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn rescan_file_top_level_vars(&mut self, file: &ast::File, inference_env: &TypeEnv) {
+        for decl in &file.decls {
+            let ast::Decl::GenDecl(gd) = decl else {
+                continue;
+            };
+            if gd.tok == token::Token::CONST {
+                continue;
+            }
+            for spec in &gd.specs {
+                let ast::Spec::ValueSpec(vs) = spec else {
+                    continue;
+                };
+                let explicit_type = vs.type_.as_ref().map(GoType::from_expr);
+                let values = vs.values.as_ref();
+                for (i, name) in vs.names.iter().enumerate() {
+                    let ty = if let Some(ref explicit_type) = explicit_type {
+                        explicit_type.clone()
+                    } else {
+                        values
+                            .and_then(|values| values.get(i))
+                            .map(|expr| GoType::infer_expr(expr, inference_env))
+                            .unwrap_or(GoType::Unknown)
+                    };
+                    if !matches!(ty, GoType::Unknown) {
+                        self.set_var(name.name, ty.clone());
+                        self.set_top_level_var(name.name, ty);
+                    }
                 }
             }
         }

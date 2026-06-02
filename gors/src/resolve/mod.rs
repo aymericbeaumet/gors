@@ -331,6 +331,16 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             }
         }
     }
+    for (_, ast) in &parsed_files {
+        let mut inference_env = package_type_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut inference_env,
+            ast,
+            &BTreeMap::new(),
+            &imported_type_envs,
+        );
+        package_type_env.rescan_file_top_level_vars(ast, &inference_env);
+    }
 
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
