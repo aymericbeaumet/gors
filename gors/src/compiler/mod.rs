@@ -4780,14 +4780,16 @@ fn inject_post_prune_stdlib_helpers(
 
 fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
     let mut targets = collect_mut_ref_vec_targets(modules);
+    let mut method_targets = collect_mut_ref_vec_method_targets(modules);
 
     loop {
-        if !targets.is_empty() {
+        if !targets.is_empty() || !method_targets.is_empty() {
             for module in modules.values_mut() {
                 syn::visit_mut::VisitMut::visit_file_mut(
                     &mut BorrowMutatedVecCallArgs {
                         module_name: module.mod_name.clone(),
                         targets: &targets,
+                        method_targets: &method_targets,
                     },
                     &mut module.file,
                 );
@@ -4816,6 +4818,38 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
                     changed = true;
                 }
             }
+            for item in &mut module.file.items {
+                let syn::Item::Impl(item_impl) = item else {
+                    continue;
+                };
+                if item_impl.trait_.is_some() {
+                    continue;
+                }
+                for impl_item in &mut item_impl.items {
+                    let syn::ImplItem::Fn(method) = impl_item else {
+                        continue;
+                    };
+                    if return_type_is_vec(&method.sig.output) {
+                        continue;
+                    }
+                    let params = mutated_vec_param_indices(&method.sig, &method.block);
+                    if params.is_empty() {
+                        continue;
+                    }
+                    let indices = params
+                        .iter()
+                        .filter_map(|(index, _, _)| index.checked_sub(1))
+                        .collect();
+                    rewrite_vec_params_as_mut_refs(&mut method.sig, &params);
+                    reborrow_mutated_vec_params(&mut method.block, &params);
+                    if method_targets
+                        .insert(method.sig.ident.to_string(), indices)
+                        .is_none()
+                    {
+                        changed = true;
+                    }
+                }
+            }
         }
 
         if !changed {
@@ -4841,6 +4875,36 @@ fn collect_mut_ref_vec_targets(
                 format!("{}::{}", module.mod_name, item_fn.sig.ident),
                 indices,
             );
+        }
+    }
+    targets
+}
+
+fn collect_mut_ref_vec_method_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> BTreeMap<String, std::collections::HashSet<usize>> {
+    let mut targets = BTreeMap::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            if item_impl.trait_.is_some() {
+                continue;
+            }
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(method) = impl_item else {
+                    continue;
+                };
+                let indices = mut_ref_vec_param_indices(&method.sig)
+                    .into_iter()
+                    .filter_map(|index| index.checked_sub(1))
+                    .collect::<std::collections::HashSet<_>>();
+                if indices.is_empty() {
+                    continue;
+                }
+                targets.insert(method.sig.ident.to_string(), indices);
+            }
         }
     }
     targets
@@ -4889,10 +4953,35 @@ fn mutated_vec_param_indices(
                 return None;
             };
             let inner = vec_type_inner(&pat_type.ty)?;
-            body_mutates_vec_param(block, &pat_ident.ident)
-                .then(|| (index, pat_ident.ident.clone(), inner))
+            (body_mutates_vec_param(block, &pat_ident.ident)
+                && !body_reassigns_param(block, &pat_ident.ident))
+            .then(|| (index, pat_ident.ident.clone(), inner))
         })
         .collect()
+}
+
+fn body_reassigns_param(block: &syn::Block, ident: &syn::Ident) -> bool {
+    struct Finder<'a> {
+        ident: &'a syn::Ident,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_assign(&mut self, assign: &syn::ExprAssign) {
+            if matches!(&*assign.left, syn::Expr::Path(path) if path.path.is_ident(self.ident)) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_assign(self, assign);
+        }
+    }
+
+    let mut finder = Finder {
+        ident,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
 }
 
 fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
@@ -5044,6 +5133,7 @@ fn reborrow_mutated_vec_params(block: &mut syn::Block, params: &[(usize, syn::Id
 struct BorrowMutatedVecCallArgs<'a> {
     module_name: String,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    method_targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
 }
 
 impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
@@ -5053,6 +5143,18 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
             return;
         };
         let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                borrow_mut_vec_call_arg(arg);
+            }
+        }
+    }
+
+    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
+        syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let Some(indices) = self.method_targets.get(&call.method.to_string()) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
@@ -15057,7 +15159,7 @@ fn typed_ident_pat(ident: syn::Ident, ty: syn::Type) -> syn::Pat {
         pat: Box::new(syn::Pat::Ident(syn::PatIdent {
             attrs: vec![],
             by_ref: None,
-            mutability: None,
+            mutability: Some(<Token![mut]>::default()),
             ident,
             subpat: None,
         })),
@@ -29399,6 +29501,112 @@ func main() {
         );
         assert!(main_rs.contains("writeByte(&mut buf);"), "{main_rs}");
         assert!(!main_rs.contains("writeByte(buf.clone());"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_method_slice_params_written_by_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Filler struct{}
+
+func (f *Filler) Fill(p []byte) {
+	p[0] = 7
+}
+
+func main() {
+	f := &Filler{}
+	buf := []byte{0}
+	f.Fill(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("fn Fill(&mut self, mut p: &mut Vec<u8>)")
+                || main_rs.contains("fn Fill (& mut self , mut p : & mut Vec < u8 >)"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains(".Fill(&mut buf)") || main_rs.contains(". Fill (& mut buf)"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains(".Fill(buf.clone())"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_method_value_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Filler struct{}
+
+func (f *Filler) Fill(p []byte) {
+	p[0] = 7
+}
+
+func main() {
+	f := &Filler{}
+	fill := f.Fill
+	buf := []byte{0}
+	fill(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("mut __gors_method_arg_0: Vec<u8>")
+                || main_rs.contains("mut __gors_method_arg_0 : Vec < u8 >"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains(".Fill(&mut __gors_method_arg_0)")
+                || main_rs.contains(". Fill (& mut __gors_method_arg_0)"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_reassigned_method_slice_params_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Formatter struct{}
+
+func (f *Formatter) Trim(p []byte) {
+	p = p[:0]
+	_ = p
+}
+
+func main() {
+	f := &Formatter{}
+	buf := []byte{1}
+	f.Trim(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("fn Trim(&mut self, mut p: Vec<u8>)")
+                || main_rs.contains("fn Trim (& mut self , mut p : Vec < u8 >)"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains(".Trim(&mut buf)"), "{main_rs}");
     }
 
     #[test]
