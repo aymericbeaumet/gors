@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 47,
-    "unsupportedCaseCount": 12537,
+    "passingCaseCount": 62,
+    "unsupportedCaseCount": 12522,
     "fixtureCount": 76
   },
   "groups": [
@@ -1403,13 +1403,15 @@
       "id": "builtin",
       "title": "builtin",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "builtin"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 25,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 25,
+        "passingCaseCount": 15,
+        "unsupportedCaseCount": 10,
         "fixtureCount": 0
       },
       "cases": [
@@ -1472,8 +1474,10 @@
           "title": "any",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1481,8 +1485,10 @@
           "title": "append",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1490,8 +1496,10 @@
           "title": "cap",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1499,8 +1507,10 @@
           "title": "clear",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1508,8 +1518,10 @@
           "title": "close",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1517,8 +1529,10 @@
           "title": "complex",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1526,8 +1540,10 @@
           "title": "copy",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1535,8 +1551,10 @@
           "title": "delete",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1544,8 +1562,10 @@
           "title": "imag",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1553,8 +1573,10 @@
           "title": "len",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1562,8 +1584,10 @@
           "title": "make",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1571,8 +1595,10 @@
           "title": "max",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1580,8 +1606,10 @@
           "title": "min",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1589,8 +1617,10 @@
           "title": "new",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {
@@ -1625,8 +1655,10 @@
           "title": "real",
           "subtitle": "builtin",
           "kind": "builtin",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "builtin"
+          ],
           "reason": ""
         },
         {

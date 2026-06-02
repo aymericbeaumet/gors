@@ -37,12 +37,14 @@ func case_builtin_any_parameter() {
 }
 
 func case_builtin_any_type() {
+	// gors:stdlib-cover builtin::any
 	var x any
 	_ = x
 	fmt.Println("any type works")
 }
 
 func case_builtin_append_copy() {
+	// gors:stdlib-cover builtin::append builtin::copy
 	s := []int{1, 2, 3}
 	s = append(s, 4)
 	fmt.Println(len(s))
@@ -71,6 +73,7 @@ func case_builtin_append_variadic() {
 }
 
 func case_builtin_close() {
+	// gors:stdlib-cover builtin::close
 	ch := make(chan int, 2)
 	ch <- 7
 	close(ch)
@@ -81,6 +84,7 @@ func case_builtin_close() {
 }
 
 func case_builtin_complex() {
+	// gors:stdlib-cover builtin::complex builtin::real builtin::imag
 	c := complex(3.0, 4.0)
 	fmt.Println(real(c))
 	fmt.Println(imag(c))
@@ -92,6 +96,7 @@ func case_builtin_complex() {
 }
 
 func case_builtin_delete_clear() {
+	// gors:stdlib-cover builtin::delete builtin::clear
 	m := map[string]int{"a": 1, "b": 2, "c": 3}
 	delete(m, "b")
 	fmt.Println(len(m))
@@ -106,6 +111,7 @@ func case_builtin_delete_clear() {
 }
 
 func case_builtin_len_cap() {
+	// gors:stdlib-cover builtin::len builtin::cap
 	s := []int{1, 2, 3, 4, 5}
 	fmt.Println(len(s))
 
@@ -133,6 +139,7 @@ func case_builtin_len_cap_maps_arrays_channels() {
 }
 
 func case_builtin_make_new() {
+	// gors:stdlib-cover builtin::make builtin::new
 	s := make([]int, 5)
 	fmt.Println(len(s))
 	fmt.Println(cap(s))
@@ -167,6 +174,7 @@ func case_builtin_make_map_chan() {
 }
 
 func case_builtin_max_min() {
+	// gors:stdlib-cover builtin::max builtin::min
 	fmt.Println(max(3, 7))
 	fmt.Println(max(10, 2))
 	fmt.Println(max(3, 7, 5))
