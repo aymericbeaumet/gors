@@ -13,9 +13,9 @@
     "groupCount": 345,
     "passingGroupCount": 1,
     "caseCount": 12584,
-    "passingCaseCount": 89,
-    "unsupportedCaseCount": 12495,
-    "fixtureCount": 76
+    "passingCaseCount": 91,
+    "unsupportedCaseCount": 12493,
+    "fixtureCount": 77
   },
   "groups": [
     {
@@ -2693,13 +2693,15 @@
       "id": "compress/bzip2",
       "title": "compress/bzip2",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "compress/bzip2"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 3,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 3,
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -2717,8 +2719,10 @@
           "title": "StructuralError",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "compress/bzip2"
+          ],
           "reason": ""
         },
         {
@@ -2726,8 +2730,10 @@
           "title": "StructuralError.Error",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "compress/bzip2"
+          ],
           "reason": ""
         }
       ]
