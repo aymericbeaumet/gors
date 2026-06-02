@@ -11,10 +11,10 @@
   },
   "summary": {
     "groupCount": 344,
-    "passingGroupCount": 1,
+    "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 202,
-    "unsupportedCaseCount": 12216,
+    "passingCaseCount": 203,
+    "unsupportedCaseCount": 12215,
     "fixtureCount": 80
   },
   "groups": [
@@ -3630,8 +3630,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 6,
-        "passingCaseCount": 5,
-        "unsupportedCaseCount": 1,
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -3640,8 +3640,10 @@
           "title": "Fix",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "container/heap"
+          ],
           "reason": ""
         },
         {

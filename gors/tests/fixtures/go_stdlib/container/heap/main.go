@@ -40,6 +40,10 @@ func main() {
 	// gors:stdlib-cover container/heap::Push
 	heap.Push(h, 3)
 	fmt.Println("min", (*h)[0])
+	(*h)[2] = 0
+	// gors:stdlib-cover container/heap::Fix
+	heap.Fix(h, 2)
+	fmt.Println("fix", (*h)[0])
 	// gors:stdlib-cover container/heap::Remove
 	fmt.Println("remove", heap.Remove(h, 1).(int))
 	for h.Len() > 0 {

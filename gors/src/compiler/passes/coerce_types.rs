@@ -183,6 +183,7 @@ impl VisitMut for CoerceTypes {
         for mut stmt in old_stmts {
             visit_mut::visit_stmt_mut(self, &mut stmt);
             new_stmts.extend(hoist_args_read_after_mut_borrow(&mut stmt));
+            new_stmts.extend(hoist_condition_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(hoist_method_args_read_receiver(&mut stmt));
             let needs_flush = stmt_needs_fmt_flush(&stmt);
             new_stmts.push(stmt);
@@ -1108,19 +1109,57 @@ fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
         return Vec::new();
     };
 
-    let borrowed: Vec<(usize, String)> = call
-        .args
+    let mut hoisted = Vec::new();
+    hoist_args_read_after_mut_borrow_in_args(&mut call.args, &mut hoisted);
+    hoisted
+}
+
+fn hoist_condition_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
+    match stmt {
+        syn::Stmt::Expr(syn::Expr::If(if_expr), _) => {
+            hoist_args_read_after_mut_borrow_in_expr(&mut if_expr.cond)
+        }
+        syn::Stmt::Expr(syn::Expr::While(while_expr), _) => {
+            hoist_args_read_after_mut_borrow_in_expr(&mut while_expr.cond)
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn hoist_args_read_after_mut_borrow_in_expr(expr: &mut syn::Expr) -> Vec<syn::Stmt> {
+    struct Hoister {
+        hoisted: Vec<syn::Stmt>,
+    }
+
+    impl VisitMut for Hoister {
+        fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+            visit_mut::visit_expr_call_mut(self, call);
+            hoist_args_read_after_mut_borrow_in_args(&mut call.args, &mut self.hoisted);
+        }
+    }
+
+    let mut hoister = Hoister {
+        hoisted: Vec::new(),
+    };
+    hoister.visit_expr_mut(expr);
+    hoister.hoisted
+}
+
+fn hoist_args_read_after_mut_borrow_in_args(
+    args: &mut syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+    hoisted: &mut Vec<syn::Stmt>,
+) {
+    let borrowed: Vec<(usize, String)> = args
         .iter()
         .enumerate()
         .filter_map(|(index, arg)| mut_borrowed_path_name(arg).map(|name| (index, name)))
         .collect();
     if borrowed.is_empty() {
-        return Vec::new();
+        return;
     }
 
-    let mut hoisted = Vec::new();
     for (borrow_index, name) in borrowed {
-        for (arg_index, arg) in call.args.iter_mut().enumerate() {
+        for (arg_index, arg) in args.iter_mut().enumerate() {
             if arg_index <= borrow_index || !expr_contains_path_ident(arg, &name) {
                 continue;
             }
@@ -1132,7 +1171,6 @@ fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
             });
         }
     }
-    hoisted
 }
 
 fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
@@ -1689,6 +1727,36 @@ mod tests {
         assert!(
             !tokens.contains("Box :: new (())"),
             "expected no method-name-driven empty any replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_hoists_condition_args_read_after_mut_borrow() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub trait Interface {
+                fn Len(&mut self) -> isize;
+            }
+
+            pub fn down(h: &mut dyn Interface, i: isize, n: isize) -> bool {
+                false
+            }
+
+            pub fn up(h: &mut dyn Interface, i: isize) {}
+
+            pub fn fix(mut h: &mut dyn Interface, mut i: isize) {
+                if !down(&mut *h, i, h.Len()) {
+                    up(&mut *h, i);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("let __gors_preborrow_arg_0 = h . Len ()")
+                && tokens.contains("down (& mut * h , i , __gors_preborrow_arg_0)"),
+            "expected condition argument read after mutable borrow to be hoisted: {tokens}"
         );
     }
 
