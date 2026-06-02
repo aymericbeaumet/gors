@@ -15766,18 +15766,20 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    let receiver_needs_lock =
-        receiver_is_pointer || info.pointer_receiver && shared_receiver_ident.is_some();
+    let receiver_needs_lock = receiver_is_pointer || info.pointer_receiver;
     let body: syn::Expr = if receiver_needs_lock {
         syn::parse_quote! { #receiver_ident.lock().unwrap().#method(#(#call_args),*) }
     } else {
         syn::parse_quote! { #receiver_ident.#method(#(#call_args),*) }
     };
-    let receiver_binding: syn::Stmt = if info.pointer_receiver && !receiver_needs_lock {
-        syn::parse_quote! { let mut #receiver_ident = #receiver; }
-    } else {
-        syn::parse_quote! { let #receiver_ident = #receiver; }
-    };
+    let receiver_binding: syn::Stmt =
+        if info.pointer_receiver && !receiver_is_pointer && shared_receiver_ident.is_none() {
+            syn::parse_quote! {
+                let #receiver_ident = std::sync::Arc::new(std::sync::Mutex::new(#receiver));
+            }
+        } else {
+            syn::parse_quote! { let #receiver_ident = #receiver; }
+        };
     syn::parse_quote! {{
         #receiver_binding
         move |#(#param_pats),*| -> #return_type { #body }
@@ -29953,12 +29955,14 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("let mut __gors_method_receiver = (c) . clone ()"),
-            "expected pointer method value receiver to be mutable: {output}"
+            output.contains(
+                "let __gors_method_receiver = std :: sync :: Arc :: new (std :: sync :: Mutex :: new ((c) . clone ()))"
+            ),
+            "expected pointer method value receiver to be captured in a lockable cell: {output}"
         );
         assert!(
-            output.contains("__gors_method_receiver . Increment ()"),
-            "expected method value to call the saved receiver: {output}"
+            output.contains("__gors_method_receiver . lock () . unwrap () . Increment ()"),
+            "expected method value to lock the saved receiver per call: {output}"
         );
     }
 
