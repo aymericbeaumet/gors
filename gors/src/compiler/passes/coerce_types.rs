@@ -1436,10 +1436,6 @@ fn coerce_print_arg(expr: &mut syn::Expr) {
         syn::Expr::Field(field) if is_self_member(field, "arg") => {
             *expr = syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> };
         }
-        syn::Expr::Index(_) => {
-            let inner = expr.clone();
-            *expr = syn::parse_quote! { std::mem::replace(&mut #inner, Box::new(())) };
-        }
         _ => {}
     }
 }
@@ -1675,6 +1671,33 @@ mod tests {
         assert!(
             !tokens.contains("Box :: new (err)"),
             "expected no method-name-driven err boxing: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_replace_print_arg_index_args_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink;
+
+            impl Sink {
+                pub fn printArg(&mut self, value: isize) {}
+            }
+
+            pub fn call(mut sink: Sink, mut values: Vec<isize>) {
+                sink.printArg(values[0]);
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("sink . printArg (values [0])"),
+            "expected method name not to force indexed argument replacement: {tokens}"
+        );
+        assert!(
+            !tokens.contains("std :: mem :: replace"),
+            "expected no method-name-driven indexed argument replacement: {tokens}"
         );
     }
 
