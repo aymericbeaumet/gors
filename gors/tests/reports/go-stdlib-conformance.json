@@ -13,9 +13,9 @@
     "groupCount": 345,
     "passingGroupCount": 1,
     "caseCount": 12584,
-    "passingCaseCount": 128,
-    "unsupportedCaseCount": 12456,
-    "fixtureCount": 77
+    "passingCaseCount": 130,
+    "unsupportedCaseCount": 12454,
+    "fixtureCount": 78
   },
   "groups": [
     {
@@ -3946,13 +3946,15 @@
       "id": "context",
       "title": "context",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "context"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 17,
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 15,
         "fixtureCount": 0
       },
       "cases": [
@@ -3997,8 +3999,10 @@
           "title": "Canceled",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
           "reason": ""
         },
         {
@@ -4024,8 +4028,10 @@
           "title": "DeadlineExceeded",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
           "reason": ""
         },
         {
