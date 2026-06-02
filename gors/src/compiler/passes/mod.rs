@@ -39,6 +39,7 @@ pub fn pass_for_imported_package(file: &mut syn::File) {
 }
 
 pub fn pass_after_package_merge(file: &mut syn::File) {
+    coerce_types::pass_after_package_merge(file);
     avoid_item_shadowing::pass(file);
 }
 

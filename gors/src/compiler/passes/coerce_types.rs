@@ -6,10 +6,25 @@ use syn::{
 pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = collect_tuple_newtypes(file);
     let mutable_ref_call_args = collect_mutable_ref_call_args(file);
+    let pointer_cell_statics = collect_pointer_cell_statics(file);
     CoerceTypes {
         mutable_ref_call_args,
+        pointer_cell_statics,
         tuple_newtypes,
         ..Default::default()
+    }
+    .visit_file_mut(file);
+}
+
+pub fn pass_after_package_merge(file: &mut syn::File) {
+    let mutable_ref_call_args = collect_mutable_ref_call_args(file);
+    let pointer_cell_statics = collect_pointer_cell_statics(file);
+    if mutable_ref_call_args.is_empty() || pointer_cell_statics.is_empty() {
+        return;
+    }
+    CoercePointerCellStaticArgs {
+        mutable_ref_call_args,
+        pointer_cell_statics,
     }
     .visit_file_mut(file);
 }
@@ -20,8 +35,26 @@ struct CoerceTypes {
     generic_value_params: Vec<std::collections::HashSet<String>>,
     has_generic_params: Vec<bool>,
     mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    pointer_cell_statics: std::collections::HashSet<String>,
     tuple_newtypes: std::collections::HashSet<String>,
     impl_self_types: Vec<String>,
+}
+
+struct CoercePointerCellStaticArgs {
+    mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    pointer_cell_statics: std::collections::HashSet<String>,
+}
+
+impl VisitMut for CoercePointerCellStaticArgs {
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        visit_mut::visit_expr_call_mut(self, call);
+        coerce_pointer_cell_static_call_args(
+            &call.func,
+            &mut call.args,
+            &self.mutable_ref_call_args,
+            &self.pointer_cell_statics,
+        );
+    }
 }
 
 impl VisitMut for CoerceTypes {
@@ -263,7 +296,12 @@ impl VisitMut for CoerceTypes {
             self.generic_value_params.last(),
             self.has_generic_params.last().copied().unwrap_or(false),
         );
-        coerce_signature_call_args(&call.func, &mut call.args, &self.mutable_ref_call_args);
+        coerce_signature_call_args(
+            &call.func,
+            &mut call.args,
+            &self.mutable_ref_call_args,
+            &self.pointer_cell_statics,
+        );
 
         if is_path_call(&call.func, &["Box", "new"]) {
             if let Some(first) = call.args.first_mut() {
@@ -311,7 +349,7 @@ impl VisitMut for CoerceTypes {
             || is_path_call(&call.func, &["slices", "Sort"])
         {
             if let Some(first) = call.args.first_mut() {
-                borrow_mut_expr(first);
+                borrow_mut_expr(first, &self.pointer_cell_statics);
             }
             return;
         }
@@ -818,11 +856,14 @@ fn collect_mutable_ref_call_args(
                 }
             }
             syn::Item::Impl(item_impl) => {
+                let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
+                    continue;
+                };
                 for item in &item_impl.items {
                     if let syn::ImplItem::Fn(func) = item {
                         let refs = mutable_ref_arg_indices(&func.sig);
                         if !refs.is_empty() {
-                            calls.insert(func.sig.ident.to_string(), refs);
+                            calls.insert(format!("{self_ty}::{}", func.sig.ident), refs);
                         }
                     }
                 }
@@ -831,6 +872,48 @@ fn collect_mutable_ref_call_args(
         }
     }
     calls
+}
+
+fn collect_pointer_cell_statics(file: &syn::File) -> std::collections::HashSet<String> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Static(item_static) = item else {
+                return None;
+            };
+            lazylock_contains_arc_mutex(&item_static.ty).then(|| item_static.ident.to_string())
+        })
+        .collect()
+}
+
+fn lazylock_contains_arc_mutex(ty: &syn::Type) -> bool {
+    let Some(inner) = first_type_arg_if_path_last_ident(ty, "LazyLock") else {
+        return false;
+    };
+    let Some(mutex) = first_type_arg_if_path_last_ident(inner, "Arc") else {
+        return false;
+    };
+    first_type_arg_if_path_last_ident(mutex, "Mutex").is_some()
+}
+
+fn first_type_arg_if_path_last_ident<'a>(ty: &'a syn::Type, ident: &str) -> Option<&'a syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != ident {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| {
+        if let syn::GenericArgument::Type(ty) = arg {
+            Some(ty)
+        } else {
+            None
+        }
+    })
 }
 
 fn mutable_ref_arg_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
@@ -1019,6 +1102,7 @@ fn coerce_signature_call_args(
     func: &syn::Expr,
     args: &mut syn::punctuated::Punctuated<syn::Expr, Token![,]>,
     mutable_ref_call_args: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    pointer_cell_statics: &std::collections::HashSet<String>,
 ) {
     let Some(name) = call_func_name(func) else {
         return;
@@ -1028,7 +1112,26 @@ fn coerce_signature_call_args(
     };
     for (index, arg) in args.iter_mut().enumerate() {
         if indices.contains(&index) {
-            borrow_mut_expr(arg);
+            borrow_mut_expr(arg, pointer_cell_statics);
+        }
+    }
+}
+
+fn coerce_pointer_cell_static_call_args(
+    func: &syn::Expr,
+    args: &mut syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+    mutable_ref_call_args: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    pointer_cell_statics: &std::collections::HashSet<String>,
+) {
+    let Some(name) = call_func_name(func) else {
+        return;
+    };
+    let Some(indices) = mutable_ref_call_args.get(&name) else {
+        return;
+    };
+    for (index, arg) in args.iter_mut().enumerate() {
+        if indices.contains(&index) {
+            borrow_pointer_cell_static_expr(arg, pointer_cell_statics);
         }
     }
 }
@@ -1037,10 +1140,17 @@ fn call_func_name(func: &syn::Expr) -> Option<String> {
     let syn::Expr::Path(path) = func else {
         return None;
     };
-    path.path
+    let segments = path
+        .path
         .segments
-        .last()
+        .iter()
         .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [name] => Some(name.clone()),
+        [.., ty, method] => Some(format!("{ty}::{method}")),
+        [] => None,
+    }
 }
 
 fn remove_owned_string_reference(expr: &mut syn::Expr) {
@@ -1224,11 +1334,14 @@ fn borrow_expr(expr: &mut syn::Expr) {
     *expr = syn::parse_quote! { &#inner };
 }
 
-fn borrow_mut_expr(expr: &mut syn::Expr) {
+fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections::HashSet<String>) {
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
     if is_path_ident(expr, "self") {
+        return;
+    }
+    if borrow_pointer_cell_static_expr(expr, pointer_cell_statics) {
         return;
     }
     if let Some(name) = path_ident_name(expr) {
@@ -1238,6 +1351,53 @@ fn borrow_mut_expr(expr: &mut syn::Expr) {
     }
     let inner = expr.clone();
     *expr = syn::parse_quote! { &mut #inner };
+}
+
+fn borrow_pointer_cell_static_expr(
+    expr: &mut syn::Expr,
+    pointer_cell_statics: &std::collections::HashSet<String>,
+) -> bool {
+    let Some(name) = deref_clone_path_name(expr) else {
+        return false;
+    };
+    if !pointer_cell_statics.contains(&name) {
+        return false;
+    }
+    let ident = syn::Ident::new(&name, proc_macro2::Span::mixed_site());
+    *expr = syn::parse_quote! { &mut *((*#ident)).lock().unwrap() };
+    true
+}
+
+fn deref_clone_path_name(expr: &syn::Expr) -> Option<String> {
+    let expr = strip_paren_or_group(expr);
+    let syn::Expr::MethodCall(method) = expr else {
+        return None;
+    };
+    if method.method != "clone" || !method.args.is_empty() {
+        return None;
+    }
+    deref_path_name(&method.receiver)
+}
+
+fn deref_path_name(expr: &syn::Expr) -> Option<String> {
+    let expr = strip_paren_or_group(expr);
+    let syn::Expr::Unary(unary) = expr else {
+        return None;
+    };
+    if !matches!(unary.op, syn::UnOp::Deref(_)) {
+        return None;
+    }
+    path_ident_name(strip_paren_or_group(&unary.expr))
+}
+
+fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
+    loop {
+        match expr {
+            syn::Expr::Paren(paren) => expr = &paren.expr,
+            syn::Expr::Group(group) => expr = &group.expr,
+            _ => return expr,
+        }
+    }
 }
 
 fn coerce_write_arg(expr: &mut syn::Expr) {
@@ -1552,6 +1712,70 @@ mod tests {
         assert!(
             !tokens.contains("self as isize"),
             "expected borrowed receiver cast to be rewritten: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_borrows_pointer_cell_static_pointees_for_mut_ref_calls() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Table {
+                pub n: isize,
+            }
+
+            pub static Public: std::sync::LazyLock<std::sync::Arc<std::sync::Mutex<Table>>> =
+                std::sync::LazyLock::new(|| std::sync::Arc::new(std::sync::Mutex::new(Table { n: 1 })));
+
+            fn check(mut table: &mut Table) -> isize {
+                table.n
+            }
+
+            pub fn call() -> isize {
+                check((*Public).clone())
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("check (& mut * ((* Public)) . lock () . unwrap ())"),
+            "expected pointer-cell static to be locked for mutable-reference call: {tokens}"
+        );
+        assert!(
+            !tokens.contains("check (& mut (* Public) . clone ())"),
+            "expected not to borrow a cloned Arc cell: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_borrows_pointer_cell_static_pointees_after_package_merge() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub fn call() -> isize {
+                check((*Public).clone())
+            }
+
+            fn check(mut table: &mut Table) -> isize {
+                table.n
+            }
+
+            pub static Public: std::sync::LazyLock<std::sync::Arc<std::sync::Mutex<Table>>> =
+                std::sync::LazyLock::new(|| std::sync::Arc::new(std::sync::Mutex::new(Table { n: 1 })));
+
+            pub struct Table {
+                pub n: isize,
+            }
+        };
+
+        pass_after_package_merge(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("check (& mut * ((* Public)) . lock () . unwrap ())"),
+            "expected post-merge pass to lock pointer-cell static: {tokens}"
+        );
+        assert!(
+            !tokens.contains("check (& mut (* Public) . clone ())"),
+            "expected post-merge pass not to borrow a cloned Arc cell: {tokens}"
         );
     }
 }

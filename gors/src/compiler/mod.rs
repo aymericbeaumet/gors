@@ -22219,13 +22219,14 @@ fn collect_borrow_pointer_arg_indices(
         if indices.is_empty() {
             continue;
         }
-        map.insert(func_decl.name.name.to_string(), indices.clone());
         if let Some(recv) = &func_decl.recv
             && let Some(recv_field) = recv.list.first()
             && let Some(recv_type) = &recv_field.type_
             && let Ok((type_name, _)) = extract_receiver_type(recv_type)
         {
             map.insert(format!("{type_name}.{}", func_decl.name.name), indices);
+        } else {
+            map.insert(func_decl.name.name.to_string(), indices.clone());
         }
     }
     map
@@ -22275,33 +22276,7 @@ pub(crate) fn clear_borrow_pointer_arg_indices() {
 fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet<usize> {
     let names = match fun {
         ast::Expr::Ident(ident) => vec![ident.name.to_string()],
-        ast::Expr::SelectorExpr(selector) => {
-            if let ast::Expr::Ident(receiver) = &*selector.x {
-                TYPE_ENV.with(|env| {
-                    let env = env.borrow();
-                    let package_key = format!("{}.{}", receiver.name, selector.sel.name);
-                    if env.has_func(&package_key) {
-                        return vec![package_key];
-                    }
-                    if let Some(name) = env
-                        .get_var(receiver.name)
-                        .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
-                    {
-                        let mut names = vec![format!("{name}.{}", selector.sel.name)];
-                        if let Some(base_name) = name.rsplit('.').next()
-                            && base_name != name
-                        {
-                            names.push(format!("{base_name}.{}", selector.sel.name));
-                        }
-                        names.push(selector.sel.name.to_string());
-                        return names;
-                    }
-                    vec![selector.sel.name.to_string()]
-                })
-            } else {
-                vec![selector.sel.name.to_string()]
-            }
-        }
+        ast::Expr::SelectorExpr(selector) => borrow_pointer_selector_candidate_names(selector),
         _ => vec![],
     };
     BORROW_POINTER_ARG_INDICES.with(|indices| {
@@ -22311,6 +22286,45 @@ fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet
             .find_map(|name| indices.get(name).cloned())
             .unwrap_or_else(std::collections::HashSet::new)
     })
+}
+
+fn borrow_pointer_selector_candidate_names(selector: &ast::SelectorExpr) -> Vec<String> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let method_name = selector.sel.name;
+
+        if let ast::Expr::Ident(receiver) = &*selector.x {
+            let receiver_name = receiver.name;
+            let package_key = format!("{receiver_name}.{method_name}");
+            if env.has_func(&package_key) {
+                return vec![package_key];
+            }
+            if let Some(type_name) = env
+                .get_var(receiver_name)
+                .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
+            {
+                return receiver_method_borrow_pointer_keys(&type_name, method_name);
+            }
+            return vec![package_key];
+        }
+
+        let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
+        if let Some(type_name) = receiver_method_type_name_for_call(receiver_type, &env) {
+            return receiver_method_borrow_pointer_keys(&type_name, method_name);
+        }
+
+        Vec::new()
+    })
+}
+
+fn receiver_method_borrow_pointer_keys(type_name: &str, method_name: &str) -> Vec<String> {
+    let mut names = vec![format!("{type_name}.{method_name}")];
+    if let Some(base_name) = type_name.rsplit('.').next()
+        && base_name != type_name
+    {
+        names.push(format!("{base_name}.{method_name}"));
+    }
+    names
 }
 
 fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoType>) {
@@ -30219,6 +30233,117 @@ func Read() string {
         assert!(
             !output.contains("Source::Name((*__gors_guard).clone())"),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_forward_pointer_interface_value_params_by_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/contract"
+
+type Buffer []byte
+
+func (b *Buffer) WriteString(s string) (int, error) {
+	*b = append(*b, s...)
+	return len(s), nil
+}
+
+type Adapter struct{}
+
+func (a *Adapter) WriteString(w contract.Writer, s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+func main() {
+	var b Buffer
+	var w contract.StringWriter = &b
+	w.WriteString("x")
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("contract/contract.go").as_path(),
+            r#"
+package contract
+
+type StringWriter interface {
+	WriteString(string) (int, error)
+}
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("Buffer::WriteString(&mut *__gors_guard, s)"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("Buffer::WriteString(&mut *__gors_guard, &mut s)"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_imported_package_pointer_vars_for_pointer_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/data"
+
+func main() {
+	_ = data.Check()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("data/data.go").as_path(),
+            r#"
+package data
+
+type Table struct {
+	N int
+}
+
+var private = &Table{N: 1}
+var Public = private
+
+func checkTable(t *Table) int {
+	return t.N
+}
+
+func Check() int {
+	return checkTable(Public)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let data_rs = output.files.get("example__data.rs").unwrap();
+        assert!(
+            data_rs.contains("checkTable(&mut *((*Public)).lock().unwrap())")
+                || data_rs.contains("checkTable(&mut *(Public).lock().unwrap())")
+                || data_rs.contains("checkTable (& mut * (Public) . lock () . unwrap ())"),
+            "{data_rs}"
+        );
+        assert!(
+            !data_rs.contains("checkTable(&mut (*Public).clone())"),
+            "{data_rs}"
         );
     }
 
