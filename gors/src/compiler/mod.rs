@@ -5016,6 +5016,16 @@ fn merged_top_level_return_types(
         .collect()
 }
 
+fn merged_top_level_field_types(
+    modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
+) -> ReceiverFieldTypeMap {
+    modules
+        .values()
+        .flat_map(|module| top_level_item_field_types(&module.file.items, module_names))
+        .collect()
+}
+
 fn record_fn_arg_receiver_type(
     arg: &syn::FnArg,
     module_names: &std::collections::HashSet<String>,
@@ -5039,6 +5049,7 @@ fn local_receiver_type_binding(
     module_names: &std::collections::HashSet<String>,
     item_names: &std::collections::HashSet<String>,
     top_level_return_types: &ReceiverTypeMap,
+    top_level_field_types: &ReceiverFieldTypeMap,
     scopes: &[BTreeMap<String, ReceiverTypeRef>],
     current_self_type: Option<&ReceiverTypeRef>,
 ) -> Option<(String, ReceiverTypeRef)> {
@@ -5055,6 +5066,7 @@ fn local_receiver_type_binding(
         module_names,
         item_names,
         top_level_return_types,
+        top_level_field_types,
         scopes,
         current_self_type,
     )
@@ -5080,6 +5092,7 @@ fn method_receiver_type_from_expr(
     module_names: &std::collections::HashSet<String>,
     item_names: &std::collections::HashSet<String>,
     top_level_return_types: &ReceiverTypeMap,
+    top_level_field_types: &ReceiverFieldTypeMap,
     scopes: &[BTreeMap<String, ReceiverTypeRef>],
     current_self_type: Option<&ReceiverTypeRef>,
 ) -> Option<ReceiverTypeRef> {
@@ -5095,6 +5108,7 @@ fn method_receiver_type_from_expr(
                                 module_names,
                                 item_names,
                                 top_level_return_types,
+                                top_level_field_types,
                                 scopes,
                                 current_self_type,
                             )
@@ -5110,15 +5124,36 @@ fn method_receiver_type_from_expr(
             module_names,
             item_names,
             top_level_return_types,
+            top_level_field_types,
             scopes,
             current_self_type,
         ),
+        syn::Expr::Field(field) => {
+            let base_type = method_receiver_type_from_expr(
+                &field.base,
+                current_module,
+                module_names,
+                item_names,
+                top_level_return_types,
+                top_level_field_types,
+                scopes,
+                current_self_type,
+            )?;
+            let syn::Member::Named(member) = &field.member else {
+                return None;
+            };
+            top_level_field_types
+                .get(&base_type.name)
+                .and_then(|fields| fields.get(&member.to_string()))
+                .cloned()
+        }
         syn::Expr::Group(group) => method_receiver_type_from_expr(
             &group.expr,
             current_module,
             module_names,
             item_names,
             top_level_return_types,
+            top_level_field_types,
             scopes,
             current_self_type,
         ),
@@ -5134,6 +5169,7 @@ fn method_receiver_type_from_expr(
                 module_names,
                 item_names,
                 top_level_return_types,
+                top_level_field_types,
                 scopes,
                 current_self_type,
             )
@@ -5144,6 +5180,7 @@ fn method_receiver_type_from_expr(
             module_names,
             item_names,
             top_level_return_types,
+            top_level_field_types,
             scopes,
             current_self_type,
         ),
@@ -5165,6 +5202,7 @@ fn method_receiver_type_from_expr(
             module_names,
             item_names,
             top_level_return_types,
+            top_level_field_types,
             scopes,
             current_self_type,
         ),
@@ -5175,6 +5213,7 @@ fn method_receiver_type_from_expr(
             module_names,
             item_names,
             top_level_return_types,
+            top_level_field_types,
             scopes,
             current_self_type,
         ),
@@ -5194,6 +5233,7 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
     let module_names = module_name_set(modules);
     let item_names = module_item_name_set(modules);
     let top_level_return_types = merged_top_level_return_types(modules, &module_names);
+    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
     let mut targets = collect_mut_ref_vec_targets(modules);
     let mut method_targets = collect_mut_ref_vec_method_targets(modules);
 
@@ -5206,6 +5246,7 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
                         module_names: &module_names,
                         item_names: &item_names,
                         top_level_return_types: &top_level_return_types,
+                        top_level_field_types: &top_level_field_types,
                         targets: &targets,
                         method_targets: &method_targets,
                         local_types: vec![BTreeMap::new()],
@@ -5592,6 +5633,7 @@ struct BorrowMutatedVecCallArgs<'a> {
     module_names: &'a std::collections::HashSet<String>,
     item_names: &'a std::collections::HashSet<String>,
     top_level_return_types: &'a ReceiverTypeMap,
+    top_level_field_types: &'a ReceiverFieldTypeMap,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
     method_targets: &'a ReceiverMethodArgTargets,
     local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
@@ -5640,6 +5682,7 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
             self.module_names,
             self.item_names,
             self.top_level_return_types,
+            self.top_level_field_types,
             &self.local_types,
             self.current_self_type.as_ref(),
         ) {
@@ -5673,6 +5716,7 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
                 self.module_names,
                 self.item_names,
                 self.top_level_return_types,
+                self.top_level_field_types,
                 &self.local_types,
                 self.current_self_type.as_ref(),
             )
@@ -5763,9 +5807,14 @@ fn to_vec_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
 }
 
 fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
+    let module_names = module_name_set(modules);
+    let item_names = module_item_name_set(modules);
+    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
+    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
     let targets = collect_vec_value_param_targets(modules);
+    let method_targets = collect_vec_value_method_targets(modules);
     let vec_newtypes = collect_vec_newtypes(modules);
-    if targets.is_empty() && vec_newtypes.is_empty() {
+    if targets.is_empty() && method_targets.is_empty() && vec_newtypes.is_empty() {
         return;
     }
 
@@ -5773,8 +5822,15 @@ fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
         syn::visit_mut::VisitMut::visit_file_mut(
             &mut CloneVecValueCallArgs {
                 module_name: module.mod_name.clone(),
+                module_names: &module_names,
+                item_names: &item_names,
+                top_level_return_types: &top_level_return_types,
+                top_level_field_types: &top_level_field_types,
                 targets: &targets,
+                method_targets: &method_targets,
                 vec_newtypes: &vec_newtypes,
+                local_types: vec![BTreeMap::new()],
+                current_self_type: None,
             },
             &mut module.file,
         );
@@ -5913,6 +5969,46 @@ fn collect_vec_value_param_targets(
     targets
 }
 
+fn collect_vec_value_method_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> ReceiverMethodArgTargets {
+    let mut targets = ReceiverMethodArgTargets::default();
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            targets.record_methods_seen(&module.mod_name, item_impl);
+            if item_impl.trait_.is_some() {
+                continue;
+            }
+            let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                continue;
+            };
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(method) = impl_item else {
+                    continue;
+                };
+                let indices = vec_value_param_indices(&method.sig)
+                    .into_iter()
+                    .filter_map(|index| index.checked_sub(1))
+                    .collect::<std::collections::HashSet<_>>();
+                if indices.is_empty() {
+                    continue;
+                }
+                targets.insert_receiver(
+                    &module.mod_name,
+                    &self_name,
+                    &method.sig.ident.to_string(),
+                    indices,
+                );
+            }
+        }
+    }
+    targets.finalize_unambiguous_names();
+    targets
+}
+
 fn vec_value_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
     let clone_type_params: std::collections::HashSet<String> = sig
         .generics
@@ -5994,11 +6090,67 @@ fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
 
 struct CloneVecValueCallArgs<'a> {
     module_name: String,
+    module_names: &'a std::collections::HashSet<String>,
+    item_names: &'a std::collections::HashSet<String>,
+    top_level_return_types: &'a ReceiverTypeMap,
+    top_level_field_types: &'a ReceiverFieldTypeMap,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    method_targets: &'a ReceiverMethodArgTargets,
     vec_newtypes: &'a std::collections::HashSet<String>,
+    local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
+    current_self_type: Option<ReceiverTypeRef>,
 }
 
 impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
+    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        let previous_self_type = self.current_self_type.clone();
+        self.current_self_type = named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef {
+            module: Some(self.module_name.clone()),
+            name,
+        });
+        syn::visit_mut::visit_item_impl_mut(self, item_impl);
+        self.current_self_type = previous_self_type;
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_impl_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_block_mut(self, block);
+        self.local_types.pop();
+    }
+
+    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
+        record_fn_arg_receiver_type(arg, self.module_names, &mut self.local_types);
+        syn::visit_mut::visit_fn_arg_mut(self, arg);
+    }
+
+    fn visit_local_mut(&mut self, local: &mut syn::Local) {
+        syn::visit_mut::visit_local_mut(self, local);
+        if let Some((name, receiver_type)) = local_receiver_type_binding(
+            local,
+            &self.module_name,
+            self.module_names,
+            self.item_names,
+            self.top_level_return_types,
+            self.top_level_field_types,
+            &self.local_types,
+            self.current_self_type.as_ref(),
+        ) {
+            record_local_receiver_type(name, receiver_type, &mut self.local_types);
+        }
+    }
+
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         syn::visit_mut::visit_expr_call_mut(self, call);
 
@@ -6014,6 +6166,32 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
             return;
         };
         let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        for (index, arg) in call.args.iter_mut().enumerate() {
+            if indices.contains(&index) {
+                normalize_vec_value_arg(arg);
+            }
+        }
+    }
+
+    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
+        syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let Some(indices) = self.method_targets.indices_for_call(
+            &self.module_name,
+            &call.method.to_string(),
+            method_receiver_type_from_expr(
+                &call.receiver,
+                &self.module_name,
+                self.module_names,
+                self.item_names,
+                self.top_level_return_types,
+                self.top_level_field_types,
+                &self.local_types,
+                self.current_self_type.as_ref(),
+            )
+            .as_ref(),
+        ) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
@@ -6058,6 +6236,7 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     let module_names = module_name_set(modules);
     let item_names = module_item_name_set(modules);
     let top_level_return_types = merged_top_level_return_types(modules, &module_names);
+    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
     let (targets, method_targets) = collect_mut_ref_targets(modules);
     if targets.is_empty() && method_targets.is_empty() {
         return;
@@ -6069,6 +6248,7 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
                 module_names: &module_names,
                 item_names: &item_names,
                 top_level_return_types: &top_level_return_types,
+                top_level_field_types: &top_level_field_types,
                 targets: &targets,
                 method_targets: &method_targets,
                 local_types: vec![BTreeMap::new()],
@@ -6154,6 +6334,7 @@ struct BorrowMutRefCallArgs<'a> {
     module_names: &'a std::collections::HashSet<String>,
     item_names: &'a std::collections::HashSet<String>,
     top_level_return_types: &'a ReceiverTypeMap,
+    top_level_field_types: &'a ReceiverFieldTypeMap,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
     method_targets: &'a ReceiverMethodArgTargets,
     local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
@@ -6202,6 +6383,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
             self.module_names,
             self.item_names,
             self.top_level_return_types,
+            self.top_level_field_types,
             &self.local_types,
             self.current_self_type.as_ref(),
         ) {
@@ -6235,6 +6417,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
                 self.module_names,
                 self.item_names,
                 self.top_level_return_types,
+                self.top_level_field_types,
                 &self.local_types,
                 self.current_self_type.as_ref(),
             )
@@ -27918,6 +28101,65 @@ var X int
                 "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone () , (item . bytes) . clone ())"
             ),
             "expected value-copy coercions to follow callee cloneable value parameters: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_keys_method_value_args_by_receiver_type() {
+        let main_file: syn::File = rust! {
+            pub struct NeedsClone;
+            impl NeedsClone {
+                pub fn put(&self, mut value: String) {}
+            }
+
+            pub struct TakesCopy;
+            impl TakesCopy {
+                pub fn put(&self, value: usize) {}
+            }
+
+            pub struct Holder {
+                pub needs: NeedsClone,
+                pub plain: TakesCopy,
+            }
+
+            pub struct Item {
+                pub name: String,
+                pub count: usize,
+            }
+
+            pub fn call(mut holder: Holder, mut item: Item) {
+                holder.needs.put(item.name);
+                holder.plain.put(item.count);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("holder . needs . put ((item . name) . clone ())"),
+            "expected clone to follow NeedsClone::put value signature: {output}"
+        );
+        assert!(
+            output.contains("holder . plain . put (item . count)"),
+            "expected TakesCopy::put argument to remain unchanged: {output}"
+        );
+        assert!(
+            !output.contains("holder . plain . put ((item . count) . clone ())"),
+            "expected same-named method not to inherit NeedsClone::put coercion: {output}"
         );
     }
 
