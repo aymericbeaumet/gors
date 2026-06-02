@@ -4915,6 +4915,111 @@ struct ReceiverMethodArgTargets {
     by_unambiguous_method: BTreeMap<String, std::collections::HashSet<usize>>,
 }
 
+#[derive(Clone, Copy)]
+enum CloneValueParamKind {
+    Clone,
+    Vec,
+}
+
+type CloneValueParamTargets = BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>;
+type ReceiverTraitSupertraits = BTreeMap<(String, String), Vec<ReceiverTypeRef>>;
+
+#[derive(Default)]
+struct ReceiverMethodCloneValueTargets {
+    by_receiver: BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>,
+    receiver_keys_by_method: BTreeMap<String, std::collections::HashSet<String>>,
+    by_unambiguous_method: BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>,
+}
+
+impl ReceiverMethodCloneValueTargets {
+    fn is_empty(&self) -> bool {
+        self.by_receiver.is_empty()
+    }
+
+    fn record_method_seen(&mut self, module: &str, self_name: &str, method: &str) {
+        self.receiver_keys_by_method
+            .entry(method.to_string())
+            .or_default()
+            .insert(receiver_method_target_key(module, self_name, method));
+    }
+
+    fn insert_receiver(
+        &mut self,
+        module: &str,
+        self_name: &str,
+        method: &str,
+        kinds: BTreeMap<usize, CloneValueParamKind>,
+    ) {
+        let key = receiver_method_target_key(module, self_name, method);
+        self.record_method_seen(module, self_name, method);
+        self.by_receiver.insert(key, kinds);
+    }
+
+    fn inherit_supertrait_methods(&mut self, supertraits: &ReceiverTraitSupertraits) {
+        loop {
+            let snapshot = self.by_receiver.clone();
+            let methods = self
+                .receiver_keys_by_method
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut changed = false;
+
+            for ((module, self_name), direct_supertraits) in supertraits {
+                for supertrait in direct_supertraits {
+                    let super_module = supertrait.module.as_deref().unwrap_or(module);
+                    for method in &methods {
+                        let super_key =
+                            receiver_method_target_key(super_module, &supertrait.name, method);
+                        let Some(kinds) = snapshot.get(&super_key) else {
+                            continue;
+                        };
+                        let key = receiver_method_target_key(module, self_name, method);
+                        if self.by_receiver.contains_key(&key) {
+                            continue;
+                        }
+                        self.insert_receiver(module, self_name, method, kinds.clone());
+                        changed = true;
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn finalize_unambiguous_names(&mut self) {
+        self.by_unambiguous_method.clear();
+        for (method, receiver_keys) in &self.receiver_keys_by_method {
+            let Some(receiver_key) = receiver_keys.iter().next() else {
+                continue;
+            };
+            if receiver_keys.len() == 1
+                && let Some(kinds) = self.by_receiver.get(receiver_key)
+            {
+                self.by_unambiguous_method
+                    .insert(method.clone(), kinds.clone());
+            }
+        }
+    }
+
+    fn kinds_for_call(
+        &self,
+        current_module: &str,
+        method: &str,
+        receiver_type: Option<&ReceiverTypeRef>,
+    ) -> Option<&BTreeMap<usize, CloneValueParamKind>> {
+        if let Some(receiver_type) = receiver_type {
+            let module = receiver_type.module.as_deref().unwrap_or(current_module);
+            let key = receiver_method_target_key(module, &receiver_type.name, method);
+            return self.by_receiver.get(&key);
+        }
+        self.by_unambiguous_method.get(method)
+    }
+}
+
 impl ReceiverMethodArgTargets {
     fn is_empty(&self) -> bool {
         self.by_receiver.is_empty()
@@ -4928,15 +5033,15 @@ impl ReceiverMethodArgTargets {
             let syn::ImplItem::Fn(method) = impl_item else {
                 continue;
             };
-            self.receiver_keys_by_method
-                .entry(method.sig.ident.to_string())
-                .or_default()
-                .insert(receiver_method_target_key(
-                    module,
-                    &self_name,
-                    &method.sig.ident.to_string(),
-                ));
+            self.record_method_seen(module, &self_name, &method.sig.ident.to_string());
         }
+    }
+
+    fn record_method_seen(&mut self, module: &str, self_name: &str, method: &str) {
+        self.receiver_keys_by_method
+            .entry(method.to_string())
+            .or_default()
+            .insert(receiver_method_target_key(module, self_name, method));
     }
 
     fn insert_receiver(
@@ -4947,10 +5052,7 @@ impl ReceiverMethodArgTargets {
         indices: std::collections::HashSet<usize>,
     ) -> Option<std::collections::HashSet<usize>> {
         let key = receiver_method_target_key(module, self_name, method);
-        self.receiver_keys_by_method
-            .entry(method.to_string())
-            .or_default()
-            .insert(key.clone());
+        self.record_method_seen(module, self_name, method);
         self.by_receiver.insert(key, indices)
     }
 
@@ -5949,21 +6051,18 @@ fn add_phantom_fields_for_file(file: &mut syn::File) {
 
 fn collect_vec_value_param_targets(
     modules: &BTreeMap<String, CompiledModule>,
-) -> BTreeMap<String, std::collections::HashSet<usize>> {
+) -> CloneValueParamTargets {
     let mut targets = BTreeMap::new();
     for module in modules.values() {
         for item in &module.file.items {
             let syn::Item::Fn(item_fn) = item else {
                 continue;
             };
-            let indices = vec_value_param_indices(&item_fn.sig);
-            if indices.is_empty() {
+            let kinds = clone_value_param_kinds(&item_fn.sig);
+            if kinds.is_empty() {
                 continue;
             }
-            targets.insert(
-                format!("{}::{}", module.mod_name, item_fn.sig.ident),
-                indices,
-            );
+            targets.insert(format!("{}::{}", module.mod_name, item_fn.sig.ident), kinds);
         }
     }
     targets
@@ -5971,45 +6070,106 @@ fn collect_vec_value_param_targets(
 
 fn collect_vec_value_method_targets(
     modules: &BTreeMap<String, CompiledModule>,
-) -> ReceiverMethodArgTargets {
-    let mut targets = ReceiverMethodArgTargets::default();
+) -> ReceiverMethodCloneValueTargets {
+    let module_names = module_name_set(modules);
+    let mut targets = ReceiverMethodCloneValueTargets::default();
+    let mut supertraits: ReceiverTraitSupertraits = BTreeMap::new();
     for module in modules.values() {
         for item in &module.file.items {
-            let syn::Item::Impl(item_impl) = item else {
-                continue;
-            };
-            targets.record_methods_seen(&module.mod_name, item_impl);
-            if item_impl.trait_.is_some() {
-                continue;
-            }
-            let Some(self_name) = named_self_type(&item_impl.self_ty) else {
-                continue;
-            };
-            for impl_item in &item_impl.items {
-                let syn::ImplItem::Fn(method) = impl_item else {
-                    continue;
-                };
-                let indices = vec_value_param_indices(&method.sig)
-                    .into_iter()
-                    .filter_map(|index| index.checked_sub(1))
-                    .collect::<std::collections::HashSet<_>>();
-                if indices.is_empty() {
-                    continue;
+            match item {
+                syn::Item::Impl(item_impl) => {
+                    let Some(seen_self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        targets.record_method_seen(
+                            &module.mod_name,
+                            &seen_self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                    }
+                    if item_impl.trait_.is_some() {
+                        continue;
+                    }
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        let kinds = clone_value_param_kinds(&method.sig)
+                            .into_iter()
+                            .filter_map(|(index, kind)| index.checked_sub(1).map(|i| (i, kind)))
+                            .collect::<BTreeMap<_, _>>();
+                        if kinds.is_empty() {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &seen_self_name,
+                            &method.sig.ident.to_string(),
+                            kinds,
+                        );
+                    }
                 }
-                targets.insert_receiver(
-                    &module.mod_name,
-                    &self_name,
-                    &method.sig.ident.to_string(),
-                    indices,
-                );
+                syn::Item::Trait(item_trait) => {
+                    let self_name = item_trait.ident.to_string();
+                    let direct_supertraits = item_trait
+                        .supertraits
+                        .iter()
+                        .filter_map(|bound| {
+                            let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                                return None;
+                            };
+                            let mut receiver_type =
+                                receiver_type_from_path(&trait_bound.path, &module_names)?;
+                            if receiver_type.module.is_none() {
+                                receiver_type.module = Some(module.mod_name.clone());
+                            }
+                            Some(receiver_type)
+                        })
+                        .collect::<Vec<_>>();
+                    if !direct_supertraits.is_empty() {
+                        supertraits.insert(
+                            (module.mod_name.clone(), self_name.clone()),
+                            direct_supertraits,
+                        );
+                    }
+                    for trait_item in &item_trait.items {
+                        let syn::TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        targets.record_method_seen(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                        let kinds = clone_value_param_kinds(&method.sig)
+                            .into_iter()
+                            .filter_map(|(index, kind)| index.checked_sub(1).map(|i| (i, kind)))
+                            .collect::<BTreeMap<_, _>>();
+                        if kinds.is_empty() {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                            kinds,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }
+    targets.inherit_supertrait_methods(&supertraits);
     targets.finalize_unambiguous_names();
     targets
 }
 
-fn vec_value_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+fn clone_value_param_kinds(sig: &syn::Signature) -> BTreeMap<usize, CloneValueParamKind> {
     let clone_type_params: std::collections::HashSet<String> = sig
         .generics
         .params
@@ -6034,32 +6194,33 @@ fn vec_value_param_indices(sig: &syn::Signature) -> std::collections::HashSet<us
             let syn::FnArg::Typed(pat_type) = input else {
                 return None;
             };
-            cloneable_value_param_type(&pat_type.ty, &clone_type_params).then_some(index)
+            cloneable_value_param_kind(&pat_type.ty, &clone_type_params).map(|kind| (index, kind))
         })
         .collect()
 }
 
-fn cloneable_value_param_type(
+fn cloneable_value_param_kind(
     ty: &syn::Type,
     clone_type_params: &std::collections::HashSet<String>,
-) -> bool {
+) -> Option<CloneValueParamKind> {
     if matches!(ty, syn::Type::Reference(_)) {
-        return false;
+        return None;
     }
     if let Some(inner) = vec_type_inner(ty) {
-        return !is_box_dyn_any_type(&inner);
+        return (!is_box_dyn_any_type(&inner)).then_some(CloneValueParamKind::Vec);
     }
     let syn::Type::Path(type_path) = ty else {
-        return false;
+        return None;
     };
     if type_path.qself.is_some() {
-        return false;
+        return None;
     }
     let Some(segment) = type_path.path.segments.last() else {
-        return false;
+        return None;
     };
-    matches!(segment.ident.to_string().as_str(), "String")
-        || clone_type_params.contains(&segment.ident.to_string())
+    (matches!(segment.ident.to_string().as_str(), "String")
+        || clone_type_params.contains(&segment.ident.to_string()))
+    .then_some(CloneValueParamKind::Clone)
 }
 
 fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
@@ -6094,8 +6255,8 @@ struct CloneVecValueCallArgs<'a> {
     item_names: &'a std::collections::HashSet<String>,
     top_level_return_types: &'a ReceiverTypeMap,
     top_level_field_types: &'a ReceiverFieldTypeMap,
-    targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
-    method_targets: &'a ReceiverMethodArgTargets,
+    targets: &'a CloneValueParamTargets,
+    method_targets: &'a ReceiverMethodCloneValueTargets,
     vec_newtypes: &'a std::collections::HashSet<String>,
     local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
     current_self_type: Option<ReceiverTypeRef>,
@@ -6165,19 +6326,19 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
         let Some(key) = call_target_key(&call.func, &self.module_name) else {
             return;
         };
-        let Some(indices) = self.targets.get(&key) else {
+        let Some(kinds) = self.targets.get(&key) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
-            if indices.contains(&index) {
-                normalize_vec_value_arg(arg);
+            if let Some(kind) = kinds.get(&index) {
+                normalize_vec_value_arg(arg, *kind);
             }
         }
     }
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let Some(indices) = self.method_targets.indices_for_call(
+        let Some(kinds) = self.method_targets.kinds_for_call(
             &self.module_name,
             &call.method.to_string(),
             method_receiver_type_from_expr(
@@ -6195,20 +6356,34 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
-            if indices.contains(&index) {
-                normalize_vec_value_arg(arg);
+            if let Some(kind) = kinds.get(&index) {
+                normalize_vec_value_arg(arg, *kind);
             }
         }
     }
 }
 
-fn normalize_vec_value_arg(arg: &mut syn::Expr) {
+fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
     if let syn::Expr::Reference(reference) = arg
         && reference.mutability.is_none()
     {
         *arg = (*reference.expr).clone();
     }
+    if matches!(kind, CloneValueParamKind::Vec)
+        && (is_slice_range_index_expr(arg) || matches!(arg, syn::Expr::Block(_)))
+    {
+        let inner = arg.clone();
+        *arg = syn::parse_quote! { (#inner).to_vec() };
+        return;
+    }
     clone_value_arg(arg);
+}
+
+fn is_slice_range_index_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::Index(index) if matches!(&*index.index, syn::Expr::Range(_))
+    )
 }
 
 fn clone_value_arg(arg: &mut syn::Expr) {
@@ -28196,6 +28371,191 @@ var X int
         assert!(
             !output.contains("holder . plain . put (item . count , (item . count) . clone ())"),
             "expected same-named method not to inherit NeedsClone::put coercion: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_converts_slice_method_args_to_vec() {
+        let main_file: syn::File = rust! {
+            pub struct Sink;
+            impl Sink {
+                pub fn Write(&self, data: Vec<u8>) {}
+            }
+
+            pub struct TakesIndex;
+            impl TakesIndex {
+                pub fn Write(&self, data: u8) {}
+            }
+
+            pub struct Holder {
+                pub sink: Sink,
+                pub other: TakesIndex,
+            }
+
+            pub fn call(mut holder: Holder, mut data: Vec<u8>) {
+                holder.sink.Write(data[1..]);
+                holder.other.Write(data[0]);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("holder . sink . Write ((data [1 ..]) . to_vec ())"),
+            "expected range-index slice argument to materialize Vec for Sink::Write: {output}"
+        );
+        assert!(
+            output.contains("holder . other . Write (data [0])"),
+            "expected same-named non-Vec method argument to remain unchanged: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_converts_trait_method_block_args_to_vec() {
+        let main_file: syn::File = rust! {
+            pub struct buffer(pub Vec<u8>);
+            impl buffer {
+                pub fn to_vec(&self) -> Vec<u8> {
+                    self.0.clone()
+                }
+            }
+
+            pub trait Writer {
+                fn Write(&mut self, data: Vec<u8>);
+            }
+
+            pub fn call(mut w: &mut dyn Writer, mut data: buffer) {
+                w.Write({
+                    let temp = data.clone();
+                    temp
+                });
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("w . Write (({ let temp = data . clone () ; temp }) . to_vec ())"),
+            "expected trait method Vec argument block to materialize Vec: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_uses_supertrait_method_value_args() {
+        let io_file: syn::File = rust! {
+            pub trait Writer {
+                fn Write(&mut self, data: Vec<u8>);
+            }
+        };
+        let hash_file: syn::File = rust! {
+            pub trait Hash: crate::io::Writer {
+                fn Sum(&mut self, data: Vec<u8>) -> Vec<u8>;
+            }
+
+            pub trait Hash32: Hash {
+                fn Sum32(&mut self) -> u32;
+            }
+        };
+        let fnv_file: syn::File = rust! {
+            pub fn New32() -> Box<dyn crate::hash::Hash32> {
+                panic!()
+            }
+        };
+        let main_file: syn::File = rust! {
+            pub fn call() {
+                let mut data = Vec::<u8>::new();
+                let mut h = crate::hash__fnv::New32();
+                h.Write(data);
+                h.Write(data);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "io".to_string(),
+                super::CompiledModule {
+                    mod_name: "io".to_string(),
+                    import_path: "io".to_string(),
+                    file: io_file,
+                    filename: "io.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "hash".to_string(),
+                super::CompiledModule {
+                    mod_name: "hash".to_string(),
+                    import_path: "hash".to_string(),
+                    file: hash_file,
+                    filename: "hash.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "hash__fnv".to_string(),
+                super::CompiledModule {
+                    mod_name: "hash__fnv".to_string(),
+                    import_path: "hash/fnv".to_string(),
+                    file: fnv_file,
+                    filename: "hash__fnv.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        let clone_count = output.matches("h . Write ((data) . clone ())").count();
+        assert_eq!(
+            clone_count, 2,
+            "expected Vec argument clones to follow inherited Writer::Write signature: {output}"
         );
     }
 

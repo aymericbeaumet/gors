@@ -227,11 +227,7 @@ impl VisitMut for CoerceTypes {
             self.has_generic_params.last().copied().unwrap_or(false),
         );
 
-        if mc.method == "Write" {
-            if let Some(first) = mc.args.first_mut() {
-                coerce_write_arg(first);
-            }
-        } else if mc.method == "printArg" {
+        if mc.method == "printArg" {
             if let Some(first) = mc.args.first_mut() {
                 coerce_print_arg(first);
             }
@@ -1518,14 +1514,6 @@ fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
             _ => return expr,
         }
     }
-}
-
-fn coerce_write_arg(expr: &mut syn::Expr) {
-    let inner = match expr {
-        syn::Expr::Reference(reference) => (*reference.expr).clone(),
-        _ => expr.clone(),
-    };
-    *expr = syn::parse_quote! { (#inner).to_vec() };
 }
 
 fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
