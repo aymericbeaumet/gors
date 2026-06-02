@@ -4908,7 +4908,292 @@ fn inject_post_prune_stdlib_helpers(
     prune_unreferenced_stdlib_modules(modules, &preserved);
 }
 
+#[derive(Default)]
+struct ReceiverMethodArgTargets {
+    by_receiver: BTreeMap<String, std::collections::HashSet<usize>>,
+    receiver_keys_by_method: BTreeMap<String, std::collections::HashSet<String>>,
+    by_unambiguous_method: BTreeMap<String, std::collections::HashSet<usize>>,
+}
+
+impl ReceiverMethodArgTargets {
+    fn is_empty(&self) -> bool {
+        self.by_receiver.is_empty()
+    }
+
+    fn record_methods_seen(&mut self, module: &str, item_impl: &syn::ItemImpl) {
+        let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+            return;
+        };
+        for impl_item in &item_impl.items {
+            let syn::ImplItem::Fn(method) = impl_item else {
+                continue;
+            };
+            self.receiver_keys_by_method
+                .entry(method.sig.ident.to_string())
+                .or_default()
+                .insert(receiver_method_target_key(
+                    module,
+                    &self_name,
+                    &method.sig.ident.to_string(),
+                ));
+        }
+    }
+
+    fn insert_receiver(
+        &mut self,
+        module: &str,
+        self_name: &str,
+        method: &str,
+        indices: std::collections::HashSet<usize>,
+    ) -> Option<std::collections::HashSet<usize>> {
+        let key = receiver_method_target_key(module, self_name, method);
+        self.receiver_keys_by_method
+            .entry(method.to_string())
+            .or_default()
+            .insert(key.clone());
+        self.by_receiver.insert(key, indices)
+    }
+
+    fn finalize_unambiguous_names(&mut self) {
+        self.by_unambiguous_method.clear();
+        for (method, receiver_keys) in &self.receiver_keys_by_method {
+            let Some(receiver_key) = receiver_keys.iter().next() else {
+                continue;
+            };
+            if receiver_keys.len() == 1
+                && let Some(indices) = self.by_receiver.get(receiver_key)
+            {
+                self.by_unambiguous_method
+                    .insert(method.clone(), indices.clone());
+            }
+        }
+    }
+
+    fn indices_for_call(
+        &self,
+        current_module: &str,
+        method: &str,
+        receiver_type: Option<&ReceiverTypeRef>,
+    ) -> Option<&std::collections::HashSet<usize>> {
+        if let Some(receiver_type) = receiver_type {
+            let module = receiver_type.module.as_deref().unwrap_or(current_module);
+            let key = receiver_method_target_key(module, &receiver_type.name, method);
+            return self.by_receiver.get(&key);
+        }
+        self.by_unambiguous_method.get(method)
+    }
+}
+
+fn receiver_method_target_key(module: &str, self_name: &str, method: &str) -> String {
+    format!("{module}::{self_name}::{method}")
+}
+
+fn module_name_set(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> std::collections::HashSet<String> {
+    modules
+        .values()
+        .map(|module| module.mod_name.clone())
+        .collect()
+}
+
+fn module_item_name_set(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> std::collections::HashSet<String> {
+    modules
+        .values()
+        .flat_map(|module| module.file.items.iter().filter_map(item_name))
+        .collect()
+}
+
+fn merged_top_level_return_types(
+    modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
+) -> ReceiverTypeMap {
+    modules
+        .values()
+        .flat_map(|module| top_level_item_return_types(&module.file.items, module_names))
+        .collect()
+}
+
+fn record_fn_arg_receiver_type(
+    arg: &syn::FnArg,
+    module_names: &std::collections::HashSet<String>,
+    scopes: &mut [BTreeMap<String, ReceiverTypeRef>],
+) {
+    let syn::FnArg::Typed(pat_type) = arg else {
+        return;
+    };
+    let Some(name) = rust_pat_ident_name(&pat_type.pat) else {
+        return;
+    };
+    let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names) else {
+        return;
+    };
+    record_local_receiver_type(name, receiver_type, scopes);
+}
+
+fn local_receiver_type_binding(
+    local: &syn::Local,
+    current_module: &str,
+    module_names: &std::collections::HashSet<String>,
+    item_names: &std::collections::HashSet<String>,
+    top_level_return_types: &ReceiverTypeMap,
+    scopes: &[BTreeMap<String, ReceiverTypeRef>],
+    current_self_type: Option<&ReceiverTypeRef>,
+) -> Option<(String, ReceiverTypeRef)> {
+    let name = rust_pat_ident_name(&local.pat)?;
+    if let syn::Pat::Type(pat_type) = &local.pat
+        && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names)
+    {
+        return Some((name, receiver_type));
+    }
+    let init = local.init.as_ref()?;
+    let receiver_type = method_receiver_type_from_expr(
+        &init.expr,
+        current_module,
+        module_names,
+        item_names,
+        top_level_return_types,
+        scopes,
+        current_self_type,
+    )
+    .or_else(|| {
+        receiver_type_from_init_expr(&init.expr, module_names, item_names, top_level_return_types)
+    })?;
+    Some((name, receiver_type))
+}
+
+fn record_local_receiver_type(
+    name: String,
+    receiver_type: ReceiverTypeRef,
+    scopes: &mut [BTreeMap<String, ReceiverTypeRef>],
+) {
+    if let Some(scope) = scopes.last_mut() {
+        scope.insert(name, receiver_type);
+    }
+}
+
+fn method_receiver_type_from_expr(
+    expr: &syn::Expr,
+    current_module: &str,
+    module_names: &std::collections::HashSet<String>,
+    item_names: &std::collections::HashSet<String>,
+    top_level_return_types: &ReceiverTypeMap,
+    scopes: &[BTreeMap<String, ReceiverTypeRef>],
+    current_self_type: Option<&ReceiverTypeRef>,
+) -> Option<ReceiverTypeRef> {
+    match expr {
+        syn::Expr::Call(call) => {
+            receiver_type_from_init_expr(expr, module_names, item_names, top_level_return_types)
+                .or_else(|| {
+                    if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
+                        call.args.first().and_then(|arg| {
+                            method_receiver_type_from_expr(
+                                arg,
+                                current_module,
+                                module_names,
+                                item_names,
+                                top_level_return_types,
+                                scopes,
+                                current_self_type,
+                            )
+                        })
+                    } else {
+                        None
+                    }
+                })
+        }
+        syn::Expr::Cast(cast) => method_receiver_type_from_expr(
+            &cast.expr,
+            current_module,
+            module_names,
+            item_names,
+            top_level_return_types,
+            scopes,
+            current_self_type,
+        ),
+        syn::Expr::Group(group) => method_receiver_type_from_expr(
+            &group.expr,
+            current_module,
+            module_names,
+            item_names,
+            top_level_return_types,
+            scopes,
+            current_self_type,
+        ),
+        syn::Expr::MethodCall(method)
+            if matches!(
+                method.method.to_string().as_str(),
+                "clone" | "lock" | "unwrap"
+            ) =>
+        {
+            method_receiver_type_from_expr(
+                &method.receiver,
+                current_module,
+                module_names,
+                item_names,
+                top_level_return_types,
+                scopes,
+                current_self_type,
+            )
+        }
+        syn::Expr::Paren(paren) => method_receiver_type_from_expr(
+            &paren.expr,
+            current_module,
+            module_names,
+            item_names,
+            top_level_return_types,
+            scopes,
+            current_self_type,
+        ),
+        syn::Expr::Path(path)
+            if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
+        {
+            let name = path.path.segments.first()?.ident.to_string();
+            if name == "self" {
+                return current_self_type.cloned();
+            }
+            scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(&name).cloned())
+        }
+        syn::Expr::Reference(reference) => method_receiver_type_from_expr(
+            &reference.expr,
+            current_module,
+            module_names,
+            item_names,
+            top_level_return_types,
+            scopes,
+            current_self_type,
+        ),
+        syn::Expr::Struct(expr_struct) => receiver_type_from_path(&expr_struct.path, module_names),
+        syn::Expr::Unary(unary) => method_receiver_type_from_expr(
+            &unary.expr,
+            current_module,
+            module_names,
+            item_names,
+            top_level_return_types,
+            scopes,
+            current_self_type,
+        ),
+        _ => None,
+    }
+}
+
+fn rust_pat_ident_name(pat: &syn::Pat) -> Option<String> {
+    match pat {
+        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+        syn::Pat::Type(pat_type) => rust_pat_ident_name(&pat_type.pat),
+        _ => None,
+    }
+}
+
 fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
+    let module_names = module_name_set(modules);
+    let item_names = module_item_name_set(modules);
+    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
     let mut targets = collect_mut_ref_vec_targets(modules);
     let mut method_targets = collect_mut_ref_vec_method_targets(modules);
 
@@ -4918,8 +5203,13 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
                 syn::visit_mut::VisitMut::visit_file_mut(
                     &mut BorrowMutatedVecCallArgs {
                         module_name: module.mod_name.clone(),
+                        module_names: &module_names,
+                        item_names: &item_names,
+                        top_level_return_types: &top_level_return_types,
                         targets: &targets,
                         method_targets: &method_targets,
+                        local_types: vec![BTreeMap::new()],
+                        current_self_type: None,
                     },
                     &mut module.file,
                 );
@@ -4972,14 +5262,26 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
                         .collect();
                     rewrite_vec_params_as_mut_refs(&mut method.sig, &params);
                     reborrow_mutated_vec_params(&mut method.block, &params);
+                    let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
                     if method_targets
-                        .insert(method.sig.ident.to_string(), indices)
+                        .insert_receiver(
+                            &module_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                            indices,
+                        )
                         .is_none()
                     {
                         changed = true;
                     }
                 }
             }
+        }
+
+        if changed {
+            method_targets.finalize_unambiguous_names();
         }
 
         if !changed {
@@ -5012,16 +5314,20 @@ fn collect_mut_ref_vec_targets(
 
 fn collect_mut_ref_vec_method_targets(
     modules: &BTreeMap<String, CompiledModule>,
-) -> BTreeMap<String, std::collections::HashSet<usize>> {
-    let mut targets = BTreeMap::new();
+) -> ReceiverMethodArgTargets {
+    let mut targets = ReceiverMethodArgTargets::default();
     for module in modules.values() {
         for item in &module.file.items {
             let syn::Item::Impl(item_impl) = item else {
                 continue;
             };
+            targets.record_methods_seen(&module.mod_name, item_impl);
             if item_impl.trait_.is_some() {
                 continue;
             }
+            let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                continue;
+            };
             for impl_item in &item_impl.items {
                 let syn::ImplItem::Fn(method) = impl_item else {
                     continue;
@@ -5033,10 +5339,16 @@ fn collect_mut_ref_vec_method_targets(
                 if indices.is_empty() {
                     continue;
                 }
-                targets.insert(method.sig.ident.to_string(), indices);
+                targets.insert_receiver(
+                    &module.mod_name,
+                    &self_name,
+                    &method.sig.ident.to_string(),
+                    indices,
+                );
             }
         }
     }
+    targets.finalize_unambiguous_names();
     targets
 }
 
@@ -5277,11 +5589,64 @@ fn reborrow_mutated_vec_params(block: &mut syn::Block, params: &[(usize, syn::Id
 
 struct BorrowMutatedVecCallArgs<'a> {
     module_name: String,
+    module_names: &'a std::collections::HashSet<String>,
+    item_names: &'a std::collections::HashSet<String>,
+    top_level_return_types: &'a ReceiverTypeMap,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
-    method_targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    method_targets: &'a ReceiverMethodArgTargets,
+    local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
+    current_self_type: Option<ReceiverTypeRef>,
 }
 
 impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
+    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        let previous_self_type = self.current_self_type.clone();
+        self.current_self_type = named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef {
+            module: Some(self.module_name.clone()),
+            name,
+        });
+        syn::visit_mut::visit_item_impl_mut(self, item_impl);
+        self.current_self_type = previous_self_type;
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_impl_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_block_mut(self, block);
+        self.local_types.pop();
+    }
+
+    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
+        record_fn_arg_receiver_type(arg, self.module_names, &mut self.local_types);
+        syn::visit_mut::visit_fn_arg_mut(self, arg);
+    }
+
+    fn visit_local_mut(&mut self, local: &mut syn::Local) {
+        syn::visit_mut::visit_local_mut(self, local);
+        if let Some((name, receiver_type)) = local_receiver_type_binding(
+            local,
+            &self.module_name,
+            self.module_names,
+            self.item_names,
+            self.top_level_return_types,
+            &self.local_types,
+            self.current_self_type.as_ref(),
+        ) {
+            record_local_receiver_type(name, receiver_type, &mut self.local_types);
+        }
+    }
+
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         syn::visit_mut::visit_expr_call_mut(self, call);
         let Some(key) = call_target_key(&call.func, &self.module_name) else {
@@ -5299,7 +5664,20 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let Some(indices) = self.method_targets.get(&call.method.to_string()) else {
+        let Some(indices) = self.method_targets.indices_for_call(
+            &self.module_name,
+            &call.method.to_string(),
+            method_receiver_type_from_expr(
+                &call.receiver,
+                &self.module_name,
+                self.module_names,
+                self.item_names,
+                self.top_level_return_types,
+                &self.local_types,
+                self.current_self_type.as_ref(),
+            )
+            .as_ref(),
+        ) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
@@ -5677,6 +6055,9 @@ fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
 }
 
 fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
+    let module_names = module_name_set(modules);
+    let item_names = module_item_name_set(modules);
+    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
     let (targets, method_targets) = collect_mut_ref_targets(modules);
     if targets.is_empty() && method_targets.is_empty() {
         return;
@@ -5685,8 +6066,13 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
         syn::visit_mut::VisitMut::visit_file_mut(
             &mut BorrowMutRefCallArgs {
                 module_name: module.mod_name.clone(),
+                module_names: &module_names,
+                item_names: &item_names,
+                top_level_return_types: &top_level_return_types,
                 targets: &targets,
                 method_targets: &method_targets,
+                local_types: vec![BTreeMap::new()],
+                current_self_type: None,
             },
             &mut module.file,
         );
@@ -5697,10 +6083,10 @@ fn collect_mut_ref_targets(
     modules: &BTreeMap<String, CompiledModule>,
 ) -> (
     BTreeMap<String, std::collections::HashSet<usize>>,
-    BTreeMap<String, std::collections::HashSet<usize>>,
+    ReceiverMethodArgTargets,
 ) {
     let mut targets = BTreeMap::new();
-    let mut method_targets = BTreeMap::new();
+    let mut method_targets = ReceiverMethodArgTargets::default();
     for module in modules.values() {
         for item in &module.file.items {
             match item {
@@ -5715,9 +6101,13 @@ fn collect_mut_ref_targets(
                     );
                 }
                 syn::Item::Impl(item_impl) => {
+                    method_targets.record_methods_seen(&module.mod_name, item_impl);
                     if item_impl.trait_.is_some() {
                         continue;
                     }
+                    let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
                     for item in &item_impl.items {
                         let syn::ImplItem::Fn(item_fn) = item else {
                             continue;
@@ -5729,13 +6119,19 @@ fn collect_mut_ref_targets(
                         if indices.is_empty() {
                             continue;
                         }
-                        method_targets.insert(item_fn.sig.ident.to_string(), indices);
+                        method_targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &item_fn.sig.ident.to_string(),
+                            indices,
+                        );
                     }
                 }
                 _ => {}
             }
         }
     }
+    method_targets.finalize_unambiguous_names();
     (targets, method_targets)
 }
 
@@ -5755,11 +6151,64 @@ fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usiz
 
 struct BorrowMutRefCallArgs<'a> {
     module_name: String,
+    module_names: &'a std::collections::HashSet<String>,
+    item_names: &'a std::collections::HashSet<String>,
+    top_level_return_types: &'a ReceiverTypeMap,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
-    method_targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    method_targets: &'a ReceiverMethodArgTargets,
+    local_types: Vec<BTreeMap<String, ReceiverTypeRef>>,
+    current_self_type: Option<ReceiverTypeRef>,
 }
 
 impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
+    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        let previous_self_type = self.current_self_type.clone();
+        self.current_self_type = named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef {
+            module: Some(self.module_name.clone()),
+            name,
+        });
+        syn::visit_mut::visit_item_impl_mut(self, item_impl);
+        self.current_self_type = previous_self_type;
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_impl_item_fn_mut(self, func);
+        self.local_types.pop();
+    }
+
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        self.local_types.push(BTreeMap::new());
+        syn::visit_mut::visit_block_mut(self, block);
+        self.local_types.pop();
+    }
+
+    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
+        record_fn_arg_receiver_type(arg, self.module_names, &mut self.local_types);
+        syn::visit_mut::visit_fn_arg_mut(self, arg);
+    }
+
+    fn visit_local_mut(&mut self, local: &mut syn::Local) {
+        syn::visit_mut::visit_local_mut(self, local);
+        if let Some((name, receiver_type)) = local_receiver_type_binding(
+            local,
+            &self.module_name,
+            self.module_names,
+            self.item_names,
+            self.top_level_return_types,
+            &self.local_types,
+            self.current_self_type.as_ref(),
+        ) {
+            record_local_receiver_type(name, receiver_type, &mut self.local_types);
+        }
+    }
+
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         syn::visit_mut::visit_expr_call_mut(self, call);
         let Some(key) = call_target_key(&call.func, &self.module_name) else {
@@ -5777,7 +6226,20 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let Some(indices) = self.method_targets.get(&call.method.to_string()) else {
+        let Some(indices) = self.method_targets.indices_for_call(
+            &self.module_name,
+            &call.method.to_string(),
+            method_receiver_type_from_expr(
+                &call.receiver,
+                &self.module_name,
+                self.module_names,
+                self.item_names,
+                self.top_level_return_types,
+                &self.local_types,
+                self.current_self_type.as_ref(),
+            )
+            .as_ref(),
+        ) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
@@ -27503,6 +27965,108 @@ var X int
         assert!(
             output.contains("crate :: helper :: sort (& mut values)"),
             "expected mutable borrow to follow callee signature: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_keys_method_args_by_receiver_type() {
+        let main_file: syn::File = rust! {
+            pub struct NeedsMut;
+            impl NeedsMut {
+                pub fn fill(&self, mut values: &mut [String]) {}
+            }
+
+            pub struct TakesValue;
+            impl TakesValue {
+                pub fn fill(&self, mut values: Vec<String>) {}
+            }
+
+            pub fn call(mut needs: NeedsMut, plain: TakesValue, mut values: Vec<String>, other: Vec<String>) {
+                needs.fill(values);
+                plain.fill(other);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("needs . fill (& mut values)"),
+            "expected receiver-specific mutable borrow for NeedsMut::fill: {output}"
+        );
+        assert!(
+            output.contains("plain . fill (other)"),
+            "expected TakesValue::fill argument to remain by value: {output}"
+        );
+        assert!(
+            !output.contains("plain . fill (& mut other)"),
+            "expected same-named value method not to inherit NeedsMut::fill coercion: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mutated_vec_params_keys_method_args_by_receiver_type() {
+        let main_file: syn::File = rust! {
+            pub struct Mutates;
+            impl Mutates {
+                pub fn fill(&self, mut values: Vec<String>) {
+                    values[0] = String::new();
+                }
+            }
+
+            pub struct TakesValue;
+            impl TakesValue {
+                pub fn fill(&self, mut values: Vec<String>) {
+                    let _ = values;
+                }
+            }
+
+            pub fn call(mut mutates: Mutates, plain: TakesValue, mut values: Vec<String>, other: Vec<String>) {
+                mutates.fill(values);
+                plain.fill(other);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mutated_vec_params(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("mutates . fill (& mut * values)"),
+            "expected receiver-specific mutable slice borrow for Mutates::fill: {output}"
+        );
+        assert!(
+            output.contains("plain . fill (other)"),
+            "expected TakesValue::fill argument to remain by value: {output}"
+        );
+        assert!(
+            !output.contains("plain . fill (& mut * other)"),
+            "expected same-named value method not to inherit Mutates::fill coercion: {output}"
         );
     }
 
