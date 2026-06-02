@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 153,
-    "unsupportedCaseCount": 12265,
+    "passingCaseCount": 156,
+    "unsupportedCaseCount": 12262,
     "fixtureCount": 79
   },
   "groups": [
@@ -4750,13 +4750,15 @@
       "id": "crypto/des",
       "title": "crypto/des",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "crypto/des"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 5,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 5,
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 2,
         "fixtureCount": 0
       },
       "cases": [
@@ -4765,8 +4767,10 @@
           "title": "BlockSize",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/des"
+          ],
           "reason": ""
         },
         {
@@ -4774,8 +4778,10 @@
           "title": "KeySizeError",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/des"
+          ],
           "reason": ""
         },
         {
@@ -4783,8 +4789,10 @@
           "title": "KeySizeError.Error",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/des"
+          ],
           "reason": ""
         },
         {
