@@ -364,15 +364,6 @@ impl VisitMut for CoerceTypes {
             return;
         }
 
-        if is_path_call(&call.func, &["crate", "reflect", "ValueOf"])
-            || is_path_call(&call.func, &["reflect", "ValueOf"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                coerce_value_of_arg(first);
-            }
-            return;
-        }
-
         if is_path_call(&call.func, &["intFromArg"]) {
             if let Some(first) = call.args.first_mut() {
                 replace_path_with_take(first, "a");
@@ -1569,31 +1560,6 @@ fn coerce_print_arg(expr: &mut syn::Expr) {
             let inner = expr.clone();
             *expr = syn::parse_quote! { Box::new(#inner) as Box<dyn std::any::Any> };
         }
-        _ => {}
-    }
-}
-
-fn coerce_value_of_arg(expr: &mut syn::Expr) {
-    match expr {
-        syn::Expr::Index(_) => {
-            let inner = expr.clone();
-            *expr = syn::parse_quote! {
-                std::mem::replace(&mut #inner, Box::new(()) as Box<dyn std::any::Any>)
-            };
-        }
-        syn::Expr::Path(path)
-            if path.path.segments.len() == 1
-                && path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|seg| seg.ident == "arg") =>
-        {
-            *expr = syn::parse_quote! {
-                std::mem::replace(&mut arg, Box::new(()) as Box<dyn std::any::Any>)
-            };
-        }
-        syn::Expr::Field(_) => clone_field_or_path(expr),
         _ => {}
     }
 }
