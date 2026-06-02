@@ -11580,6 +11580,9 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let is_unsafe_pointer_arg = expr_contains_unsafe_pointer_conversion(&raw_arg);
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let arg_go_type = typeinfer::GoType::infer_expr(&raw_arg, &env);
+    let source_is_owning_pointer_cell = is_owning_pointer_cell_expr_ref(&raw_arg);
+    let fixed_array_pointer_target =
+        fixed_array_pointer_conversion_target(&target_fun, &arg_go_type, &env);
 
     if matches!(&target_fun, ast::Expr::SelectorExpr(sel) if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") && sel.sel.name == "Pointer")
     {
@@ -11627,6 +11630,16 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
         return syn::parse_quote! { ((#inner_ty::from(#arg)) as #target_ty) };
     }
     if let Some(inner_ty) = arc_mutex_inner_type(&target_ty) {
+        if let Some(array_target_ty) = fixed_array_pointer_target {
+            if source_is_owning_pointer_cell {
+                return syn::parse_quote! {
+                    std::sync::Arc::new(std::sync::Mutex::new(#array_target_ty((#arg).lock().unwrap().0)))
+                };
+            }
+            return syn::parse_quote! {
+                std::sync::Arc::new(std::sync::Mutex::new(#array_target_ty((#arg).0)))
+            };
+        }
         return syn::parse_quote! {
             std::sync::Arc::new(std::sync::Mutex::new((#arg) as #inner_ty))
         };
@@ -11640,6 +11653,41 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     } else {
         syn::parse_quote! { ((#arg) as #target_ty) }
     }
+}
+
+fn fixed_array_pointer_conversion_target(
+    target_fun: &ast::Expr,
+    arg_go_type: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Type> {
+    let target_inner = match target_fun {
+        ast::Expr::ParenExpr(paren) => {
+            return fixed_array_pointer_conversion_target(&paren.x, arg_go_type, env);
+        }
+        ast::Expr::StarExpr(star) => star.x.as_ref(),
+        _ => return None,
+    };
+    if type_expr_denotes_declared_alias(target_inner) {
+        return None;
+    }
+    let target_name = type_env_name_from_type_expr(target_inner)?;
+    let target_kind = env.get_type_kind(&target_name)?;
+    let typeinfer::TypeKind::Alias(target_alias) = target_kind else {
+        return None;
+    };
+    let typeinfer::GoType::Array(target_elem) = env.resolve_alias(target_alias) else {
+        return None;
+    };
+    let typeinfer::GoType::Pointer(source_inner) = env.resolve_alias(arg_go_type) else {
+        return None;
+    };
+    let typeinfer::GoType::Array(source_elem) = env.resolve_alias(&source_inner) else {
+        return None;
+    };
+    if target_elem != source_elem {
+        return None;
+    }
+    Some(type_from_expr_ref(target_inner))
 }
 
 fn syn_expr_is_self(expr: &syn::Expr) -> bool {
@@ -27792,6 +27840,38 @@ func main() {
         assert!(
             !output.contains("block ([])"),
             "expected empty named array literal not to emit an empty array: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_fixed_array_pointer_conversion_without_rust_cast() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 512
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("std :: sync :: Arc :: new (std :: sync :: Mutex :: new (header"),
+            "expected pointer conversion to construct target newtype: {output}"
+        );
+        assert!(
+            !output.contains("as header"),
+            "expected fixed array pointer conversion not to emit a Rust cast: {output}"
         );
     }
 
