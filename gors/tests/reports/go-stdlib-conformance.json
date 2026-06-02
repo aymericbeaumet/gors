@@ -6470,7 +6470,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: FetchModule is internal test-helper code depending on external module downloads and test harness behavior, not generated-program stdout coverage."
         },
         {
           "id": "crypto/internal/cryptotest::MakeAEAD",
@@ -6479,7 +6479,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MakeAEAD is an internal test-helper function type for cipher.AEAD factories; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/cryptotest::MakeBlock",
@@ -6488,7 +6488,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MakeBlock is an internal test-helper function type for cipher.Block factories; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/cryptotest::MakeBlockMode",
@@ -6497,7 +6497,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MakeBlockMode is an internal test-helper function type for cipher.BlockMode factories; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/cryptotest::MakeHash",
@@ -6506,7 +6506,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MakeHash is an internal test-helper function type for hash.Hash factories; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/cryptotest::MakeStream",
@@ -6515,7 +6515,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MakeStream is an internal test-helper function type for cipher.Stream factories; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/cryptotest::MustSupportFIPS140",
@@ -6524,7 +6524,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: MustSupportFIPS140 depends on testing.T, FIPS build configuration, and skip/fail test-harness behavior outside stdout fixtures."
         },
         {
           "id": "crypto/internal/cryptotest::NoExtraMethods",
@@ -6533,7 +6533,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NoExtraMethods depends on reflect-based method-set inspection over test values and testing.T failure behavior."
         },
         {
           "id": "crypto/internal/cryptotest::SkipTestAllocations",
@@ -6542,7 +6542,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SkipTestAllocations depends on testing allocation measurement and skip behavior, not generated-program stdout semantics."
         },
         {
           "id": "crypto/internal/cryptotest::TestAEAD",
@@ -6551,7 +6551,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestAEAD depends on testing.T subtests, cipher.AEAD interface factories, randomized byte slices, and panic/error assertions."
         },
         {
           "id": "crypto/internal/cryptotest::TestAllImplementations",
@@ -6560,7 +6560,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestAllImplementations depends on testing.T subtests, FIPS enforcement toggles, and callback execution over multiple implementations."
         },
         {
           "id": "crypto/internal/cryptotest::TestBlock",
@@ -6569,7 +6569,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestBlock depends on testing.T subtests, cipher.Block factory callbacks, byte-slice mutation checks, and panic assertions."
         },
         {
           "id": "crypto/internal/cryptotest::TestBlockMode",
@@ -6578,7 +6578,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestBlockMode depends on testing.T subtests, cipher.BlockMode factories, byte-slice mutation checks, and panic assertions."
         },
         {
           "id": "crypto/internal/cryptotest::TestHash",
@@ -6587,7 +6587,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestHash depends on testing.T subtests, hash.Hash interface factories, binary marshaling checks, and allocation assertions."
         },
         {
           "id": "crypto/internal/cryptotest::TestStream",
@@ -6596,7 +6596,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestStream depends on testing.T subtests, cipher.Stream factories, XORKeyStream mutation checks, and panic assertions."
         },
         {
           "id": "crypto/internal/cryptotest::TestStreamFromBlock",
@@ -6605,7 +6605,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestStreamFromBlock depends on testing.T subtests, cipher.Block-backed stream factories, byte-slice mutation checks, and panic assertions."
         }
       ]
     },
@@ -6630,7 +6630,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Depleted depends on callback function values that fill entropy buffers plus internal entropy module health-test state."
         }
       ]
     },
@@ -6655,7 +6655,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: AdaptiveProportionTest depends on entropy sample windows, statistical error thresholds, and large byte-slice scans inside an internal package."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::RepetitionCountTest",
@@ -6664,7 +6664,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RepetitionCountTest depends on entropy sample runs, statistical error thresholds, and byte-slice scans inside an internal package."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::SHA384",
@@ -6673,7 +6673,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SHA384 depends on internal entropy hashing over large scratch buffers and FIPS module entropy source behavior."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::Samples",
@@ -6682,7 +6682,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Samples depends on large scratch-buffer mutation, entropy source state, and statistical health tests inside an internal package."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::ScratchBuffer",
@@ -6691,7 +6691,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ScratchBuffer is a large internal array type used for entropy sampling memory-touch behavior; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::Seed",
@@ -6700,7 +6700,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Seed depends on large scratch-buffer mutation, entropy source sampling, SHA-384 hashing, and error propagation from health tests."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::TestingOnlySHA384",
@@ -6709,7 +6709,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: TestingOnlySHA384 is internal test hook coverage for entropy hashing and should be exercised through package tests, not stdout fixtures."
         },
         {
           "id": "crypto/internal/entropy/v1.0.0::Version",
@@ -6718,7 +6718,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Version is internal entropy module metadata; direct fixture coverage is blocked by Go internal import visibility."
         }
       ]
     },
@@ -6743,7 +6743,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CAST depends on FIPS conditional algorithm self-test state and service-indicator accounting inside an internal package."
         },
         {
           "id": "crypto/internal/fips140::Enabled",
@@ -6752,7 +6752,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Enabled is internal FIPS runtime state initialized from GODEBUG/build settings; direct fixture coverage is blocked by Go internal import visibility."
         },
         {
           "id": "crypto/internal/fips140::Name",
@@ -6761,7 +6761,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Name depends on internal FIPS module metadata selected by build settings and package initialization."
         },
         {
           "id": "crypto/internal/fips140::PCT",
@@ -6770,7 +6770,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PCT depends on FIPS pairwise-consistency test state and service-indicator accounting inside an internal package."
         },
         {
           "id": "crypto/internal/fips140::RecordApproved",
@@ -6779,7 +6779,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RecordApproved depends on internal service-indicator state mutation and FIPS runtime accounting."
         },
         {
           "id": "crypto/internal/fips140::RecordNonApproved",
@@ -6788,7 +6788,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: RecordNonApproved depends on internal service-indicator state mutation and FIPS runtime accounting."
         },
         {
           "id": "crypto/internal/fips140::ResetServiceIndicator",
@@ -6797,7 +6797,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ResetServiceIndicator depends on internal mutable service-indicator state and FIPS debug accounting."
         },
         {
           "id": "crypto/internal/fips140::ServiceIndicator",
@@ -6806,7 +6806,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: ServiceIndicator depends on reading internal mutable service-indicator state after approved/non-approved operation recording."
         },
         {
           "id": "crypto/internal/fips140::Supported",
@@ -6815,7 +6815,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Supported depends on FIPS build/runtime configuration, GOFIPS metadata, and internal error construction."
         },
         {
           "id": "crypto/internal/fips140::Version",
@@ -6824,7 +6824,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Version depends on internal FIPS module version metadata selected by build settings."
         }
       ]
     },
