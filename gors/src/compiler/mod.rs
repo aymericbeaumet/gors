@@ -13832,6 +13832,12 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
     {
         return bytes;
     }
+    if kind == "[]byte" && is_nil_expr(&raw_arg) {
+        return syn::parse_quote! { Vec::<u8>::new() };
+    }
+    if kind == "[]rune" && is_nil_expr(&raw_arg) {
+        return syn::parse_quote! { Vec::<i32>::new() };
+    }
     let arg: syn::Expr = raw_arg.into();
     match kind {
         "string" if is_int_arg || is_numeric_var => {
@@ -30455,6 +30461,42 @@ Done:
             "{main_rs}"
         );
         assert!(!main_rs.contains("let mut b = Default::default();"));
+    }
+
+    #[test]
+    fn compile_program_multi_converts_nil_to_empty_byte_and_rune_slices() {
+        let go_source = r#"package main
+
+func main() {
+	b := []byte(nil)
+	r := []rune(nil)
+	println(len(b), len(r))
+}
+"#;
+        let ast = parse_file("main.go", go_source).unwrap();
+        let program = crate::parser::ParsedProgram {
+            main_package: crate::parser::ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast,
+                files: vec![("main.go".to_string(), go_source.to_string())],
+            },
+            imports: vec![],
+            stdlib_imports: vec![],
+        };
+        let compiled = super::compile_program_multi(program).unwrap();
+        let output = printer::generate_multi(compiled).unwrap();
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("let mut b = Vec::<u8>::new();"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("let mut r = Vec::<i32>::new();"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("(None).as_bytes()"), "{main_rs}");
     }
 
     #[test]

@@ -8,12 +8,16 @@ import (
 func main() {
 	fmt.Println("== bytes/clone ==")
 	case_bytes_clone()
+	fmt.Println("== bytes/constants_errors ==")
+	case_bytes_constants_errors()
 	fmt.Println("== bytes/compare ==")
 	case_bytes_compare()
 	fmt.Println("== bytes/contains ==")
 	case_bytes_contains()
 	fmt.Println("== bytes/contains_any ==")
 	case_bytes_contains_any()
+	fmt.Println("== bytes/contains_func ==")
+	case_bytes_contains_func()
 	fmt.Println("== bytes/contains_rune ==")
 	case_bytes_contains_rune()
 	fmt.Println("== bytes/count ==")
@@ -28,6 +32,10 @@ func main() {
 	case_bytes_equal()
 	fmt.Println("== bytes/equal_fold ==")
 	case_bytes_equal_fold()
+	fmt.Println("== bytes/fields ==")
+	case_bytes_fields()
+	fmt.Println("== bytes/fields_func ==")
+	case_bytes_fields_func()
 	fmt.Println("== bytes/has_prefix ==")
 	case_bytes_has_prefix()
 	fmt.Println("== bytes/has_suffix ==")
@@ -38,16 +46,28 @@ func main() {
 	case_bytes_index_any()
 	fmt.Println("== bytes/index_byte ==")
 	case_bytes_index_byte()
+	fmt.Println("== bytes/index_func ==")
+	case_bytes_index_func()
 	fmt.Println("== bytes/index_rune ==")
 	case_bytes_index_rune()
+	fmt.Println("== bytes/join ==")
+	case_bytes_join()
 	fmt.Println("== bytes/last_index ==")
 	case_bytes_last_index()
 	fmt.Println("== bytes/last_index_any ==")
 	case_bytes_last_index_any()
 	fmt.Println("== bytes/last_index_byte ==")
 	case_bytes_last_index_byte()
+	fmt.Println("== bytes/last_index_func ==")
+	case_bytes_last_index_func()
+	fmt.Println("== bytes/map ==")
+	case_bytes_map()
 	fmt.Println("== bytes/runes ==")
 	case_bytes_runes()
+	fmt.Println("== bytes/replace ==")
+	case_bytes_replace()
+	fmt.Println("== bytes/replace_all ==")
+	case_bytes_replace_all()
 	fmt.Println("== bytes/split ==")
 	case_bytes_split()
 	fmt.Println("== bytes/split_after ==")
@@ -56,10 +76,30 @@ func main() {
 	case_bytes_split_after_n()
 	fmt.Println("== bytes/split_n ==")
 	case_bytes_split_n()
+	fmt.Println("== bytes/title ==")
+	case_bytes_title()
+	fmt.Println("== bytes/to_lower ==")
+	case_bytes_to_lower()
+	fmt.Println("== bytes/to_title ==")
+	case_bytes_to_title()
+	fmt.Println("== bytes/to_upper ==")
+	case_bytes_to_upper()
 	fmt.Println("== bytes/to_valid_utf8 ==")
 	case_bytes_to_valid_utf8()
+	fmt.Println("== bytes/trim ==")
+	case_bytes_trim()
+	fmt.Println("== bytes/trim_func ==")
+	case_bytes_trim_func()
+	fmt.Println("== bytes/trim_left ==")
+	case_bytes_trim_left()
+	fmt.Println("== bytes/trim_left_func ==")
+	case_bytes_trim_left_func()
 	fmt.Println("== bytes/trim_prefix ==")
 	case_bytes_trim_prefix()
+	fmt.Println("== bytes/trim_right ==")
+	case_bytes_trim_right()
+	fmt.Println("== bytes/trim_right_func ==")
+	case_bytes_trim_right_func()
 	fmt.Println("== bytes/trim_suffix ==")
 	case_bytes_trim_suffix()
 }
@@ -77,6 +117,12 @@ func printByteSlices(parts [][]byte) {
 func case_bytes_clone() {
 	// gors:stdlib-cover bytes::Clone
 	printBytes(bytes.Clone([]byte("alpha")))
+}
+
+func case_bytes_constants_errors() {
+	// gors:stdlib-cover bytes::ErrTooLarge bytes::MinRead
+	fmt.Println(bytes.ErrTooLarge.Error())
+	fmt.Println(bytes.MinRead)
 }
 
 func case_bytes_compare() {
@@ -99,6 +145,7 @@ func case_bytes_contains_func_isDash(r rune) bool {
 }
 
 func case_bytes_contains_func() {
+	// gors:stdlib-cover bytes::ContainsFunc
 	fmt.Println(bytes.ContainsFunc([]byte("alpha-beta"), case_bytes_contains_func_isDash))
 }
 
@@ -141,6 +188,7 @@ func case_bytes_equal_fold() {
 }
 
 func case_bytes_fields() {
+	// gors:stdlib-cover bytes::Fields
 	printByteSlices(bytes.Fields([]byte(" alpha\tbeta  gamma ")))
 }
 
@@ -149,6 +197,7 @@ func case_bytes_fields_func_isSep(r rune) bool {
 }
 
 func case_bytes_fields_func() {
+	// gors:stdlib-cover bytes::FieldsFunc
 	printByteSlices(bytes.FieldsFunc([]byte("alpha,beta;gamma"), case_bytes_fields_func_isSep))
 }
 
@@ -182,12 +231,18 @@ func case_bytes_index_func_isDash(r rune) bool {
 }
 
 func case_bytes_index_func() {
+	// gors:stdlib-cover bytes::IndexFunc
 	fmt.Println(bytes.IndexFunc([]byte("alpha-beta"), case_bytes_index_func_isDash))
 }
 
 func case_bytes_index_rune() {
 	// gors:stdlib-cover bytes::IndexRune
 	fmt.Println(bytes.IndexRune([]byte("alphabet"), 'p'))
+}
+
+func case_bytes_join() {
+	// gors:stdlib-cover bytes::Join
+	printBytes(bytes.Join([][]byte{[]byte("a"), []byte("b"), []byte("c")}, []byte(",")))
 }
 
 func case_bytes_last_index() {
@@ -210,6 +265,7 @@ func case_bytes_last_index_func_isDash(r rune) bool {
 }
 
 func case_bytes_last_index_func() {
+	// gors:stdlib-cover bytes::LastIndexFunc
 	fmt.Println(bytes.LastIndexFunc([]byte("alpha-beta"), case_bytes_last_index_func_isDash))
 }
 
@@ -221,12 +277,23 @@ func case_bytes_map_rot(r rune) rune {
 }
 
 func case_bytes_map() {
+	// gors:stdlib-cover bytes::Map
 	printBytes(bytes.Map(case_bytes_map_rot, []byte("abc!")))
 }
 
 func case_bytes_runes() {
 	// gors:stdlib-cover bytes::Runes
 	fmt.Println(bytes.Runes([]byte("goλ")))
+}
+
+func case_bytes_replace() {
+	// gors:stdlib-cover bytes::Replace
+	printBytes(bytes.Replace([]byte("go go go"), []byte("go"), []byte("rs"), 2))
+}
+
+func case_bytes_replace_all() {
+	// gors:stdlib-cover bytes::ReplaceAll
+	printBytes(bytes.ReplaceAll([]byte("go go"), []byte("go"), []byte("rs")))
 }
 
 func case_bytes_split() {
@@ -250,18 +317,22 @@ func case_bytes_split_n() {
 }
 
 func case_bytes_title() {
+	// gors:stdlib-cover bytes::Title
 	printBytes(bytes.Title([]byte("go gopher")))
 }
 
 func case_bytes_to_lower() {
+	// gors:stdlib-cover bytes::ToLower
 	printBytes(bytes.ToLower([]byte("GoLang")))
 }
 
 func case_bytes_to_title() {
+	// gors:stdlib-cover bytes::ToTitle
 	printBytes(bytes.ToTitle([]byte("GoLang")))
 }
 
 func case_bytes_to_upper() {
+	// gors:stdlib-cover bytes::ToUpper
 	printBytes(bytes.ToUpper([]byte("GoLang")))
 }
 
@@ -271,6 +342,7 @@ func case_bytes_to_valid_utf8() {
 }
 
 func case_bytes_trim() {
+	// gors:stdlib-cover bytes::Trim
 	printBytes(bytes.Trim([]byte("!!go!!"), "!"))
 }
 
@@ -279,14 +351,17 @@ func case_bytes_trim_func_isBang(r rune) bool {
 }
 
 func case_bytes_trim_func() {
+	// gors:stdlib-cover bytes::TrimFunc
 	printBytes(bytes.TrimFunc([]byte("!!go!!"), case_bytes_trim_func_isBang))
 }
 
 func case_bytes_trim_left() {
+	// gors:stdlib-cover bytes::TrimLeft
 	printBytes(bytes.TrimLeft([]byte("!!go!!"), "!"))
 }
 
 func case_bytes_trim_left_func() {
+	// gors:stdlib-cover bytes::TrimLeftFunc
 	printBytes(bytes.TrimLeftFunc([]byte("!!go!!"), case_bytes_trim_func_isBang))
 }
 
@@ -296,10 +371,12 @@ func case_bytes_trim_prefix() {
 }
 
 func case_bytes_trim_right() {
+	// gors:stdlib-cover bytes::TrimRight
 	printBytes(bytes.TrimRight([]byte("!!go!!"), "!"))
 }
 
 func case_bytes_trim_right_func() {
+	// gors:stdlib-cover bytes::TrimRightFunc
 	printBytes(bytes.TrimRightFunc([]byte("!!go!!"), case_bytes_trim_func_isBang))
 }
 

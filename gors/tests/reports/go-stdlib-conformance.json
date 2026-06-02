@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 1,
     "caseCount": 12418,
-    "passingCaseCount": 181,
-    "unsupportedCaseCount": 12237,
+    "passingCaseCount": 202,
+    "unsupportedCaseCount": 12216,
     "fixtureCount": 80
   },
   "groups": [
@@ -1683,8 +1683,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 99,
-        "passingCaseCount": 28,
-        "unsupportedCaseCount": 71,
+        "passingCaseCount": 49,
+        "unsupportedCaseCount": 50,
         "fixtureCount": 0
       },
       "cases": [
@@ -1962,8 +1962,10 @@
           "title": "ContainsFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2048,8 +2050,10 @@
           "title": "ErrTooLarge",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2057,8 +2061,10 @@
           "title": "Fields",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2066,8 +2072,10 @@
           "title": "FieldsFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2148,8 +2156,10 @@
           "title": "IndexFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2168,8 +2178,10 @@
           "title": "Join",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2210,8 +2222,10 @@
           "title": "LastIndexFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2228,8 +2242,10 @@
           "title": "Map",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2237,8 +2253,10 @@
           "title": "MinRead",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2390,8 +2408,10 @@
           "title": "Replace",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2399,8 +2419,10 @@
           "title": "ReplaceAll",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2481,8 +2503,10 @@
           "title": "Title",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2490,8 +2514,10 @@
           "title": "ToLower",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2508,8 +2534,10 @@
           "title": "ToTitle",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2526,8 +2554,10 @@
           "title": "ToUpper",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2555,8 +2585,10 @@
           "title": "Trim",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2564,8 +2596,10 @@
           "title": "TrimFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2573,8 +2607,10 @@
           "title": "TrimLeft",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2582,8 +2618,10 @@
           "title": "TrimLeftFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2602,8 +2640,10 @@
           "title": "TrimRight",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
@@ -2611,8 +2651,10 @@
           "title": "TrimRightFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "bytes"
+          ],
           "reason": ""
         },
         {
