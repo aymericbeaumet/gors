@@ -15396,11 +15396,21 @@ fn is_string_literal(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING)
 }
 
-fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, body: syn::Block) -> Vec<syn::Stmt> {
+fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, mut body: syn::Block) -> Vec<syn::Stmt> {
+    let label = if has_continue_for_post(&body.stmts, None, true) {
+        let label = next_loop_body_label();
+        rewrite_unlabeled_continue_to_label(&mut body.stmts, &label);
+        Some(syn::Label {
+            name: label,
+            colon_token: <Token![:]>::default(),
+        })
+    } else {
+        None
+    };
     vec![syn::Stmt::Expr(
         syn::Expr::ForLoop(syn::ExprForLoop {
             attrs: vec![],
-            label: None,
+            label,
             for_token: <Token![for]>::default(),
             pat: Box::new(pat),
             in_token: <Token![in]>::default(),
@@ -22511,6 +22521,36 @@ fn rewrite_continue_for_post_in_nested_loop(
     rewrite_continue_for_post(stmts, Some(loop_label), false, body_label);
 }
 
+fn rewrite_unlabeled_continue_to_label(stmts: &mut [syn::Stmt], loop_label: &syn::Lifetime) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            syn::Stmt::Expr(syn::Expr::Continue(cont), _) if cont.label.is_none() => {
+                cont.label = Some(loop_label.clone());
+            }
+            syn::Stmt::Expr(expr, _) => {
+                rewrite_unlabeled_continue_to_label_in_expr(expr, loop_label);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_unlabeled_continue_to_label_in_expr(expr: &mut syn::Expr, loop_label: &syn::Lifetime) {
+    match expr {
+        syn::Expr::If(if_expr) => {
+            rewrite_unlabeled_continue_to_label(&mut if_expr.then_branch.stmts, loop_label);
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                rewrite_unlabeled_continue_to_label_in_expr(else_expr, loop_label);
+            }
+        }
+        syn::Expr::Block(block) => {
+            rewrite_unlabeled_continue_to_label(&mut block.block.stmts, loop_label);
+        }
+        syn::Expr::While(_) | syn::Expr::Loop(_) | syn::Expr::ForLoop(_) => {}
+        _ => {}
+    }
+}
+
 fn continue_targets_current_loop(
     cont: &syn::ExprContinue,
     loop_label: Option<&str>,
@@ -25316,6 +25356,41 @@ var X int
                 }
             "#,
             "invalid fallthrough in final switch case",
+        );
+    }
+
+    #[test]
+    fn it_should_label_range_loop_continues_that_cross_switch_blocks() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func count(m map[string]string) int {
+                    n := 0
+                    for k, v := range m {
+                        switch {
+                        case k == v:
+                            continue
+                        default:
+                            n++
+                        }
+                    }
+                    return n
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let compact = quote! { #compiled }.to_string().replace(' ', "");
+
+        assert!(
+            compact.contains("'__gors_loop_body_"),
+            "expected range loop to receive a synthetic Rust label: {compact}"
+        );
+        assert!(
+            compact.contains("continue'__gors_loop_body_"),
+            "expected switch-contained continue to target the synthetic range loop label: {compact}"
         );
     }
 
