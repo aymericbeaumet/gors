@@ -7686,10 +7686,24 @@ fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
 
 fn named_self_type(ty: &syn::Type) -> Option<String> {
     match ty {
-        syn::Type::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+        syn::Type::Path(path) => named_self_type_from_path(&path.path),
         syn::Type::Reference(reference) => named_self_type(&reference.elem),
         _ => None,
     }
+}
+
+fn named_self_type_from_path(path: &syn::Path) -> Option<String> {
+    let last = path.segments.last()?;
+    if matches!(last.ident.to_string().as_str(), "Arc" | "Mutex")
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(name) = args.args.iter().find_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => named_self_type(ty),
+            _ => None,
+        })
+    {
+        return Some(name);
+    }
+    Some(last.ident.to_string())
 }
 
 fn item_name(item: &syn::Item) -> Option<String> {
@@ -8930,7 +8944,7 @@ fn collect_refs_from_item(
                 return;
             };
             let name = last.ident.to_string();
-            if self.item_names.contains(&name) {
+            if self.top_level_names.contains(&name) {
                 self.local_names.insert(name);
             }
         }
@@ -32368,6 +32382,77 @@ func main() {
         assert!(
             refs.get("time")
                 .is_some_and(|refs| refs.contains("Time::Format")),
+            "{refs:?}"
+        );
+    }
+
+    #[test]
+    fn it_should_not_keep_private_helpers_that_only_reference_rooted_types() {
+        let file: syn::File = rust! {
+            pub struct Header {
+                pub Name: String,
+                pub ModTime: crate::time::Time,
+                pub Format: Format,
+            }
+
+            pub struct Format(pub isize);
+
+            impl Format {
+                pub fn String(&self) -> String {
+                    "PAX".to_string()
+                }
+            }
+
+            pub struct headerFileInfo {
+                h: std::sync::Arc<std::sync::Mutex<Header>>,
+            }
+
+            impl headerFileInfo {
+                pub fn String(&self) -> String {
+                    crate::io__fs::FormatFileInfo(&mut (self).clone())
+                }
+            }
+
+            impl crate::fmt::Stringer for std::sync::Arc<std::sync::Mutex<headerFileInfo>> {
+                fn String(&mut self) -> String {
+                    headerFileInfo::String(&*self.lock().unwrap())
+                }
+
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn __gors_clone_box(&self) -> Box<dyn crate::fmt::Stringer> {
+                    Box::new(self.clone()) as Box<dyn crate::fmt::Stringer>
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from([
+            "Header".to_string(),
+            "Format".to_string(),
+            "Format::String".to_string(),
+            "String".to_string(),
+        ]);
+        let module_names = std::collections::HashSet::from([
+            "fmt".to_string(),
+            "io__fs".to_string(),
+            "time".to_string(),
+        ]);
+
+        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(names.contains("Header"));
+        assert!(names.contains("Format::String"));
+        assert!(!names.contains("headerFileInfo"));
+        assert!(!names.contains("headerFileInfo::String"));
+        assert!(
+            refs.get("time").is_some_and(|refs| refs.contains("Time")),
+            "{refs:?}"
+        );
+        assert!(
+            !refs
+                .get("io__fs")
+                .is_some_and(|refs| refs.contains("FormatFileInfo")),
             "{refs:?}"
         );
     }

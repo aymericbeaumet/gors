@@ -12,6 +12,8 @@ func main() {
 	caseTypeflags()
 	fmt.Println("== archive/tar/formats ==")
 	caseFormats()
+	fmt.Println("== archive/tar/header ==")
+	caseHeader()
 }
 
 func caseErrors() {
@@ -51,4 +53,25 @@ func caseFormats() {
 	fmt.Println(tar.Format.String(tar.FormatGNU))
 	combo := tar.FormatUSTAR | tar.FormatPAX
 	fmt.Println(tar.Format.String(combo))
+}
+
+func caseHeader() {
+	// gors:stdlib-cover archive/tar::Header
+	h := tar.Header{
+		Name:     "dir/file.txt",
+		Mode:     0644,
+		Uid:      1000,
+		Gid:      1001,
+		Size:     7,
+		Typeflag: tar.TypeReg,
+		Linkname: "target",
+		Uname:    "owner",
+		Gname:    "group",
+		Format:   tar.FormatPAX,
+		PAXRecords: map[string]string{
+			"comment": "fixture",
+		},
+	}
+	fmt.Println(h.Name, h.Mode, h.Uid, h.Gid, h.Size, h.Typeflag, h.Linkname, h.Uname, h.Gname)
+	fmt.Println(tar.Format.String(h.Format), h.PAXRecords["comment"])
 }
