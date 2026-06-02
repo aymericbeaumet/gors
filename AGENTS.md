@@ -182,6 +182,11 @@ gors-builtin/
   Rust type. In particular, numeric constants need an explicit cast such as
   `42 as isize` before boxing so type assertions and type switches downcast to
   Go's `int` representation instead of Rust's default literal type.
+- Generated structs that contain `any` fields may need compiler-emitted
+  `Send`/`Sync` impls with item-local `#[allow(unsafe_code)]` so they can
+  satisfy generated Go interface traits, which are modeled as thread-safe. Keep
+  this as generated runtime glue and do not weaken the generated crate-level
+  `unsafe_code` deny for ordinary output.
 - `[]any`/`[]interface{}` index expressions cannot call Rust `Clone` on
   `Box<dyn Any>` directly. Use the runtime `builtin::clone_any` helper for
   copied interface elements, and bind cloned interface-index temporaries before

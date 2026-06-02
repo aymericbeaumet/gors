@@ -10325,6 +10325,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut cannot_derive_partial_eq = false;
             let mut cannot_default = false;
             let mut can_derive_copy = true;
+            let mut needs_manual_send_sync = false;
             let mut blank_field_index = 0usize;
             if let Some(field_list) = struct_type.fields {
                 for field in field_list.list {
@@ -10341,9 +10342,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     };
                     has_borrowed_interface_field |= borrowed_interface_trait_path.is_some();
                     let field_contains_func = contains_func_type(&field_type);
+                    let field_contains_any = contains_any_type(&field_type);
                     let field_needs_manual_default =
                         contains_array_type(&field_type) || field_contains_func || field_is_error;
-                    let field_cannot_derive_clone = contains_any_type(&field_type)
+                    let field_cannot_derive_clone = field_contains_any
                         || (!field_is_error && contains_interface_type(&field_type))
                         || (!field_is_error && interface_trait_path.is_some());
                     let field_cannot_derive_partial_eq =
@@ -10380,6 +10382,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             cannot_derive_clone |= field_cannot_derive_clone;
                             cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
                             cannot_default |= field_cannot_default;
+                            needs_manual_send_sync |= field_contains_any;
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -10423,6 +10426,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             cannot_derive_clone |= field_cannot_derive_clone;
                             cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
                             cannot_default |= field_cannot_default;
+                            needs_manual_send_sync |= field_contains_any;
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -10512,6 +10516,20 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 None
             };
+            let send_sync_impls = if needs_manual_send_sync {
+                vec![
+                    syn::parse_quote! {
+                        #[allow(unsafe_code)]
+                        unsafe impl #impl_generics Send for #ident #ty_generics #where_clause {}
+                    },
+                    syn::parse_quote! {
+                        #[allow(unsafe_code)]
+                        unsafe impl #impl_generics Sync for #ident #ty_generics #where_clause {}
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
             if let Some((emb_field, emb_ty, interface_trait_path)) =
                 embedded_types.first().filter(|_| embedded_types.len() == 1)
             {
@@ -10555,6 +10573,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 if let Some(default_impl) = default_impl {
                     out.push(default_impl);
                 }
+                out.extend(send_sync_impls);
                 out.push(deref_impl);
                 out.push(deref_mut_impl);
                 return Ok(out);
@@ -10564,6 +10583,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if let Some(default_impl) = default_impl {
                 out.push(default_impl);
             }
+            out.extend(send_sync_impls);
             Ok(out)
         }
         ast::Expr::InterfaceType(iface) => {
@@ -29685,6 +29705,8 @@ func (value) M() {}
             output.contains("fn __gors_clone_box (& self) -> Box < dyn Interface > { crate :: builtin :: panic_value (\"cloned non-clone interface value\") }"),
             "{output}"
         );
+        assert!(output.contains("unsafe impl Send for value"), "{output}");
+        assert!(output.contains("unsafe impl Sync for value"), "{output}");
     }
 
     #[test]
