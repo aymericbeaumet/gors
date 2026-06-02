@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 1,
     "caseCount": 12584,
-    "passingCaseCount": 112,
-    "unsupportedCaseCount": 12472,
+    "passingCaseCount": 115,
+    "unsupportedCaseCount": 12469,
     "fixtureCount": 77
   },
   "groups": [
@@ -3225,13 +3225,15 @@
       "id": "compress/lzw",
       "title": "compress/lzw",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "compress/lzw"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 13,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 13,
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 10,
         "fixtureCount": 0
       },
       "cases": [
@@ -3240,8 +3242,10 @@
           "title": "LSB",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "compress/lzw"
+          ],
           "reason": ""
         },
         {
@@ -3249,8 +3253,10 @@
           "title": "MSB",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "compress/lzw"
+          ],
           "reason": ""
         },
         {
@@ -3276,8 +3282,10 @@
           "title": "Order",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "compress/lzw"
+          ],
           "reason": ""
         },
         {
