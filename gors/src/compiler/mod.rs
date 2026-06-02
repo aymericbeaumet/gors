@@ -555,6 +555,12 @@ fn boxed_interface_value_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
     Some(syn::parse_quote! { Box<dyn #trait_ty> })
 }
 
+fn boxed_noop_interface_expr(interface_name: &str) -> syn::Expr {
+    let trait_path = interface_trait_path_from_name(interface_name);
+    let noop_ty = noop_interface_type_from_name(interface_name);
+    syn::parse_quote! { Box::new(#noop_ty::default()) as Box<dyn #trait_path> }
+}
+
 fn local_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
     borrowed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
 }
@@ -9492,6 +9498,9 @@ fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
                 Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
             }
         }
+        _ if let Some(interface_name) = interface_name_from_type_expr(expr) => {
+            boxed_noop_interface_expr(&interface_name)
+        }
         ast::Expr::InterfaceType(_) => {
             syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
         }
@@ -10595,11 +10604,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     } else {
                         interface_trait_path.clone()
                     };
-                    has_borrowed_interface_field |= borrowed_interface_trait_path.is_some();
                     let field_contains_func = contains_func_type(&field_type);
                     let field_contains_any = contains_any_type(&field_type);
-                    let field_needs_manual_default =
-                        contains_array_type(&field_type) || field_contains_func || field_is_error;
+                    let field_needs_manual_default = contains_array_type(&field_type)
+                        || field_contains_func
+                        || field_is_error
+                        || borrowed_interface_trait_path.is_some();
                     let field_cannot_derive_clone = field_contains_any
                         || (!field_is_error && contains_interface_type(&field_type))
                         || (!field_is_error && interface_trait_path.is_some());
@@ -10616,7 +10626,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     if let Some(names) = field.names {
                         let rust_type: syn::Type =
                             if let Some(trait_path) = &borrowed_interface_trait_path {
-                                syn::parse_quote! { &'__gors mut dyn #trait_path }
+                                syn::parse_quote! { Box<dyn #trait_path> }
                             } else {
                                 type_from_struct_field_expr(&field_type, &ident)
                             };
@@ -10652,6 +10662,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let embedded_name = extract_type_name(&field_type);
                         let rust_type: syn::Type =
                             if let Some(trait_path) = &borrowed_interface_trait_path {
+                                has_borrowed_interface_field = true;
                                 syn::parse_quote! { &'__gors mut dyn #trait_path }
                             } else {
                                 type_from_struct_field_expr(&field_type, &ident)
@@ -10848,6 +10859,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             // Generate trait with method signatures
             let mut trait_items: Vec<syn::TraitItem> = vec![];
             let mut supertraits = syn::punctuated::Punctuated::new();
+            let mut has_embedded_runtime_interfaces = false;
             supertraits.push(syn::parse_quote! { Send });
             supertraits.push(syn::parse_quote! { Sync });
 
@@ -10933,6 +10945,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             }));
                         }
                     } else if let Some(type_expr) = field.type_ {
+                        has_embedded_runtime_interfaces |=
+                            interface_trait_path_from_expr(&type_expr).is_some();
                         append_type_param_bounds(
                             &mut supertraits,
                             go_constraint_to_rust_bounds(&type_expr),
@@ -10943,7 +10957,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let has_supertraits = !supertraits.is_empty();
             let has_go_methods = !trait_items.is_empty();
-            if has_go_methods {
+            let needs_runtime_interface_items = has_go_methods || has_embedded_runtime_interfaces;
+            if needs_runtime_interface_items {
                 trait_items.insert(
                     0,
                     syn::parse_quote! {
@@ -10977,7 +10992,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             if let Some(Some(box_impl)) = box_impl {
                 items.push(box_impl);
             }
-            if has_methods {
+            if needs_runtime_interface_items {
                 items.push(interface_box_clone_impl(&ident));
                 items.extend(noop_interface_items(&ident, &trait_items));
             }
@@ -13845,6 +13860,9 @@ fn wrap_void_defer_body_in_unwind_catch(block: &mut syn::Block) {
 fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
+    if !matches!(expected, typeinfer::GoType::Error) && go_type_interface_name(expected).is_some() {
+        return compile_owned_interface_expr(expr, expected);
+    }
     if let ast::Expr::FuncLit(func_lit) = expr {
         let compiled = compile_func_lit_with_capture_mode(func_lit, true);
         return shared_func_value_expr(expected, compiled.clone()).unwrap_or(compiled);
@@ -13857,6 +13875,31 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
         return expr;
     }
     compiled
+}
+
+fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
+    let Some(interface_name) = go_type_interface_name(expected) else {
+        return compile_expr_with_expected(expr, Some(expected));
+    };
+    if interface_name == "error" {
+        return compile_expr_with_expected(expr, Some(expected));
+    }
+    if is_nil_expr(&expr) {
+        return boxed_noop_interface_expr(&interface_name);
+    }
+
+    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+    let trait_path = interface_trait_path_from_name(&interface_name);
+    if go_type_interface_name(&actual).is_some() {
+        if let Some(lvalue) = lvalue_expr_from_ref(&expr) {
+            return syn::parse_quote! { #trait_path::__gors_clone_box(&*(#lvalue)) };
+        }
+        let compiled: syn::Expr = expr.into();
+        return syn::parse_quote! { #trait_path::__gors_clone_box(&*(#compiled)) };
+    }
+
+    let compiled: syn::Expr = expr.into();
+    syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
 }
 
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
@@ -14747,7 +14790,10 @@ fn is_ir_addressable_expr(expr: &ast::Expr) -> bool {
     })
 }
 
-fn take_rhs_lvalue_reads(lhs: &ast::Expr, rhs: &mut syn::Expr) {
+fn take_rhs_lvalue_reads(lhs: &ast::Expr, lhs_ty: &typeinfer::GoType, rhs: &mut syn::Expr) {
+    if go_type_is_interface_like(lhs_ty) {
+        return;
+    }
     let Some(target) = lvalue_expr_from_ref(lhs) else {
         return;
     };
@@ -20231,7 +20277,13 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             dot_token: <Token![.]>::default(),
                             member: syn::Member::Named(field),
                         });
-                        if matches!(
+                        if field_go_type
+                            .as_ref()
+                            .and_then(go_type_interface_name)
+                            .is_some()
+                        {
+                            syn::parse_quote! { (#field_expr).clone() }
+                        } else if matches!(
                             field_go_type.as_ref().map(resolved_go_type),
                             Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
                         ) {
@@ -25435,10 +25487,16 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     other => other,
                 };
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
-                let right_raw = compile_expr_with_expected(rhs_ast, Some(&lhs_ty));
+                let right_raw = if !matches!(lhs_ty, typeinfer::GoType::Error)
+                    && go_type_interface_name(&lhs_ty).is_some()
+                {
+                    compile_owned_interface_expr(rhs_ast, &lhs_ty)
+                } else {
+                    compile_expr_with_expected(rhs_ast, Some(&lhs_ty))
+                };
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
                 if !go_type_is_copy(&lhs_ty) {
-                    take_rhs_lvalue_reads(&lhs_ast, &mut right);
+                    take_rhs_lvalue_reads(&lhs_ast, &lhs_ty, &mut right);
                 }
                 if matches!(lhs_ty, typeinfer::GoType::Error) {
                     right = syn::parse_quote! { (#right).clone() };
@@ -28177,7 +28235,7 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
     }
 
     #[test]
-    fn borrowed_interface_selector_fields_reborrow_for_expected_interfaces() {
+    fn interface_selector_fields_clone_for_storage_and_reborrow_for_params() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(
             tmp.path().join("main.go").as_path(),
@@ -28221,8 +28279,9 @@ func main() {
             .collect::<Vec<_>>()
             .join("\n");
 
+        assert!(output.contains("r: Box<dyn Reader>"), "{output}");
         assert!(
-            output.contains("r: &mut *self.r") || output.contains("r : & mut * self . r"),
+            output.contains("r: Reader::__gors_clone_box(&*(self.r))"),
             "{output}"
         );
         assert!(
@@ -28537,6 +28596,63 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("h.err = (err).clone();"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_boxes_interface_field_rhs_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+type wrap struct {
+	curr Writer
+}
+
+type sparse struct {
+	fw Writer
+}
+
+func (s *sparse) Write(b []byte) (int, error) {
+	return s.fw.Write(b)
+}
+
+type sink struct{}
+
+func (s *sink) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (w *wrap) replace() {
+	w.curr = &sparse{fw: w.curr}
+}
+
+func main() {
+	w := wrap{curr: &sink{}}
+	w.replace()
+	_, _ = w.curr.Write([]byte("x"))
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            !main_rs.contains("std::mem::take(&mut self.curr)"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("curr: Box<dyn Writer>"), "{main_rs}");
+        assert!(main_rs.contains("fw: Box<dyn Writer>"), "{main_rs}");
+        assert!(
+            main_rs.contains("fw: Writer::__gors_clone_box(&*(self.curr))"),
+            "{main_rs}"
+        );
     }
 
     #[test]
@@ -31270,7 +31386,7 @@ func makeState(r Reader) state {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("state { r : r , n : Default :: default () , err : Box :: new (crate :: builtin :: __GorsNooperror :: default ()) as Box < dyn crate :: builtin :: error > , }"),
+            output.contains("state { r : Reader :: __gors_clone_box (& * (r)) , n : Default :: default () , err : Box :: new (crate :: builtin :: __GorsNooperror :: default ()) as Box < dyn crate :: builtin :: error > , }"),
             "{output}"
         );
         assert!(
