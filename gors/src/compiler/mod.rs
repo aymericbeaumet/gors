@@ -19981,6 +19981,104 @@ fn pointer_interface_impl_items_for_methods(
     impl_items
 }
 
+fn imported_pointer_interface_impls_for_local_structs(
+    struct_methods: &BTreeMap<String, Vec<String>>,
+    struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    method_generics: &BTreeMap<String, Vec<syn::Ident>>,
+    emitted_interface_impls: &mut std::collections::BTreeSet<(String, String, bool)>,
+) -> Vec<syn::Item> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let mut items = Vec::new();
+        for interface_name in env.interface_names() {
+            if !interface_name.contains('.') {
+                continue;
+            }
+            let Some(required_methods) = env.get_interface_methods(&interface_name) else {
+                continue;
+            };
+            if required_methods.is_empty() {
+                continue;
+            }
+            let direct_required_methods =
+                interface_direct_methods_for_impl(&interface_name, &required_methods);
+            if direct_required_methods.is_empty() {
+                continue;
+            }
+            let embedded_interfaces = env.get_interface_embedded_interfaces(&interface_name);
+            for (struct_name, struct_method_list) in struct_methods {
+                if BORROWED_INTERFACE_STRUCTS
+                    .with(|structs| structs.borrow().contains_key(struct_name))
+                    || method_generics
+                        .get(struct_name)
+                        .is_some_and(|type_args| !type_args.is_empty())
+                {
+                    continue;
+                }
+                let pointer_satisfies = required_methods
+                    .iter()
+                    .all(|method| struct_method_list.contains(method));
+                if !pointer_satisfies {
+                    continue;
+                }
+                let pointer_methods = struct_pointer_methods.get(struct_name);
+                if emitted_interface_impls.insert((
+                    interface_name.clone(),
+                    struct_name.clone(),
+                    true,
+                )) {
+                    let trait_path = interface_trait_path_from_name(&interface_name);
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let impl_items = pointer_interface_impl_items_for_methods(
+                        &interface_name,
+                        struct_name,
+                        &trait_path,
+                        &direct_required_methods,
+                        methods,
+                        pointer_methods,
+                    );
+                    items.push(syn::parse_quote! {
+                        impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
+                            #(#impl_items)*
+                        }
+                    });
+                }
+
+                for embedded_name in &embedded_interfaces {
+                    if !emitted_interface_impls.insert((
+                        embedded_name.clone(),
+                        struct_name.clone(),
+                        true,
+                    )) {
+                        continue;
+                    }
+                    let embedded_methods = env
+                        .get_interface_direct_methods(embedded_name)
+                        .or_else(|| interface_direct_methods_from_import(embedded_name))
+                        .unwrap_or_default();
+                    let trait_path = interface_trait_path_from_name(embedded_name);
+                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let impl_items = pointer_interface_impl_items_for_methods(
+                        embedded_name,
+                        struct_name,
+                        &trait_path,
+                        &embedded_methods,
+                        methods,
+                        pointer_methods,
+                    );
+                    items.push(syn::parse_quote! {
+                        impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
+                            #(#impl_items)*
+                        }
+                    });
+                }
+            }
+        }
+        items
+    })
+}
+
 impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
@@ -20462,6 +20560,13 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             }
         }
+        items.extend(imported_pointer_interface_impls_for_local_structs(
+            &struct_methods,
+            &struct_pointer_methods,
+            &methods,
+            &method_generics,
+            &mut emitted_interface_impls,
+        ));
 
         items.extend(noop_interface_supertrait_impls(&items));
         items.extend(embedded_interface_impls(&items, &methods));
@@ -23327,17 +23432,43 @@ fn external_interface_assertion_implementors(interface_name: &str) -> Vec<syn::T
     })
 }
 
+fn go_type_contains_borrowed_interface_field(
+    env: &typeinfer::TypeEnv,
+    go_type: &typeinfer::GoType,
+) -> bool {
+    match env.resolve_alias(go_type) {
+        typeinfer::GoType::Interface(_) => true,
+        typeinfer::GoType::Named(name) => env.is_interface(&name),
+        typeinfer::GoType::Pointer(inner)
+        | typeinfer::GoType::Slice(inner)
+        | typeinfer::GoType::Array(inner) => go_type_contains_borrowed_interface_field(env, &inner),
+        typeinfer::GoType::Map(key, value) => {
+            go_type_contains_borrowed_interface_field(env, &key)
+                || go_type_contains_borrowed_interface_field(env, &value)
+        }
+        _ => false,
+    }
+}
+
+fn named_type_has_borrowed_interface_fields(env: &typeinfer::TypeEnv, name: &str) -> bool {
+    env.get_struct_fields(name)
+        .iter()
+        .any(|(_, field_ty)| go_type_contains_borrowed_interface_field(env, field_ty))
+}
+
 fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
     let mut implementors = TYPE_ENV.with(|env| {
         let env = env.borrow();
         let mut implementors = env
             .interface_implementors(interface_name)
             .into_iter()
+            .filter(|name| !named_type_has_borrowed_interface_fields(&env, name))
             .map(|name| named_go_type_path(&name))
             .collect::<Vec<_>>();
         implementors.extend(
             env.interface_pointer_implementors(interface_name)
                 .into_iter()
+                .filter(|name| !named_type_has_borrowed_interface_fields(&env, name))
                 .map(|name| {
                     let ty = named_go_type_path(&name);
                     syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#ty>> }
@@ -27032,6 +27163,109 @@ type Seeker interface {
                 && !main_rs.contains("downcast_ref :: < ioish :: Seeker >"),
             "{main_rs}"
         );
+    }
+
+    #[test]
+    fn compile_program_multi_emits_imported_pointer_interface_impls_for_local_structs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	_ = stream.New()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("ioish/ioish.go").as_path(),
+            r#"
+package ioish
+
+const EOF int64 = 0
+
+type Seeker interface {
+	Seek(offset int64, whence int) int64
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+import "example/ioish"
+
+type Reader struct{}
+
+func New() *Reader {
+	return &Reader{}
+}
+
+func marker() int64 {
+	return ioish.EOF
+}
+
+func (r *Reader) Seek(offset int64, whence int) int64 {
+	return offset + int64(whence)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+
+        assert!(
+            stream_rs.contains(
+                "impl crate::ioish::Seeker for std::sync::Arc<std::sync::Mutex<Reader>>"
+            ) || stream_rs.contains(
+                "impl crate :: ioish :: Seeker for std :: sync :: Arc < std :: sync :: Mutex < Reader > >"
+            ),
+            "{stream_rs}"
+        );
+        assert!(
+            stream_rs.contains("Reader::Seek(&mut *__gors_guard, offset, whence)")
+                || stream_rs.contains("Reader :: Seek (& mut * __gors_guard , offset , whence)"),
+            "{stream_rs}"
+        );
+    }
+
+    #[test]
+    fn interface_assertion_implementors_skip_borrowed_interface_field_structs() {
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("io.Reader", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("io.Reader", vec!["Read".to_string()]);
+        env.set_type_kind("pkg.Plain", super::typeinfer::TypeKind::Struct);
+        env.set_func("pkg.Plain.Read", vec![super::typeinfer::GoType::Int]);
+        env.set_pointer_receiver_method("pkg.Plain.Read");
+        env.set_type_kind("pkg.Holder", super::typeinfer::TypeKind::Struct);
+        env.set_struct_fields(
+            "pkg.Holder",
+            vec![(
+                "inner".to_string(),
+                super::typeinfer::GoType::Interface("io.Reader".to_string()),
+            )],
+        );
+        env.set_func("pkg.Holder.Read", vec![super::typeinfer::GoType::Int]);
+        env.set_pointer_receiver_method("pkg.Holder.Read");
+
+        super::set_type_env(env);
+        let implementors = super::interface_assertion_implementors("io.Reader")
+            .into_iter()
+            .map(|ty| quote! { #ty }.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert!(
+            implementors.contains("std :: sync :: Arc < std :: sync :: Mutex < pkg :: Plain > >"),
+            "{implementors}"
+        );
+        assert!(!implementors.contains("pkg :: Holder"), "{implementors}");
     }
 
     #[test]
