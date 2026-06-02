@@ -684,6 +684,11 @@ Package-level function signatures and method signatures live in separate
 such as `StringSlice.Search`, never as plain `Search`, because Go permits package
 functions and methods to share the same simple name and call-site lowering needs
 the package function signature for `func(...)` argument coercions.
+Generated Rust postpasses that coerce method-call arguments from signatures must
+use receiver-qualified method keys as well, including the generated module name
+when available. A plain method-name fallback is acceptable only when that method
+name is unambiguous across the generated impl set; otherwise one receiver's
+signature can incorrectly rewrite a same-named method call on another receiver.
 Multi-result assignment type registration must also resolve method calls through
 selector receivers such as `pkg.Value.Method()`, not only direct package
 functions or local receiver identifiers, so later uses like `err == nil` see the
