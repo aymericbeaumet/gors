@@ -1850,6 +1850,13 @@ impl TypeEnv {
         self.interface_methods.get(name).cloned()
     }
 
+    pub fn get_interface_direct_embedded_interfaces(&self, name: &str) -> Vec<std::string::String> {
+        self.interface_embedded
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn get_interface_embedded_interfaces(&self, name: &str) -> Vec<std::string::String> {
         let mut out = Vec::new();
         self.collect_interface_embedded_interfaces(name, &mut HashSet::new(), &mut out);
@@ -2174,12 +2181,6 @@ impl TypeEnv {
 
     fn resolve_embedded_interface_name(&self, name: &str) -> Option<std::string::String> {
         if self.is_interface(name) {
-            return Some(name.to_string());
-        }
-        if name
-            .rsplit_once('.')
-            .is_some_and(|(_, item)| item == "Writer")
-        {
             return Some(name.to_string());
         }
         match self.type_kinds.get(name) {

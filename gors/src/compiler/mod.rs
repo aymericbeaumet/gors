@@ -20814,12 +20814,43 @@ fn interface_direct_methods_from_import(trait_name: &str) -> Option<Vec<String>>
 }
 
 fn interface_methods_from_import(trait_name: &str) -> Option<Vec<String>> {
+    let mut visiting = std::collections::BTreeSet::new();
+    interface_methods_from_import_inner(trait_name, &mut visiting)
+}
+
+fn interface_methods_from_import_inner(
+    trait_name: &str,
+    visiting: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    if !visiting.insert(trait_name.to_string()) {
+        return Some(Vec::new());
+    }
     let (package_name, type_name) = trait_name.split_once('.')?;
     let (_, env) = crate::resolve::scan_type_env(package_name)?;
-    env.get_interface_methods(type_name)
+    let mut methods = env.get_interface_direct_methods(type_name)?;
+    for embedded_name in env.get_interface_direct_embedded_interfaces(type_name) {
+        let embedded_name = qualify_embedded_import_interface_name(package_name, &embedded_name);
+        let Some(embedded_methods) = interface_methods_from_import_inner(&embedded_name, visiting)
+        else {
+            continue;
+        };
+        for method in embedded_methods {
+            if !methods.contains(&method) {
+                methods.push(method);
+            }
+        }
+    }
+    visiting.remove(trait_name);
+    Some(methods)
 }
 
 fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
+    if trait_name.contains('.') {
+        let imported = interface_embedded_interfaces_from_import(trait_name).unwrap_or_default();
+        if !imported.is_empty() {
+            return imported;
+        }
+    }
     let embedded = TYPE_ENV.with(|env| env.borrow().get_interface_embedded_interfaces(trait_name));
     if !embedded.is_empty() {
         return embedded;
@@ -20828,20 +20859,39 @@ fn interface_embedded_interfaces_for_impl(trait_name: &str) -> Vec<String> {
 }
 
 fn interface_embedded_interfaces_from_import(trait_name: &str) -> Option<Vec<String>> {
+    let mut visiting = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    collect_interface_embedded_interfaces_from_import(trait_name, &mut visiting, &mut out)?;
+    Some(out)
+}
+
+fn collect_interface_embedded_interfaces_from_import(
+    trait_name: &str,
+    visiting: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<String>,
+) -> Option<()> {
+    if !visiting.insert(trait_name.to_string()) {
+        return Some(());
+    }
     let (package_name, type_name) = trait_name.split_once('.')?;
     let (_, env) = crate::resolve::scan_type_env(package_name)?;
-    Some(
-        env.get_interface_embedded_interfaces(type_name)
-            .into_iter()
-            .map(|name| {
-                if name.contains('.') {
-                    name
-                } else {
-                    format!("{package_name}.{name}")
-                }
-            })
-            .collect(),
-    )
+    for embedded_name in env.get_interface_direct_embedded_interfaces(type_name) {
+        let embedded_name = qualify_embedded_import_interface_name(package_name, &embedded_name);
+        if !out.contains(&embedded_name) {
+            out.push(embedded_name.clone());
+        }
+        collect_interface_embedded_interfaces_from_import(&embedded_name, visiting, out)?;
+    }
+    visiting.remove(trait_name);
+    Some(())
+}
+
+fn qualify_embedded_import_interface_name(package_name: &str, embedded_name: &str) -> String {
+    if embedded_name.contains('.') {
+        embedded_name.to_string()
+    } else {
+        format!("{package_name}.{embedded_name}")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -20856,10 +20906,15 @@ fn interface_method_set_for_impl(
     fallback_required_methods: &[String],
 ) -> InterfaceImplMethodSet {
     let direct_methods = interface_direct_methods_for_impl(trait_name, fallback_required_methods);
-    let required_methods = TYPE_ENV
-        .with(|env| env.borrow().get_interface_methods(trait_name))
-        .or_else(|| interface_methods_from_import(trait_name))
-        .unwrap_or_else(|| fallback_required_methods.to_vec());
+    let required_methods = if trait_name.contains('.') {
+        interface_methods_from_import(trait_name)
+            .or_else(|| TYPE_ENV.with(|env| env.borrow().get_interface_methods(trait_name)))
+    } else {
+        TYPE_ENV
+            .with(|env| env.borrow().get_interface_methods(trait_name))
+            .or_else(|| interface_methods_from_import(trait_name))
+    }
+    .unwrap_or_else(|| fallback_required_methods.to_vec());
     let embedded_interfaces = interface_embedded_interfaces_for_impl(trait_name);
 
     InterfaceImplMethodSet {
@@ -28626,6 +28681,42 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
         assert_eq!(
             method_set.embedded_interfaces,
             vec!["Reader".to_string(), "Writer".to_string()]
+        );
+    }
+
+    #[test]
+    fn interface_method_set_for_impl_expands_imported_embedded_interfaces() {
+        let method_set = super::interface_method_set_for_impl("hash.XOF", &[]);
+
+        assert!(
+            method_set.required_methods.contains(&"Write".to_string()),
+            "{method_set:?}"
+        );
+        assert!(
+            method_set.required_methods.contains(&"Read".to_string()),
+            "{method_set:?}"
+        );
+        assert!(
+            method_set.required_methods.contains(&"Reset".to_string()),
+            "{method_set:?}"
+        );
+        assert!(
+            method_set
+                .required_methods
+                .contains(&"BlockSize".to_string()),
+            "{method_set:?}"
+        );
+        assert!(
+            method_set
+                .embedded_interfaces
+                .contains(&"io.Writer".to_string()),
+            "{method_set:?}"
+        );
+        assert!(
+            method_set
+                .embedded_interfaces
+                .contains(&"io.Reader".to_string()),
+            "{method_set:?}"
         );
     }
 
