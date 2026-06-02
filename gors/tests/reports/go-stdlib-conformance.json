@@ -2901,7 +2901,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReader depends on generic DEFLATE decompressor lowering with io.Reader to flate.Reader/bufio.Reader selection, sync.Once initialized package state, function-valued decompressor steps, and sliding byte-window aliases."
         },
         {
           "id": "compress/flate::NewReaderDict",
@@ -2910,7 +2910,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewReaderDict depends on the unsupported NewReader decompressor graph plus dictionary-backed LZ77 window initialization."
         },
         {
           "id": "compress/flate::NewWriter",
@@ -2919,7 +2919,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriter depends on generic io.Writer storage in compressor state, function-valued compression strategy fields, large array-backed state, and byte-slice window mutation."
         },
         {
           "id": "compress/flate::NewWriterDict",
@@ -2928,7 +2928,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: NewWriterDict depends on NewWriter plus dictionary writer interface forwarding, copied dictionary state, and compressor window prefill semantics."
         },
         {
           "id": "compress/flate::NoCompression",
@@ -2970,7 +2970,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reader is an exported interface tied to the unsupported decompressor ReadByte/read path and bufio fallback semantics."
         },
         {
           "id": "compress/flate::Resetter",
@@ -2979,7 +2979,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Resetter coverage depends on returned ReadCloser interface values also exposing Reset with io.Reader and dictionary state replacement."
         },
         {
           "id": "compress/flate::WriteError",
@@ -3010,7 +3010,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Writer behavior depends on the unsupported compressor state model, function-valued strategy fields, io.Writer dispatch, and mutable byte-slice windows."
         },
         {
           "id": "compress/flate::Writer.Close",
@@ -3019,7 +3019,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Close depends on compressor final-block emission, huffman bit writer state, io.Writer dispatch, and closed-writer error state."
         },
         {
           "id": "compress/flate::Writer.Flush",
@@ -3028,7 +3028,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Flush depends on compressor sync-flush state, huffman bit writer output, and mutation-preserving io.Writer calls."
         },
         {
           "id": "compress/flate::Writer.Reset",
@@ -3037,7 +3037,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Reset depends on interface type assertions for dictionary writers, stored io.Writer replacement, and dictionary window refill semantics."
         },
         {
           "id": "compress/flate::Writer.Write",
@@ -3046,7 +3046,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Write depends on compressor byte-window mutation, function-valued compression steps, and io.Writer dispatch for emitted blocks."
         }
       ]
     },

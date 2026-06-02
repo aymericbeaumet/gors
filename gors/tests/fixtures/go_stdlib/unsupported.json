@@ -149,5 +149,16 @@
   "bytes::ToTitleSpecial": "Audited 2026-06-02: ToTitleSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune.",
   "bytes::ToUpperSpecial": "Audited 2026-06-02: ToUpperSpecial depends on generic method-value coercion from unicode.SpecialCase receiver methods to func(rune) rune.",
   "bytes::TrimSpace": "Audited 2026-06-02: TrimSpace depends on range-over-slice lowering that does not keep an immutable borrow alive while the slice variable is reassigned.",
-  "compress/bzip2::NewReader": "Audited 2026-06-02: NewReader depends on generic io.Reader to io.ByteReader assertion/fallback through bufio.Reader, interface method shims for borrowed []byte Read parameters, and slices.SortFunc callback type-parameter lowering in the reachable decompressor graph."
+  "compress/bzip2::NewReader": "Audited 2026-06-02: NewReader depends on generic io.Reader to io.ByteReader assertion/fallback through bufio.Reader, interface method shims for borrowed []byte Read parameters, and slices.SortFunc callback type-parameter lowering in the reachable decompressor graph.",
+  "compress/flate::NewReader": "Audited 2026-06-02: NewReader depends on generic DEFLATE decompressor lowering with io.Reader to flate.Reader/bufio.Reader selection, sync.Once initialized package state, function-valued decompressor steps, and sliding byte-window aliases.",
+  "compress/flate::NewReaderDict": "Audited 2026-06-02: NewReaderDict depends on the unsupported NewReader decompressor graph plus dictionary-backed LZ77 window initialization.",
+  "compress/flate::NewWriter": "Audited 2026-06-02: NewWriter depends on generic io.Writer storage in compressor state, function-valued compression strategy fields, large array-backed state, and byte-slice window mutation.",
+  "compress/flate::NewWriterDict": "Audited 2026-06-02: NewWriterDict depends on NewWriter plus dictionary writer interface forwarding, copied dictionary state, and compressor window prefill semantics.",
+  "compress/flate::Reader": "Audited 2026-06-02: Reader is an exported interface tied to the unsupported decompressor ReadByte/read path and bufio fallback semantics.",
+  "compress/flate::Resetter": "Audited 2026-06-02: Resetter coverage depends on returned ReadCloser interface values also exposing Reset with io.Reader and dictionary state replacement.",
+  "compress/flate::Writer": "Audited 2026-06-02: Writer behavior depends on the unsupported compressor state model, function-valued strategy fields, io.Writer dispatch, and mutable byte-slice windows.",
+  "compress/flate::Writer.Close": "Audited 2026-06-02: Close depends on compressor final-block emission, huffman bit writer state, io.Writer dispatch, and closed-writer error state.",
+  "compress/flate::Writer.Flush": "Audited 2026-06-02: Flush depends on compressor sync-flush state, huffman bit writer output, and mutation-preserving io.Writer calls.",
+  "compress/flate::Writer.Reset": "Audited 2026-06-02: Reset depends on interface type assertions for dictionary writers, stored io.Writer replacement, and dictionary window refill semantics.",
+  "compress/flate::Writer.Write": "Audited 2026-06-02: Write depends on compressor byte-window mutation, function-valued compression steps, and io.Writer dispatch for emitted blocks."
 }
