@@ -5055,7 +5055,7 @@ fn mutated_vec_param_indices(
             let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
                 return None;
             };
-            let inner = vec_type_inner(&pat_type.ty)?;
+            let inner = vec_type_inner(&pat_type.ty).or_else(|| mut_ref_vec_inner(&pat_type.ty))?;
             (body_mutates_vec_param(block, &pat_ident.ident)
                 && !body_reassigns_param(block, &pat_ident.ident))
             .then(|| (index, pat_ident.ident.clone(), inner))
@@ -5825,22 +5825,13 @@ impl RestoreVecNewtypeMethodReceivers<'_> {
         let syn::Stmt::Expr(syn::Expr::MethodCall(method_call), semi) = stmt else {
             return None;
         };
-        let syn::Expr::Call(receiver_call) = &*method_call.receiver else {
-            return None;
-        };
-        let type_key = from_call_vec_newtype_key(&receiver_call.func, &self.module_name)?;
-        if !self.vec_newtypes.contains(&type_key) {
-            return None;
-        }
-        let source_name = receiver_call.args.first().and_then(expr_path_ident)?;
-        if receiver_call.args.len() != 1 {
-            return None;
-        }
+        let receiver =
+            vec_newtype_receiver_call(&method_call.receiver, &self.module_name, self.vec_newtypes)?;
 
         let temp = quote::format_ident!("__gors_vec_newtype_recv_{}", self.counter);
         self.counter += 1;
-        let source = syn::Ident::new(&source_name, Span::mixed_site());
-        let from_func = receiver_call.func.clone();
+        let source = receiver.source;
+        let from_func = receiver.from_func;
         let method = method_call.method.clone();
         let args = method_call.args.iter().cloned().collect::<Vec<_>>();
         let expr: syn::Expr = syn::parse_quote! {{
@@ -5918,27 +5909,65 @@ impl syn::visit_mut::VisitMut for VecNewtypeBorrowHoister<'_> {
         if reference.mutability.is_none() {
             return;
         }
-        let syn::Expr::Call(call) = &*reference.expr else {
-            return;
-        };
-        let Some(type_key) = from_call_vec_newtype_key(&call.func, &self.module_name) else {
-            return;
-        };
-        if !self.vec_newtypes.contains(&type_key) || call.args.len() != 1 {
-            return;
-        }
-        let Some(source_name) = call.args.first().and_then(expr_path_ident) else {
+        let Some(receiver) =
+            vec_newtype_receiver_call(&reference.expr, &self.module_name, self.vec_newtypes)
+        else {
             return;
         };
         let temp = quote::format_ident!("__gors_vec_newtype_arg_{}", *self.counter);
         *self.counter += 1;
-        let source = syn::Ident::new(&source_name, Span::mixed_site());
         self.bindings.push(VecNewtypeBorrowBinding {
             temp: temp.clone(),
-            source,
-            from_func: (*call.func).clone(),
+            source: receiver.source,
+            from_func: receiver.from_func,
         });
         *reference.expr = syn::parse_quote! { #temp };
+    }
+}
+
+struct VecNewtypeReceiverCall {
+    from_func: syn::Expr,
+    source: syn::Ident,
+}
+
+fn vec_newtype_receiver_call(
+    expr: &syn::Expr,
+    current_module: &str,
+    vec_newtypes: &std::collections::HashSet<String>,
+) -> Option<VecNewtypeReceiverCall> {
+    match expr {
+        syn::Expr::Call(call) => {
+            let type_key = from_call_vec_newtype_key(&call.func, current_module)?;
+            if !vec_newtypes.contains(&type_key) || call.args.len() != 1 {
+                return None;
+            }
+            let source_name = call.args.first().and_then(expr_path_ident_or_clone)?;
+            Some(VecNewtypeReceiverCall {
+                from_func: (*call.func).clone(),
+                source: syn::Ident::new(&source_name, Span::mixed_site()),
+            })
+        }
+        syn::Expr::Group(group) => {
+            vec_newtype_receiver_call(&group.expr, current_module, vec_newtypes)
+        }
+        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
+            vec_newtype_receiver_call(&method.receiver, current_module, vec_newtypes)
+        }
+        syn::Expr::Paren(paren) => {
+            vec_newtype_receiver_call(&paren.expr, current_module, vec_newtypes)
+        }
+        _ => None,
+    }
+}
+
+fn expr_path_ident_or_clone(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Group(group) => expr_path_ident_or_clone(&group.expr),
+        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
+            expr_path_ident_or_clone(&method.receiver)
+        }
+        syn::Expr::Paren(paren) => expr_path_ident_or_clone(&paren.expr),
+        _ => expr_path_ident(expr),
     }
 }
 
@@ -12489,6 +12518,7 @@ fn compile_method(
     let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
         borrowed_slice_alias_param_names(&func_decl.type_.params),
     );
+    let borrowed_generic_slice_params = std::collections::HashSet::new();
     let borrowed_pointer_view_names = BorrowedPointerViewNamesGuard::clear();
     let borrowed_pointer_view_return_guard =
         BorrowedPointerViewReturnGuard::set(borrowed_pointer_view_return.clone());
@@ -12502,6 +12532,7 @@ fn compile_method(
             param,
             &type_param_info,
             &borrow_pointer_params,
+            &borrowed_generic_slice_params,
         )? {
             inputs.push(arg);
         }
@@ -13999,10 +14030,17 @@ fn wrap_void_defer_body_in_unwind_catch(block: &mut syn::Block) {
     ];
 }
 
-fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
+fn compile_struct_field_expr(
+    expr: ast::Expr,
+    expected: &typeinfer::GoType,
+    borrowed_interface_field: bool,
+) -> syn::Expr {
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
-    if !matches!(expected, typeinfer::GoType::Error) && go_type_interface_name(expected).is_some() {
+    if !borrowed_interface_field
+        && !matches!(expected, typeinfer::GoType::Error)
+        && go_type_interface_name(expected).is_some()
+    {
         return compile_owned_interface_expr(expr, expected);
     }
     if let ast::Expr::FuncLit(func_lit) = expr {
@@ -14017,6 +14055,20 @@ fn compile_struct_field_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> s
         return expr;
     }
     compiled
+}
+
+fn struct_field_is_borrowed_interface(type_name: Option<&str>, field_name: &str) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let field_name = rust_safe_ident_name(field_name);
+    BORROWED_INTERFACE_STRUCTS.with(|structs| {
+        structs.borrow().get(type_name).is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| field.field_ident.to_string() == field_name)
+        })
+    })
 }
 
 fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
@@ -14096,7 +14148,11 @@ fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Ve
                         .find(|(name, _)| name == &field_name)
                         .map(|(_, ty)| ty.clone());
                     let expr = if let Some(expected) = expected.as_ref() {
-                        compile_struct_field_expr(*kv.value, expected)
+                        compile_struct_field_expr(
+                            *kv.value,
+                            expected,
+                            struct_field_is_borrowed_interface(type_name, &field_name),
+                        )
                     } else {
                         compile_expr_with_expected(*kv.value, None)
                     };
@@ -14122,7 +14178,11 @@ fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Ve
                     attrs: vec![],
                     member: syn::Member::Named(syn::Ident::new(&field_name, Span::mixed_site())),
                     colon_token: Some(<Token![:]>::default()),
-                    expr: compile_struct_field_expr(elt, field_ty),
+                    expr: compile_struct_field_expr(
+                        elt,
+                        field_ty,
+                        struct_field_is_borrowed_interface(type_name, field_name.as_str()),
+                    ),
                 };
             }
             let index = positional_index as u32;
@@ -22457,6 +22517,163 @@ fn borrowed_slice_alias_param_names(params: &ast::FieldList) -> std::collections
     names
 }
 
+fn borrowed_generic_slice_alias_param_names(
+    params: &ast::FieldList,
+    type_param_info: &TypeParamInfo,
+    body: Option<&ast::BlockStmt>,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for field in &params.list {
+        let Some(type_expr) = &field.type_ else {
+            continue;
+        };
+        if generic_slice_param_element_type(type_expr, type_param_info).is_none() {
+            continue;
+        }
+        let Some(field_names) = &field.names else {
+            continue;
+        };
+        for name in field_names {
+            if body.is_some_and(|body| slice_param_body_rebinds_or_returns(body, name.name)) {
+                continue;
+            }
+            names.insert(rust_safe_ident_name(name.name));
+        }
+    }
+    names
+}
+
+fn slice_param_body_rebinds_or_returns(body: &ast::BlockStmt, name: &str) -> bool {
+    body.list
+        .iter()
+        .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+}
+
+fn slice_param_stmt_rebinds_or_returns(stmt: &ast::Stmt, name: &str) -> bool {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            assign.lhs.iter().any(|lhs| expr_is_ident_name(lhs, name))
+                || assign
+                    .rhs
+                    .iter()
+                    .any(|rhs| slice_param_expr_rebinds_or_returns(rhs, name))
+        }
+        ast::Stmt::BlockStmt(block) => slice_param_body_rebinds_or_returns(block, name),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name)),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || comm
+                    .body
+                    .iter()
+                    .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+        }
+        ast::Stmt::DeclStmt(decl) => decl.decl.specs.iter().any(|spec| match spec {
+            ast::Spec::ValueSpec(value) => value.values.as_ref().is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|expr| ast_expr_mentions_ident(expr, name))
+            }),
+            _ => false,
+        }),
+        ast::Stmt::ExprStmt(expr) => slice_param_expr_rebinds_or_returns(&expr.x, name),
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || for_stmt
+                    .cond
+                    .as_ref()
+                    .is_some_and(|expr| slice_param_expr_rebinds_or_returns(expr, name))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || slice_param_body_rebinds_or_returns(&for_stmt.body, name)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || slice_param_expr_rebinds_or_returns(&if_stmt.cond, name)
+                || slice_param_body_rebinds_or_returns(&if_stmt.body, name)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+        }
+        ast::Stmt::LabeledStmt(labeled) => slice_param_stmt_rebinds_or_returns(&labeled.stmt, name),
+        ast::Stmt::RangeStmt(range) => {
+            slice_param_expr_rebinds_or_returns(&range.x, name)
+                || slice_param_body_rebinds_or_returns(&range.body, name)
+        }
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .any(|expr| ast_expr_mentions_ident(expr, name)),
+        ast::Stmt::SelectStmt(select) => select
+            .body
+            .list
+            .iter()
+            .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name)),
+        ast::Stmt::SendStmt(send) => {
+            slice_param_expr_rebinds_or_returns(&send.chan, name)
+                || slice_param_expr_rebinds_or_returns(&send.value, name)
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || switch
+                    .tag
+                    .as_ref()
+                    .is_some_and(|expr| slice_param_expr_rebinds_or_returns(expr, name))
+                || switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+                || slice_param_stmt_rebinds_or_returns(&type_switch.assign, name)
+                || type_switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| slice_param_stmt_rebinds_or_returns(stmt, name))
+        }
+        ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_) => false,
+    }
+}
+
+fn slice_param_expr_rebinds_or_returns(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::FuncLit(func) => slice_param_body_rebinds_or_returns(&func.body, name),
+        _ => false,
+    }
+}
+
+fn expr_is_ident_name(expr: &ast::Expr, name: &str) -> bool {
+    matches!(expr, ast::Expr::Ident(ident) if ident.name == name)
+}
+
 fn type_kind_for_type_expr(expr: &ast::Expr) -> Option<typeinfer::TypeKind> {
     if let ast::Expr::ParenExpr(paren) = expr {
         return type_kind_for_type_expr(&paren.x);
@@ -22532,6 +22749,7 @@ fn compile_field_to_fn_args_with_type_params(
     field: ast::Field,
     type_param_info: &TypeParamInfo,
     borrow_pointer_params: &std::collections::HashSet<String>,
+    borrow_generic_slice_params: &std::collections::HashSet<String>,
 ) -> Result<Vec<syn::FnArg>, CompilerError> {
     let type_expr = field
         .type_
@@ -22553,7 +22771,11 @@ fn compile_field_to_fn_args_with_type_params(
         let name_str = name.name;
         let mut rust_type: syn::Type =
             if let Some(elem) = generic_slice_param_element_type(&type_expr, type_param_info) {
-                syn::parse_quote! { &mut Vec<#elem> }
+                if borrow_generic_slice_params.contains(&rust_safe_ident_name(name_str)) {
+                    syn::parse_quote! { &mut [#elem] }
+                } else {
+                    syn::parse_quote! { &mut Vec<#elem> }
+                }
             } else if let Some(map_type) = generic_map_param_type(&type_expr, type_param_info) {
                 map_type
             } else {
@@ -22789,15 +23011,21 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         }
         let borrowed_pointer_param_names =
             BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
-        let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
-            borrowed_slice_alias_param_names(&func_decl.type_.params),
+        let borrowed_generic_slice_params = borrowed_generic_slice_alias_param_names(
+            &func_decl.type_.params,
+            &type_param_info,
+            func_decl.body.as_ref(),
         );
+        let mut borrowed_slice_names = borrowed_slice_alias_param_names(&func_decl.type_.params);
+        borrowed_slice_names.extend(borrowed_generic_slice_params.iter().cloned());
+        let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(borrowed_slice_names);
         let mut inputs = syn::punctuated::Punctuated::new();
         for param in func_decl.type_.params.list {
             for arg in compile_field_to_fn_args_with_type_params(
                 param,
                 &type_param_info,
                 &borrow_pointer_params,
+                &borrowed_generic_slice_params,
             )? {
                 inputs.push(arg);
             }
@@ -28897,6 +29125,40 @@ func main() {
     }
 
     #[test]
+    fn embedded_interface_struct_literals_keep_borrowed_storage() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Interface interface {
+	Len() int
+}
+
+type reverse struct {
+	Interface
+}
+
+func Reverse(data Interface) Interface {
+	return &reverse{data}
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("Interface : data") || output.contains("Interface: data"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("Interface :: __gors_clone_box (& * (data))"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn interface_composite_literals_get_stable_backing_storage() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(
@@ -31773,7 +32035,7 @@ func main() {
                 }
             "#,
             rust! {
-                pub fn Index<E: PartialEq + Clone + Default>(mut s: &mut Vec<E>, mut v: E) -> isize {
+                pub fn Index<E: PartialEq + Clone + Default>(mut s: &mut [E], mut v: E) -> isize {
                     for mut i in 0..((crate::builtin::len(&s) as isize) as isize) {
                         if v == {
                             let __gors_index_base = &s;
@@ -31789,6 +32051,45 @@ func main() {
                     -1
                 }
             },
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_borrows_mutated_generic_slice_alias_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func Touch[S ~[]E, E comparable](s S, v E) {
+	s[0] = v
+}
+
+func main() {
+	values := []int{1}
+	Touch(values, 2)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains(
+                "pub fn Touch<E: PartialEq + Clone + Default>(mut s: &mut [E], mut v: E)"
+            ) || main_rs.contains(
+                "pub fn Touch < E : PartialEq + Clone + Default > (mut s : & mut [E] , mut v : E)"
+            ),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("Touch(&mut values, 2)")
+                || main_rs.contains("Touch(&mut *values, 2)")
+                || main_rs.contains("Touch (& mut values , 2)")
+                || main_rs.contains("Touch (& mut * values , 2)"),
+            "{main_rs}"
         );
     }
 
@@ -31882,6 +32183,48 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_restores_cloned_named_slice_conversion_method_receivers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Numbers []int
+
+func (n Numbers) Set(i int, v int) {
+	n[i] = v
+}
+
+func main() {
+	values := []int{1, 2}
+	Numbers(values).Set(0, 9)
+	_ = values
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("std::mem::take(&mut values)")
+                || main_rs.contains("std :: mem :: take (& mut values)"),
+            "expected named slice method receiver to move out of the source Vec: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("values = Vec::from(__gors_vec_newtype_recv_")
+                || main_rs.contains("values = Vec :: from (__gors_vec_newtype_recv_"),
+            "expected named slice method receiver to write back to the source Vec: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("Numbers::from(values.clone()).clone().Set")
+                && !main_rs.contains("Numbers :: from (values . clone ()) . clone () . Set"),
+            "expected cloned conversion receiver to be restored: {main_rs}"
         );
     }
 
