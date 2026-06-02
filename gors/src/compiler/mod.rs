@@ -21464,7 +21464,21 @@ fn borrowed_pointer_interface_impl_items_for_methods(
                 PointerInterfaceCallReceiver::MutableRef => syn::parse_quote! { &mut **self },
                 PointerInterfaceCallReceiver::Owned => syn::parse_quote! { (**self).clone() },
             };
-            let block = if matches!(sig.output, syn::ReturnType::Default) {
+            let block = if immutable_error_method
+                && matches!(call_receiver_kind, PointerInterfaceCallReceiver::MutableRef)
+            {
+                if matches!(sig.output, syn::ReturnType::Default) {
+                    syn::parse_quote!({
+                        let mut __gors_receiver = (**self).clone();
+                        #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*);
+                    })
+                } else {
+                    syn::parse_quote!({
+                        let mut __gors_receiver = (**self).clone();
+                        #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*)
+                    })
+                }
+            } else if matches!(sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
                     #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
                 })
@@ -30117,6 +30131,56 @@ var ErrValue error = &wrapError{msg: "boom"}
         assert!(
             !errpkg_rs.contains("impl crate::builtin::error for wrapError"),
             "{errpkg_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_clones_borrowed_named_slice_error_receivers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type listError []string
+
+func (e listError) Error() string {
+	var parts []string
+	for _, part := range e {
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+func use(err error) string {
+	return err.Error()
+}
+
+func main() {
+	err := listError{"boom"}
+	_ = use(err)
+	_ = use(&err)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("impl<'__gors> crate::builtin::error for &'__gors mut listError"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("let mut __gors_receiver = (**self).clone();")
+                && main_rs.contains("listError::Error(&mut __gors_receiver)"),
+            "expected borrowed error shim to call value-receiver method on a clone: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("listError::Error(&mut **self)"),
+            "expected borrowed error shim not to mutably borrow through immutable self: {main_rs}"
         );
     }
 
