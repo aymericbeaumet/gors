@@ -25440,6 +25440,9 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &mut right);
                 }
+                if matches!(lhs_ty, typeinfer::GoType::Error) {
+                    right = syn::parse_quote! { (#right).clone() };
+                }
                 if let Some(stmts) =
                     slice_alias_writeback_assignment_stmts(&lhs_ast, right.clone(), &lhs_ty)
                 {
@@ -28504,6 +28507,36 @@ func main() {
         assert!(main_rs.contains("impl Default for wrapError"), "{main_rs}");
         assert!(main_rs.contains("#[derive(Clone"), "{main_rs}");
         assert!(main_rs.contains("let _ = w.clone();"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_clones_error_assignments() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	err error
+}
+
+func save(err error) error {
+	var h holder
+	h.err = err
+	return err
+}
+
+func main() {
+	_ = save(nil)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("h.err = (err).clone();"), "{main_rs}");
     }
 
     #[test]
