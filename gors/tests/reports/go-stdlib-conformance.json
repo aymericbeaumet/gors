@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 214,
-    "unsupportedCaseCount": 12204,
+    "passingCaseCount": 221,
+    "unsupportedCaseCount": 12197,
     "fixtureCount": 81
   },
   "groups": [
@@ -13893,8 +13893,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 33,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 31,
+        "passingCaseCount": 9,
+        "unsupportedCaseCount": 24,
         "fixtureCount": 0
       },
       "cases": [
@@ -13905,7 +13905,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: CRTValue behavior depends on math/big.Int pointer fields used by multi-prime RSA precomputation and validation."
         },
         {
           "id": "crypto/rsa::DecryptOAEP",
@@ -13914,7 +13914,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: DecryptOAEP depends on hash.Hash state, FIPS RSA private-key conversion, OAEP padding checks, byte-slice mutation, and error interface propagation."
         },
         {
           "id": "crypto/rsa::DecryptPKCS1v15",
@@ -13923,7 +13923,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: DecryptPKCS1v15 depends on FIPS RSA private-key conversion, constant-time padding checks over byte slices, and math/big-backed key state."
         },
         {
           "id": "crypto/rsa::DecryptPKCS1v15SessionKey",
@@ -13932,7 +13932,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: DecryptPKCS1v15SessionKey depends on mutation-preserving session-key []byte arguments, constant-time copy semantics, and FIPS RSA private-key conversion."
         },
         {
           "id": "crypto/rsa::EncryptOAEP",
@@ -13941,7 +13941,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: EncryptOAEP depends on hash.Hash/MGF state, random byte generation, FIPS RSA public-key conversion, and OAEP byte-slice padding construction."
         },
         {
           "id": "crypto/rsa::EncryptOAEPWithOptions",
@@ -13950,7 +13950,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: EncryptOAEPWithOptions depends on OAEP option hash selection plus the unsupported EncryptOAEP hash/random/FIPS RSA path."
         },
         {
           "id": "crypto/rsa::EncryptPKCS1v15",
@@ -13959,15 +13959,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: EncryptPKCS1v15 depends on random nonzero padding bytes, FIPS RSA public-key conversion, and mutation-preserving byte-slice padding assembly."
         },
         {
           "id": "crypto/rsa::ErrDecryption",
           "title": "ErrDecryption",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -13975,8 +13977,10 @@
           "title": "ErrMessageTooLong",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -13984,8 +13988,10 @@
           "title": "ErrVerification",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -13995,7 +14001,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateKey depends on crypto/internal/fips140/rsa key generation, secure random byte reads, math/big.Int construction, and pointer-backed private key state."
         },
         {
           "id": "crypto/rsa::GenerateMultiPrimeKey",
@@ -14004,15 +14010,17 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: GenerateMultiPrimeKey depends on crypto/rand.Prime, math/big modular arithmetic, labeled prime-generation loops, and multi-prime precomputation."
         },
         {
           "id": "crypto/rsa::OAEPOptions",
           "title": "OAEPOptions",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -14020,8 +14028,10 @@
           "title": "PKCS1v15DecryptOptions",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -14029,8 +14039,10 @@
           "title": "PSSOptions",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -14038,8 +14050,10 @@
           "title": "PSSOptions.HashFunc",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "crypto/rsa"
+          ],
           "reason": ""
         },
         {
@@ -14071,7 +14085,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrecomputedValues behavior depends on math/big.Int pointer fields plus imported FIPS RSA private-key handles stored in struct state."
         },
         {
           "id": "crypto/rsa::PrivateKey",
@@ -14080,7 +14094,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PrivateKey behavior depends on embedded PublicKey fields, math/big.Int pointer slices, FIPS RSA private-key handles, and crypto.Signer/Decrypter interface methods."
         },
         {
           "id": "crypto/rsa::PrivateKey.Decrypt",
@@ -14089,7 +14103,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Decrypt depends on DecrypterOpts type assertions, hash.Hash option dispatch, random session-key fills, and the unsupported OAEP/PKCS1 private-key paths."
         },
         {
           "id": "crypto/rsa::PrivateKey.Equal",
@@ -14098,7 +14112,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PrivateKey interface assertions and constant-time comparison of math/big.Int pointer-backed key fields."
         },
         {
           "id": "crypto/rsa::PrivateKey.Precompute",
@@ -14107,7 +14121,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Precompute depends on FIPS RSA private-key construction, math/big byte encodings, and mutation of embedded precomputed key state."
         },
         {
           "id": "crypto/rsa::PrivateKey.Public",
@@ -14116,7 +14130,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Public depends on returning the embedded PublicKey pointer as a crypto.PublicKey interface while preserving receiver/key identity."
         },
         {
           "id": "crypto/rsa::PrivateKey.Sign",
@@ -14125,7 +14139,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Sign depends on SignerOpts/PSSOptions dispatch, hash selection, random input, and the unsupported PKCS1/PSS private-key signing paths."
         },
         {
           "id": "crypto/rsa::PrivateKey.Validate",
@@ -14134,7 +14148,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Validate depends on math/big.Int pointer fields, FIPS RSA private-key consistency checks, and precomputed CRT state validation."
         },
         {
           "id": "crypto/rsa::PublicKey",
@@ -14143,7 +14157,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: PublicKey behavior depends on math/big.Int pointer state for modulus size, equality, and FIPS public-key conversion."
         },
         {
           "id": "crypto/rsa::PublicKey.Equal",
@@ -14152,7 +14166,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Equal depends on crypto.PublicKey interface assertions and constant-time comparison of math/big.Int pointer-backed modulus values."
         },
         {
           "id": "crypto/rsa::PublicKey.Size",
@@ -14161,7 +14175,7 @@
           "kind": "method",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: Size depends on math/big.Int pointer receiver BitLen over RSA modulus state."
         },
         {
           "id": "crypto/rsa::SignPKCS1v15",
@@ -14170,7 +14184,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SignPKCS1v15 depends on hash identifier encoding, FIPS RSA private-key conversion, byte-slice signature construction, and error mapping."
         },
         {
           "id": "crypto/rsa::SignPSS",
@@ -14179,7 +14193,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: SignPSS depends on hash.Hash unwrapping, random salt generation, FIPS RSA private-key conversion, and PSS padding byte-slice construction."
         },
         {
           "id": "crypto/rsa::VerifyPKCS1v15",
@@ -14188,7 +14202,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: VerifyPKCS1v15 depends on hash identifier encoding, FIPS RSA public-key conversion, byte-slice signature checks, and error mapping."
         },
         {
           "id": "crypto/rsa::VerifyPSS",
@@ -14197,7 +14211,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Audited 2026-06-02: VerifyPSS depends on hash.Hash unwrapping, FIPS RSA public-key conversion, PSS padding checks, and error mapping."
         }
       ]
     },
