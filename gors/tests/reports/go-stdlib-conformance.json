@@ -13,8 +13,8 @@
     "groupCount": 345,
     "passingGroupCount": 0,
     "caseCount": 12584,
-    "passingCaseCount": 29,
-    "unsupportedCaseCount": 12555,
+    "passingCaseCount": 37,
+    "unsupportedCaseCount": 12547,
     "fixtureCount": 76
   },
   "groups": [
@@ -458,13 +458,15 @@
       "id": "archive/zip",
       "title": "archive/zip",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "archive/zip"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 40,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 40,
+        "passingCaseCount": 8,
+        "unsupportedCaseCount": 32,
         "fixtureCount": 0
       },
       "cases": [
@@ -491,8 +493,10 @@
           "title": "Deflate",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -500,8 +504,10 @@
           "title": "ErrAlgorithm",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -509,8 +515,10 @@
           "title": "ErrChecksum",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -518,8 +526,10 @@
           "title": "ErrFormat",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -527,8 +537,10 @@
           "title": "ErrInsecurePath",
           "subtitle": "var",
           "kind": "var",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -572,8 +584,10 @@
           "title": "FileHeader",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -617,8 +631,10 @@
           "title": "FileHeader.SetMode",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {
@@ -725,8 +741,10 @@
           "title": "Store",
           "subtitle": "const",
           "kind": "const",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "archive/zip"
+          ],
           "reason": ""
         },
         {

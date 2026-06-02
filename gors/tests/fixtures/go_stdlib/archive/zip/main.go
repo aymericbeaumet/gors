@@ -3,51 +3,38 @@ package main
 import (
 	"archive/zip"
 	"fmt"
+	"io/fs"
 )
 
 func main() {
+	fmt.Println("== archive/zip/constants ==")
+	caseConstants()
+	fmt.Println("== archive/zip/errors ==")
+	caseErrors()
+	fmt.Println("== archive/zip/file-header ==")
+	caseFileHeader()
+}
+
+func caseConstants() {
+	// gors:stdlib-cover archive/zip::Store archive/zip::Deflate
 	fmt.Println(zip.Store, zip.Deflate)
 }
 
-func coverArchiveZipAPI() {
-	var _ zip.Compressor
-	var _ zip.Decompressor
-	var _ = zip.Deflate
-	var _ = zip.ErrAlgorithm
-	var _ = zip.ErrChecksum
-	var _ = zip.ErrFormat
-	var _ = zip.ErrInsecurePath
-	var _ zip.File
-	var _ = (*zip.File).DataOffset
-	var _ = (*zip.File).Open
-	var _ = (*zip.File).OpenRaw
-	var _ zip.FileHeader
-	var _ = (*zip.FileHeader).FileInfo
-	var _ = (*zip.FileHeader).Mode
-	var _ = (*zip.FileHeader).ModTime
-	var _ = (*zip.FileHeader).SetMode
-	var _ = (*zip.FileHeader).SetModTime
-	var _ = zip.FileInfoHeader
-	var _ = zip.NewReader
-	var _ = zip.NewWriter
-	var _ = zip.OpenReader
-	var _ zip.ReadCloser
-	var _ = (*zip.ReadCloser).Close
-	var _ zip.Reader
-	var _ = (*zip.Reader).Open
-	var _ = (*zip.Reader).RegisterDecompressor
-	var _ = zip.RegisterCompressor
-	var _ = zip.RegisterDecompressor
-	var _ = zip.Store
-	var _ zip.Writer
-	var _ = (*zip.Writer).AddFS
-	var _ = (*zip.Writer).Close
-	var _ = (*zip.Writer).Copy
-	var _ = (*zip.Writer).Create
-	var _ = (*zip.Writer).CreateHeader
-	var _ = (*zip.Writer).CreateRaw
-	var _ = (*zip.Writer).Flush
-	var _ = (*zip.Writer).RegisterCompressor
-	var _ = (*zip.Writer).SetComment
-	var _ = (*zip.Writer).SetOffset
+func caseErrors() {
+	// gors:stdlib-cover archive/zip::ErrAlgorithm archive/zip::ErrChecksum archive/zip::ErrFormat archive/zip::ErrInsecurePath
+	fmt.Println(zip.ErrAlgorithm.Error())
+	fmt.Println(zip.ErrChecksum.Error())
+	fmt.Println(zip.ErrFormat.Error())
+	fmt.Println(zip.ErrInsecurePath.Error())
+}
+
+func caseFileHeader() {
+	// gors:stdlib-cover archive/zip::FileHeader archive/zip::FileHeader.SetMode
+	h := zip.FileHeader{
+		Name:               "dir/file.txt",
+		Method:             zip.Store,
+		UncompressedSize64: 7,
+	}
+	h.SetMode(fs.ModeDir | 0755)
+	fmt.Println(h.Name, h.Method, h.ExternalAttrs != 0, h.UncompressedSize64)
 }
