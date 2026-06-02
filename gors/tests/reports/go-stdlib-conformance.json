@@ -7385,7 +7385,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::ACC1",
@@ -7394,7 +7394,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::ACCM",
@@ -7403,7 +7403,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B0",
@@ -7412,7 +7412,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B1",
@@ -7421,7 +7421,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B2",
@@ -7430,7 +7430,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B3",
@@ -7439,7 +7439,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B4",
@@ -7448,7 +7448,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B5",
@@ -7457,7 +7457,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B6",
@@ -7466,7 +7466,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::B7",
@@ -7475,7 +7475,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::BSWAP",
@@ -7484,7 +7484,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::POLY",
@@ -7493,7 +7493,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::T0",
@@ -7502,7 +7502,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::T1",
@@ -7511,7 +7511,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/aes/gcm/_asm/gcm::T2",
@@ -7520,7 +7520,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -10359,7 +10359,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/nistec/_asm::LDt",
@@ -10368,7 +10368,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/nistec/_asm::MemFunc",
@@ -10377,7 +10377,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/nistec/_asm::ST",
@@ -10386,7 +10386,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/nistec/_asm::STt",
@@ -10395,7 +10395,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/nistec/_asm::ThatPeskyUnicodeDot",
@@ -10404,7 +10404,7 @@
           "kind": "const",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -11285,7 +11285,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::CTX",
@@ -11294,7 +11294,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::INP",
@@ -11303,7 +11303,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::INP_END_SIZE",
@@ -11312,7 +11312,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::INP_SIZE",
@@ -11321,7 +11321,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::K256_DATA",
@@ -11330,7 +11330,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::NUM_BYTES",
@@ -11339,7 +11339,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::SRND",
@@ -11348,7 +11348,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::STACK_SIZE",
@@ -11357,7 +11357,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::T1",
@@ -11366,7 +11366,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::TBL",
@@ -11375,7 +11375,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::VecFunc",
@@ -11384,7 +11384,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XDWORD0",
@@ -11393,7 +11393,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XDWORD1",
@@ -11402,7 +11402,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XDWORD2",
@@ -11411,7 +11411,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XDWORD3",
@@ -11420,7 +11420,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XFER",
@@ -11429,7 +11429,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XFER_SIZE",
@@ -11438,7 +11438,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP0",
@@ -11447,7 +11447,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP1",
@@ -11456,7 +11456,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP2",
@@ -11465,7 +11465,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP3",
@@ -11474,7 +11474,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP4",
@@ -11483,7 +11483,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XTMP5",
@@ -11492,7 +11492,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XWORD0",
@@ -11501,7 +11501,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XWORD1",
@@ -11510,7 +11510,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XWORD2",
@@ -11519,7 +11519,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::XWORD3",
@@ -11528,7 +11528,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha256/_asm::X_BYTE_FLIP_MASK",
@@ -11537,7 +11537,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -11857,7 +11857,7 @@
           "kind": "type",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::MOVQ_RBI_RCE",
@@ -11866,7 +11866,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::RoundConstants",
@@ -11875,7 +11875,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RBA_RCU",
@@ -11884,7 +11884,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RBE_RCU",
@@ -11893,7 +11893,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RDA_RCA",
@@ -11902,7 +11902,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RDE_RCE",
@@ -11911,7 +11911,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RDU_RCU",
@@ -11920,7 +11920,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RT1_RCA",
@@ -11929,7 +11929,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha3/_asm::XORQ_RT1_RCE",
@@ -11938,7 +11938,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -12105,7 +12105,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::INP_SIZE",
@@ -12114,7 +12114,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::MASK_YMM_LO_DATA",
@@ -12123,7 +12123,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::MY_VPALIGNR",
@@ -12132,7 +12132,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::PSHUFFLE_BYTE_FLIP_MASK_DATA",
@@ -12141,7 +12141,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::PSHUFFLE_BYTE_FLIP_MASK_DATA_ptr",
@@ -12150,7 +12150,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::SRND_SIZE",
@@ -12159,7 +12159,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::ThatPeskyUnicodeDot",
@@ -12168,7 +12168,7 @@
           "kind": "const",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/internal/fips140/sha512/_asm::YFER_SIZE",
@@ -12177,7 +12177,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support."
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -13362,7 +13362,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/md5/_asm::ROUND2",
@@ -13371,7 +13371,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/md5/_asm::ROUND3",
@@ -13380,7 +13380,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/md5/_asm::ROUND3FIRST",
@@ -13389,7 +13389,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/md5/_asm::ROUND4",
@@ -13398,7 +13398,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },
@@ -14274,7 +14274,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::BSWAP_SHUFB_CTL_DATA",
@@ -14283,7 +14283,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC",
@@ -14292,7 +14292,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_0",
@@ -14301,7 +14301,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_1",
@@ -14310,7 +14310,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_10",
@@ -14319,7 +14319,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_100",
@@ -14328,7 +14328,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_101",
@@ -14337,7 +14337,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_102",
@@ -14346,7 +14346,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_103",
@@ -14355,7 +14355,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_104",
@@ -14364,7 +14364,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_105",
@@ -14373,7 +14373,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_106",
@@ -14382,7 +14382,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_107",
@@ -14391,7 +14391,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_108",
@@ -14400,7 +14400,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_109",
@@ -14409,7 +14409,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_11",
@@ -14418,7 +14418,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_110",
@@ -14427,7 +14427,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_111",
@@ -14436,7 +14436,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_112",
@@ -14445,7 +14445,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_113",
@@ -14454,7 +14454,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_114",
@@ -14463,7 +14463,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_115",
@@ -14472,7 +14472,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_116",
@@ -14481,7 +14481,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_117",
@@ -14490,7 +14490,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_118",
@@ -14499,7 +14499,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_119",
@@ -14508,7 +14508,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_12",
@@ -14517,7 +14517,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_120",
@@ -14526,7 +14526,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_121",
@@ -14535,7 +14535,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_122",
@@ -14544,7 +14544,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_123",
@@ -14553,7 +14553,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_124",
@@ -14562,7 +14562,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_125",
@@ -14571,7 +14571,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_126",
@@ -14580,7 +14580,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_127",
@@ -14589,7 +14589,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_128",
@@ -14598,7 +14598,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_129",
@@ -14607,7 +14607,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_13",
@@ -14616,7 +14616,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_130",
@@ -14625,7 +14625,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_131",
@@ -14634,7 +14634,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_132",
@@ -14643,7 +14643,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_133",
@@ -14652,7 +14652,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_134",
@@ -14661,7 +14661,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_135",
@@ -14670,7 +14670,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_136",
@@ -14679,7 +14679,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_137",
@@ -14688,7 +14688,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_138",
@@ -14697,7 +14697,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_139",
@@ -14706,7 +14706,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_14",
@@ -14715,7 +14715,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_140",
@@ -14724,7 +14724,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_141",
@@ -14733,7 +14733,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_142",
@@ -14742,7 +14742,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_143",
@@ -14751,7 +14751,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_144",
@@ -14760,7 +14760,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_145",
@@ -14769,7 +14769,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_146",
@@ -14778,7 +14778,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_147",
@@ -14787,7 +14787,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_148",
@@ -14796,7 +14796,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_149",
@@ -14805,7 +14805,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_15",
@@ -14814,7 +14814,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_150",
@@ -14823,7 +14823,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_151",
@@ -14832,7 +14832,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_152",
@@ -14841,7 +14841,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_153",
@@ -14850,7 +14850,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_154",
@@ -14859,7 +14859,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_155",
@@ -14868,7 +14868,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_156",
@@ -14877,7 +14877,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_157",
@@ -14886,7 +14886,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_158",
@@ -14895,7 +14895,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_159",
@@ -14904,7 +14904,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_16",
@@ -14913,7 +14913,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_17",
@@ -14922,7 +14922,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_18",
@@ -14931,7 +14931,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_19",
@@ -14940,7 +14940,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_2",
@@ -14949,7 +14949,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_20",
@@ -14958,7 +14958,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_21",
@@ -14967,7 +14967,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_22",
@@ -14976,7 +14976,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_23",
@@ -14985,7 +14985,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_24",
@@ -14994,7 +14994,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_25",
@@ -15003,7 +15003,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_26",
@@ -15012,7 +15012,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_27",
@@ -15021,7 +15021,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_28",
@@ -15030,7 +15030,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_29",
@@ -15039,7 +15039,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_3",
@@ -15048,7 +15048,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_30",
@@ -15057,7 +15057,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_31",
@@ -15066,7 +15066,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_32",
@@ -15075,7 +15075,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_33",
@@ -15084,7 +15084,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_34",
@@ -15093,7 +15093,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_35",
@@ -15102,7 +15102,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_36",
@@ -15111,7 +15111,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_37",
@@ -15120,7 +15120,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_38",
@@ -15129,7 +15129,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_39",
@@ -15138,7 +15138,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_4",
@@ -15147,7 +15147,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_40",
@@ -15156,7 +15156,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_41",
@@ -15165,7 +15165,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_42",
@@ -15174,7 +15174,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_43",
@@ -15183,7 +15183,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_44",
@@ -15192,7 +15192,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_45",
@@ -15201,7 +15201,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_46",
@@ -15210,7 +15210,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_47",
@@ -15219,7 +15219,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_48",
@@ -15228,7 +15228,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_49",
@@ -15237,7 +15237,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_5",
@@ -15246,7 +15246,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_50",
@@ -15255,7 +15255,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_51",
@@ -15264,7 +15264,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_52",
@@ -15273,7 +15273,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_53",
@@ -15282,7 +15282,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_54",
@@ -15291,7 +15291,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_55",
@@ -15300,7 +15300,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_56",
@@ -15309,7 +15309,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_57",
@@ -15318,7 +15318,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_58",
@@ -15327,7 +15327,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_59",
@@ -15336,7 +15336,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_6",
@@ -15345,7 +15345,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_60",
@@ -15354,7 +15354,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_61",
@@ -15363,7 +15363,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_62",
@@ -15372,7 +15372,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_63",
@@ -15381,7 +15381,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_64",
@@ -15390,7 +15390,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_65",
@@ -15399,7 +15399,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_66",
@@ -15408,7 +15408,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_67",
@@ -15417,7 +15417,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_68",
@@ -15426,7 +15426,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_69",
@@ -15435,7 +15435,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_7",
@@ -15444,7 +15444,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_70",
@@ -15453,7 +15453,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_71",
@@ -15462,7 +15462,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_72",
@@ -15471,7 +15471,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_73",
@@ -15480,7 +15480,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_74",
@@ -15489,7 +15489,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_75",
@@ -15498,7 +15498,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_76",
@@ -15507,7 +15507,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_77",
@@ -15516,7 +15516,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_78",
@@ -15525,7 +15525,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_79",
@@ -15534,7 +15534,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_8",
@@ -15543,7 +15543,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_80",
@@ -15552,7 +15552,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_81",
@@ -15561,7 +15561,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_82",
@@ -15570,7 +15570,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_83",
@@ -15579,7 +15579,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_84",
@@ -15588,7 +15588,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_85",
@@ -15597,7 +15597,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_86",
@@ -15606,7 +15606,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_87",
@@ -15615,7 +15615,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_88",
@@ -15624,7 +15624,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_89",
@@ -15633,7 +15633,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_9",
@@ -15642,7 +15642,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_90",
@@ -15651,7 +15651,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_91",
@@ -15660,7 +15660,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_92",
@@ -15669,7 +15669,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_93",
@@ -15678,7 +15678,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_94",
@@ -15687,7 +15687,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_95",
@@ -15696,7 +15696,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_96",
@@ -15705,7 +15705,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_97",
@@ -15714,7 +15714,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_98",
@@ -15723,7 +15723,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_99",
@@ -15732,7 +15732,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F1_POST",
@@ -15741,7 +15741,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F1_PRE",
@@ -15750,7 +15750,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F2_POST",
@@ -15759,7 +15759,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F2_PRE",
@@ -15768,7 +15768,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F3_POST",
@@ -15777,7 +15777,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::CALC_F3_PRE",
@@ -15786,7 +15786,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::K_XMM_AR_DATA",
@@ -15795,7 +15795,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::K_XMM_AR_ptr",
@@ -15804,7 +15804,7 @@
           "kind": "var",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC",
@@ -15813,7 +15813,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_0",
@@ -15822,7 +15822,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_00_15",
@@ -15831,7 +15831,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_1",
@@ -15840,7 +15840,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_16",
@@ -15849,7 +15849,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_16_31",
@@ -15858,7 +15858,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_17",
@@ -15867,7 +15867,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_18",
@@ -15876,7 +15876,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_19",
@@ -15885,7 +15885,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_2",
@@ -15894,7 +15894,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_20",
@@ -15903,7 +15903,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_21",
@@ -15912,7 +15912,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_23",
@@ -15921,7 +15921,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_32",
@@ -15930,7 +15930,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_32_79",
@@ -15939,7 +15939,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_33",
@@ -15948,7 +15948,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_34",
@@ -15957,7 +15957,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_35",
@@ -15966,7 +15966,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_36",
@@ -15975,7 +15975,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_37",
@@ -15984,7 +15984,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_39",
@@ -15993,7 +15993,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_4",
@@ -16002,7 +16002,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::PRECALC_7",
@@ -16011,7 +16011,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         },
         {
           "id": "crypto/sha1/_asm::UPDATE_HASH",
@@ -16020,7 +16020,7 @@
           "kind": "func",
           "status": "unsupported",
           "fixtures": [],
-          "reason": ""
+          "reason": "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program."
         }
       ]
     },

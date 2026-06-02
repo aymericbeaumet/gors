@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 const REPORT_SCHEMA_VERSION: u32 = 1;
 const GO_INTERNAL_UNSUPPORTED_REASON: &str = "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support.";
+const GO_ASM_GENERATOR_UNSUPPORTED_REASON: &str = "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program.";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -458,11 +459,21 @@ fn stdlib_unsupported_reason(
 }
 
 fn default_stdlib_unsupported_reason(package_path: &str) -> Option<String> {
-    is_go_internal_package(package_path).then(|| GO_INTERNAL_UNSUPPORTED_REASON.to_string())
+    if is_go_asm_generator_package(package_path) {
+        Some(GO_ASM_GENERATOR_UNSUPPORTED_REASON.to_string())
+    } else if is_go_internal_package(package_path) {
+        Some(GO_INTERNAL_UNSUPPORTED_REASON.to_string())
+    } else {
+        None
+    }
 }
 
 fn is_go_internal_package(package_path: &str) -> bool {
     package_path.split('/').any(|part| part == "internal")
+}
+
+fn is_go_asm_generator_package(package_path: &str) -> bool {
+    package_path.split('/').any(|part| part == "_asm")
 }
 
 fn collect_go_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -1223,6 +1234,24 @@ func main() {
                 &mut reasons
             ),
             GO_INTERNAL_UNSUPPORTED_REASON
+        );
+    }
+
+    #[test]
+    fn unsupported_reason_defaults_for_go_asm_generator_packages() {
+        let mut reasons = BTreeMap::new();
+
+        assert_eq!(
+            stdlib_unsupported_reason("crypto/md5/_asm", "crypto/md5/_asm::ROUND1", &mut reasons),
+            GO_ASM_GENERATOR_UNSUPPORTED_REASON
+        );
+        assert_eq!(
+            stdlib_unsupported_reason(
+                "crypto/internal/fips140/sha256/_asm",
+                "crypto/internal/fips140/sha256/_asm::Round",
+                &mut reasons
+            ),
+            GO_ASM_GENERATOR_UNSUPPORTED_REASON
         );
     }
 
