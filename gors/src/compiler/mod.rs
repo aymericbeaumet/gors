@@ -13102,6 +13102,12 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                     let is_declared_alias =
                         TYPE_ENV.with(|env| env.borrow().is_type_alias(&type_name));
                     if let typeinfer::GoType::Array(elem_type) = alias_type {
+                        if raw_elts.is_empty() {
+                            if is_declared_alias {
+                                return syn::parse_quote! { Default::default() };
+                            }
+                            return syn::parse_quote! { #type_ident::default() };
+                        }
                         let elts = raw_elts
                             .into_iter()
                             .map(|elt| compile_expr_with_expected(elt, Some(&elem_type)))
@@ -27755,6 +27761,37 @@ func main() {
         assert!(
             output.contains("impl crate :: builtin :: Cap for block"),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_empty_fixed_array_newtype_literal_as_default() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 512
+
+                type block [blockSize]byte
+
+                func (b *block) reset() {
+                    *b = block{}
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("* self = block :: default ()"),
+            "expected empty named array literal to use Default: {output}"
+        );
+        assert!(
+            !output.contains("block ([])"),
+            "expected empty named array literal not to emit an empty array: {output}"
         );
     }
 
