@@ -13616,7 +13616,7 @@ fn method_call_expr(
     args: syn::punctuated::Punctuated<syn::Expr, Token![,]>,
 ) -> syn::Expr {
     if receiver_expr_needs_scoped_temp(&receiver) {
-        return syn::parse_quote! { (|| { #receiver.#method(#args) })() };
+        return syn::parse_quote! { (|| { (#receiver).#method(#args) })() };
     }
     syn::Expr::MethodCall(syn::ExprMethodCall {
         attrs: vec![],
@@ -14633,6 +14633,7 @@ fn receiver_method_type_name_for_call(
 
 struct MethodValueInfo {
     receiver_type: typeinfer::GoType,
+    pointer_receiver: bool,
     params: Vec<typeinfer::GoType>,
     results: Vec<typeinfer::GoType>,
 }
@@ -14662,6 +14663,10 @@ fn method_value_info(selector: &ast::SelectorExpr) -> Option<MethodValueInfo> {
         let receiver_name = receiver_method_type_name_for_call(receiver_type.clone(), &env)?;
         env.has_method_func(&receiver_name, selector.sel.name)
             .then(|| MethodValueInfo {
+                pointer_receiver: env.method_has_pointer_receiver(&format!(
+                    "{}.{}",
+                    receiver_name, selector.sel.name
+                )),
                 receiver_type,
                 params: env.get_method_params(&receiver_name, selector.sel.name),
                 results: env.get_method_returns(&receiver_name, selector.sel.name),
@@ -14678,12 +14683,18 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
         resolved_go_type(&info.receiver_type),
         typeinfer::GoType::Pointer(_)
     );
+    let receiver_ast = *selector.x;
+    let shared_receiver_ident = shared_capture_ident(&receiver_ast);
     let receiver: syn::Expr = if receiver_is_pointer {
-        let receiver: syn::Expr = (*selector.x).into();
+        let receiver: syn::Expr = receiver_ast.into();
         syn::parse_quote! { (#receiver).clone() }
+    } else if info.pointer_receiver
+        && let Some(shared_receiver_ident) = &shared_receiver_ident
+    {
+        syn::parse_quote! { #shared_receiver_ident.clone() }
     } else {
         let should_clone = !go_type_is_copy(&info.receiver_type);
-        let receiver = method_receiver_expr_from_ref(*selector.x);
+        let receiver = method_receiver_expr_from_ref(receiver_ast);
         if should_clone {
             syn::parse_quote! { (#receiver).clone() }
         } else {
@@ -14714,13 +14725,20 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
-    let body: syn::Expr = if receiver_is_pointer {
+    let receiver_needs_lock =
+        receiver_is_pointer || info.pointer_receiver && shared_receiver_ident.is_some();
+    let body: syn::Expr = if receiver_needs_lock {
         syn::parse_quote! { #receiver_ident.lock().unwrap().#method(#(#call_args),*) }
     } else {
         syn::parse_quote! { #receiver_ident.#method(#(#call_args),*) }
     };
+    let receiver_binding: syn::Stmt = if info.pointer_receiver && !receiver_needs_lock {
+        syn::parse_quote! { let mut #receiver_ident = #receiver; }
+    } else {
+        syn::parse_quote! { let #receiver_ident = #receiver; }
+    };
     syn::parse_quote! {{
-        let #receiver_ident = #receiver;
+        #receiver_binding
         move |#(#param_pats),*| -> #return_type { #body }
     }}
 }
@@ -24795,7 +24813,7 @@ var X int
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("inner) . lock () . unwrap () . value . Load"),
+            output.contains("((o . inner) . lock () . unwrap () . value) . Load"),
             "expected promoted field receiver to pass through embedded pointer: {output}"
         );
         assert!(
@@ -27945,6 +27963,119 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_parenthesize_shared_capture_method_call_receivers() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func main() {
+                    var c Counter
+                    f := func() {
+                        c.Increment()
+                    }
+                    _ = f
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(* c . lock () . unwrap ()) . Increment ()"),
+            "expected dereferenced shared receiver to be parenthesized before method call: {output}"
+        );
+        assert!(
+            !output.contains("* c . lock () . unwrap () . Increment ()"),
+            "expected method call not to dereference the method result: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_bind_pointer_method_value_receivers_as_mutable() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func main() {
+                    var c Counter
+                    f := c.Increment
+                    f()
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let mut __gors_method_receiver = (c) . clone ()"),
+            "expected pointer method value receiver to be mutable: {output}"
+        );
+        assert!(
+            output.contains("__gors_method_receiver . Increment ()"),
+            "expected method value to call the saved receiver: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_capture_shared_pointer_method_value_receivers_by_cell() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func main() {
+                    var c Counter
+                    outer := func() {
+                        f := c.Increment
+                        f()
+                    }
+                    _ = outer
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let __gors_method_receiver = c . clone ()"),
+            "expected shared pointer method value receiver to clone the capture cell: {output}"
+        );
+        assert!(
+            output.contains("__gors_method_receiver . lock () . unwrap () . Increment ()"),
+            "expected shared pointer method value to lock the capture cell per call: {output}"
         );
     }
 
