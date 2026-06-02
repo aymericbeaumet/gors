@@ -217,12 +217,6 @@ impl VisitMut for CoerceTypes {
             self.generic_value_params.last(),
             self.has_generic_params.last().copied().unwrap_or(false),
         );
-
-        if mc.method == "printArg" {
-            if let Some(first) = mc.args.first_mut() {
-                coerce_print_arg(first);
-            }
-        }
     }
 
     fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
@@ -1431,15 +1425,6 @@ fn clone_expr(expr: &mut syn::Expr) {
     *expr = syn::parse_quote! { (#inner).clone() };
 }
 
-fn coerce_print_arg(expr: &mut syn::Expr) {
-    match expr {
-        syn::Expr::Field(field) if is_self_member(field, "arg") => {
-            *expr = syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> };
-        }
-        _ => {}
-    }
-}
-
 fn is_self_member(field: &syn::ExprField, name: &str) -> bool {
     is_self_expr(&field.base) && is_named_member(field, name)
 }
@@ -1698,6 +1683,36 @@ mod tests {
         assert!(
             !tokens.contains("std :: mem :: replace"),
             "expected no method-name-driven indexed argument replacement: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_replace_print_arg_self_arg_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink {
+                arg: isize,
+            }
+
+            impl Sink {
+                pub fn printArg(&mut self, value: isize) {}
+
+                pub fn call(&mut self) {
+                    self.printArg(self.arg);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("let __gors_premethod_arg_0 = self . arg")
+                && tokens.contains("self . printArg (__gors_premethod_arg_0)"),
+            "expected method and field names not to force empty any replacement: {tokens}"
+        );
+        assert!(
+            !tokens.contains("Box :: new (())"),
+            "expected no method-name-driven empty any replacement: {tokens}"
         );
     }
 

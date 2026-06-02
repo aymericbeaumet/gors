@@ -15801,6 +15801,12 @@ fn coerce_assignment_expr(
 
     rhs_expr = coerce_numeric_expr(lhs_ty, rhs_ty, rhs_expr);
 
+    if matches!(resolved_go_type(lhs_ty), typeinfer::GoType::Any)
+        && matches!(resolved_go_type(rhs_ty), typeinfer::GoType::Any)
+    {
+        rhs_expr = syn::parse_quote! { crate::builtin::clone_any(&#rhs_expr) };
+    }
+
     rhs_expr
 }
 
@@ -21561,9 +21567,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             syn::parse_quote! { (#field_expr).clone() }
                         } else if matches!(
                             field_go_type.as_ref().map(resolved_go_type),
-                            Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+                            Some(typeinfer::GoType::Any)
                         ) {
-                            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+                            syn::parse_quote! { crate::builtin::clone_any(&#field_expr) }
                         } else if base_is_owning_pointer {
                             syn::parse_quote! {{
                                 let __gors_pointer_field = (#field_expr).clone();
@@ -31390,6 +31396,54 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("h.err = (err).clone();"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_clones_any_assignments_and_field_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	arg any
+}
+
+func save(arg any) any {
+	var h holder
+	h.arg = arg
+	return arg
+}
+
+func read(h holder) any {
+	return h.arg
+}
+
+func main() {
+	_ = save(1)
+	var h holder
+	h.arg = "value"
+	_ = read(h)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("h.arg = crate::builtin::clone_any(&arg);"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("crate::builtin::clone_any(&h.arg)"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("return Box::new(()) as Box<dyn std::any::Any>;"),
+            "{main_rs}"
+        );
     }
 
     #[test]
