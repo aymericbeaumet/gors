@@ -19678,12 +19678,38 @@ fn concrete_interface_impl_items_for_methods(
     impl_items
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PointerInterfaceCallReceiver {
+    ImmutableRef,
+    MutableRef,
+    Owned,
+}
+
+fn pointer_interface_call_receiver(
+    method: &syn::ImplItemFn,
+    method_is_pointer_receiver: bool,
+) -> PointerInterfaceCallReceiver {
+    match method.sig.inputs.first() {
+        Some(syn::FnArg::Receiver(receiver)) if receiver.reference.is_some() => {
+            if receiver.mutability.is_some() {
+                PointerInterfaceCallReceiver::MutableRef
+            } else {
+                PointerInterfaceCallReceiver::ImmutableRef
+            }
+        }
+        Some(syn::FnArg::Receiver(_)) => PointerInterfaceCallReceiver::Owned,
+        _ if method_is_pointer_receiver => PointerInterfaceCallReceiver::MutableRef,
+        _ => PointerInterfaceCallReceiver::Owned,
+    }
+}
+
 fn pointer_interface_impl_items_for_methods(
     trait_name: &str,
     struct_name: &str,
     _trait_path: &syn::Path,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&std::collections::BTreeSet<String>>,
 ) -> Vec<syn::ImplItem> {
     let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
         fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
@@ -19696,6 +19722,10 @@ fn pointer_interface_impl_items_for_methods(
                 continue;
             }
             let method_ident = method.sig.ident.clone();
+            let method_is_pointer_receiver =
+                pointer_methods.is_some_and(|methods| methods.contains(&method_ident.to_string()));
+            let call_receiver_kind =
+                pointer_interface_call_receiver(method, method_is_pointer_receiver);
             let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
             let arg_idents = method
                 .sig
@@ -19721,15 +19751,24 @@ fn pointer_interface_impl_items_for_methods(
                     *receiver.ty = syn::parse_quote! { &mut Self };
                 }
             }
+            let call_receiver: syn::Expr = match call_receiver_kind {
+                PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &*__gors_guard },
+                PointerInterfaceCallReceiver::MutableRef => {
+                    syn::parse_quote! { &mut *__gors_guard }
+                }
+                PointerInterfaceCallReceiver::Owned => {
+                    syn::parse_quote! { (*__gors_guard).clone() }
+                }
+            };
             let block = if matches!(sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*);
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
                 })
             } else {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*)
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
                 })
             };
             impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
@@ -20183,6 +20222,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             &trait_path,
                             &direct_required_methods,
                             &methods,
+                            pointer_methods,
                         );
                         items.push(syn::parse_quote! {
                             impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
@@ -20212,6 +20252,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             &trait_path,
                             &embedded_methods,
                             &methods,
+                            pointer_methods,
                         );
                         items.push(syn::parse_quote! {
                             impl #trait_path for std::sync::Arc<std::sync::Mutex<#struct_ident>> {
@@ -27279,6 +27320,86 @@ func Read() string {
         assert!(
             debugpkg_rs.contains("(Debug.lock().unwrap()).Value()"),
             "{debugpkg_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_forward_pointer_interface_value_receivers_by_value() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Reader interface {
+                    Read([]byte) (int, error)
+                }
+
+                type Source struct {
+                    count int
+                }
+
+                func (s Source) Read(p []byte) (int, error) {
+                    s.count = s.count + 1
+                    return s.count, nil
+                }
+
+                func take(r Reader) {}
+
+                func main() {
+                    src := Source{count: 1}
+                    take(&src)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("Source::Read((*__gors_guard).clone(), p)"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("Source::Read(&mut *__gors_guard, p)"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_forward_pointer_interface_ref_receivers_by_ref() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Namer interface {
+                    Name() string
+                }
+
+                type Source struct {
+                    name string
+                }
+
+                func (s Source) Name() string {
+                    return s.name
+                }
+
+                func take(n Namer) {}
+
+                func main() {
+                    src := Source{name: "alpha"}
+                    take(&src)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("Source::Name(&*__gors_guard)"), "{output}");
+        assert!(
+            !output.contains("Source::Name((*__gors_guard).clone())"),
+            "{output}"
         );
     }
 
