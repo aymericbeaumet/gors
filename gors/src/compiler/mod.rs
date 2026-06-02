@@ -14655,6 +14655,18 @@ fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Exp
     }
 }
 
+fn borrowed_interface_selector_reborrow_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::SelectorExpr(selector) = expr else {
+        return None;
+    };
+    let field_ty = selector_field_go_type(selector)?;
+    if !TYPE_ENV.with(|env| go_type_contains_borrowed_interface_field(&env.borrow(), &field_ty)) {
+        return None;
+    }
+    let lvalue = lvalue_expr_from_ref(expr)?;
+    Some(syn::parse_quote! { &mut *#lvalue })
+}
+
 fn compile_expr_with_expected(
     mut expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
@@ -14789,14 +14801,17 @@ fn compile_expr_with_expected(
         };
     }
 
-    if let Some(typeinfer::GoType::Named(name)) = expected {
-        if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
+    if let Some(expected) = expected {
+        if go_type_interface_name(expected).is_some() {
             let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
-            if go_type_is_interface_like(&actual) {
-                return expr.into();
-            }
             if let Some(expr) = borrowed_interface_address_of_ident_expr(&expr) {
                 return expr;
+            }
+            if let Some(expr) = borrowed_interface_selector_reborrow_expr(&expr) {
+                return expr;
+            }
+            if go_type_is_interface_like(&actual) {
+                return expr.into();
             }
             let needs_owned_temp = matches!(expr, ast::Expr::SelectorExpr(_));
             let expr: syn::Expr = expr.into();
@@ -27266,6 +27281,63 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
             "{implementors}"
         );
         assert!(!implementors.contains("pkg :: Holder"), "{implementors}");
+    }
+
+    #[test]
+    fn borrowed_interface_selector_fields_reborrow_for_expected_interfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Reader interface {
+	Read() int
+}
+
+type Source struct{}
+
+func (s *Source) Read() int { return 0 }
+
+type Holder struct {
+	r Reader
+}
+
+type Wrap struct {
+	r Reader
+}
+
+func consume(r Reader) {}
+
+func (h *Holder) Use() {
+	_ = Wrap{r: h.r}
+	consume(h.r)
+}
+
+func main() {
+	var h Holder
+	h.Use()
+}
+"#,
+        );
+        let output = compile_temp_program(tmp.path());
+        let output = output
+            .files
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            output.contains("r: &mut *self.r") || output.contains("r : & mut * self . r"),
+            "{output}"
+        );
+        assert!(
+            output.contains("consume(&mut *self.r)")
+                || output.contains("consume (& mut * self . r)"),
+            "{output}"
+        );
+        assert!(!output.contains("(self.r).clone()"), "{output}");
     }
 
     #[test]
