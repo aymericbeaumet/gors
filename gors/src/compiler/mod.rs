@@ -14854,7 +14854,7 @@ fn syn_expr_is_self(expr: &syn::Expr) -> bool {
         syn::Expr::Paren(paren) => syn_expr_is_self(&paren.expr),
         syn::Expr::Group(group) => syn_expr_is_self(&group.expr),
         syn::Expr::Reference(reference) => syn_expr_is_self(&reference.expr),
-        _ => quote::quote!(#expr).to_string().replace(' ', "") == "self",
+        _ => false,
     }
 }
 
@@ -29456,6 +29456,21 @@ var X int
             output.contains("ch . lock () . unwrap () . Dir"),
             "expected selector on converted pointer to lock the pointer cell: {output}"
         );
+    }
+
+    #[test]
+    fn syn_expr_is_self_matches_only_self_ast_shapes() {
+        let direct: syn::Expr = syn::parse_quote! { self };
+        let referenced: syn::Expr = syn::parse_quote! { &self };
+        let parenthesized: syn::Expr = syn::parse_quote! { ((self)) };
+        let field: syn::Expr = syn::parse_quote! { self.value };
+        let other_ident: syn::Expr = syn::parse_quote! { self_ };
+
+        assert!(super::syn_expr_is_self(&direct));
+        assert!(super::syn_expr_is_self(&referenced));
+        assert!(super::syn_expr_is_self(&parenthesized));
+        assert!(!super::syn_expr_is_self(&field));
+        assert!(!super::syn_expr_is_self(&other_ident));
     }
 
     #[test]
