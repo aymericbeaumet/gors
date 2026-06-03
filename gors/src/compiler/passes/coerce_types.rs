@@ -7,6 +7,7 @@ mod pointer_cells;
 mod static_false;
 mod structural_helpers;
 mod tuple_newtypes;
+mod value_materialization;
 
 pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = tuple_newtypes::collect(file);
@@ -133,33 +134,12 @@ impl VisitMut for CoerceTypes {
             &self.pointer_cell_statics,
         );
 
-        if is_path_call(&call.func, &["Box", "new"]) {
-            if let Some(first) = call.args.first_mut() {
-                if matches!(first, syn::Expr::Field(_)) {
-                    call_args::clone_field_or_path(first);
-                }
-            }
-        }
-
-        if is_path_call(&call.func, &["crate", "builtin", "append"])
-            || is_path_call(&call.func, &["builtin", "append"])
-        {
-            if let Some(first) = call.args.first_mut() {
-                replace_self_deref_with_take(first);
-                replace_self_field_with_take(first);
-            }
-            if let Some(second) = call.args.iter_mut().nth(1) {
-                call_args::clone_field_or_path(second);
-            }
-        }
+        value_materialization::coerce_call(call);
     }
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
         visit_mut::visit_local_mut(self, local);
-
-        if let Some(init) = &mut local.init {
-            replace_self_deref_with_take(&mut init.expr);
-        }
+        value_materialization::coerce_local(local);
     }
 }
 
@@ -209,35 +189,6 @@ fn is_path_call(func: &syn::Expr, segments: &[&str]) -> bool {
             .all(|(seg, expected)| seg.ident == *expected)
 }
 
-fn replace_self_deref_with_take(expr: &mut syn::Expr) {
-    let replacement = match expr {
-        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
-            if is_self_expr(&unary.expr) {
-                Some(syn::parse_quote! { std::mem::take(self) })
-            } else if is_self_field_expr(&unary.expr) {
-                let inner = unary.expr.clone();
-                Some(syn::parse_quote! { std::mem::take(&mut *#inner) })
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    if let Some(replacement) = replacement {
-        *expr = replacement;
-    }
-}
-
-fn replace_self_field_with_take(expr: &mut syn::Expr) {
-    if !matches!(expr, syn::Expr::Field(field) if is_self_expr(&field.base)) {
-        return;
-    }
-
-    let inner = expr.clone();
-    *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
-}
-
 fn is_self_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Path(path)
         if path.path.leading_colon.is_none()
@@ -250,10 +201,6 @@ fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
         if path.path.leading_colon.is_none()
             && path.path.segments.len() == 1
             && path.path.segments.first().is_some_and(|seg| seg.ident == name))
-}
-
-fn is_self_field_expr(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::Field(field) if is_self_expr(&field.base))
 }
 
 #[cfg(test)]

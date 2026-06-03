@@ -233,13 +233,6 @@ fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections
     *expr = syn::parse_quote! { &mut #inner };
 }
 
-pub(super) fn clone_field_or_path(expr: &mut syn::Expr) {
-    if !matches!(expr, syn::Expr::Path(_) | syn::Expr::Field(_)) {
-        return;
-    }
-    clone_expr(expr);
-}
-
 fn clone_expr(expr: &mut syn::Expr) {
     let inner = expr.clone();
     *expr = syn::parse_quote! { (#inner).clone() };
