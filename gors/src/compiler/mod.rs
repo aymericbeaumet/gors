@@ -7367,7 +7367,7 @@ fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String
 }
 
 fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has_main: bool) {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     if semantic_reachability_graph_enabled() {
         let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
@@ -7392,12 +7392,12 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             prune_items_to_roots(&mut main_module.file.items, &roots, &module_names);
         }
 
-        let mut required: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut required = RequiredModuleRoots::default();
         if let Some(main_module) = modules.get("__main__") {
-            merge_required_refs(
-                &mut required,
-                collect_external_refs(&main_module.file.items, &module_names),
-            );
+            required.merge(collect_external_refs(
+                &main_module.file.items,
+                &module_names,
+            ));
         }
 
         loop {
@@ -7417,7 +7417,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                     roots
                 };
                 let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, &module_names);
-                changed |= merge_required_refs(&mut required, refs);
+                changed |= required.merge(refs);
             }
             if !changed {
                 break;
@@ -7427,10 +7427,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         let removable: Vec<String> = modules
             .iter()
             .filter(|&(_key, module)| {
-                !module.is_main
-                    && required
-                        .get(&module.mod_name)
-                        .is_none_or(|roots| roots.is_empty())
+                !module.is_main && required.is_missing_or_empty(&module.mod_name)
             })
             .map(|(key, _module)| key.clone())
             .collect();
@@ -7456,7 +7453,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 prune_builtin_bitcast_helpers(&mut module.file.items, roots);
                 prune_unneeded_builtin_traits(&mut module.file.items, roots);
             } else {
-                let mut builtin_roots = required.get("builtin").cloned().unwrap_or_default();
+                let mut builtin_roots = required.cloned_or_default("builtin");
                 if let Some(local_builtin_roots) =
                     collect_external_refs(&module.file.items, &module_names).remove("builtin")
                 {
@@ -7478,7 +7475,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         let empty_roots = HashSet::new();
         for module in modules.values_mut() {
             if has_main {
-                let roots = required.get(&module.mod_name).unwrap_or(&empty_roots);
+                let roots = required.get_or_empty(&module.mod_name, &empty_roots);
                 prune_unused_struct_fields(&mut module.file.items, roots);
             }
             prune_unused_use_items(&mut module.file.items);
@@ -8291,17 +8288,12 @@ fn resolve_required_stdlib_modules(
         stdlib_mod_names.insert(module.mod_name.clone());
     }
 
-    let mut required: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut required = RequiredModuleRoots::default();
     for path in roots {
-        required
-            .entry(crate::resolve::module_name(path))
-            .or_default();
+        required.insert_module(crate::resolve::module_name(path));
     }
     for module in modules.values().filter(|module| !module.is_stdlib) {
-        merge_required_refs(
-            &mut required,
-            collect_external_refs(&module.file.items, &stdlib_mod_names),
-        );
+        required.merge(collect_external_refs(&module.file.items, &stdlib_mod_names));
     }
 
     let mut loaded_roots: HashMap<String, HashSet<String>> = HashMap::new();
@@ -8334,7 +8326,7 @@ fn resolve_required_stdlib_modules(
 
         let mut loaded_any = false;
         for (module_name, import_path) in pending {
-            let required_roots = required.get(&module_name).cloned().unwrap_or_default();
+            let required_roots = required.cloned_or_default(&module_name);
             trace_stdlib_resolution(format_args!(
                 "[gors] resolve stdlib {import_path} as {module_name} with roots {}",
                 format_reachability_roots(required_roots.iter())
@@ -8393,7 +8385,7 @@ fn resolve_required_stdlib_modules(
             } else {
                 continue;
             };
-            changed |= merge_required_refs(&mut required, refs);
+            changed |= required.merge(refs);
         }
 
         if !loaded_any && !changed {
@@ -8436,7 +8428,7 @@ fn prune_dependency_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
     _roots: &[String],
 ) {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     let stdlib_mod_names: HashSet<String> = modules
         .values()
@@ -8464,14 +8456,11 @@ fn prune_dependency_stdlib_modules(
         names.join(",")
     }));
 
-    let mut required: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut required = RequiredModuleRoots::default();
     for module in modules.values().filter(|module| !module.is_stdlib) {
-        merge_required_refs(
-            &mut required,
-            collect_external_refs(&module.file.items, &stdlib_mod_names),
-        );
+        required.merge(collect_external_refs(&module.file.items, &stdlib_mod_names));
     }
-    for (module, roots) in &required {
+    for (module, roots) in required.iter() {
         trace_stdlib_resolution(format_args!(
             "[gors] prune stdlib {module} with roots {}",
             format_reachability_roots(roots.iter())
@@ -8490,7 +8479,7 @@ fn prune_dependency_stdlib_modules(
             } else {
                 continue;
             };
-            changed |= merge_required_refs(&mut required, refs);
+            changed |= required.merge(refs);
         }
         if !changed {
             break;
@@ -8504,13 +8493,10 @@ fn prune_dependency_stdlib_modules(
             if !module.is_stdlib || preserved_mod_names.contains(&module.mod_name) {
                 return None;
             }
-            if required
-                .get(&module.mod_name)
-                .is_some_and(|roots| !roots.is_empty())
-            {
-                None
-            } else {
+            if required.is_missing_or_empty(&module.mod_name) {
                 Some(key.clone())
+            } else {
+                None
             }
         })
         .collect();
@@ -8522,7 +8508,7 @@ fn prune_dependency_stdlib_modules(
         if root_mod_names.contains(&module.mod_name) {
             continue;
         }
-        let roots = required.get(&module.mod_name).unwrap_or(&empty);
+        let roots = required.get_or_empty(&module.mod_name, &empty);
         let (keep, _, names) = reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
         if keep.is_empty() {
             module.file.items.clear();
@@ -8588,6 +8574,52 @@ fn prune_unreferenced_stdlib_modules(
         for key in removable {
             modules.remove(&key);
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RequiredModuleRoots {
+    by_module: std::collections::HashMap<String, std::collections::HashSet<String>>,
+}
+
+impl RequiredModuleRoots {
+    fn insert_module(&mut self, module: String) {
+        self.by_module.entry(module).or_default();
+    }
+
+    fn merge(
+        &mut self,
+        refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) -> bool {
+        merge_required_refs(&mut self.by_module, refs)
+    }
+
+    fn get(&self, module: &str) -> Option<&std::collections::HashSet<String>> {
+        self.by_module.get(module)
+    }
+
+    fn get_or_empty<'a>(
+        &'a self,
+        module: &str,
+        empty: &'a std::collections::HashSet<String>,
+    ) -> &'a std::collections::HashSet<String> {
+        self.get(module).unwrap_or(empty)
+    }
+
+    fn is_missing_or_empty(&self, module: &str) -> bool {
+        self.get(module).is_none_or(|roots| roots.is_empty())
+    }
+
+    fn cloned_or_default(&self, module: &str) -> std::collections::HashSet<String> {
+        self.get(module).cloned().unwrap_or_default()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &std::collections::HashSet<String>)> {
+        self.by_module.iter()
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &String> {
+        self.by_module.keys()
     }
 }
 
