@@ -397,6 +397,13 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     cache_resolved_imports(import_path, roots, used_imports.clone());
     let module_refs: HashSet<String> = used_imports.iter().map(|path| module_name(path)).collect();
     inject_structural_helpers(&mut all_items);
+    let mut merged_file = syn::File {
+        shebang: None,
+        attrs: vec![],
+        items: all_items,
+    };
+    crate::compiler::passes::pass_after_structural_helpers(&mut merged_file);
+    let mut all_items = merged_file.items;
     prefix_crate_paths(&mut all_items, &module_refs);
 
     Some(item_mod_for(import_path, all_items))

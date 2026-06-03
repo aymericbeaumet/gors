@@ -12456,6 +12456,88 @@ fn embedded_interface_impls(
                 brace_token: syn::token::Brace::default(),
                 items: impl_items,
             }));
+
+            let mut pointer_impl_items = vec![];
+            for trait_fn in required_methods {
+                let mut sig = trait_fn.sig.clone();
+                let method_name = sig.ident.to_string();
+                let is_hook = is_runtime_interface_hook(&method_name);
+                if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
+                    if is_hook {
+                        receiver.mutability = None;
+                        *receiver.ty = syn::parse_quote! { &Self };
+                    } else {
+                        receiver.mutability = Some(<Token![mut]>::default());
+                        *receiver.ty = syn::parse_quote! { &mut Self };
+                    }
+                }
+                let method_ident = sig.ident.clone();
+                let field_ident = field.field_ident.clone();
+                let arg_idents = sig
+                    .inputs
+                    .iter()
+                    .skip(1)
+                    .filter_map(|arg| match arg {
+                        syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                            syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                            _ => None,
+                        },
+                        syn::FnArg::Receiver(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                let has_inherent_method = methods.get(&struct_name).is_some_and(|methods| {
+                    methods
+                        .iter()
+                        .any(|method| method.sig.ident == method_ident)
+                });
+                let block = match method_name.as_str() {
+                    "__gors_as_any" => syn::parse_quote!({ None }),
+                    "__gors_clone_box" => {
+                        syn::parse_quote!({
+                            crate::builtin::panic_value("cloned non-clone interface value")
+                        })
+                    }
+                    _ if has_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
+                        syn::parse_quote!({
+                            let mut __gors_guard = self.lock().unwrap();
+                            #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*);
+                        })
+                    }
+                    _ if has_inherent_method => {
+                        syn::parse_quote!({
+                            let mut __gors_guard = self.lock().unwrap();
+                            #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*)
+                        })
+                    }
+                    _ if matches!(sig.output, syn::ReturnType::Default) => {
+                        syn::parse_quote!({
+                            let mut __gors_guard = self.lock().unwrap();
+                            __gors_guard.#field_ident.#method_ident(#(#arg_idents),*);
+                        })
+                    }
+                    _ => {
+                        syn::parse_quote!({
+                            let mut __gors_guard = self.lock().unwrap();
+                            __gors_guard.#field_ident.#method_ident(#(#arg_idents),*)
+                        })
+                    }
+                };
+                pointer_impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
+                    attrs: vec![],
+                    vis: syn::Visibility::Inherited,
+                    defaultness: None,
+                    sig,
+                    block,
+                }));
+            }
+            if !pointer_impl_items.is_empty() {
+                let trait_path = field.trait_path.clone();
+                out.push(syn::parse_quote! {
+                    impl<'__gors> #trait_path for crate::builtin::GorsPtr<#struct_ident<'__gors>> {
+                        #(#pointer_impl_items)*
+                    }
+                });
+            }
         }
     }
 
@@ -15720,6 +15802,32 @@ fn compile_builtin_print(args: Vec<syn::Expr>) -> syn::Expr {
         .map(|arg| syn::parse_quote! { crate::builtin::print_value(#arg); })
         .collect::<Vec<syn::Stmt>>();
     syn::parse_quote! {{ #(#stmts)* }}
+}
+
+enum StdlibCallWorkaround {
+    SortSlice,
+    StrconvAppendFloat,
+}
+
+impl StdlibCallWorkaround {
+    fn classify(call_expr: &ast::CallExpr<'_>) -> Option<Self> {
+        if is_sort_slice_call(call_expr) {
+            return Some(Self::SortSlice);
+        }
+        if is_append_float_call(call_expr) {
+            return Some(Self::StrconvAppendFloat);
+        }
+        None
+    }
+
+    fn compile(self, call_expr: ast::CallExpr<'_>) -> syn::Expr {
+        match self {
+            Self::SortSlice => compile_sort_slice_call(call_expr)
+                .unwrap_or_else(|| compile_error_expr("invalid sort slice call")),
+            Self::StrconvAppendFloat => compile_append_float_call(call_expr)
+                .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call")),
+        }
+    }
 }
 
 fn compile_sort_slice_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
@@ -22472,13 +22580,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
-                if is_sort_slice_call(&call_expr) {
-                    return compile_sort_slice_call(call_expr)
-                        .unwrap_or_else(|| compile_error_expr("invalid sort slice call"));
-                }
-                if is_append_float_call(&call_expr) {
-                    return compile_append_float_call(call_expr)
-                        .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call"));
+                if let Some(workaround) = StdlibCallWorkaround::classify(&call_expr) {
+                    return workaround.compile(call_expr);
                 }
                 if is_type_method_expression_call(&call_expr) {
                     return compile_type_method_expression_call(call_expr);
@@ -32311,10 +32414,15 @@ package main
 
 type Interface interface {
 	Len() int
+	Less(i, j int) bool
 }
 
 type reverse struct {
 	Interface
+}
+
+func (r reverse) Less(i, j int) bool {
+	return r.Interface.Less(j, i)
 }
 
 func Reverse(data Interface) Interface {
@@ -32334,6 +32442,13 @@ func Reverse(data Interface) Interface {
             !output.contains("Interface :: __gors_clone_box (& * (data))"),
             "{output}"
         );
+        assert!(
+            output.contains(
+                "impl < '__gors > Interface for crate :: builtin :: GorsPtr < reverse < '__gors > >"
+            ),
+            "{output}"
+        );
+        assert!(output.contains("reverse :: Less"), "{output}");
     }
 
     #[test]

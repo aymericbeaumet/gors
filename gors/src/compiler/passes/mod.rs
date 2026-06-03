@@ -43,6 +43,10 @@ pub fn pass_after_package_merge(file: &mut syn::File) {
     avoid_item_shadowing::pass(file);
 }
 
+pub fn pass_after_structural_helpers(file: &mut syn::File) {
+    coerce_types::pass_after_structural_helpers(file);
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {

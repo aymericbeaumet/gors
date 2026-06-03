@@ -8,10 +8,12 @@ pub fn pass(file: &mut syn::File) {
     let mutable_ref_call_args = collect_mutable_ref_call_args(file);
     let pointer_cell_statics = collect_pointer_cell_statics(file);
     let fmt_flush_receiver_types = collect_fmt_flush_receiver_types(file);
+    let self_value_reflection_receiver_types = collect_self_value_reflection_receiver_types(file);
     CoerceTypes {
         mutable_ref_call_args,
         pointer_cell_statics,
         fmt_flush_receiver_types,
+        self_value_reflection_receiver_types,
         tuple_newtypes,
         ..Default::default()
     }
@@ -33,6 +35,20 @@ pub fn pass_after_package_merge(file: &mut syn::File) {
     .visit_file_mut(file);
 }
 
+pub fn pass_after_structural_helpers(file: &mut syn::File) {
+    let fmt_flush_receiver_types = collect_fmt_flush_receiver_types(file);
+    let self_value_reflection_receiver_types = collect_self_value_reflection_receiver_types(file);
+    if fmt_flush_receiver_types.is_empty() && self_value_reflection_receiver_types.is_empty() {
+        return;
+    }
+    CoerceStructuralHelpers {
+        fmt_flush_receiver_types,
+        self_value_reflection_receiver_types,
+        impl_self_types: Vec::new(),
+    }
+    .visit_file_mut(file);
+}
+
 #[derive(Default)]
 struct CoerceTypes {
     mutable_ref_params: Vec<std::collections::HashSet<String>>,
@@ -41,6 +57,7 @@ struct CoerceTypes {
     mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
     pointer_cell_statics: std::collections::HashSet<String>,
     fmt_flush_receiver_types: std::collections::HashSet<String>,
+    self_value_reflection_receiver_types: std::collections::HashSet<String>,
     tuple_newtypes: std::collections::HashSet<String>,
     impl_self_types: Vec<String>,
 }
@@ -50,6 +67,12 @@ struct CoercePointerCellArgs {
     pointer_cell_statics: std::collections::HashSet<String>,
     pointer_cell_names: Vec<std::collections::HashSet<String>>,
     pointer_cell_iter_names: Vec<std::collections::HashSet<String>>,
+}
+
+struct CoerceStructuralHelpers {
+    fmt_flush_receiver_types: std::collections::HashSet<String>,
+    self_value_reflection_receiver_types: std::collections::HashSet<String>,
+    impl_self_types: Vec<String>,
 }
 
 impl VisitMut for CoercePointerCellArgs {
@@ -100,6 +123,49 @@ impl VisitMut for CoercePointerCellArgs {
     }
 }
 
+impl VisitMut for CoerceStructuralHelpers {
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
+            self.impl_self_types.push(self_ty);
+            visit_mut::visit_item_impl_mut(self, item_impl);
+            self.impl_self_types.pop();
+        } else {
+            visit_mut::visit_item_impl_mut(self, item_impl);
+        }
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        visit_mut::visit_impl_item_fn_mut(self, func);
+        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
+            self.self_value_reflection_receiver_types.contains(ty)
+                && block_has_self_value_reflection_fallback(&func.block)
+        });
+        prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
+    }
+
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        let old_stmts = std::mem::take(&mut block.stmts);
+        let mut new_stmts = Vec::with_capacity(old_stmts.len());
+
+        for mut stmt in old_stmts {
+            visit_mut::visit_stmt_mut(self, &mut stmt);
+            let needs_flush = self
+                .impl_self_types
+                .last()
+                .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
+                && stmt_needs_fmt_flush(&stmt);
+            new_stmts.push(stmt);
+            if needs_flush {
+                new_stmts.push(syn::parse_quote! {
+                    self.__gors_flush_fmt();
+                });
+            }
+        }
+
+        block.stmts = new_stmts;
+    }
+}
+
 impl VisitMut for CoerceTypes {
     fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
         if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
@@ -136,11 +202,11 @@ impl VisitMut for CoerceTypes {
         self.mutable_ref_params.pop();
 
         prune_static_false_branches(&mut func.block.stmts);
-        let prune_self_value = self
-            .impl_self_types
-            .last()
-            .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
-            && should_prune_fmt_self_value(&func.block);
+        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
+            (self.fmt_flush_receiver_types.contains(ty) && should_prune_fmt_self_value(&func.block))
+                || (self.self_value_reflection_receiver_types.contains(ty)
+                    && block_has_self_value_reflection_fallback(&func.block))
+        });
         prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
     }
 
@@ -319,6 +385,10 @@ impl VisitMut for CoerceTypes {
 }
 
 fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
+    if block_has_self_value_reflection_fallback(block) {
+        return true;
+    }
+
     struct Finder {
         found: bool,
     }
@@ -330,6 +400,28 @@ fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
                     call.method.to_string().as_str(),
                     "printArg" | "printValue" | "fmtPointer"
                 )
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder { found: false };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+fn block_has_self_value_reflection_fallback(block: &syn::Block) -> bool {
+    struct Finder {
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
+                && expr_mentions_self_field_named(&call.receiver, "value")
             {
                 self.found = true;
                 return;
@@ -593,6 +685,27 @@ fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<St
     visitor.found
 }
 
+fn expr_mentions_self_field_named(expr: &syn::Expr, name: &str) -> bool {
+    struct Visitor<'a> {
+        name: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Visitor<'_> {
+        fn visit_expr_field(&mut self, field: &syn::ExprField) {
+            if is_self_field_named(field, self.name) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_field(self, field);
+        }
+    }
+
+    let mut visitor = Visitor { name, found: false };
+    syn::visit::Visit::visit_expr(&mut visitor, expr);
+    visitor.found
+}
+
 fn print_arg_stmt_needs_reflection(stmt: &syn::Stmt, prune_self_value: bool) -> bool {
     let mut finder = PrintArgReflectionFinder {
         prune_self_value,
@@ -743,6 +856,31 @@ fn collect_mutable_ref_call_args(
 }
 
 fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashSet<String> {
+    let mut hook_receivers = std::collections::HashSet::new();
+    let mut flushable_receivers = std::collections::HashSet::new();
+    for item in &file.items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
+            continue;
+        };
+        if impl_has_method(item_impl, "__gors_flush_fmt") {
+            hook_receivers.insert(self_ty.clone());
+        }
+        if impl_has_method(item_impl, "printArg") || impl_has_method(item_impl, "printValue") {
+            flushable_receivers.insert(self_ty);
+        }
+    }
+    hook_receivers
+        .intersection(&flushable_receivers)
+        .cloned()
+        .collect()
+}
+
+fn collect_self_value_reflection_receiver_types(
+    file: &syn::File,
+) -> std::collections::HashSet<String> {
     file.items
         .iter()
         .filter_map(|item| {
@@ -750,12 +888,18 @@ fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashS
                 return None;
             };
             let self_ty = type_path_ident_name(&item_impl.self_ty)?;
-            let has_flush_hook = impl_has_method(item_impl, "__gors_flush_fmt");
-            let has_flushable_method =
-                impl_has_method(item_impl, "printArg") || impl_has_method(item_impl, "printValue");
-            (has_flush_hook && has_flushable_method).then_some(self_ty)
+            impl_has_self_value_reflection_fallback(item_impl).then_some(self_ty)
         })
         .collect()
+}
+
+fn impl_has_self_value_reflection_fallback(item_impl: &syn::ItemImpl) -> bool {
+    item_impl.items.iter().any(|item| {
+        matches!(
+            item,
+            syn::ImplItem::Fn(func) if block_has_self_value_reflection_fallback(&func.block)
+        )
+    })
 }
 
 fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
@@ -1876,6 +2020,33 @@ mod tests {
     }
 
     #[test]
+    fn it_inserts_flush_after_structural_helpers_are_injected() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer;
+
+            impl Printer {
+                pub fn printArg(&mut self, value: isize) {}
+
+                pub fn run(&mut self) {
+                    self.printArg(1);
+                }
+            }
+
+            impl Printer {
+                pub fn __gors_flush_fmt(&mut self) {}
+            }
+        };
+
+        pass_after_structural_helpers(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
+            "expected generated flush hook after structural helpers are injected: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_does_not_insert_flush_for_receivers_without_generated_flush_hook() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Printer;
@@ -1923,6 +2094,56 @@ mod tests {
         assert!(
             !tokens.contains("fallback") && !tokens.contains("self . value"),
             "expected generated self.value reflection fallback to be pruned by receiver metadata: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_self_value_reflection_fallback_without_print_call() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer {
+                pub arg: Box<dyn std::any::Any>,
+                pub value: crate::reflect::Value,
+                pub buf: Buffer,
+            }
+
+            pub struct Buffer;
+
+            impl Buffer {
+                pub fn writeByte(&mut self, value: u8) {}
+                pub fn writeString(&mut self, value: String) {}
+            }
+
+            pub fn nilAngleString() -> String {
+                "nil".to_string()
+            }
+
+            impl Printer {
+                pub fn badVerb(&mut self) {
+                    if !crate::builtin::interface_is_nil(
+                        (crate::builtin::clone_any(&self.arg)).as_ref(),
+                    ) {
+                        self.buf.writeByte(61u8);
+                        let __gors_premethod_arg_0 = crate::builtin::clone_any(&self.arg);
+                    } else if (self.value).clone().IsValid() {
+                        let __gors_premethod_arg_0 = (self.value).clone().Type().String();
+                        self.buf.writeString((__gors_premethod_arg_0).clone());
+                    } else {
+                        self.buf.writeString(nilAngleString());
+                    }
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            !tokens.contains("IsValid") && !tokens.contains("Type"),
+            "expected generated self.value reflection fallback to be pruned without a print call: {tokens}"
+        );
+        assert!(
+            tokens.contains("nilAngleString"),
+            "expected non-reflection fallback branch to remain: {tokens}"
         );
     }
 
