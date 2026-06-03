@@ -11603,24 +11603,6 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
     ]
 }
 
-fn trait_path_is_local(path: &syn::Path) -> bool {
-    path.leading_colon.is_none() && path.segments.len() == 1
-}
-
-fn trait_path_interface_name(path: &syn::Path) -> Option<String> {
-    let segments = path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect::<Vec<_>>();
-    match segments.as_slice() {
-        [] => None,
-        [single] => Some(single.clone()),
-        [crate_name, rest @ ..] if crate_name == "crate" => Some(rest.join(".")),
-        _ => Some(segments.join(".")),
-    }
-}
-
 fn type_env_name_candidates_for_rust_path_name(name: &str) -> Vec<String> {
     let mut candidates = vec![name.to_string()];
     if let Some((module, symbol)) = name.rsplit_once('.') {
@@ -11824,16 +11806,17 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
             else {
                 continue;
             };
-            let seen_name = trait_path_interface_name(&path).unwrap_or_else(|| name.clone());
+            let seen_name =
+                interface_hooks::trait_path_interface_name(&path).unwrap_or_else(|| name.clone());
             if !seen.insert(seen_name) {
                 continue;
             }
-            if trait_path_is_local(&path)
+            if interface_hooks::trait_path_is_local(&path)
                 && let Some(next) = trait_supertraits.get(&name)
             {
                 pending.extend(next.iter().cloned());
             }
-            let impl_items = if trait_path_is_local(&path) {
+            let impl_items = if interface_hooks::trait_path_is_local(&path) {
                 if !trait_methods.contains_key(&name) && !trait_supertraits.contains_key(&name) {
                     continue;
                 }
@@ -11843,7 +11826,7 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
                         .into_iter()
                         .flat_map(|methods| methods.iter()),
                 )
-            } else if let Some(interface_name) = trait_path_interface_name(&path) {
+            } else if let Some(interface_name) = interface_hooks::trait_path_interface_name(&path) {
                 let items = noop_impl_items_for_interface_name(&interface_name);
                 if items.is_empty() {
                     continue;

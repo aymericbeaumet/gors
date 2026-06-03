@@ -11,6 +11,24 @@ pub(super) fn is_noop_type_name(name: &str) -> bool {
     name.starts_with("__GorsNoop")
 }
 
+pub(super) fn trait_path_is_local(path: &syn::Path) -> bool {
+    path.leading_colon.is_none() && path.segments.len() == 1
+}
+
+pub(super) fn trait_path_interface_name(path: &syn::Path) -> Option<String> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [] => None,
+        [single] => Some(single.clone()),
+        [crate_name, rest @ ..] if crate_name == "crate" => Some(rest.join(".")),
+        _ => Some(segments.join(".")),
+    }
+}
+
 pub(super) fn clone_box_impl_item(trait_path: &syn::Path, can_clone_self: bool) -> syn::ImplItem {
     if can_clone_self {
         syn::parse_quote! {
