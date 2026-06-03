@@ -181,6 +181,11 @@ gors-builtin/
   generated interface contract. DCE must preserve the hooks on reachable traits
   and trait impls, and any injected structural stdlib helper that implements a
   Go interface, such as `os.File` for `io.Writer`, must implement the hooks too.
+- Structs with embedded borrowed interface fields, such as `sort.reverse`, must
+  emit both the value trait impl and the matching `GorsPtr<T>` trait impl. The
+  pointer-cell impl should delegate to an inherent method when the struct
+  overrides an embedded method, and otherwise delegate through the embedded
+  interface field.
 - The predeclared `error` interface lowers to the shared
   `crate::builtin::error` trait object, not to `String`. Its nil value is the
   noop-interface sentinel `crate::builtin::__GorsNooperror`, and ordinary Go
@@ -1270,6 +1275,11 @@ Main package (`pass()`):
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
 ordinary user fields named `value` must remain usable as `self.value`.
+Resolver-injected structural helpers are added after package merge, so helper
+dependent coercions belong in `pass_after_structural_helpers()`, not in the
+main package/file pass. Keep that post-helper pass narrow: it currently owns
+generated fmt flush insertion and self-value reflection fallback pruning after
+helpers such as `__gors_flush_fmt` have been injected.
 
 Imported packages (`pass_for_imported_package()`): only map_type, type_conversion,
 simplify_return, flatten_block.
