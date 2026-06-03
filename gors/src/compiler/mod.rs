@@ -11900,25 +11900,27 @@ fn container_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
     boxed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
 }
 
+fn signature_arg_idents(sig: &syn::Signature) -> Vec<syn::Ident> {
+    sig.inputs
+        .iter()
+        .skip(1)
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+                _ => None,
+            },
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect()
+}
+
 fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
     let mut impl_methods = Vec::new();
     for trait_item in trait_items {
         let syn::TraitItem::Fn(trait_fn) = trait_item else {
             continue;
         };
-        let arg_names = trait_fn
-            .sig
-            .inputs
-            .iter()
-            .skip(1)
-            .filter_map(|arg| match arg {
-                syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                    syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                    _ => None,
-                },
-                syn::FnArg::Receiver(_) => None,
-            })
-            .collect::<Vec<_>>();
+        let arg_names = signature_arg_idents(&trait_fn.sig);
         let sig = trait_fn.sig.clone();
         let method = sig.ident.clone();
         let receiver: syn::Expr = if sig
@@ -12416,18 +12418,7 @@ fn embedded_interface_impls(
                 }
                 let method_ident = sig.ident.clone();
                 let field_ident = field.field_ident.clone();
-                let arg_idents = sig
-                    .inputs
-                    .iter()
-                    .skip(1)
-                    .filter_map(|arg| match arg {
-                        syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                            syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                            _ => None,
-                        },
-                        syn::FnArg::Receiver(_) => None,
-                    })
-                    .collect::<Vec<_>>();
+                let arg_idents = signature_arg_idents(&sig);
                 let block = if matches!(sig.output, syn::ReturnType::Default) {
                     syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*); })
                 } else {
@@ -12473,18 +12464,7 @@ fn embedded_interface_impls(
                 }
                 let method_ident = sig.ident.clone();
                 let field_ident = field.field_ident.clone();
-                let arg_idents = sig
-                    .inputs
-                    .iter()
-                    .skip(1)
-                    .filter_map(|arg| match arg {
-                        syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                            syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                            _ => None,
-                        },
-                        syn::FnArg::Receiver(_) => None,
-                    })
-                    .collect::<Vec<_>>();
+                let arg_idents = signature_arg_idents(&sig);
                 let has_inherent_method = methods.get(&struct_name).is_some_and(|methods| {
                     methods
                         .iter()
@@ -23478,19 +23458,7 @@ fn promoted_concrete_interface_impl_item(
         &rust_safe_ident_name(&promoted.owner_type),
         Span::mixed_site(),
     );
-    let arg_idents = method
-        .sig
-        .inputs
-        .iter()
-        .skip(1)
-        .filter_map(|arg| match arg {
-            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                _ => None,
-            },
-            syn::FnArg::Receiver(_) => None,
-        })
-        .collect::<Vec<_>>();
+    let arg_idents = signature_arg_idents(&method.sig);
     let mut sig = method.sig;
     if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
         receiver.mutability = Some(<Token![mut]>::default());
@@ -23602,19 +23570,7 @@ fn concrete_interface_impl_items_for_methods(
                 }
                 if immutable_error_method {
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let arg_idents = method
-                        .sig
-                        .inputs
-                        .iter()
-                        .skip(1)
-                        .filter_map(|arg| match arg {
-                            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                                _ => None,
-                            },
-                            syn::FnArg::Receiver(_) => None,
-                        })
-                        .collect::<Vec<_>>();
+                    let arg_idents = signature_arg_idents(&method.sig);
                     let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
                     m.block = if original_receiver_is_mut {
                         if matches!(m.sig.output, syn::ReturnType::Default) {
@@ -23723,19 +23679,7 @@ fn pointer_interface_impl_items_for_methods(
             let call_receiver_kind =
                 pointer_interface_call_receiver(method, method_is_pointer_receiver);
             let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-            let arg_idents = method
-                .sig
-                .inputs
-                .iter()
-                .skip(1)
-                .filter_map(|arg| match arg {
-                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                        _ => None,
-                    },
-                    syn::FnArg::Receiver(_) => None,
-                })
-                .collect::<Vec<_>>();
+            let arg_idents = signature_arg_idents(&method.sig);
             let mut sig = method.sig.clone();
             let immutable_error_method = trait_name == "error" && method_ident == "Error";
             if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
@@ -23806,19 +23750,7 @@ fn borrowed_pointer_interface_impl_items_for_methods(
             let call_receiver_kind =
                 pointer_interface_call_receiver(method, method_is_pointer_receiver);
             let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-            let arg_idents = method
-                .sig
-                .inputs
-                .iter()
-                .skip(1)
-                .filter_map(|arg| match arg {
-                    syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
-                        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
-                        _ => None,
-                    },
-                    syn::FnArg::Receiver(_) => None,
-                })
-                .collect::<Vec<_>>();
+            let arg_idents = signature_arg_idents(&method.sig);
             let mut sig = method.sig.clone();
             let immutable_error_method = trait_name == "error" && method_ident == "Error";
             if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
