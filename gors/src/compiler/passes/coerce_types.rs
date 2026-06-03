@@ -221,6 +221,36 @@ mod tests {
     }
 
     #[test]
+    fn it_prunes_reflect_typeof_fallback_paths() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            crate::reflect::TypeOf(v).String();
+        }];
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            !tokens.contains("TypeOf"),
+            "expected reflect TypeOf fallback path to be pruned: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_prune_unrelated_reflect_module_paths() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            let kind = reflect::Slice;
+        }];
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            tokens.contains("reflect :: Slice"),
+            "expected non-fallback reflect module path to remain: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_prunes_reflect_type_paths_inside_generated_fallbacks() {
         let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
             value.is::<crate::reflect::Value>();

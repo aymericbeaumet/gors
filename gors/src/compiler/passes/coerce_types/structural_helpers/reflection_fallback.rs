@@ -297,7 +297,7 @@ struct Finder<'a> {
 
 impl syn::visit::Visit<'_> for Finder<'_> {
     fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-        if is_reflect_module_path(&path.path) {
+        if is_reflect_fallback_expr_path(&path.path) {
             self.found = true;
             return;
         }
@@ -305,7 +305,7 @@ impl syn::visit::Visit<'_> for Finder<'_> {
     }
 
     fn visit_type_path(&mut self, path: &syn::TypePath) {
-        if is_reflect_module_path(&path.path) {
+        if is_reflect_value_type_path(&path.path) {
             self.found = true;
             return;
         }
@@ -324,27 +324,36 @@ impl syn::visit::Visit<'_> for Finder<'_> {
     }
 }
 
-fn is_reflect_module_path(path: &syn::Path) -> bool {
-    let segments = path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect::<Vec<_>>();
+fn is_reflect_fallback_expr_path(path: &syn::Path) -> bool {
     matches!(
-        segments.as_slice(),
-        [first, second, ..] if first == "crate" && second == "reflect"
-    ) || matches!(segments.as_slice(), [first, _, ..] if first == "reflect")
+        reflect_path_member(path).as_deref(),
+        Some("ValueOf" | "TypeOf")
+    )
+}
+
+fn is_reflect_value_type_path(path: &syn::Path) -> bool {
+    reflect_path_member(path).as_deref() == Some("Value")
+}
+
+fn reflect_path_member(path: &syn::Path) -> Option<String> {
+    let mut segments = path.segments.iter();
+    let first = segments.next()?.ident.to_string();
+    let member = if first == "crate" {
+        let module = segments.next()?;
+        (module.ident == "reflect").then(|| segments.next())??
+    } else if first == "reflect" {
+        segments.next()?
+    } else {
+        return None;
+    };
+    Some(member.ident.to_string())
 }
 
 fn is_reflect_value_type(ty: &syn::Type) -> bool {
     let syn::Type::Path(path) = ty else {
         return false;
     };
-    path.path
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Value")
-        && is_reflect_module_path(&path.path)
+    is_reflect_value_type_path(&path.path)
 }
 
 fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverFieldMap {
