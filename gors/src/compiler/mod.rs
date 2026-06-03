@@ -6478,6 +6478,14 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     if is_box_leak_expr(arg) {
         return;
     }
+    if let Some(source) = cloned_lvalue_source(arg) {
+        *arg = syn::parse_quote! { &mut #source };
+        return;
+    }
+    if let Some(source) = cloned_lvalue_block_source(arg) {
+        *arg = syn::parse_quote! { &mut #source };
+        return;
+    }
     if let Some(name) = expr_path_ident(arg) {
         if name == "self" {
             return;
@@ -6501,6 +6509,14 @@ fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
         *arg = syn::parse_quote! { &mut #receiver };
         return;
     }
+    if let Some(source) = cloned_lvalue_source(arg) {
+        *arg = syn::parse_quote! { &mut #source };
+        return;
+    }
+    if let Some(source) = cloned_lvalue_block_source(arg) {
+        *arg = syn::parse_quote! { &mut #source };
+        return;
+    }
     if let Some(name) = expr_path_ident(arg) {
         if name == "self" {
             return;
@@ -6516,6 +6532,60 @@ fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
     }
     let inner = arg.clone();
     *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn cloned_lvalue_source(expr: &syn::Expr) -> Option<syn::Expr> {
+    let source = clone_call_receiver_expr(expr)?;
+    expr_can_be_mutably_borrowed(&source).then_some(source)
+}
+
+fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::Block(block) = expr else {
+        return None;
+    };
+    let [local_stmt, result_stmt] = block.block.stmts.as_slice() else {
+        return None;
+    };
+    let syn::Stmt::Local(local) = local_stmt else {
+        return None;
+    };
+    let ident = rust_pat_ident_name(&local.pat)?;
+    let init = local.init.as_ref()?;
+    let source = clone_call_receiver_expr(&init.expr)?;
+    let syn::Stmt::Expr(result, None) = result_stmt else {
+        return None;
+    };
+    if expr_path_ident(result).as_deref() != Some(ident.as_str()) {
+        return None;
+    }
+    expr_can_be_mutably_borrowed(&source).then_some(source)
+}
+
+fn clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
+            Some((*method.receiver).clone())
+        }
+        syn::Expr::Paren(paren) => clone_call_receiver_expr(&paren.expr),
+        _ => None,
+    }
+}
+
+fn expr_can_be_mutably_borrowed(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Field(field) => expr_can_be_mutably_borrowed(&field.base),
+        syn::Expr::Group(group) => expr_can_be_mutably_borrowed(&group.expr),
+        syn::Expr::Index(index) => expr_can_be_mutably_borrowed(&index.expr),
+        syn::Expr::MethodCall(method)
+            if matches!(method.method.to_string().as_str(), "lock" | "unwrap") =>
+        {
+            expr_can_be_mutably_borrowed(&method.receiver)
+        }
+        syn::Expr::Paren(paren) => expr_can_be_mutably_borrowed(&paren.expr),
+        syn::Expr::Path(path) => path.path.leading_colon.is_none() && path.path.segments.len() == 1,
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => true,
+        _ => false,
+    }
 }
 
 fn to_vec_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
@@ -16055,9 +16125,6 @@ fn compile_struct_field_expr(
     if is_function_field_selector {
         return compiled;
     }
-    if let Some(expr) = shared_func_value_expr(expected, compiled.clone()) {
-        return expr;
-    }
     compiled
 }
 
@@ -18535,9 +18602,17 @@ fn compile_function_value_arg_with_expected(
 
 fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
     match arg {
-        ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => {
+        ast::Expr::Ident(_) => {
             let expr: syn::Expr = arg.into();
             syn::parse_quote! { &mut *#expr }
+        }
+        ast::Expr::SelectorExpr(_) => {
+            if let Some(lvalue) = lvalue_expr_from_ref(&arg) {
+                syn::parse_quote! { &mut #lvalue }
+            } else {
+                let expr: syn::Expr = arg.into();
+                syn::parse_quote! { &mut *#expr }
+            }
         }
         ast::Expr::CallExpr(call) if call_returns_mutable_slice_view(&call) => {
             let expr: syn::Expr = ast::Expr::CallExpr(call).into();
@@ -30365,6 +30440,52 @@ var X int
     }
 
     #[test]
+    fn borrow_mutated_vec_params_recovers_cloned_field_lvalue_args() {
+        let main_file: syn::File = rust! {
+            pub struct Holder {
+                pub data: Vec<u8>,
+            }
+
+            pub fn fill(mut values: Vec<u8>) {
+                values[0] = 1;
+            }
+
+            pub fn call(mut h: crate::builtin::GorsPtr<Holder>) {
+                fill({
+                    let __gors_pointer_field = (h.lock().unwrap().data).clone();
+                    __gors_pointer_field
+                });
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mutated_vec_params(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("fill (& mut (h . lock () . unwrap () . data))")
+                || output.contains("fill (& mut h . lock () . unwrap () . data)"),
+            "expected cloned pointer-field read to recover the mutable field lvalue: {output}"
+        );
+        assert!(
+            !output.contains("& mut { let __gors_pointer_field"),
+            "expected pass not to borrow a cloned temporary block: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_preserve_named_numeric_const_masks_and_method_results() {
         let parsed = parse_file(
             "test.go",
@@ -31645,6 +31766,39 @@ func main() {
         assert!(output.contains("std::sync::Arc::new(move |"));
         assert!(output.contains("dyn Fn(isize) -> isize + Send + Sync"));
         assert!(!output.contains("FnMut"));
+    }
+
+    #[test]
+    fn it_should_reuse_function_value_cells_in_struct_fields() {
+        let go_source = r#"
+package main
+
+type holder struct {
+	F func(int) int
+}
+
+func save(f func(int) int) holder {
+	return holder{F: f}
+}
+
+func inc(x int) int {
+	return x + 1
+}
+
+func main() {
+	h := save(inc)
+	_ = h.F(1)
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("F: f.clone()"), "{output}");
+        assert!(
+            !output.contains("std::sync::Arc::new(f.clone())"),
+            "expected function-value cells assigned to function fields to be reused, not wrapped as closure bodies: {output}"
+        );
     }
 
     #[test]
@@ -36435,6 +36589,42 @@ func main() {
         assert!(
             !output.contains("* h . lock () . unwrap () . data"),
             "expected dereference not to bind to the slice field: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_borrow_slice_fields_as_lvalues_for_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	data []byte
+}
+
+func fill(dst []byte) {
+	dst[0] = 'x'
+}
+
+func main() {
+	h := holder{data: []byte("abc")}
+	fill(h.data)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("fill(&mut h.data)") || main_rs.contains("fill(&mut (h.data))"),
+            "expected borrowed slice argument to use the selector lvalue: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("__gors_pointer_field = (h.data).clone()"),
+            "expected borrowed slice argument not to mutate a cloned field: {main_rs}"
         );
     }
 
