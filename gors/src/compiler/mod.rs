@@ -1684,10 +1684,9 @@ fn go_constraint_to_rust_bounds(
 fn dedupe_type_param_bounds(
     bounds: syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
 ) -> syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]> {
-    let mut seen = std::collections::HashSet::new();
     let mut deduped = syn::punctuated::Punctuated::new();
     for bound in bounds {
-        if seen.insert(bound.to_token_stream().to_string()) {
+        if !type_param_bounds_contains(&deduped, &bound) {
             deduped.push(bound);
         }
     }
@@ -1699,11 +1698,92 @@ fn append_type_param_bounds(
     source: syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
 ) {
     for bound in source {
-        if !target.iter().any(|existing| {
-            existing.to_token_stream().to_string() == bound.to_token_stream().to_string()
-        }) {
+        if !type_param_bounds_contains(target, &bound) {
             target.push(bound);
         }
+    }
+}
+
+fn type_param_bounds_contains(
+    bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, Token![+]>,
+    needle: &syn::TypeParamBound,
+) -> bool {
+    bounds
+        .iter()
+        .any(|existing| type_param_bound_matches(existing, needle))
+}
+
+fn type_param_bound_matches(left: &syn::TypeParamBound, right: &syn::TypeParamBound) -> bool {
+    match (left, right) {
+        (syn::TypeParamBound::Trait(left), syn::TypeParamBound::Trait(right)) => {
+            trait_bound_modifier_matches(&left.modifier, &right.modifier)
+                && left.paren_token.is_some() == right.paren_token.is_some()
+                && bound_lifetimes_match(left.lifetimes.as_ref(), right.lifetimes.as_ref())
+                && syn_path_matches(&left.path, &right.path)
+        }
+        (syn::TypeParamBound::Lifetime(left), syn::TypeParamBound::Lifetime(right)) => {
+            left.ident == right.ident
+        }
+        _ => false,
+    }
+}
+
+fn trait_bound_modifier_matches(
+    left: &syn::TraitBoundModifier,
+    right: &syn::TraitBoundModifier,
+) -> bool {
+    matches!(
+        (left, right),
+        (syn::TraitBoundModifier::None, syn::TraitBoundModifier::None)
+            | (
+                syn::TraitBoundModifier::Maybe(_),
+                syn::TraitBoundModifier::Maybe(_)
+            )
+    )
+}
+
+fn bound_lifetimes_match(
+    left: Option<&syn::BoundLifetimes>,
+    right: Option<&syn::BoundLifetimes>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.lifetimes.len() == right.lifetimes.len()
+                && left
+                    .lifetimes
+                    .iter()
+                    .zip(right.lifetimes.iter())
+                    .all(|(left, right)| generic_param_matches(left, right))
+        }
+        _ => false,
+    }
+}
+
+fn generic_param_matches(left: &syn::GenericParam, right: &syn::GenericParam) -> bool {
+    match (left, right) {
+        (syn::GenericParam::Lifetime(left), syn::GenericParam::Lifetime(right)) => {
+            left.lifetime.ident == right.lifetime.ident
+                && left
+                    .bounds
+                    .iter()
+                    .zip(right.bounds.iter())
+                    .all(|(left, right)| left.ident == right.ident)
+                && left.bounds.len() == right.bounds.len()
+        }
+        (syn::GenericParam::Type(left), syn::GenericParam::Type(right)) => {
+            left.ident == right.ident
+                && left
+                    .bounds
+                    .iter()
+                    .zip(right.bounds.iter())
+                    .all(|(left, right)| type_param_bound_matches(left, right))
+                && left.bounds.len() == right.bounds.len()
+        }
+        (syn::GenericParam::Const(left), syn::GenericParam::Const(right)) => {
+            left.ident == right.ident && syn_type_matches(&left.ty, &right.ty)
+        }
+        _ => false,
     }
 }
 
@@ -2146,12 +2226,7 @@ fn generics_for_idents(idents: &[syn::Ident]) -> syn::Generics {
 }
 
 fn ensure_type_param_bound(param: &mut syn::TypeParam, bound: syn::TypeParamBound) {
-    let bound_tokens = bound.to_token_stream().to_string();
-    if param
-        .bounds
-        .iter()
-        .any(|existing| existing.to_token_stream().to_string() == bound_tokens)
-    {
+    if type_param_bounds_contains(&param.bounds, &bound) {
         return;
     }
     param.colon_token.get_or_insert_with(<Token![:]>::default);
@@ -39720,6 +39795,32 @@ func main() {
     }
 
     // --- Generics tests (Agent 5) ---
+
+    #[test]
+    fn type_param_bound_helpers_match_bounds_structurally() {
+        let mut bounds = syn::punctuated::Punctuated::<syn::TypeParamBound, syn::Token![+]>::new();
+        bounds.push(syn::parse_quote! { Clone });
+        bounds.push(syn::parse_quote! { Clone });
+        bounds.push(syn::parse_quote! { 'a });
+        bounds.push(syn::parse_quote! { 'a });
+
+        let deduped = super::dedupe_type_param_bounds(bounds);
+        assert_eq!(deduped.len(), 2);
+
+        let mut target = syn::punctuated::Punctuated::<syn::TypeParamBound, syn::Token![+]>::new();
+        target.push(syn::parse_quote! { Clone });
+        let mut source = syn::punctuated::Punctuated::<syn::TypeParamBound, syn::Token![+]>::new();
+        source.push(syn::parse_quote! { Clone });
+        source.push(syn::parse_quote! { Default });
+
+        super::append_type_param_bounds(&mut target, source);
+        assert_eq!(target.len(), 2);
+
+        let mut param: syn::TypeParam = syn::parse_quote! { T: Clone };
+        super::ensure_type_param_bound(&mut param, syn::parse_quote! { Clone });
+        super::ensure_type_param_bound(&mut param, syn::parse_quote! { Default });
+        assert_eq!(param.bounds.len(), 2);
+    }
 
     #[test]
     fn it_should_compile_generic_function() {
