@@ -364,6 +364,13 @@ imports with no surviving references should not force module generation.
 Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
 stream, requested roots, and known module names; keep that key aligned with any
 future reachability input that can change the kept item set.
+Compiler-side root propagation should go through the private
+`RequiredModuleRoots` helper rather than open-coded
+`HashMap<String, HashSet<String>>` loops. The `SemanticReachabilityGraph`
+scaffold records item-level local/external refs and currently mirrors supertrait
+expansion edges for audit/debug use; broaden that graph toward the existing DCE
+semantics before replacing token-derived pruning paths, especially for receiver
+method expansion and other synthetic reachability names.
 
 ## Go toolchain
 
