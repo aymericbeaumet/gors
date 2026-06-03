@@ -16,6 +16,7 @@
 
 mod builtin_roots;
 mod display_impls;
+mod embedded_interfaces;
 mod generated_attrs;
 mod interface_hooks;
 mod interface_type_env;
@@ -11567,165 +11568,6 @@ fn interface_box_clone_impl(ident: &syn::Ident) -> syn::Item {
             }
         }
     }
-}
-
-fn embedded_interface_impls(
-    items: &[syn::Item],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-) -> Vec<syn::Item> {
-    let trait_methods = syn_inspect::trait_method_fns(items);
-    let embedded_structs = BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().clone());
-    let mut out = vec![];
-
-    for (struct_name, fields) in embedded_structs {
-        let struct_ident = syn::Ident::new(&struct_name, Span::mixed_site());
-        for field in fields {
-            let Some(trait_ident) = field
-                .trait_path
-                .segments
-                .last()
-                .map(|segment| &segment.ident)
-            else {
-                continue;
-            };
-            let Some(required_methods) = trait_methods.get(&trait_ident.to_string()) else {
-                continue;
-            };
-            let mut impl_items = vec![];
-            for trait_fn in required_methods {
-                let method_name = trait_fn.sig.ident.to_string();
-                if let Some(method) = methods.get(&struct_name).and_then(|methods| {
-                    methods
-                        .iter()
-                        .find(|method| method.sig.ident == method_name)
-                }) {
-                    let mut method = method.clone();
-                    method.vis = syn::Visibility::Inherited;
-                    if let Some(syn::FnArg::Receiver(receiver)) = method.sig.inputs.first_mut() {
-                        receiver.mutability = Some(<Token![mut]>::default());
-                        *receiver.ty = syn::parse_quote! { &mut Self };
-                    }
-                    impl_items.push(syn::ImplItem::Fn(method));
-                    continue;
-                }
-
-                let mut sig = trait_fn.sig.clone();
-                let is_hook = interface_hooks::is_runtime_hook(&sig.ident.to_string());
-                if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                    if is_hook {
-                        receiver.mutability = None;
-                        *receiver.ty = syn::parse_quote! { &Self };
-                    } else {
-                        receiver.mutability = Some(<Token![mut]>::default());
-                        *receiver.ty = syn::parse_quote! { &mut Self };
-                    }
-                }
-                let method_ident = sig.ident.clone();
-                let field_ident = field.field_ident.clone();
-                let arg_idents = signature_arg_idents(&sig);
-                let block = if matches!(sig.output, syn::ReturnType::Default) {
-                    syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*); })
-                } else {
-                    syn::parse_quote!({ self.#field_ident.#method_ident(#(#arg_idents),*) })
-                };
-                impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                    attrs: vec![],
-                    vis: syn::Visibility::Inherited,
-                    defaultness: None,
-                    sig,
-                    block,
-                }));
-            }
-            if impl_items.is_empty() {
-                continue;
-            }
-            let trait_path = field.trait_path.clone();
-            out.push(syn::Item::Impl(syn::ItemImpl {
-                attrs: vec![],
-                defaultness: None,
-                unsafety: None,
-                impl_token: <Token![impl]>::default(),
-                generics: syn::parse_quote! { <'__gors> },
-                trait_: Some((None, trait_path, <Token![for]>::default())),
-                self_ty: Box::new(syn::parse_quote! { #struct_ident<'__gors> }),
-                brace_token: syn::token::Brace::default(),
-                items: impl_items,
-            }));
-
-            let mut pointer_impl_items = vec![];
-            for trait_fn in required_methods {
-                let mut sig = trait_fn.sig.clone();
-                let method_name = sig.ident.to_string();
-                let is_hook = interface_hooks::is_runtime_hook(&method_name);
-                if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                    if is_hook {
-                        receiver.mutability = None;
-                        *receiver.ty = syn::parse_quote! { &Self };
-                    } else {
-                        receiver.mutability = Some(<Token![mut]>::default());
-                        *receiver.ty = syn::parse_quote! { &mut Self };
-                    }
-                }
-                let method_ident = sig.ident.clone();
-                let field_ident = field.field_ident.clone();
-                let arg_idents = signature_arg_idents(&sig);
-                let has_inherent_method = methods.get(&struct_name).is_some_and(|methods| {
-                    methods
-                        .iter()
-                        .any(|method| method.sig.ident == method_ident)
-                });
-                let block = match method_name.as_str() {
-                    interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ None }),
-                    interface_hooks::CLONE_BOX_METHOD => {
-                        syn::parse_quote!({
-                            crate::builtin::panic_value("cloned non-clone interface value")
-                        })
-                    }
-                    _ if has_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
-                        syn::parse_quote!({
-                            let mut __gors_guard = self.lock().unwrap();
-                            #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*);
-                        })
-                    }
-                    _ if has_inherent_method => {
-                        syn::parse_quote!({
-                            let mut __gors_guard = self.lock().unwrap();
-                            #struct_ident::#method_ident(&mut *__gors_guard, #(#arg_idents),*)
-                        })
-                    }
-                    _ if matches!(sig.output, syn::ReturnType::Default) => {
-                        syn::parse_quote!({
-                            let mut __gors_guard = self.lock().unwrap();
-                            __gors_guard.#field_ident.#method_ident(#(#arg_idents),*);
-                        })
-                    }
-                    _ => {
-                        syn::parse_quote!({
-                            let mut __gors_guard = self.lock().unwrap();
-                            __gors_guard.#field_ident.#method_ident(#(#arg_idents),*)
-                        })
-                    }
-                };
-                pointer_impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                    attrs: vec![],
-                    vis: syn::Visibility::Inherited,
-                    defaultness: None,
-                    sig,
-                    block,
-                }));
-            }
-            if !pointer_impl_items.is_empty() {
-                let trait_path = field.trait_path.clone();
-                out.push(syn::parse_quote! {
-                    impl<'__gors> #trait_path for crate::builtin::GorsPtr<#struct_ident<'__gors>> {
-                        #(#pointer_impl_items)*
-                    }
-                });
-            }
-        }
-    }
-
-    out
 }
 
 fn manual_clone_expr_for_struct_field(
@@ -23886,7 +23728,13 @@ impl TryFrom<ast::File<'_>> for syn::File {
             &items,
             interface_type_env::noop_impl_items_for_interface_name,
         ));
-        items.extend(embedded_interface_impls(&items, &methods));
+        let embedded_interface_structs =
+            BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().clone());
+        items.extend(embedded_interfaces::impls(
+            &items,
+            &methods,
+            embedded_interface_structs,
+        ));
 
         // Stringer pattern: generate `impl Display` for structs with String() string
         for struct_name in &struct_has_string_method {
