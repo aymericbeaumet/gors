@@ -83,14 +83,13 @@ struct EmbeddedInterfaceField {
 }
 
 #[derive(Clone)]
-struct ReachableItemsCacheEntry {
+struct ReachableItems {
     keep: std::collections::HashSet<usize>,
     refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
     names: std::collections::HashSet<String>,
 }
 
-static REACHABLE_ITEMS_CACHE: OnceLock<Mutex<BTreeMap<String, ReachableItemsCacheEntry>>> =
-    OnceLock::new();
+static REACHABLE_ITEMS_CACHE: OnceLock<Mutex<BTreeMap<String, ReachableItems>>> = OnceLock::new();
 
 struct MainPackageVarModeGuard {
     previous: bool,
@@ -7743,7 +7742,7 @@ impl<'a> ExternalRootCollector<'a> {
         module: &CompiledModule,
         roots: &std::collections::HashSet<String>,
     ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, self.module_names);
+        let refs = reachable_stdlib_items(&module.file.items, roots, self.module_names).refs;
         debug_assert_semantic_external_refs(self.semantic_graph, &module.mod_name, roots, &refs);
         refs
     }
@@ -7869,16 +7868,24 @@ fn prune_items_to_roots(
     roots: &std::collections::HashSet<String>,
     module_names: &std::collections::HashSet<String>,
 ) {
-    let (keep, _, names) = reachable_stdlib_items(items, roots, module_names);
+    let reachable = reachable_stdlib_items(items, roots, module_names);
     let item_names = item_reachability_names(items);
     let top_level_names = top_level_item_names(items);
     *items = items
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
-            keep.contains(&idx)
+            reachable
+                .keep
+                .contains(&idx)
                 .then(|| {
-                    reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
+                    reachable_item_for_names(
+                        item,
+                        &reachable.names,
+                        &item_names,
+                        &top_level_names,
+                        roots,
+                    )
                 })
                 .flatten()
         })
@@ -8777,8 +8784,8 @@ fn prune_dependency_stdlib_modules(
             continue;
         }
         let roots = required.get_or_empty(&module.mod_name, &empty);
-        let (keep, _, names) = reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
-        if keep.is_empty() {
+        let reachable = reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
+        if reachable.keep.is_empty() {
             module.file.items.clear();
             module.content_hash = String::new();
             continue;
@@ -8791,9 +8798,17 @@ fn prune_dependency_stdlib_modules(
             .iter()
             .enumerate()
             .filter_map(|(idx, item)| {
-                keep.contains(&idx)
+                reachable
+                    .keep
+                    .contains(&idx)
                     .then(|| {
-                        reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
+                        reachable_item_for_names(
+                            item,
+                            &reachable.names,
+                            &item_names,
+                            &top_level_names,
+                            roots,
+                        )
                     })
                     .flatten()
             })
@@ -8910,18 +8925,14 @@ fn reachable_stdlib_items(
     items: &[syn::Item],
     roots: &std::collections::HashSet<String>,
     module_names: &std::collections::HashSet<String>,
-) -> (
-    std::collections::HashSet<usize>,
-    std::collections::HashMap<String, std::collections::HashSet<String>>,
-    std::collections::HashSet<String>,
-) {
+) -> ReachableItems {
     let cache_key = reachable_items_cache_key(items, roots, module_names);
     if let Ok(cache) = REACHABLE_ITEMS_CACHE
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         && let Some(entry) = cache.get(&cache_key)
     {
-        return (entry.keep.clone(), entry.refs.clone(), entry.names.clone());
+        return entry.clone();
     }
 
     let mut names = roots.clone();
@@ -8972,7 +8983,7 @@ fn reachable_stdlib_items(
         }
     }
 
-    let entry = ReachableItemsCacheEntry {
+    let entry = ReachableItems {
         keep,
         refs: external_refs,
         names,
@@ -8983,7 +8994,7 @@ fn reachable_stdlib_items(
     {
         cache.insert(cache_key, entry.clone());
     }
-    (entry.keep, entry.refs, entry.names)
+    entry
 }
 
 fn reachable_items_cache_key(
@@ -34519,10 +34530,18 @@ func main() {
         let roots = std::collections::HashSet::from(["root".to_string()]);
         let module_names = std::collections::HashSet::from(["builtin".to_string()]);
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("printer::doPrintln"), "{names:?}");
-        assert!(!names.contains("printer::unused"), "{names:?}");
+        assert!(
+            reachable.names.contains("printer::doPrintln"),
+            "{:?}",
+            reachable.names
+        );
+        assert!(
+            !reachable.names.contains("printer::unused"),
+            "{:?}",
+            reachable.names
+        );
     }
 
     #[test]
@@ -36780,11 +36799,11 @@ func main() {
         let roots = std::collections::HashSet::from(["root".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (keep, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("NeededTrait"));
-        assert!(names.contains("make_impl"));
-        assert_eq!(keep.len(), 4);
+        assert!(reachable.names.contains("NeededTrait"));
+        assert!(reachable.names.contains("make_impl"));
+        assert_eq!(reachable.keep.len(), 4);
     }
 
     #[test]
@@ -36814,7 +36833,7 @@ func main() {
         let roots = std::collections::HashSet::from(["root".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
         let item_names = super::item_reachability_names(&file.items);
         let top_level_names = super::top_level_item_names(&file.items);
 
@@ -36823,7 +36842,13 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Trait(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
             })
             .and_then(|item| match item {
                 syn::Item::Trait(item_trait) => Some(item_trait),
@@ -36839,7 +36864,13 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Impl(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
             })
             .and_then(|item| match item {
                 syn::Item::Impl(item_impl) => Some(item_impl),
@@ -36877,7 +36908,7 @@ func main() {
         let roots = std::collections::HashSet::from(["Interface".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
         let item_names = super::item_reachability_names(&file.items);
         let top_level_names = super::top_level_item_names(&file.items);
 
@@ -36886,7 +36917,13 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Trait(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
             })
             .and_then(|item| match item {
                 syn::Item::Trait(item_trait) => Some(item_trait),
@@ -36909,7 +36946,13 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Impl(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
             })
             .and_then(|item| match item {
                 syn::Item::Impl(item_impl) => Some(item_impl),
@@ -37053,7 +37096,7 @@ func main() {
         let roots = std::collections::HashSet::from(["Holder".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
         let item_names = super::item_reachability_names(&file.items);
         let top_level_names = super::top_level_item_names(&file.items);
 
@@ -37062,7 +37105,13 @@ func main() {
             .iter()
             .find(|item| matches!(item, syn::Item::Trait(_)))
             .and_then(|item| {
-                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
             })
             .and_then(|item| match item {
                 syn::Item::Trait(item_trait) => Some(item_trait),
@@ -37118,10 +37167,10 @@ func main() {
         let roots = std::collections::HashSet::from(["Reader::readHeader".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("block::toV7"));
-        assert!(names.contains("headerV7::name"));
+        assert!(reachable.names.contains("block::toV7"));
+        assert!(reachable.names.contains("headerV7::name"));
     }
 
     #[test]
@@ -37155,10 +37204,10 @@ func main() {
         let roots = std::collections::HashSet::from(["Writer::write".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("block::toUSTAR"));
-        assert!(names.contains("headerUSTAR::prefix"));
+        assert!(reachable.names.contains("block::toUSTAR"));
+        assert!(reachable.names.contains("headerUSTAR::prefix"));
     }
 
     #[test]
@@ -37175,13 +37224,16 @@ func main() {
         let roots = std::collections::HashSet::from(["FormatFileInfo".to_string()]);
         let module_names = std::collections::HashSet::from(["time".to_string()]);
 
-        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("FileInfo::ModTime"));
+        assert!(reachable.names.contains("FileInfo::ModTime"));
         assert!(
-            refs.get("time")
+            reachable
+                .refs
+                .get("time")
                 .is_some_and(|refs| refs.contains("Time::Format")),
-            "{refs:?}"
+            "{:?}",
+            reachable.refs
         );
     }
 
@@ -37238,21 +37290,27 @@ func main() {
             "time".to_string(),
         ]);
 
-        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("Header"));
-        assert!(names.contains("Format::String"));
-        assert!(!names.contains("headerFileInfo"));
-        assert!(!names.contains("headerFileInfo::String"));
+        assert!(reachable.names.contains("Header"));
+        assert!(reachable.names.contains("Format::String"));
+        assert!(!reachable.names.contains("headerFileInfo"));
+        assert!(!reachable.names.contains("headerFileInfo::String"));
         assert!(
-            refs.get("time").is_some_and(|refs| refs.contains("Time")),
-            "{refs:?}"
+            reachable
+                .refs
+                .get("time")
+                .is_some_and(|refs| refs.contains("Time")),
+            "{:?}",
+            reachable.refs
         );
         assert!(
-            !refs
+            !reachable
+                .refs
                 .get("io__fs")
                 .is_some_and(|refs| refs.contains("FormatFileInfo")),
-            "{refs:?}"
+            "{:?}",
+            reachable.refs
         );
     }
 
@@ -37320,26 +37378,33 @@ func main() {
             "time".to_string(),
         ]);
 
-        let (_, refs, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("headerFileInfo"));
-        assert!(names.contains("FileInfo"));
+        assert!(reachable.names.contains("headerFileInfo"));
+        assert!(reachable.names.contains("FileInfo"));
         assert!(
-            refs.get("io__fs")
+            reachable
+                .refs
+                .get("io__fs")
                 .is_some_and(|refs| refs.contains("FileInfo")),
-            "{refs:?}"
+            "{:?}",
+            reachable.refs
         );
         assert!(
-            !refs
+            !reachable
+                .refs
                 .get("fmt")
                 .is_some_and(|refs| refs.contains("Stringer")),
-            "{refs:?}"
+            "{:?}",
+            reachable.refs
         );
         assert!(
-            !refs
+            !reachable
+                .refs
                 .get("io__fs")
                 .is_some_and(|refs| refs.contains("FormatFileInfo")),
-            "{refs:?}"
+            "{:?}",
+            reachable.refs
         );
     }
 
@@ -37372,10 +37437,10 @@ func main() {
             std::collections::HashSet::from(["sparseFileWriter::logicalRemaining".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (_, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        assert!(names.contains("sparseEntry"));
-        assert!(names.contains("sparseEntry::endOffset"));
+        assert!(reachable.names.contains("sparseEntry"));
+        assert!(reachable.names.contains("sparseEntry::endOffset"));
     }
 
     #[test]
@@ -37501,9 +37566,9 @@ func main() {
         let roots = std::collections::HashSet::from(["headerFileInfo::IsDir".to_string()]);
         let module_names = std::collections::HashSet::from(["io__fs".to_string()]);
 
-        let (_, refs, _) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
-        let fs_refs = refs.get("io__fs").expect("io/fs refs");
+        let fs_refs = reachable.refs.get("io__fs").expect("io/fs refs");
         assert!(fs_refs.contains("FileMode"));
         assert!(fs_refs.contains("FileMode::IsDir"));
     }
@@ -37655,7 +37720,7 @@ func main() {
         let roots = std::collections::HashSet::from(["root".to_string()]);
         let module_names = std::collections::HashSet::new();
 
-        let (keep, _, names) = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
         let item_names = super::item_reachability_names(&file.items);
         let top_level_names = super::top_level_item_names(&file.items);
         let kept = file
@@ -37663,10 +37728,10 @@ func main() {
             .iter()
             .enumerate()
             .filter_map(|(idx, item)| {
-                keep.contains(&idx).then(|| {
+                reachable.keep.contains(&idx).then(|| {
                     super::reachable_item_for_names(
                         item,
-                        &names,
+                        &reachable.names,
                         &item_names,
                         &top_level_names,
                         &roots,
@@ -37677,7 +37742,7 @@ func main() {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(names.contains("State"));
+        assert!(reachable.names.contains("State"));
         assert!(kept.contains("impl State for __GorsNoopReader"));
         assert!(kept.contains("fn Remaining"));
 
