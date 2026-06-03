@@ -44,7 +44,7 @@ impl Metadata {
 }
 
 fn block_mentions_self_reflect_field(block: &syn::Block, fields: &FieldSet) -> bool {
-    SelfFieldFinder::block_contains(block, fields)
+    super::self_fields::block_mentions(block, fields)
 }
 
 fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &FieldSet) -> bool {
@@ -56,7 +56,7 @@ fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &Fi
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
             if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
-                && expr_mentions_self_field_in(&call.receiver, self.fields)
+                && super::self_fields::expr_mentions(&call.receiver, self.fields)
             {
                 self.found = true;
                 return;
@@ -263,45 +263,6 @@ fn expr_mentions_any_name(expr: &syn::Expr, names: &FieldSet) -> bool {
     visitor.found
 }
 
-fn expr_mentions_self_field_in(expr: &syn::Expr, fields: &FieldSet) -> bool {
-    SelfFieldFinder::expr_contains(expr, fields)
-}
-
-struct SelfFieldFinder<'a> {
-    fields: &'a FieldSet,
-    found: bool,
-}
-
-impl SelfFieldFinder<'_> {
-    fn block_contains(block: &syn::Block, fields: &FieldSet) -> bool {
-        let mut finder = SelfFieldFinder {
-            fields,
-            found: false,
-        };
-        syn::visit::Visit::visit_block(&mut finder, block);
-        finder.found
-    }
-
-    fn expr_contains(expr: &syn::Expr, fields: &FieldSet) -> bool {
-        let mut finder = SelfFieldFinder {
-            fields,
-            found: false,
-        };
-        syn::visit::Visit::visit_expr(&mut finder, expr);
-        finder.found
-    }
-}
-
-impl syn::visit::Visit<'_> for SelfFieldFinder<'_> {
-    fn visit_expr_field(&mut self, field: &syn::ExprField) {
-        if is_self_field_in(field, self.fields) {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_field(self, field);
-    }
-}
-
 fn stmt_needs_reflection(stmt: &syn::Stmt, self_reflect_fields: Option<&FieldSet>) -> bool {
     let mut finder = Finder {
         self_reflect_fields,
@@ -354,7 +315,7 @@ impl syn::visit::Visit<'_> for Finder<'_> {
     fn visit_expr_field(&mut self, field: &syn::ExprField) {
         if self
             .self_reflect_fields
-            .is_some_and(|fields| is_self_field_in(field, fields))
+            .is_some_and(|fields| super::self_fields::is_self_field_in(field, fields))
         {
             self.found = true;
             return;
@@ -384,19 +345,6 @@ fn is_reflect_value_type(ty: &syn::Type) -> bool {
         .last()
         .is_some_and(|segment| segment.ident == "Value")
         && is_reflect_module_path(&path.path)
-}
-
-fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
-    match member {
-        syn::Member::Named(ident) => Some(ident),
-        syn::Member::Unnamed(_) => None,
-    }
-}
-
-fn is_self_field_in(field: &syn::ExprField, fields: &FieldSet) -> bool {
-    super::super::syntax::is_self_expr(&field.base)
-        && member_ident_name(&field.member)
-            .is_some_and(|member| fields.contains(&member.to_string()))
 }
 
 fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverFieldMap {

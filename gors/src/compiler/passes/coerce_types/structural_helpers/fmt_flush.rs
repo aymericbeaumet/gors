@@ -151,7 +151,7 @@ fn flush_source_fields(func: &syn::ImplItemFn) -> NameSet {
         fn visit_expr_call(&mut self, call: &syn::ExprCall) {
             if expr_call_path_ends_with(call, "take") {
                 for arg in &call.args {
-                    collect_direct_self_fields(arg, &mut self.fields);
+                    super::self_fields::collect_direct_self_fields(arg, &mut self.fields);
                 }
                 return;
             }
@@ -195,7 +195,7 @@ fn method_calls_flush_source_field(func: &syn::ImplItemFn, source_fields: &NameS
 
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if expr_mentions_self_field_in(&call.receiver, self.source_fields) {
+            if super::self_fields::expr_mentions(&call.receiver, self.source_fields) {
                 self.found = true;
                 return;
             }
@@ -221,27 +221,6 @@ fn expr_call_path_ends_with(call: &syn::ExprCall, name: &str) -> bool {
         .is_some_and(|segment| segment.ident == name)
 }
 
-fn collect_direct_self_fields(expr: &syn::Expr, fields: &mut NameSet) {
-    struct Collector<'a> {
-        fields: &'a mut NameSet,
-    }
-
-    impl syn::visit::Visit<'_> for Collector<'_> {
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if super::super::syntax::is_self_expr(&field.base)
-                && let Some(ident) = member_ident_name(&field.member)
-            {
-                self.fields.insert(ident.to_string());
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-
-    let mut collector = Collector { fields };
-    syn::visit::Visit::visit_expr(&mut collector, expr);
-}
-
 fn stmt_needs_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {
     matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_flush(expr, methods))
 }
@@ -254,49 +233,6 @@ fn expr_needs_flush(expr: &syn::Expr, methods: &NameSet) -> bool {
         return false;
     }
     super::super::syntax::is_self_expr(&call.receiver)
-}
-
-fn expr_mentions_self_field_in(expr: &syn::Expr, fields: &NameSet) -> bool {
-    SelfFieldFinder::expr_contains(expr, fields)
-}
-
-struct SelfFieldFinder<'a> {
-    fields: &'a NameSet,
-    found: bool,
-}
-
-impl SelfFieldFinder<'_> {
-    fn expr_contains(expr: &syn::Expr, fields: &NameSet) -> bool {
-        let mut finder = SelfFieldFinder {
-            fields,
-            found: false,
-        };
-        syn::visit::Visit::visit_expr(&mut finder, expr);
-        finder.found
-    }
-}
-
-impl syn::visit::Visit<'_> for SelfFieldFinder<'_> {
-    fn visit_expr_field(&mut self, field: &syn::ExprField) {
-        if is_self_field_in(field, self.fields) {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_field(self, field);
-    }
-}
-
-fn is_self_field_in(field: &syn::ExprField, fields: &NameSet) -> bool {
-    super::super::syntax::is_self_expr(&field.base)
-        && member_ident_name(&field.member)
-            .is_some_and(|member| fields.contains(&member.to_string()))
-}
-
-fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
-    match member {
-        syn::Member::Named(ident) => Some(ident),
-        syn::Member::Unnamed(_) => None,
-    }
 }
 
 #[cfg(test)]

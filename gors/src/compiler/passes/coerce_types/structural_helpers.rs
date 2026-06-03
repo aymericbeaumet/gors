@@ -2,6 +2,7 @@ use syn::visit_mut::{self, VisitMut};
 
 mod fmt_flush;
 mod reflection_fallback;
+mod self_fields;
 
 #[derive(Default)]
 pub(super) struct Metadata {
