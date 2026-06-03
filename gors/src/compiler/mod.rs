@@ -15752,10 +15752,10 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 .collect();
             match kind {
                 ir::BuiltinCallKind::Len if let [x] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::len(&#x) }
+                    syn::parse_quote! { (crate::builtin::len(&#x) as isize) }
                 }
                 ir::BuiltinCallKind::Cap if let [x] = args.as_slice() => {
-                    syn::parse_quote! { crate::builtin::cap(&#x) }
+                    syn::parse_quote! { (crate::builtin::cap(&#x) as isize) }
                 }
                 ir::BuiltinCallKind::Close if let [ch] = args.as_slice() => {
                     syn::parse_quote! { crate::builtin::close(&#ch) }
@@ -36417,7 +36417,7 @@ func main() {
             "#,
             rust! {
                 pub fn Index<E: PartialEq + Clone + Default>(mut s: &mut [E], mut v: E) -> isize {
-                    for mut i in 0..((crate::builtin::len(&s) as isize) as isize) {
+                    for mut i in 0..(crate::builtin::len(&s) as isize) {
                         if v == {
                             let __gors_index_base = &s;
                             let __gors_index = (i) as usize;
@@ -36985,6 +36985,34 @@ func main() {
                     let mut s = Vec::from([1, 2, 3]);
                     let mut n = (crate::builtin::len(&s) as isize);
                     let _ = n;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_not_cast_shadowed_len_function_calls() {
+        test(
+            r#"
+                package main
+
+                func len() string {
+                    return "ok"
+                }
+
+                func main() {
+                    value := len()
+                    _ = value
+                }
+            "#,
+            rust! {
+                fn len() -> String {
+                    "ok".to_string()
+                }
+
+                pub fn main() {
+                    let mut value = len();
+                    let _ = value;
                 }
             },
         );

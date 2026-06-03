@@ -112,19 +112,6 @@ impl VisitMut for CoerceTypes {
         block.stmts = new_stmts;
     }
 
-    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
-        visit_mut::visit_expr_mut(self, expr);
-
-        // Wrap len()/cap() calls with `as isize` since Go's len() returns int (isize)
-        // but Rust's returns usize. This fixes isize/usize arithmetic mismatches.
-        if let syn::Expr::Call(call) = expr {
-            if is_len_or_cap_call(call) {
-                let inner = expr.clone();
-                *expr = syn::parse_quote! { (#inner as isize) };
-            }
-        }
-    }
-
     fn visit_expr_method_call_mut(&mut self, mc: &mut syn::ExprMethodCall) {
         visit_mut::visit_expr_method_call_mut(self, mc);
         coerce_scoped_call_args(
@@ -740,15 +727,6 @@ fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
 
 fn is_self_field_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Field(field) if is_self_expr(&field.base))
-}
-
-fn is_len_or_cap_call(call: &syn::ExprCall) -> bool {
-    if let syn::Expr::Path(path) = &*call.func {
-        if let Some(seg) = path.path.segments.last() {
-            return matches!(seg.ident.to_string().as_str(), "len" | "cap");
-        }
-    }
-    false
 }
 
 fn get_type_annotation(local: &syn::Local) -> Option<syn::Type> {
