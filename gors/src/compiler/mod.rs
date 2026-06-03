@@ -6512,7 +6512,10 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
 }
 
 fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
-    if matches!(arg, syn::Expr::Reference(_)) {
+    if let syn::Expr::Reference(reference) = arg {
+        if reference.mutability.is_some() {
+            reference.expr = Box::new(strip_cloned_lvalue_slice_source((*reference.expr).clone()));
+        }
         return;
     }
     if is_box_leak_expr(arg) {
@@ -6553,8 +6556,11 @@ fn cloned_lvalue_source(expr: &syn::Expr) -> Option<syn::Expr> {
 }
 
 fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Block(block) = expr else {
-        return None;
+    let block = match expr {
+        syn::Expr::Block(block) => block,
+        syn::Expr::Group(group) => return cloned_lvalue_block_source(&group.expr),
+        syn::Expr::Paren(paren) => return cloned_lvalue_block_source(&paren.expr),
+        _ => return None,
     };
     let [local_stmt, result_stmt] = block.block.stmts.as_slice() else {
         return None;
@@ -6608,7 +6614,33 @@ fn to_vec_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
     if method.method != "to_vec" || !method.args.is_empty() {
         return None;
     }
-    Some((*method.receiver).clone())
+    Some(strip_cloned_lvalue_slice_source((*method.receiver).clone()))
+}
+
+fn strip_cloned_lvalue_slice_source(expr: syn::Expr) -> syn::Expr {
+    match expr {
+        syn::Expr::Index(mut index) => {
+            if let Some(source) = clone_call_receiver_expr(&index.expr)
+                && expr_can_be_mutably_borrowed(&source)
+            {
+                index.expr = Box::new(source);
+            } else if let Some(source) = cloned_lvalue_block_source(&index.expr) {
+                index.expr = Box::new(source);
+            } else {
+                index.expr = Box::new(strip_cloned_lvalue_slice_source(*index.expr));
+            }
+            syn::Expr::Index(index)
+        }
+        syn::Expr::Paren(mut paren) => {
+            paren.expr = Box::new(strip_cloned_lvalue_slice_source(*paren.expr));
+            syn::Expr::Paren(paren)
+        }
+        syn::Expr::Group(mut group) => {
+            group.expr = Box::new(strip_cloned_lvalue_slice_source(*group.expr));
+            syn::Expr::Group(group)
+        }
+        other => other,
+    }
 }
 
 fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -7089,39 +7121,31 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
 }
 
 fn take_deref_value_arg(arg: &mut syn::Expr) -> bool {
-    let syn::Expr::Unary(unary) = arg else {
+    let Some(inner) = deref_lvalue_inner_expr(arg) else {
         return false;
     };
-    if !matches!(unary.op, syn::UnOp::Deref(_)) {
-        return false;
-    }
-    if is_self_path_expr(&unary.expr) {
-        *arg = syn::parse_quote! { std::mem::take(&mut *self) };
-        return true;
-    }
-    if is_self_field_expr(&unary.expr) {
-        let inner = unary.expr.clone();
-        *arg = syn::parse_quote! { std::mem::take(&mut *#inner) };
-        return true;
-    }
-    false
+    *arg = syn::parse_quote! { std::mem::take(&mut *#inner) };
+    true
 }
 
-fn is_self_path_expr(expr: &syn::Expr) -> bool {
-    matches!(
-        expr,
-        syn::Expr::Path(path)
-            if path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1
-                && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
-    )
+fn deref_lvalue_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            takeable_deref_base(&unary.expr).then(|| (*unary.expr).clone())
+        }
+        syn::Expr::Paren(paren) => deref_lvalue_inner_expr(&paren.expr),
+        syn::Expr::Group(group) => deref_lvalue_inner_expr(&group.expr),
+        _ => None,
+    }
 }
 
-fn is_self_field_expr(expr: &syn::Expr) -> bool {
-    matches!(
-        expr,
-        syn::Expr::Field(field) if is_self_path_expr(&field.base)
-    )
+fn takeable_deref_base(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_) => true,
+        syn::Expr::Paren(paren) => takeable_deref_base(&paren.expr),
+        syn::Expr::Group(group) => takeable_deref_base(&group.expr),
+        _ => false,
+    }
 }
 
 fn take_value_arg(arg: &mut syn::Expr) {
@@ -10937,6 +10961,12 @@ fn collect_refs_from_item(
                 self.item_names,
             ));
             syn::visit_mut::visit_item_macro_mut(self, item_macro);
+        }
+
+        fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+            self.local_names
+                .extend(macro_token_item_names(&mac.tokens, self.top_level_names));
+            syn::visit_mut::visit_macro_mut(self, mac);
         }
 
         fn visit_expr_method_call_mut(&mut self, method: &mut syn::ExprMethodCall) {
@@ -15935,15 +15965,6 @@ fn ordered_builtin_arg_expected_type(raw_args: &[ast::Expr]) -> Option<typeinfer
     all_string.then_some(typeinfer::GoType::String)
 }
 
-fn is_pointer_deref_expr(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::StarExpr(_) => true,
-        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::MUL => true,
-        ast::Expr::ParenExpr(paren) => is_pointer_deref_expr(&paren.x),
-        _ => false,
-    }
-}
-
 fn compile_append_slice_arg(slice_arg: ast::Expr, slice_go_type: &typeinfer::GoType) -> syn::Expr {
     if let ast::Expr::Ident(ident) = &slice_arg {
         let name = rust_safe_ident_name(ident.name);
@@ -15952,14 +15973,41 @@ fn compile_append_slice_arg(slice_arg: ast::Expr, slice_go_type: &typeinfer::GoT
             return syn::parse_quote! { (*#ident).clone() };
         }
     }
-    if is_pointer_deref_expr(&slice_arg) {
-        if !go_type_is_copy(slice_go_type)
-            && let Some(lvalue) = lvalue_expr_from_ref(&slice_arg)
-        {
-            return syn::parse_quote! { (#lvalue).clone() };
-        }
+    if !go_type_is_copy(slice_go_type)
+        && is_ir_addressable_expr(&slice_arg)
+        && let Some(lvalue) = lvalue_expr_from_ref(&slice_arg)
+    {
+        return syn::parse_quote! { (#lvalue).clone() };
     }
     compile_expr_with_expected(slice_arg, None)
+}
+
+fn append_value_arg_should_clone(arg: &ast::Expr, expected: Option<&typeinfer::GoType>) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    !matches!(expected, typeinfer::GoType::Unknown)
+        && !go_type_is_copy(expected)
+        && is_ir_addressable_expr(arg)
+}
+
+fn is_clone_call_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::MethodCall(call) => call.method == "clone" && call.args.is_empty(),
+        syn::Expr::Paren(paren) => is_clone_call_expr(&paren.expr),
+        syn::Expr::Group(group) => is_clone_call_expr(&group.expr),
+        _ => false,
+    }
+}
+
+fn compile_append_value_arg(arg: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {
+    let should_clone = append_value_arg_should_clone(&arg, expected);
+    let compiled = compile_expr_with_expected(arg, expected);
+    if should_clone && !is_clone_call_expr(&compiled) {
+        syn::parse_quote! { (#compiled).clone() }
+    } else {
+        compiled
+    }
 }
 
 fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -> syn::Expr {
@@ -15987,7 +16035,7 @@ fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -
         if remaining.len() != 1 {
             return compile_error_expr("append spread requires exactly one variadic argument");
         }
-        let elem = compile_expr_with_expected(
+        let elem = compile_append_value_arg(
             remaining.into_iter().next().unwrap_or_else(|| {
                 ast::Expr::Ident(ast::Ident {
                     name_pos: token::Position::default(),
@@ -16001,7 +16049,7 @@ fn compile_append_builtin(raw_args: Vec<ast::Expr>, has_variadic_spread: bool) -
     }
 
     for elem_arg in remaining {
-        let elem = compile_expr_with_expected(elem_arg, elem_go_type.as_ref());
+        let elem = compile_append_value_arg(elem_arg, elem_go_type.as_ref());
         out = syn::parse_quote! { crate::builtin::append(#out, #elem) };
     }
     out
@@ -17041,25 +17089,56 @@ fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
     Some(syn::parse_quote! { *#inner.lock().unwrap() })
 }
 
+fn slice_lvalue_expr_from_base(
+    base: syn::Expr,
+    low: Option<&ast::Expr<'_>>,
+    high: Option<&ast::Expr<'_>>,
+) -> Option<syn::Expr> {
+    let low = low.and_then(lvalue_index_component_expr);
+    let high = high.and_then(lvalue_index_component_expr);
+    match (low, high) {
+        (Some(low), Some(high)) => {
+            Some(syn::parse_quote! { (#base)[(#low) as usize..(#high) as usize] })
+        }
+        (Some(low), None) => Some(syn::parse_quote! { (#base)[(#low) as usize..] }),
+        (None, Some(high)) => Some(syn::parse_quote! { (#base)[..(#high) as usize] }),
+        (None, None) => Some(syn::parse_quote! { (#base)[..] }),
+    }
+}
+
+fn selector_lvalue_expr_from_base(
+    selector: &ast::SelectorExpr<'_>,
+    mut base: syn::Expr,
+) -> syn::Expr {
+    let promoted_field_info = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
+        promoted_field_info(&base_ty, selector.sel.name, &env)
+    });
+    if is_owning_pointer_cell_expr_ref(&selector.x) {
+        base = syn::parse_quote! { #base.lock().unwrap() };
+    }
+    let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+    if let Some(promoted) = promoted_field_info {
+        let embedded_field = syn::Ident::new(
+            &rust_safe_ident_name(&promoted.embedded_field),
+            Span::mixed_site(),
+        );
+        let embedded_expr: syn::Expr = syn::parse_quote! { #base.#embedded_field };
+        if promoted.embedded_is_pointer {
+            syn::parse_quote! { (#embedded_expr).lock().unwrap().#sel }
+        } else {
+            syn::parse_quote! { #embedded_expr.#sel }
+        }
+    } else {
+        syn::parse_quote! { #base.#sel }
+    }
+}
+
 fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     if let ast::Expr::SliceExpr(slice) = expr {
         let base = lvalue_expr_from_ref(&slice.x)?;
-        let low = slice
-            .low
-            .as_ref()
-            .and_then(|expr| lvalue_index_component_expr(expr));
-        let high = slice
-            .high
-            .as_ref()
-            .and_then(|expr| lvalue_index_component_expr(expr));
-        return match (low, high) {
-            (Some(low), Some(high)) => {
-                Some(syn::parse_quote! { (#base)[(#low) as usize..(#high) as usize] })
-            }
-            (Some(low), None) => Some(syn::parse_quote! { (#base)[(#low) as usize..] }),
-            (None, Some(high)) => Some(syn::parse_quote! { (#base)[..(#high) as usize] }),
-            (None, None) => Some(syn::parse_quote! { (#base)[..] }),
-        };
+        return slice_lvalue_expr_from_base(base, slice.low.as_deref(), slice.high.as_deref());
     }
     if !is_ir_addressable_expr(expr) {
         return None;
@@ -17081,29 +17160,8 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
                     syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
                 return Some(syn::parse_quote! { #module::#sel });
             }
-            let promoted_field_info = TYPE_ENV.with(|env| {
-                let env = env.borrow();
-                let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
-                promoted_field_info(&base_ty, selector.sel.name, &env)
-            });
-            let mut base = lvalue_expr_from_ref(&selector.x)?;
-            if is_owning_pointer_cell_expr_ref(&selector.x) {
-                base = syn::parse_quote! { #base.lock().unwrap() };
-            }
-            let sel = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
-            if let Some(promoted) = promoted_field_info {
-                let embedded_field = syn::Ident::new(
-                    &rust_safe_ident_name(&promoted.embedded_field),
-                    Span::mixed_site(),
-                );
-                let embedded_expr: syn::Expr = syn::parse_quote! { #base.#embedded_field };
-                return if promoted.embedded_is_pointer {
-                    Some(syn::parse_quote! { (#embedded_expr).lock().unwrap().#sel })
-                } else {
-                    Some(syn::parse_quote! { #embedded_expr.#sel })
-                };
-            }
-            Some(syn::parse_quote! { #base.#sel })
+            let base = lvalue_expr_from_ref(&selector.x)?;
+            Some(selector_lvalue_expr_from_base(selector, base))
         }
         ast::Expr::IndexExpr(index) => {
             let base = lvalue_expr_from_ref(&index.x)?;
@@ -17127,24 +17185,36 @@ fn lvalue_expr_from_owned(expr: ast::Expr) -> Option<syn::Expr> {
         }
         ast::Expr::SliceExpr(slice) => {
             let base = lvalue_expr_from_owned(*slice.x)?;
-            let low = slice
-                .low
-                .as_ref()
-                .and_then(|expr| lvalue_index_component_expr(expr));
-            let high = slice
-                .high
-                .as_ref()
-                .and_then(|expr| lvalue_index_component_expr(expr));
-            match (low, high) {
-                (Some(low), Some(high)) => {
-                    Some(syn::parse_quote! { (#base)[(#low) as usize..(#high) as usize] })
-                }
-                (Some(low), None) => Some(syn::parse_quote! { (#base)[(#low) as usize..] }),
-                (None, Some(high)) => Some(syn::parse_quote! { (#base)[..(#high) as usize] }),
-                (None, None) => Some(syn::parse_quote! { (#base)[..] }),
-            }
+            slice_lvalue_expr_from_base(base, slice.low.as_deref(), slice.high.as_deref())
         }
         other => lvalue_expr_from_ref(&other),
+    }
+}
+
+fn borrowed_slice_lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    if let Some(lvalue) = lvalue_expr_from_ref(expr) {
+        return Some(lvalue);
+    }
+    match expr {
+        ast::Expr::SelectorExpr(selector) => {
+            let base = borrowed_slice_lvalue_expr_from_ref(&selector.x)?;
+            Some(selector_lvalue_expr_from_base(selector, base))
+        }
+        ast::Expr::SliceExpr(slice) => {
+            let base = borrowed_slice_lvalue_expr_from_ref(&slice.x)?;
+            slice_lvalue_expr_from_base(base, slice.low.as_deref(), slice.high.as_deref())
+        }
+        ast::Expr::IndexExpr(index) => {
+            let base = borrowed_slice_lvalue_expr_from_ref(&index.x)?;
+            let index = lvalue_index_component_expr(&index.index)?;
+            Some(syn::parse_quote! { (#base)[(#index) as usize] })
+        }
+        ast::Expr::ParenExpr(paren) => borrowed_slice_lvalue_expr_from_ref(&paren.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::MUL => {
+            pointer_deref_lvalue_expr(&unary.x)
+        }
+        ast::Expr::StarExpr(star) => pointer_deref_lvalue_expr(&star.x),
+        _ => None,
     }
 }
 
@@ -18643,7 +18713,7 @@ fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
             syn::parse_quote! { &mut *#expr }
         }
         ast::Expr::SelectorExpr(_) => {
-            if let Some(lvalue) = lvalue_expr_from_ref(&arg) {
+            if let Some(lvalue) = borrowed_slice_lvalue_expr_from_ref(&arg) {
                 syn::parse_quote! { &mut #lvalue }
             } else {
                 let expr: syn::Expr = arg.into();
@@ -18656,7 +18726,9 @@ fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
         }
         ast::Expr::SliceExpr(slice) => {
             let expr = ast::Expr::SliceExpr(slice);
-            if let Some(lvalue) = lvalue_expr_from_owned(expr) {
+            if let Some(lvalue) =
+                borrowed_slice_lvalue_expr_from_ref(&expr).or_else(|| lvalue_expr_from_owned(expr))
+            {
                 syn::parse_quote! { &mut #lvalue }
             } else {
                 compile_error_expr("slice argument is not addressable")
@@ -24118,6 +24190,9 @@ fn imported_pointer_interface_impls_for_local_structs(
             if !interface_name.contains('.') {
                 continue;
             }
+            if !interface_has_direct_import_qualifier(&interface_name) {
+                continue;
+            }
             let Some(required_methods) = env.get_interface_methods(&interface_name) else {
                 continue;
             };
@@ -24244,6 +24319,13 @@ fn imported_pointer_interface_impls_for_local_structs(
         }
         items
     })
+}
+
+fn interface_has_direct_import_qualifier(interface_name: &str) -> bool {
+    let Some((qualifier, _)) = interface_name.split_once('.') else {
+        return false;
+    };
+    IMPORT_NAMES.with(|names| names.borrow().contains(qualifier))
 }
 
 impl TryFrom<ast::File<'_>> for syn::File {
@@ -30217,6 +30299,10 @@ var X int
         let main_file: syn::File = rust! {
             pub struct buffer(pub Vec<u8>);
 
+            pub fn write_pointer(mut values: &mut Vec<u8>, mut r: i32) {
+                crate::helper::append_rune(*values, r);
+            }
+
             impl buffer {
                 pub fn write_rune(&mut self, mut r: i32) {
                     *self = buffer(crate::helper::append_rune(*self, r));
@@ -30258,6 +30344,12 @@ var X int
             output
                 .contains("crate :: helper :: append_rune (std :: mem :: take (& mut * self) , r)"),
             "expected by-value Vec helper arg to take dereferenced receiver lvalue: {output}"
+        );
+        assert!(
+            output.contains(
+                "crate :: helper :: append_rune (std :: mem :: take (& mut * values) , r)"
+            ),
+            "expected by-value Vec helper arg to take ordinary dereferenced lvalue: {output}"
         );
     }
 
@@ -32534,6 +32626,42 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
     }
 
     #[test]
+    fn compile_program_multi_skips_transitive_imported_interface_impls_for_local_structs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "fmt"
+
+type point struct{}
+
+func (point) String() string {
+	return "Point"
+}
+
+func main() {
+	fmt.Println(point{})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("fmt::Stringer") || main_rs.contains("fmt :: Stringer"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("runtime::stringer") && !main_rs.contains("runtime :: stringer"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_emits_interface_impl_for_promoted_embedded_methods() {
         let parsed = parse_file(
             "test.go",
@@ -34602,6 +34730,26 @@ func main() {
         let builtin_rs = output.files.get("builtin.rs").unwrap();
         assert!(!builtin_rs.contains("Chan"), "{builtin_rs}");
         assert!(!builtin_rs.contains("make_chan"), "{builtin_rs}");
+    }
+
+    #[test]
+    fn reachable_items_follow_function_body_macro_token_item_names() {
+        let mut file: syn::File = syn::parse_quote! {
+            struct Kept;
+            struct Dropped;
+
+            fn root() {
+                clone_if!(Kept);
+            }
+        };
+        let roots = std::collections::HashSet::from(["root".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        super::prune_items_to_roots(&mut file.items, &roots, &module_names);
+        let output = quote::quote!(#file).to_string();
+
+        assert!(output.contains("struct Kept"), "{output}");
+        assert!(!output.contains("struct Dropped"), "{output}");
     }
 
     #[test]
@@ -36983,6 +37131,85 @@ func main() {
     }
 
     #[test]
+    fn it_should_borrow_sliced_fields_as_lvalues_for_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	data []byte
+}
+
+func fill(dst []byte) {
+	dst[0] = 'x'
+}
+
+func main() {
+	h := holder{data: []byte("abc")}
+	n := 2
+	fill(h.data[:n])
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("fill(&mut (h.data)[..(n) as usize])")
+                || main_rs.contains("fill(&mut ((h.data)[..(n) as usize]))")
+                || main_rs.contains("fill (& mut (h . data) [.. (n) as usize])"),
+            "expected borrowed sliced field argument to use the selector lvalue: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("(h.data).clone") && !main_rs.contains("(h . data) . clone"),
+            "expected borrowed sliced field argument not to mutate a cloned field: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_borrow_sliced_pointer_fields_as_lvalues_for_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	data []byte
+}
+
+func fill(dst []byte) {
+	dst[0] = 'x'
+}
+
+func main() {
+	h := &holder{data: []byte("abc")}
+	n := 2
+	fill(h.data[:n])
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains(".lock().unwrap().data)[..(n) as usize]")
+                || main_rs.contains(". lock () . unwrap () . data) [.. (n) as usize]"),
+            "expected borrowed sliced pointer field argument to use the locked selector lvalue: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("__gors_pointer_field")
+                && !main_rs.contains(".data).clone")
+                && !main_rs.contains(". data) . clone"),
+            "expected borrowed sliced pointer field argument not to mutate a cloned field: {main_rs}"
+        );
+    }
+
+    #[test]
     fn it_should_fold_constant_index_expressions_before_bounds_checks() {
         let parsed = parse_file(
             "test.go",
@@ -37239,6 +37466,30 @@ func main() {
     }
 
     #[test]
+    fn it_should_clone_addressable_append_sources_when_not_writing_back() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    s := []string{"a"}
+                    t := append(s, "b")
+                    _ = s
+                    _ = t
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = Vec::from(["a".to_string()]);
+                    let mut t = crate::builtin::append((s).clone(), "b".to_string());
+                    let _ = s;
+                    let _ = t;
+                }
+            },
+        );
+    }
+
+    #[test]
     fn it_should_take_pointer_deref_append_reads() {
         test(
             r#"
@@ -37276,6 +37527,66 @@ func main() {
     }
 
     #[test]
+    fn it_should_take_self_field_append_assignment_reads() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type holder struct {
+	xs []string
+}
+
+func (h *holder) push(value string) {
+	h.xs = append(h.xs, value)
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("std :: mem :: take (& mut self . xs)"),
+            "expected append assignment to take the receiver field source: {output}"
+        );
+        assert!(
+            output.contains("crate :: builtin :: append (std :: mem :: take (& mut self . xs) , (value) . clone ())"),
+            "expected append element to copy the non-Copy value from Go type facts: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_clone_addressable_append_elements_by_type() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type item struct {
+	Name string
+}
+
+func push(values []string, it item) []string {
+	return append(values, it.Name)
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("crate :: builtin :: append"),
+            "expected append call in output: {output}"
+        );
+        assert!(
+            output.contains("(it . Name) . clone ()"),
+            "expected addressable non-Copy append element to clone: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_clone_borrowed_named_slice_append_reads() {
         let parsed = parse_file(
             "test.go",
@@ -37298,7 +37609,7 @@ func push(xs ints, value int) ints {
             "{output}"
         );
         assert!(
-            output.contains("crate :: builtin :: append ((* xs) . clone () , (value) . clone ())"),
+            output.contains("crate :: builtin :: append ((* xs) . clone () , value)"),
             "{output}"
         );
     }

@@ -8,7 +8,6 @@ mod static_false;
 mod structural_helpers;
 mod syntax;
 mod tuple_newtypes;
-mod value_materialization;
 
 pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = tuple_newtypes::collect(file);
@@ -61,7 +60,7 @@ impl VisitMut for CoerceTypes {
         self.call_arg_scopes.pop();
 
         static_false::prune_branches(&mut func.block.stmts);
-        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, None);
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
@@ -71,11 +70,11 @@ impl VisitMut for CoerceTypes {
         self.call_arg_scopes.pop();
 
         static_false::prune_branches(&mut func.block.stmts);
-        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
+        let self_reflect_fields = self.impl_self_types.last().and_then(|ty| {
             self.structural_helper_metadata
-                .should_prune_self_value_for_initial_pass(ty, &func.block)
+                .self_reflect_fields_for_initial_pass(ty, &func.block)
         });
-        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, prune_self_value);
+        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, self_reflect_fields);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
@@ -90,15 +89,11 @@ impl VisitMut for CoerceTypes {
             new_stmts
                 .extend(evaluation_order::hoist_condition_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(evaluation_order::hoist_method_args_read_receiver(&mut stmt));
-            let needs_flush = self
-                .structural_helper_metadata
-                .should_flush_after_stmt(&self.impl_self_types, &stmt);
-            new_stmts.push(stmt);
-            if needs_flush {
-                new_stmts.push(syn::parse_quote! {
-                    self.__gors_flush_fmt();
-                });
-            }
+            self.structural_helper_metadata.push_stmt_with_flush(
+                &self.impl_self_types,
+                stmt,
+                &mut new_stmts,
+            );
         }
 
         block.stmts = new_stmts;
@@ -134,13 +129,6 @@ impl VisitMut for CoerceTypes {
             &self.mutable_ref_call_args,
             &self.pointer_cell_statics,
         );
-
-        value_materialization::coerce_call(call);
-    }
-
-    fn visit_local_mut(&mut self, local: &mut syn::Local) {
-        visit_mut::visit_local_mut(self, local);
-        value_materialization::coerce_local(local);
     }
 }
 
@@ -165,7 +153,7 @@ mod tests {
             };
         }];
 
-        structural_helpers::prune_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
@@ -188,7 +176,7 @@ mod tests {
             let msg = "crate :: reflect :: ValueOf";
         }];
 
-        structural_helpers::prune_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
@@ -198,12 +186,47 @@ mod tests {
     }
 
     #[test]
+    fn it_does_not_prune_local_identifiers_named_reflect() {
+        let mut stmts: Vec<syn::Stmt> = vec![
+            syn::parse_quote! {
+                let reflect = 1;
+            },
+            syn::parse_quote! {
+                let value = reflect + 1;
+            },
+        ];
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            tokens.contains("let reflect") && tokens.contains("reflect + 1"),
+            "expected local identifier named reflect to remain: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_unqualified_reflect_module_paths() {
+        let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
+            reflect::ValueOf(v);
+        }];
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            !tokens.contains("reflect :: ValueOf"),
+            "expected reflect module path to be pruned: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_prunes_reflect_type_paths_inside_generated_fallbacks() {
         let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
             value.is::<crate::reflect::Value>();
         }];
 
-        structural_helpers::prune_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, None);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
@@ -441,16 +464,42 @@ mod tests {
     }
 
     #[test]
-    fn it_prunes_self_value_reflection_fallback_from_generated_flush_receivers() {
+    fn it_does_not_insert_flush_for_uncollected_flush_method_names() {
         let mut file: syn::File = syn::parse_quote! {
-            pub struct Printer {
-                pub value: isize,
-            }
+            pub struct Printer;
 
             impl Printer {
                 pub fn __gors_flush_fmt(&mut self) {}
 
                 pub fn printValue(&mut self, value: isize) {}
+
+                pub fn run(&mut self) {
+                    self.printArg(1);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . printArg (1)")
+                && !tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
+            "expected flush insertion to use collected receiver methods: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_self_value_reflection_fallback_from_generated_flush_receivers() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer {
+                pub value: crate::reflect::Value,
+            }
+
+            impl Printer {
+                pub fn __gors_flush_fmt(&mut self) {}
+
+                pub fn printValue(&mut self, value: crate::reflect::Value) {}
 
                 pub fn run(&mut self) {
                     let mut fallback = self.value;
@@ -465,6 +514,27 @@ mod tests {
         assert!(
             !tokens.contains("fallback") && !tokens.contains("self . value"),
             "expected generated self.value reflection fallback to be pruned by receiver metadata: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_dependents_of_reflect_field_locals() {
+        let mut stmts: Vec<syn::Stmt> = vec![
+            syn::parse_quote! {
+                let mut fallback = self.value;
+            },
+            syn::parse_quote! {
+                self.printValue(fallback);
+            },
+        ];
+        let fields = std::collections::HashSet::from(["value".to_string()]);
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, Some(&fields));
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            !tokens.contains("fallback") && !tokens.contains("printValue"),
+            "expected reflect-field local and its dependent call to be pruned: {tokens}"
         );
     }
 
@@ -608,6 +678,29 @@ mod tests {
         assert!(
             !tokens.contains("reflect :: ValueOf"),
             "expected no method-name-driven reflect coercion: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_prune_self_print_value_by_name() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Sink;
+
+            impl Sink {
+                pub fn printValue(&mut self, value: isize) {}
+
+                pub fn call(&mut self) {
+                    self.printValue(1);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . printValue (1)"),
+            "expected self.printValue without reflect data to remain: {tokens}"
         );
     }
 

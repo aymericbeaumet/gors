@@ -2,23 +2,22 @@ use syn::visit_mut::{self, VisitMut};
 
 #[derive(Default)]
 pub(super) struct Metadata {
-    fmt_flush_receiver_types: std::collections::HashSet<String>,
-    self_value_reflection_receiver_types: std::collections::HashSet<String>,
+    fmt_flush_methods_by_receiver:
+        std::collections::BTreeMap<String, std::collections::HashSet<String>>,
+    self_reflect_value_fields:
+        std::collections::BTreeMap<String, std::collections::HashSet<String>>,
 }
 
 impl Metadata {
     pub(super) fn collect(file: &syn::File) -> Self {
         Self {
-            fmt_flush_receiver_types: collect_fmt_flush_receiver_types(file),
-            self_value_reflection_receiver_types: collect_self_value_reflection_receiver_types(
-                file,
-            ),
+            fmt_flush_methods_by_receiver: collect_fmt_flush_methods_by_receiver(file),
+            self_reflect_value_fields: collect_self_reflect_value_fields(file),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.fmt_flush_receiver_types.is_empty()
-            && self.self_value_reflection_receiver_types.is_empty()
+        self.fmt_flush_methods_by_receiver.is_empty() && self.self_reflect_value_fields.is_empty()
     }
 
     pub(super) fn should_flush_after_stmt(
@@ -26,25 +25,49 @@ impl Metadata {
         impl_self_types: &[String],
         stmt: &syn::Stmt,
     ) -> bool {
-        impl_self_types
+        let Some(methods) = impl_self_types
             .last()
-            .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
-            && stmt_needs_fmt_flush(stmt)
+            .and_then(|ty| self.fmt_flush_methods_by_receiver.get(ty))
+        else {
+            return false;
+        };
+        stmt_needs_fmt_flush(stmt, methods)
     }
 
-    pub(super) fn should_prune_self_value_for_initial_pass(
+    pub(super) fn push_stmt_with_flush(
+        &self,
+        impl_self_types: &[String],
+        stmt: syn::Stmt,
+        stmts: &mut Vec<syn::Stmt>,
+    ) {
+        let needs_flush = self.should_flush_after_stmt(impl_self_types, &stmt);
+        stmts.push(stmt);
+        if needs_flush {
+            stmts.push(syn::parse_quote! {
+                self.__gors_flush_fmt();
+            });
+        }
+    }
+
+    pub(super) fn self_reflect_fields_for_initial_pass(
         &self,
         self_ty: &str,
         block: &syn::Block,
-    ) -> bool {
-        (self.fmt_flush_receiver_types.contains(self_ty) && should_prune_fmt_self_value(block))
-            || (self.self_value_reflection_receiver_types.contains(self_ty)
-                && block_has_self_value_reflection_fallback(block))
+    ) -> Option<&std::collections::HashSet<String>> {
+        let fields = self.self_reflect_value_fields.get(self_ty)?;
+        (block_has_self_reflect_field_runtime_fallback(block, fields)
+            || (self.fmt_flush_methods_by_receiver.contains_key(self_ty)
+                && block_mentions_self_reflect_field(block, fields)))
+        .then_some(fields)
     }
 
-    fn should_prune_self_value_after_helpers(&self, self_ty: &str, block: &syn::Block) -> bool {
-        self.self_value_reflection_receiver_types.contains(self_ty)
-            && block_has_self_value_reflection_fallback(block)
+    fn self_reflect_fields_after_helpers(
+        &self,
+        self_ty: &str,
+        block: &syn::Block,
+    ) -> Option<&std::collections::HashSet<String>> {
+        let fields = self.self_reflect_value_fields.get(self_ty)?;
+        block_has_self_reflect_field_runtime_fallback(block, fields).then_some(fields)
     }
 }
 
@@ -78,11 +101,11 @@ impl VisitMut for CoerceStructuralHelpers {
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
         visit_mut::visit_impl_item_fn_mut(self, func);
-        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
+        let self_reflect_fields = self.impl_self_types.last().and_then(|ty| {
             self.metadata
-                .should_prune_self_value_after_helpers(ty, &func.block)
+                .self_reflect_fields_after_helpers(ty, &func.block)
         });
-        prune_reflection_fallback(&mut func.block.stmts, prune_self_value);
+        prune_reflection_fallback(&mut func.block.stmts, self_reflect_fields);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
@@ -91,59 +114,54 @@ impl VisitMut for CoerceStructuralHelpers {
 
         for mut stmt in old_stmts {
             visit_mut::visit_stmt_mut(self, &mut stmt);
-            let needs_flush = self
-                .metadata
-                .should_flush_after_stmt(&self.impl_self_types, &stmt);
-            new_stmts.push(stmt);
-            if needs_flush {
-                new_stmts.push(syn::parse_quote! {
-                    self.__gors_flush_fmt();
-                });
-            }
+            self.metadata
+                .push_stmt_with_flush(&self.impl_self_types, stmt, &mut new_stmts);
         }
 
         block.stmts = new_stmts;
     }
 }
 
-fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
-    if block_has_self_value_reflection_fallback(block) {
-        return true;
-    }
-
-    struct Finder {
+fn block_mentions_self_reflect_field(
+    block: &syn::Block,
+    fields: &std::collections::HashSet<String>,
+) -> bool {
+    struct Finder<'a> {
+        fields: &'a std::collections::HashSet<String>,
         found: bool,
     }
 
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if super::syntax::is_self_expr(&call.receiver)
-                && matches!(
-                    call.method.to_string().as_str(),
-                    "printArg" | "printValue" | "fmtPointer"
-                )
-            {
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_field(&mut self, field: &syn::ExprField) {
+            if is_self_field_in(field, self.fields) {
                 self.found = true;
                 return;
             }
-            syn::visit::visit_expr_method_call(self, call);
+            syn::visit::visit_expr_field(self, field);
         }
     }
 
-    let mut finder = Finder { found: false };
+    let mut finder = Finder {
+        fields,
+        found: false,
+    };
     syn::visit::Visit::visit_block(&mut finder, block);
     finder.found
 }
 
-fn block_has_self_value_reflection_fallback(block: &syn::Block) -> bool {
-    struct Finder {
+fn block_has_self_reflect_field_runtime_fallback(
+    block: &syn::Block,
+    fields: &std::collections::HashSet<String>,
+) -> bool {
+    struct Finder<'a> {
+        fields: &'a std::collections::HashSet<String>,
         found: bool,
     }
 
-    impl syn::visit::Visit<'_> for Finder {
+    impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
             if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
-                && expr_mentions_self_field_named(&call.receiver, "value")
+                && expr_mentions_self_field_in(&call.receiver, self.fields)
             {
                 self.found = true;
                 return;
@@ -152,32 +170,44 @@ fn block_has_self_value_reflection_fallback(block: &syn::Block) -> bool {
         }
     }
 
-    let mut finder = Finder { found: false };
+    let mut finder = Finder {
+        fields,
+        found: false,
+    };
     syn::visit::Visit::visit_block(&mut finder, block);
     finder.found
 }
 
-pub(super) fn prune_reflection_fallback(stmts: &mut Vec<syn::Stmt>, prune_self_value: bool) {
+pub(super) fn prune_reflection_fallback(
+    stmts: &mut Vec<syn::Stmt>,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) {
     let old_stmts = std::mem::take(stmts);
-    *stmts = old_stmts
-        .into_iter()
-        .filter_map(|stmt| prune_print_arg_stmt(stmt, prune_self_value))
-        .collect();
+    let block = prune_reflection_block(
+        syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: old_stmts,
+        },
+        self_reflect_fields,
+    );
+    *stmts = block.stmts;
 }
 
-fn prune_print_arg_stmt(stmt: syn::Stmt, prune_self_value: bool) -> Option<syn::Stmt> {
-    if print_arg_stmt_needs_reflection(&stmt, prune_self_value) {
+fn prune_reflection_stmt(
+    stmt: syn::Stmt,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> Option<syn::Stmt> {
+    if stmt_needs_reflection(&stmt, self_reflect_fields) {
         match stmt {
-            syn::Stmt::Expr(expr, semi) => {
-                prune_print_arg_expr(expr, prune_self_value).map(|expr| syn::Stmt::Expr(expr, semi))
-            }
+            syn::Stmt::Expr(expr, semi) => prune_reflection_expr(expr, self_reflect_fields)
+                .map(|expr| syn::Stmt::Expr(expr, semi)),
             syn::Stmt::Local(mut local) => {
                 if let Some(init) = &mut local.init {
                     let expr = std::mem::replace(
                         &mut init.expr,
                         Box::new(syn::parse_quote! { Default::default() }),
                     );
-                    let expr = prune_print_arg_expr(*expr, prune_self_value)?;
+                    let expr = prune_reflection_expr(*expr, self_reflect_fields)?;
                     *init.expr = expr;
                 }
                 Some(syn::Stmt::Local(local))
@@ -189,37 +219,45 @@ fn prune_print_arg_stmt(stmt: syn::Stmt, prune_self_value: bool) -> Option<syn::
     }
 }
 
-fn prune_print_arg_expr(expr: syn::Expr, prune_self_value: bool) -> Option<syn::Expr> {
+fn prune_reflection_expr(
+    expr: syn::Expr,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> Option<syn::Expr> {
     match expr {
-        syn::Expr::Block(expr_block) => prune_print_arg_expr_block(expr_block, prune_self_value),
-        syn::Expr::If(expr_if) => prune_print_arg_if(expr_if, prune_self_value),
-        other if print_arg_expr_needs_reflection(&other, prune_self_value) => None,
+        syn::Expr::Block(expr_block) => {
+            prune_reflection_expr_block(expr_block, self_reflect_fields)
+        }
+        syn::Expr::If(expr_if) => prune_reflection_if(expr_if, self_reflect_fields),
+        other if expr_needs_reflection(&other, self_reflect_fields) => None,
         other => Some(other),
     }
 }
 
-fn prune_print_arg_expr_block(
+fn prune_reflection_expr_block(
     mut expr_block: syn::ExprBlock,
-    prune_self_value: bool,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
 ) -> Option<syn::Expr> {
-    expr_block.block = prune_print_arg_block(expr_block.block, prune_self_value);
+    expr_block.block = prune_reflection_block(expr_block.block, self_reflect_fields);
     (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
 }
 
-fn prune_print_arg_if(mut expr_if: syn::ExprIf, prune_self_value: bool) -> Option<syn::Expr> {
-    if print_arg_expr_needs_reflection(&expr_if.cond, prune_self_value) {
+fn prune_reflection_if(
+    mut expr_if: syn::ExprIf,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> Option<syn::Expr> {
+    if expr_needs_reflection(&expr_if.cond, self_reflect_fields) {
         return expr_if
             .else_branch
-            .and_then(|(_, else_expr)| prune_print_arg_expr(*else_expr, prune_self_value));
+            .and_then(|(_, else_expr)| prune_reflection_expr(*else_expr, self_reflect_fields));
     }
 
-    let then_had_reflection =
-        print_arg_block_needs_reflection(&expr_if.then_branch, prune_self_value);
-    expr_if.then_branch = prune_print_arg_block(expr_if.then_branch, prune_self_value);
+    let then_had_reflection = block_needs_reflection(&expr_if.then_branch, self_reflect_fields);
+    expr_if.then_branch = prune_reflection_block(expr_if.then_branch, self_reflect_fields);
     let then_is_empty = expr_if.then_branch.stmts.is_empty();
 
     expr_if.else_branch = expr_if.else_branch.and_then(|(else_token, else_expr)| {
-        prune_print_arg_expr(*else_expr, prune_self_value).map(|expr| (else_token, Box::new(expr)))
+        prune_reflection_expr(*else_expr, self_reflect_fields)
+            .map(|expr| (else_token, Box::new(expr)))
     });
 
     if then_had_reflection && then_is_empty {
@@ -229,7 +267,10 @@ fn prune_print_arg_if(mut expr_if: syn::ExprIf, prune_self_value: bool) -> Optio
     Some(syn::Expr::If(expr_if))
 }
 
-fn prune_print_arg_block(mut block: syn::Block, prune_self_value: bool) -> syn::Block {
+fn prune_reflection_block(
+    mut block: syn::Block,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> syn::Block {
     let mut dropped_names = std::collections::HashSet::new();
     let mut stmts = vec![];
     for stmt in block.stmts {
@@ -238,7 +279,7 @@ fn prune_print_arg_block(mut block: syn::Block, prune_self_value: bool) -> syn::
             dropped_names.extend(bound_names);
             continue;
         }
-        if let Some(stmt) = prune_print_arg_stmt(stmt, prune_self_value) {
+        if let Some(stmt) = prune_reflection_stmt(stmt, self_reflect_fields) {
             stmts.push(stmt);
         } else {
             dropped_names.extend(bound_names);
@@ -261,17 +302,55 @@ fn collect_pat_names(pat: &syn::Pat, names: &mut std::collections::HashSet<Strin
         syn::Pat::Ident(pat_ident) => {
             names.insert(pat_ident.ident.to_string());
         }
+        syn::Pat::Or(pat_or) => {
+            for case in &pat_or.cases {
+                collect_pat_names(case, names);
+            }
+        }
+        syn::Pat::Paren(paren) => collect_pat_names(&paren.pat, names),
+        syn::Pat::Reference(reference) => collect_pat_names(&reference.pat, names),
+        syn::Pat::Rest(_) => {}
+        syn::Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                collect_pat_names(elem, names);
+            }
+        }
+        syn::Pat::Struct(pat_struct) => {
+            for field in &pat_struct.fields {
+                collect_pat_names(&field.pat, names);
+            }
+        }
         syn::Pat::Tuple(tuple) => {
             for elem in &tuple.elems {
                 collect_pat_names(elem, names);
             }
         }
+        syn::Pat::TupleStruct(tuple_struct) => {
+            for elem in &tuple_struct.elems {
+                collect_pat_names(elem, names);
+            }
+        }
         syn::Pat::Type(pat_type) => collect_pat_names(&pat_type.pat, names),
+        syn::Pat::Wild(_) => {}
         _ => {}
     }
 }
 
 fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<String>) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    match stmt {
+        syn::Stmt::Expr(expr, _) => expr_mentions_any_name(expr, names),
+        syn::Stmt::Local(local) => local
+            .init
+            .as_ref()
+            .is_some_and(|init| expr_mentions_any_name(&init.expr, names)),
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => false,
+    }
+}
+
+fn expr_mentions_any_name(expr: &syn::Expr, names: &std::collections::HashSet<String>) -> bool {
     if names.is_empty() {
         return false;
     }
@@ -302,19 +381,22 @@ fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<St
         names,
         found: false,
     };
-    syn::visit::Visit::visit_stmt(&mut visitor, stmt);
+    syn::visit::Visit::visit_expr(&mut visitor, expr);
     visitor.found
 }
 
-fn expr_mentions_self_field_named(expr: &syn::Expr, name: &str) -> bool {
+fn expr_mentions_self_field_in(
+    expr: &syn::Expr,
+    fields: &std::collections::HashSet<String>,
+) -> bool {
     struct Visitor<'a> {
-        name: &'a str,
+        fields: &'a std::collections::HashSet<String>,
         found: bool,
     }
 
     impl syn::visit::Visit<'_> for Visitor<'_> {
         fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_field_named(field, self.name) {
+            if is_self_field_in(field, self.fields) {
                 self.found = true;
                 return;
             }
@@ -322,51 +404,58 @@ fn expr_mentions_self_field_named(expr: &syn::Expr, name: &str) -> bool {
         }
     }
 
-    let mut visitor = Visitor { name, found: false };
+    let mut visitor = Visitor {
+        fields,
+        found: false,
+    };
     syn::visit::Visit::visit_expr(&mut visitor, expr);
     visitor.found
 }
 
-fn print_arg_stmt_needs_reflection(stmt: &syn::Stmt, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
+fn stmt_needs_reflection(
+    stmt: &syn::Stmt,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    let mut finder = ReflectionFallbackFinder {
+        self_reflect_fields,
         found: false,
     };
     syn::visit::Visit::visit_stmt(&mut finder, stmt);
     finder.found
 }
 
-fn print_arg_expr_needs_reflection(expr: &syn::Expr, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
+fn expr_needs_reflection(
+    expr: &syn::Expr,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    let mut finder = ReflectionFallbackFinder {
+        self_reflect_fields,
         found: false,
     };
     syn::visit::Visit::visit_expr(&mut finder, expr);
     finder.found
 }
 
-fn print_arg_block_needs_reflection(block: &syn::Block, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
+fn block_needs_reflection(
+    block: &syn::Block,
+    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    let mut finder = ReflectionFallbackFinder {
+        self_reflect_fields,
         found: false,
     };
     syn::visit::Visit::visit_block(&mut finder, block);
     finder.found
 }
 
-struct PrintArgReflectionFinder {
-    prune_self_value: bool,
+struct ReflectionFallbackFinder<'a> {
+    self_reflect_fields: Option<&'a std::collections::HashSet<String>>,
     found: bool,
 }
 
-impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
+impl syn::visit::Visit<'_> for ReflectionFallbackFinder<'_> {
     fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-        if path
-            .path
-            .segments
-            .iter()
-            .any(|segment| segment.ident == "reflect")
-        {
+        if is_reflect_module_path(&path.path) {
             self.found = true;
             return;
         }
@@ -374,38 +463,46 @@ impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
     }
 
     fn visit_type_path(&mut self, path: &syn::TypePath) {
-        if path
-            .path
-            .segments
-            .iter()
-            .any(|segment| segment.ident == "reflect")
-        {
+        if is_reflect_module_path(&path.path) {
             self.found = true;
             return;
         }
         syn::visit::visit_type_path(self, path);
     }
 
-    fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-        if super::syntax::is_self_expr(&call.receiver)
-            && matches!(
-                call.method.to_string().as_str(),
-                "printValue" | "fmtPointer"
-            )
-        {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
     fn visit_expr_field(&mut self, field: &syn::ExprField) {
-        if self.prune_self_value && is_self_field_named(field, "value") {
+        if self
+            .self_reflect_fields
+            .is_some_and(|fields| is_self_field_in(field, fields))
+        {
             self.found = true;
             return;
         }
         syn::visit::visit_expr_field(self, field);
     }
+}
+
+fn is_reflect_module_path(path: &syn::Path) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    matches!(
+        segments.as_slice(),
+        [first, second, ..] if first == "crate" && second == "reflect"
+    ) || matches!(segments.as_slice(), [first, _, ..] if first == "reflect")
+}
+
+fn is_reflect_value_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Value")
+        && is_reflect_module_path(&path.path)
 }
 
 fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
@@ -415,14 +512,18 @@ fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
     }
 }
 
-fn is_self_field_named(field: &syn::ExprField, name: &str) -> bool {
+fn is_self_field_in(field: &syn::ExprField, fields: &std::collections::HashSet<String>) -> bool {
     super::syntax::is_self_expr(&field.base)
-        && member_ident_name(&field.member).is_some_and(|member| member == name)
+        && member_ident_name(&field.member)
+            .is_some_and(|member| fields.contains(&member.to_string()))
 }
 
-fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashSet<String> {
+fn collect_fmt_flush_methods_by_receiver(
+    file: &syn::File,
+) -> std::collections::BTreeMap<String, std::collections::HashSet<String>> {
     let mut hook_receivers = std::collections::HashSet::new();
-    let mut flushable_receivers = std::collections::HashSet::new();
+    let mut methods_by_receiver =
+        std::collections::BTreeMap::<String, std::collections::HashSet<String>>::new();
     for item in &file.items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -433,38 +534,56 @@ fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashS
         if impl_has_method(item_impl, "__gors_flush_fmt") {
             hook_receivers.insert(self_ty.clone());
         }
-        if impl_has_method(item_impl, "printArg") || impl_has_method(item_impl, "printValue") {
-            flushable_receivers.insert(self_ty);
+        let methods = impl_fmt_flush_trigger_methods(item_impl);
+        if !methods.is_empty() {
+            methods_by_receiver
+                .entry(self_ty)
+                .or_default()
+                .extend(methods);
         }
     }
-    hook_receivers
-        .intersection(&flushable_receivers)
-        .cloned()
-        .collect()
+    methods_by_receiver.retain(|receiver, _| hook_receivers.contains(receiver));
+    methods_by_receiver
 }
 
-fn collect_self_value_reflection_receiver_types(
-    file: &syn::File,
-) -> std::collections::HashSet<String> {
-    file.items
+fn impl_fmt_flush_trigger_methods(item_impl: &syn::ItemImpl) -> std::collections::HashSet<String> {
+    item_impl
+        .items
         .iter()
         .filter_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
+            let syn::ImplItem::Fn(func) = item else {
                 return None;
             };
-            let self_ty = super::syntax::type_path_ident_name(&item_impl.self_ty)?;
-            impl_has_self_value_reflection_fallback(item_impl).then_some(self_ty)
+            matches!(
+                func.sig.ident.to_string().as_str(),
+                "printArg" | "printValue"
+            )
+            .then(|| func.sig.ident.to_string())
         })
         .collect()
 }
 
-fn impl_has_self_value_reflection_fallback(item_impl: &syn::ItemImpl) -> bool {
-    item_impl.items.iter().any(|item| {
-        matches!(
-            item,
-            syn::ImplItem::Fn(func) if block_has_self_value_reflection_fallback(&func.block)
-        )
-    })
+fn collect_self_reflect_value_fields(
+    file: &syn::File,
+) -> std::collections::BTreeMap<String, std::collections::HashSet<String>> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Struct(item_struct) = item else {
+                return None;
+            };
+            let fields = item_struct
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    is_reflect_value_type(&field.ty)
+                        .then(|| field.ident.as_ref().map(|ident| ident.to_string()))
+                        .flatten()
+                })
+                .collect::<std::collections::HashSet<_>>();
+            (!fields.is_empty()).then(|| (item_struct.ident.to_string(), fields))
+        })
+        .collect()
 }
 
 fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
@@ -474,16 +593,38 @@ fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
         .any(|item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == name))
 }
 
-fn stmt_needs_fmt_flush(stmt: &syn::Stmt) -> bool {
-    matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_fmt_flush(expr))
+fn stmt_needs_fmt_flush(stmt: &syn::Stmt, methods: &std::collections::HashSet<String>) -> bool {
+    matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_fmt_flush(expr, methods))
 }
 
-fn expr_needs_fmt_flush(expr: &syn::Expr) -> bool {
+fn expr_needs_fmt_flush(expr: &syn::Expr, methods: &std::collections::HashSet<String>) -> bool {
     let syn::Expr::MethodCall(call) = expr else {
         return false;
     };
-    if !matches!(call.method.to_string().as_str(), "printArg" | "printValue") {
+    if !methods.contains(&call.method.to_string()) {
         return false;
     }
     super::syntax::is_self_expr(&call.receiver)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_pruning_tracks_local_method_call_arguments() {
+        let local: syn::Stmt = syn::parse_quote! {
+            let mut fallback = self.value;
+        };
+        let names = stmt_bound_names(&local);
+        assert!(names.contains("fallback"), "expected local name: {names:?}");
+
+        let call: syn::Stmt = syn::parse_quote! {
+            self.printValue(fallback);
+        };
+        assert!(
+            stmt_mentions_any_name(&call, &names),
+            "expected method-call argument to mention dropped local"
+        );
+    }
 }

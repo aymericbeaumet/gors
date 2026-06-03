@@ -27,8 +27,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| Reflection fallback pruning in `structural_helpers.rs` | `printArg`, `printValue`, `fmtPointer`, `reflect` AST path/type-path checks | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
-| `builtin::append` first/second args in `value_materialization.rs` | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
+| Reflection fallback pruning in `structural_helpers.rs` | `reflect` AST path/type-path checks and generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
 | Format flush insertion in `structural_helpers.rs` | receiver impls with generated `__gors_flush_fmt` hook calling `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
@@ -44,11 +43,9 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 ## Replacement order
 
-1. Move `value_materialization.rs` rules into expected-type expression lowering
-   and lvalue lowering where the Go semantic facts are already available.
-2. Replace `structural_helpers.rs` reflection pruning and fmt flush insertion
+1. Replace `structural_helpers.rs` reflection pruning and fmt flush insertion
    with semantic reflect support and receiver-buffer aliasing.
-3. Resolver/compiler post-prune fmt helper removal after receiver-buffer aliasing
+2. Resolver/compiler post-prune fmt helper removal after receiver-buffer aliasing
    is represented semantically.
 
 ## Completed removals
@@ -57,8 +54,9 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | --- | --- |
 | Rust-name-driven `len`/`cap` post-pass casts in `coerce_types.rs` | Builtin lowering now emits Go `int` casts only for actual predeclared `len`/`cap` calls, so user functions or shadowed identifiers named `len`/`cap` are not rewritten. |
 | `Box::new` field clone in `value_materialization.rs` | The broad postpass rewrite was removed. Interface field copies are handled by typed interface boxing through generated `__gors_clone_box`, and arbitrary `Box::new(field)` calls are left unchanged. |
+| `builtin::append` first/second args in `value_materialization.rs` | The postpass module was removed. Append source values now clone addressable non-Copy lvalues by default, assignment lowering turns same-lvalue append updates into `std::mem::take`, and append elements are cloned from Go element type/addressability facts. |
 | integer-typed float local initializer repair in `coerce_types.rs` | Local `var` lowering already compiles explicit Go types through expected-type expression lowering; a compiler regression now pins `var max int = 1e6` to `(1e6 as isize)`. |
-| monolithic `coerce_types.rs` visitor responsibilities | Pointer cells, structural helpers, evaluation order, static false pruning, call arguments, tuple newtypes, binary comparisons, value materialization, and shared syntax predicates are split into focused modules under `coerce_types/`. |
+| monolithic `coerce_types.rs` visitor responsibilities | Pointer cells, structural helpers, evaluation order, static false pruning, call arguments, tuple newtypes, binary comparisons, and shared syntax predicates are split into focused modules under `coerce_types/`; the former value-materialization postpass has been folded back into typed lowering. |
 | `sort.Slice*` custom lowering in `compiler/stdlib_workarounds.rs` | The workaround module was removed. `sort.Slice*` now compile through ordinary stdlib code using generic `any` call-value copying, function-value callbacks, reflectlite slice swapper support, and writeback for addressable slices passed through `any`. |
 | `strconv` string value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones path, field, and index arguments according to the callee's generated `String`/cloneable value parameter types. |
 | `slices::Sort` mutable argument borrowing in `coerce_types.rs` | Cross-module mutable-reference call analysis now borrows arguments according to generated callee `&mut` parameter types. |
@@ -67,11 +65,12 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `argNumber` second method value argument cloning in `coerce_types.rs` | Receiver-qualified method call analysis now applies the same signature-driven cloneable value argument rule to non-first method arguments. |
 | `parsenum`/`getField` function value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now handles these generated helper calls according to their generated `String`/cloneable value parameter types. |
 | `Write` method slice-to-`Vec<u8>` argument coercion in `coerce_types.rs` | Receiver-qualified method call analysis now materializes range-index slice arguments with `.to_vec()` when the resolved method signature expects a `Vec<T>` value parameter. |
+| mutable byte-slice calls over sliced pointer fields in `coerce_types.rs` | Signature-driven mutable slice argument rewriting now looks through parenthesized cloned field blocks inside slice indexes and borrows the original lvalue, so `[]byte` writers mutate backing storage instead of cloned temporaries. |
 | stale `fmtsort::Sort` argument cloning in `coerce_types.rs` | The package-specific branch was removed; current generated calls are handled by generic call-signature borrowing and cloneable-value analysis. |
 | stale `reflect::TypeOf` argument borrowing in `coerce_types.rs` | The package-specific branch and its private borrow helpers were removed; current supported generated paths do not require name-selected `TypeOf` borrowing. |
 | stale `reflect::ValueOf` argument coercion in `coerce_types.rs` | The package-specific branch and helper were removed; current supported generated paths prune the reflection fallback before this name-selected coercion is needed. |
 | `intFromArg` local argument move in `coerce_types.rs` | Cross-module value-argument analysis now treats by-value `Vec<Box<dyn Any>>` parameters as non-cloneable lvalue takes, driven by the callee signature rather than helper name. |
-| `unicode/utf8.AppendRune` receiver argument move in `coerce_types.rs` | Cross-module value-argument analysis now treats by-value `Vec<T>` parameters passed `*self` as lvalue takes, driven by callee signature and receiver lvalue role rather than function name. |
+| `unicode/utf8.AppendRune` receiver argument move in `coerce_types.rs` | Cross-module value-argument analysis now treats by-value `Vec<T>` parameters passed dereferenced lvalues as lvalue takes, driven by callee signature and lvalue role rather than function name or receiver spelling. |
 | local initializer cloning by `value`/`f`/`fmtFlags` names in `coerce_types.rs` | Compiler lowering already clones binding initializers through IR addressability and Go type copy semantics; the postpass no longer clones locals solely by identifier or field name. |
 | dead `printArg` unsupported-format pruning in `coerce_types.rs` | The name-selected branch had no active predicate; generic static-false pruning and reflection fallback pruning now run without a `printArg`-specific no-op path. |
 | stale `printValue` argument coercion in `coerce_types.rs` | Current generated supported paths prune reflection fallback calls before method-argument coercion; the postpass no longer rewrites arbitrary `printValue` calls based on field names like `Key` or `Value`. |
@@ -83,6 +82,12 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `strconv.AppendFloat` call-site lowering and `builtin::append_float` | `strconv` now compiles through the ordinary stdlib path after generic reachable-declaration recovery, scoped local type facts, shared-lvalue parenthesization, typed-constant arithmetic, and folded constant index lowering. The dead runtime helper was removed. |
 | `self.value = value` cloning in `coerce_types.rs` | Expected-type expression lowering already clones addressable same-type non-Copy RHS values from Go type facts; the postpass no longer clones arbitrary assignments by field and local name. |
 | rendered-token matching in `coerce_types.rs` body/pruning triggers | Remaining body replacement and reflection-pruning gates now use `syn` AST visitors for identifiers, methods, fields, expression paths, and type paths. String literals and formatting cannot accidentally trigger generated-body rewrites or reflection pruning. |
+| broad `reflect` segment matching in `structural_helpers.rs` | Reflection fallback pruning now recognizes actual `reflect::...` / `crate::reflect::...` module paths instead of pruning any local identifier or type path segment named `reflect`. |
+| `self.value` reflection fallback pruning in `structural_helpers.rs` | Receiver fallback pruning now derives the prunable self fields from struct fields typed as `reflect::Value`, instead of assuming any field literally named `value` is a generated reflection fallback. |
+| flush insertion receiver gates in `structural_helpers.rs` | Flush insertion now records the actual generated flush-trigger methods per receiver with a `__gors_flush_fmt` hook, so statement rewriting uses collected receiver metadata instead of an independent receiver-name plus method-name check. |
+| `self.printValue` / `self.fmtPointer` reflection pruning in `structural_helpers.rs` | Reflection fallback pruning no longer drops receiver method calls solely by method name. It prunes actual reflect paths and reflect-typed self fields, then uses dependency-aware block pruning so locals removed from fallback paths also remove their consumers. |
+| duplicated flush insertion loops in `coerce_types.rs` and `structural_helpers.rs` | Both passes now call `Metadata::push_stmt_with_flush`, keeping the flush decision and emitted hook call in one structural-helper boundary. |
+| stale `print_arg` names in reflection fallback pruning internals | Reflection pruning helpers are named for their actual fallback-pruning responsibility instead of the older `printArg` call-site workaround. |
 | `padString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic method-call and string argument lowering, preserving width-padding behavior instead of replacing the named method with a direct write. |
 | `fmtString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic branch, receiver-method, and string argument lowering, preserving `%q`, `%x`, and `% X` string formatting behavior instead of replacing the named method with `fmtS`. |
 | `newPrinter` body replacement in `coerce_types.rs` | The generated Go body now compiles through pointer-cell ownership, generic receiver-method argument hoisting, manual cloning for structs with `any` fields, and a minimal `sync.Pool` runtime primitive instead of replacing the named function body. |
