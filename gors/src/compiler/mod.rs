@@ -7526,6 +7526,10 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
             semantic_graph
         });
+        let external_root_collector = DceExternalRootCollector {
+            module_names: &module_names,
+            semantic_graph: semantic_graph.as_ref(),
+        };
 
         if let Some(main_module) = modules.get_mut("__main__") {
             let roots = main_module_root_names(main_module, has_main);
@@ -7534,16 +7538,12 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
 
         let mut required = RequiredModuleRoots::default();
         if let Some(main_module) = modules.get("__main__") {
-            let refs = collect_external_refs(&main_module.file.items, &module_names);
-            if let Some(semantic_graph) = &semantic_graph {
-                let roots = main_module_root_names(main_module, has_main);
-                debug_assert_semantic_external_refs(
-                    Some(semantic_graph),
-                    &main_module.mod_name,
-                    &roots,
-                    &refs,
-                );
-            }
+            let roots = main_module_root_names(main_module, has_main);
+            let refs = external_root_collector.refs_from_items(
+                &main_module.mod_name,
+                &roots,
+                &main_module.file.items,
+            );
             required.merge(refs);
         }
 
@@ -7563,13 +7563,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 } else {
                     roots
                 };
-                let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, &module_names);
-                debug_assert_semantic_external_refs(
-                    semantic_graph.as_ref(),
-                    &module.mod_name,
-                    roots,
-                    &refs,
-                );
+                let refs = external_root_collector.refs_from_module_roots(module, roots);
                 changed |= required.merge(refs);
             }
             if !changed {
@@ -7678,6 +7672,34 @@ fn refs_to_btree(
             )
         })
         .collect()
+}
+
+struct DceExternalRootCollector<'a> {
+    module_names: &'a std::collections::HashSet<String>,
+    semantic_graph: Option<&'a SemanticReachabilityGraph>,
+}
+
+impl DceExternalRootCollector<'_> {
+    fn refs_from_items(
+        &self,
+        module: &str,
+        roots: &std::collections::HashSet<String>,
+        items: &[syn::Item],
+    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        let refs = collect_external_refs(items, self.module_names);
+        debug_assert_semantic_external_refs(self.semantic_graph, module, roots, &refs);
+        refs
+    }
+
+    fn refs_from_module_roots(
+        &self,
+        module: &CompiledModule,
+        roots: &std::collections::HashSet<String>,
+    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, self.module_names);
+        debug_assert_semantic_external_refs(self.semantic_graph, &module.mod_name, roots, &refs);
+        refs
+    }
 }
 
 fn debug_assert_semantic_external_refs(
