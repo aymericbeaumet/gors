@@ -11572,9 +11572,9 @@ fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> V
             continue;
         };
         let sig = trait_fn.sig.clone();
-        let block = if sig.ident == "__gors_as_any" {
+        let block = if sig.ident == interface_hooks::AS_ANY_METHOD {
             syn::parse_quote!({ None })
-        } else if sig.ident == "__gors_clone_box" {
+        } else if sig.ident == interface_hooks::CLONE_BOX_METHOD {
             syn::parse_quote!({ Box::new(#noop_ident::default()) as Box<dyn #ident> })
         } else if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({})
@@ -11647,7 +11647,7 @@ fn resolve_interface_env_name(name: &str, env: &typeinfer::TypeEnv) -> Option<St
 }
 
 fn noop_impl_item_for_signature(sig: syn::Signature) -> syn::ImplItem {
-    let block = if sig.ident == "__gors_as_any" {
+    let block = if sig.ident == interface_hooks::AS_ANY_METHOD {
         syn::parse_quote!({ None })
     } else if matches!(sig.output, syn::ReturnType::Default) {
         syn::parse_quote!({})
@@ -11990,8 +11990,8 @@ fn embedded_interface_impls(
                         .any(|method| method.sig.ident == method_ident)
                 });
                 let block = match method_name.as_str() {
-                    "__gors_as_any" => syn::parse_quote!({ None }),
-                    "__gors_clone_box" => {
+                    interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ None }),
+                    interface_hooks::CLONE_BOX_METHOD => {
                         syn::parse_quote!({
                             crate::builtin::panic_value("cloned non-clone interface value")
                         })
@@ -17968,7 +17968,8 @@ fn receiver_method_type_name_for_call(
 ) -> Option<String> {
     match ty {
         typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
-            if env.has_func(&format!("{name}.__gors_as_any")) || env.get_type_kind(&name).is_some()
+            if env.has_func(&format!("{name}.{}", interface_hooks::AS_ANY_METHOD))
+                || env.get_type_kind(&name).is_some()
             {
                 return Some(name);
             }
