@@ -3,34 +3,9 @@ mod mut_ref_forwarders;
 mod noop_interfaces;
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
-    let facts = StructuralHelperFacts::collect(items);
-
-    noop_interfaces::inject(items, facts);
-    mut_ref_forwarders::inject_state(items, facts);
+    noop_interfaces::inject(items);
+    mut_ref_forwarders::inject_state(items);
     fmt_flush::inject(items);
-}
-
-#[derive(Clone, Copy)]
-struct StructuralHelperFacts {
-    has_formatter: bool,
-    has_stringer: bool,
-    has_go_stringer: bool,
-    has_state: bool,
-}
-
-impl StructuralHelperFacts {
-    fn collect(items: &[syn::Item]) -> Self {
-        Self {
-            has_formatter: has_trait(items, "Formatter"),
-            has_stringer: has_trait(items, "Stringer"),
-            has_go_stringer: has_trait(items, "GoStringer"),
-            has_state: has_trait(items, "State"),
-        }
-    }
-
-    fn has_fmt_interfaces(self) -> bool {
-        self.has_formatter || self.has_stringer || self.has_go_stringer
-    }
 }
 
 fn has_trait(items: &[syn::Item], name: &str) -> bool {

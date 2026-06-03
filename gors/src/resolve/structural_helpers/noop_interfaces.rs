@@ -1,6 +1,8 @@
-use super::{ImplSelfType, StructuralHelperFacts, has_impl, has_struct, has_trait};
+use super::{ImplSelfType, has_impl, has_struct, has_trait};
 
-pub(super) fn inject(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
+pub(super) fn inject(items: &mut Vec<syn::Item>) {
+    let facts = FmtInterfaceFacts::collect(items);
+
     if facts.has_fmt_interfaces() && !has_struct(items, "__GorsNoopInterface") {
         items.insert(
             0,
@@ -91,5 +93,28 @@ pub(super) fn inject(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
                 }
             },
         );
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FmtInterfaceFacts {
+    has_formatter: bool,
+    has_stringer: bool,
+    has_go_stringer: bool,
+    has_state: bool,
+}
+
+impl FmtInterfaceFacts {
+    fn collect(items: &[syn::Item]) -> Self {
+        Self {
+            has_formatter: has_trait(items, "Formatter"),
+            has_stringer: has_trait(items, "Stringer"),
+            has_go_stringer: has_trait(items, "GoStringer"),
+            has_state: has_trait(items, "State"),
+        }
+    }
+
+    fn has_fmt_interfaces(self) -> bool {
+        self.has_formatter || self.has_stringer || self.has_go_stringer
     }
 }

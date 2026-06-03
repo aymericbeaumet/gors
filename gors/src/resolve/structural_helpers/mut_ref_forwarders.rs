@@ -1,9 +1,6 @@
-use super::{ImplSelfType, StructuralHelperFacts, has_impl, type_path_ident_name};
+use super::{ImplSelfType, has_impl, type_path_ident_name};
 
-pub(super) fn inject_state(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
-    if !facts.has_state {
-        return;
-    }
+pub(super) fn inject_state(items: &mut Vec<syn::Item>) {
     let Some(methods) = trait_methods(items, "State") else {
         return;
     };
