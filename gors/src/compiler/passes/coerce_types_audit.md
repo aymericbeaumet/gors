@@ -1,6 +1,6 @@
 # coerce_types hardcode audit
 
-Date: 2026-06-02
+Date: 2026-06-03
 
 Scope: production matches from:
 
@@ -23,14 +23,14 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
   semantic compiler rule.
 - `formatting artifact`: generated-format cleanup or report/debug wording.
 
-## coerce_types.rs
+## coerce_types pass modules
 
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| Reflection fallback pruning | `printArg`, `printValue`, `fmtPointer`, `reflect` AST path/type-path checks | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
-| `Box::new` field clone | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
-| `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
-| Format flush insertion | receiver impls with generated `__gors_flush_fmt` hook calling `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
+| Reflection fallback pruning in `structural_helpers.rs` | `printArg`, `printValue`, `fmtPointer`, `reflect` AST path/type-path checks | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
+| `Box::new` field clone in `value_materialization.rs` | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
+| `builtin::append` first/second args in `value_materialization.rs` | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
+| Format flush insertion in `structural_helpers.rs` | receiver impls with generated `__gors_flush_fmt` hook calling `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
 
@@ -39,24 +39,30 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `gors/src/compiler/mod.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
 | `gors/src/compiler/mod.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
 | `gors/src/compiler/mod.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
-| `gors/src/compiler/mod.rs` | `sort.Slice*` custom lowering, isolated behind `StdlibCallWorkaround` | stdlib workaround | Lower function-typed callback arguments, interface/reflection swapper support, and slice mutation generically, then compile the stdlib implementation normally. |
+| `gors/src/compiler/stdlib_workarounds.rs` | `sort.Slice*` custom lowering, isolated behind `StdlibCallWorkaround` | stdlib workaround | Lower function-typed callback arguments, interface/reflection swapper support, and slice mutation generically, then compile the stdlib implementation normally. |
 | `gors/src/compiler/mod.rs` | `reflect.TypeOf(x).Kind() == reflect.K` detection | runtime primitive | This is a reflect runtime boundary; future work should expose it as IR reflect-kind operation instead of AST pattern matching. |
 | `gors/src/resolve/mod.rs` | injected `pp` `State` impl and `__gors_flush_fmt` | stdlib workaround | Interface implementation and receiver-buffer aliasing should be produced by generic method/interface lowering, not resolver post-processing. |
 | `gors-builtin/src/lib.rs` | predeclared print/println, interface, reflect-kind helpers | runtime primitive | Builtin language/runtime support is valid, but must not implement stdlib package behavior. |
 
 ## Replacement order
 
-1. Signature-driven call argument ownership in `coerce_types.rs`.
-2. Receiver-aware method argument coercion in `coerce_types.rs`.
-3. Local binding cloning from Go value-copy semantics.
-4. Generated helper ownership metadata for currently named local helpers.
-5. Resolver/compiler post-prune fmt helper removal after receiver-buffer aliasing
+1. Move `value_materialization.rs` rules into expected-type expression lowering
+   and lvalue lowering where the Go semantic facts are already available.
+2. Replace `structural_helpers.rs` reflection pruning and fmt flush insertion
+   with semantic reflect support and receiver-buffer aliasing.
+3. Replace `stdlib_workarounds.rs` `sort.Slice*` lowering with generic
+   function callback, interface/reflection swapper, and slice mutation support.
+4. Resolver/compiler post-prune fmt helper removal after receiver-buffer aliasing
    is represented semantically.
 
 ## Completed removals
 
 | Area | Replacement |
 | --- | --- |
+| Rust-name-driven `len`/`cap` post-pass casts in `coerce_types.rs` | Builtin lowering now emits Go `int` casts only for actual predeclared `len`/`cap` calls, so user functions or shadowed identifiers named `len`/`cap` are not rewritten. |
+| integer-typed float local initializer repair in `coerce_types.rs` | Local `var` lowering already compiles explicit Go types through expected-type expression lowering; a compiler regression now pins `var max int = 1e6` to `(1e6 as isize)`. |
+| monolithic `coerce_types.rs` visitor responsibilities | Pointer cells, structural helpers, evaluation order, static false pruning, call arguments, tuple newtypes, binary comparisons, value materialization, and shared syntax predicates are split into focused modules under `coerce_types/`. |
+| `sort.Slice*` workaround embedded in `compiler/mod.rs` | The workaround remains debt but is isolated in `compiler/stdlib_workarounds.rs`; the main expression compiler now delegates through an explicit stdlib-workaround boundary. |
 | `strconv` string value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones path, field, and index arguments according to the callee's generated `String`/cloneable value parameter types. |
 | `slices::Sort` mutable argument borrowing in `coerce_types.rs` | Cross-module mutable-reference call analysis now borrows arguments according to generated callee `&mut` parameter types. |
 | non-append `unicode/utf8` value argument cloning in `coerce_types.rs` | Cross-module cloneable-value call analysis now clones `String` and `Vec<u8>` path, field, and index arguments according to generated callee parameter types. |
