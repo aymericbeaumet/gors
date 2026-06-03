@@ -3,7 +3,6 @@
 //! This module resolves import paths to Go source packages, currently backed by
 //! build-time generated metadata from the embedded Go SDK.
 
-use quote::ToTokens;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -679,13 +678,79 @@ fn item_mod_for(import_path: &str, items: Vec<syn::Item>) -> syn::ItemMod {
 }
 
 fn dedupe_use_items(items: &mut Vec<syn::Item>) {
-    let mut seen = HashSet::new();
-    items.retain(|item| {
-        let syn::Item::Use(item_use) = item else {
-            return true;
+    let mut seen = Vec::<syn::ItemUse>::new();
+    let mut deduped = Vec::with_capacity(items.len());
+    for item in std::mem::take(items) {
+        let syn::Item::Use(item_use) = &item else {
+            deduped.push(item);
+            continue;
         };
-        seen.insert(item_use.to_token_stream().to_string())
-    });
+        if seen
+            .iter()
+            .any(|existing| use_items_match(existing, item_use))
+        {
+            continue;
+        }
+        seen.push(item_use.clone());
+        deduped.push(item);
+    }
+    *items = deduped;
+}
+
+fn use_items_match(left: &syn::ItemUse, right: &syn::ItemUse) -> bool {
+    left.leading_colon.is_some() == right.leading_colon.is_some()
+        && visibilities_match(&left.vis, &right.vis)
+        && use_trees_match(&left.tree, &right.tree)
+}
+
+fn visibilities_match(left: &syn::Visibility, right: &syn::Visibility) -> bool {
+    match (left, right) {
+        (syn::Visibility::Inherited, syn::Visibility::Inherited) => true,
+        (syn::Visibility::Public(_), syn::Visibility::Public(_)) => true,
+        (syn::Visibility::Restricted(left), syn::Visibility::Restricted(right)) => {
+            left.in_token.is_some() == right.in_token.is_some()
+                && paths_match(&left.path, &right.path)
+        }
+        _ => false,
+    }
+}
+
+fn use_trees_match(left: &syn::UseTree, right: &syn::UseTree) -> bool {
+    match (left, right) {
+        (syn::UseTree::Path(left), syn::UseTree::Path(right)) => {
+            left.ident == right.ident && use_trees_match(&left.tree, &right.tree)
+        }
+        (syn::UseTree::Name(left), syn::UseTree::Name(right)) => left.ident == right.ident,
+        (syn::UseTree::Rename(left), syn::UseTree::Rename(right)) => {
+            left.ident == right.ident && left.rename == right.rename
+        }
+        (syn::UseTree::Glob(_), syn::UseTree::Glob(_)) => true,
+        (syn::UseTree::Group(left), syn::UseTree::Group(right)) => {
+            left.items.len() == right.items.len()
+                && left
+                    .items
+                    .iter()
+                    .zip(right.items.iter())
+                    .all(|(left, right)| use_trees_match(left, right))
+        }
+        _ => false,
+    }
+}
+
+fn paths_match(left: &syn::Path, right: &syn::Path) -> bool {
+    left.leading_colon.is_some() == right.leading_colon.is_some()
+        && left.segments.len() == right.segments.len()
+        && left
+            .segments
+            .iter()
+            .zip(right.segments.iter())
+            .all(|(left, right)| {
+                left.ident == right.ident
+                    && matches!(
+                        (&left.arguments, &right.arguments),
+                        (syn::PathArguments::None, syn::PathArguments::None)
+                    )
+            })
 }
 
 fn log_skip(args: std::fmt::Arguments<'_>) {
@@ -1359,6 +1424,42 @@ fn is_rust_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quote::ToTokens;
+
+    #[test]
+    fn dedupe_use_items_matches_use_trees_structurally() {
+        let duplicate_group: syn::ItemUse =
+            syn::parse_quote! { use crate::io::{Read, Write as W}; };
+        let duplicate_private: syn::ItemUse = syn::parse_quote! { use crate::io::Read; };
+        let distinct_public: syn::ItemUse = syn::parse_quote! { pub use crate::io::Read; };
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! { use crate::io::{Read, Write as W}; },
+            syn::parse_quote! { use crate::io::{Read, Write as W}; },
+            syn::parse_quote! { use crate::io::Read; },
+            syn::parse_quote! { fn keep() {} },
+            syn::parse_quote! { use crate::io::Read; },
+            syn::parse_quote! { pub use crate::io::Read; },
+        ];
+
+        dedupe_use_items(&mut items);
+
+        assert_eq!(items.len(), 4);
+        assert!(matches!(items[2], syn::Item::Fn(_)));
+        assert_eq!(matching_use_item_count(&items, &duplicate_group), 1);
+        assert_eq!(matching_use_item_count(&items, &duplicate_private), 1);
+        assert_eq!(matching_use_item_count(&items, &distinct_public), 1);
+    }
+
+    fn matching_use_item_count(items: &[syn::Item], expected: &syn::ItemUse) -> usize {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Use(item_use) => Some(item_use),
+                _ => None,
+            })
+            .filter(|item_use| use_items_match(item_use, expected))
+            .count()
+    }
 
     #[test]
     fn reachable_names_include_instantiated_field_type_arguments()
