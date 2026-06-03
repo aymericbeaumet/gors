@@ -22,14 +22,13 @@ pub(crate) mod passes;
 mod reflect_kind;
 mod reflect_slice_any;
 mod runtime_primitives;
+mod syn_inspect;
 pub mod typeinfer;
 
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use item_reachability::{
-    impl_method_reachability_name, is_noop_interface_type_name, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, reachable_item_for_names,
-    self_type_reachability_names, type_mentions_name,
+    impl_method_reachability_name, is_noop_interface_type_name, reachable_item_for_names,
 };
 use proc_macro2::Span;
 use quote::ToTokens;
@@ -40,6 +39,10 @@ use std::fmt;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
+use syn_inspect::{
+    item_macro_name, item_name, macro_token_item_names, named_self_type,
+    self_type_reachability_names, type_mentions_name,
+};
 
 // Thread-local storage for source map tracker during compilation
 thread_local! {
