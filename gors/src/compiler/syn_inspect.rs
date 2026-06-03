@@ -170,3 +170,26 @@ pub(super) fn path_mentions_name(
             }
     })
 }
+
+pub(super) fn trait_method_fns(
+    items: &[syn::Item],
+) -> std::collections::BTreeMap<String, Vec<syn::TraitItemFn>> {
+    let mut traits = std::collections::BTreeMap::new();
+    for item in items {
+        let syn::Item::Trait(item_trait) = item else {
+            continue;
+        };
+        let methods = item_trait
+            .items
+            .iter()
+            .filter_map(|trait_item| match trait_item {
+                syn::TraitItem::Fn(trait_fn) => Some(trait_fn.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !methods.is_empty() {
+            traits.insert(item_trait.ident.to_string(), methods);
+        }
+    }
+    traits
+}
