@@ -22500,27 +22500,11 @@ impl TryFrom<ast::File<'_>> for syn::File {
             embedded_interface_structs,
         ));
 
-        // Stringer pattern: generate `impl Display` for structs with String() string
-        for struct_name in &struct_has_string_method {
-            if struct_has_pointer_string_method.contains(struct_name) {
-                continue;
-            }
-            if !methods.get(struct_name).is_some_and(|method_list| {
-                method_list
-                    .iter()
-                    .any(|method| method.sig.ident == "String")
-            }) {
-                continue;
-            }
-            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-            items.push(syn::parse_quote! {
-                impl std::fmt::Display for #struct_ident {
-                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        write!(f, "{}", self.String())
-                    }
-                }
-            });
-        }
+        items.extend(display_impls::string_method_items(
+            &struct_has_string_method,
+            &struct_has_pointer_string_method,
+            &methods,
+        ));
         interface_hooks::add_missing_clone_hooks(&mut items);
 
         Ok(Self {

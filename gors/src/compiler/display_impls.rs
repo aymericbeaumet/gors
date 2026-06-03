@@ -1,3 +1,32 @@
+pub(super) fn string_method_items(
+    string_method_types: &std::collections::HashSet<String>,
+    pointer_string_method_types: &std::collections::HashSet<String>,
+    methods: &std::collections::BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Vec<syn::Item> {
+    let mut items = Vec::new();
+    for struct_name in string_method_types {
+        if pointer_string_method_types.contains(struct_name) {
+            continue;
+        }
+        if !methods.get(struct_name).is_some_and(|method_list| {
+            method_list
+                .iter()
+                .any(|method| method.sig.ident == "String")
+        }) {
+            continue;
+        }
+        let struct_ident = syn::Ident::new(struct_name, proc_macro2::Span::mixed_site());
+        items.push(syn::parse_quote! {
+            impl std::fmt::Display for #struct_ident {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", self.String())
+                }
+            }
+        });
+    }
+    items
+}
+
 pub(super) fn prune_without_string_method(items: &mut Vec<syn::Item>) {
     let display_required_types = display_required_types(items);
     items.retain(|item| {
