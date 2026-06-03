@@ -3,8 +3,8 @@ mod mut_ref_forwarders;
 mod noop_interfaces;
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
+    mut_ref_forwarders::inject(items);
     noop_interfaces::inject(items);
-    mut_ref_forwarders::inject_state(items);
     fmt_flush::inject(items);
 }
 
@@ -285,12 +285,17 @@ mod tests {
     }
 
     #[test]
-    fn state_mut_ref_forwarder_is_derived_from_named_impl() {
+    fn mut_ref_forwarders_are_derived_from_named_trait_impls() {
         let mut items: Vec<syn::Item> = vec![
             syn::parse_quote! {
                 trait State {
                     fn Write(&mut self, b: Vec<u8>) -> usize;
                     fn Width(&self) -> usize;
+                }
+            },
+            syn::parse_quote! {
+                trait Sink {
+                    fn Push(&mut self, value: isize) -> isize;
                 }
             },
             syn::parse_quote! {
@@ -300,6 +305,11 @@ mod tests {
                 impl State for Printer {
                     fn Write(&mut self, b: Vec<u8>) -> usize { b.len() }
                     fn Width(&self) -> usize { 0 }
+                }
+            },
+            syn::parse_quote! {
+                impl Sink for Printer {
+                    fn Push(&mut self, value: isize) -> isize { value }
                 }
             },
         ];
@@ -317,13 +327,26 @@ mod tests {
                 ImplSelfType::MutableReferenceToNamed("Printer"),
             )
         });
+        let sink_ref_impl = items.iter().find(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return false;
+            };
+            item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+                path.segments.last().is_some_and(|seg| seg.ident == "Sink")
+            }) && type_matches_impl_self(
+                &item_impl.self_ty,
+                ImplSelfType::MutableReferenceToNamed("Printer"),
+            )
+        });
         let tokens = quote::quote!(#(#items)*).to_string();
 
         assert!(state_ref_impl.is_some(), "{tokens}");
+        assert!(sink_ref_impl.is_some(), "{tokens}");
         assert!(
             tokens.contains("< Printer as State > :: Write (& mut * * self , b)")
-                && tokens.contains("< Printer as State > :: Width (& * * self)"),
-            "expected generated &mut State impl to forward through named impl: {tokens}"
+                && tokens.contains("< Printer as State > :: Width (& * * self)")
+                && tokens.contains("< Printer as Sink > :: Push (& mut * * self , value)"),
+            "expected generated &mut trait impls to forward through named impls: {tokens}"
         );
     }
 

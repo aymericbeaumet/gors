@@ -1,24 +1,56 @@
-use super::{ImplSelfType, has_impl, trait_methods, type_path_ident_name};
+use super::{ImplSelfType, has_impl, type_path_ident_name};
 
-pub(super) fn inject_state(items: &mut Vec<syn::Item>) {
-    let Some(methods) = trait_methods(items, "State") else {
-        return;
-    };
-    let forwarders = named_trait_impl_self_types(items, "State")
-        .into_iter()
-        .filter(|self_ty| {
-            !has_impl(
+pub(super) fn inject(items: &mut Vec<syn::Item>) {
+    let mut forwarders = Vec::new();
+    for trait_methods in forwardable_traits(items) {
+        for self_ty in named_trait_impl_self_types(items, &trait_methods.name) {
+            if has_impl(
                 items,
-                "State",
-                ImplSelfType::MutableReferenceToNamed(self_ty),
-            )
-        })
-        .filter_map(|self_ty| mutable_ref_trait_forwarder("State", &self_ty, &methods))
-        .collect::<Vec<_>>();
+                &trait_methods.name,
+                ImplSelfType::MutableReferenceToNamed(&self_ty),
+            ) {
+                continue;
+            }
+            let Some(forwarder) =
+                mutable_ref_trait_forwarder(&trait_methods.name, &self_ty, &trait_methods.methods)
+            else {
+                continue;
+            };
+            forwarders.push(forwarder);
+        }
+    }
 
     for forwarder in forwarders {
         items.insert(0, forwarder);
     }
+}
+
+struct ForwardableTrait {
+    name: String,
+    methods: Vec<syn::TraitItemFn>,
+}
+
+fn forwardable_traits(items: &[syn::Item]) -> Vec<ForwardableTrait> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let methods = item_trait
+                .items
+                .iter()
+                .map(|item| match item {
+                    syn::TraitItem::Fn(func) => Some(func.clone()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            (!methods.is_empty()).then(|| ForwardableTrait {
+                name: item_trait.ident.to_string(),
+                methods,
+            })
+        })
+        .collect()
 }
 
 fn named_trait_impl_self_types(items: &[syn::Item], trait_name: &str) -> Vec<String> {
