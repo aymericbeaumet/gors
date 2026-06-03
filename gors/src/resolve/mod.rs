@@ -1418,15 +1418,40 @@ fn import_local_name(import: &crate::ast::ImportSpec<'_>) -> Option<String> {
 }
 
 fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
-    let has_formatter = has_trait(items, "Formatter");
-    let has_stringer = has_trait(items, "Stringer");
-    let has_go_stringer = has_trait(items, "GoStringer");
-    let has_state = has_trait(items, "State");
-    let has_pp = has_struct(items, "pp");
+    let facts = StructuralHelperFacts::collect(items);
 
-    if (has_formatter || has_stringer || has_go_stringer)
-        && !has_struct(items, "__GorsNoopInterface")
-    {
+    inject_noop_interface_helpers(items, facts);
+    inject_fmt_state_ref_helper(items, facts);
+    inject_fmt_flush_helper(items, facts);
+}
+
+#[derive(Clone, Copy)]
+struct StructuralHelperFacts {
+    has_formatter: bool,
+    has_stringer: bool,
+    has_go_stringer: bool,
+    has_state: bool,
+    has_pp: bool,
+}
+
+impl StructuralHelperFacts {
+    fn collect(items: &[syn::Item]) -> Self {
+        Self {
+            has_formatter: has_trait(items, "Formatter"),
+            has_stringer: has_trait(items, "Stringer"),
+            has_go_stringer: has_trait(items, "GoStringer"),
+            has_state: has_trait(items, "State"),
+            has_pp: has_struct(items, "pp"),
+        }
+    }
+
+    fn has_fmt_interfaces(self) -> bool {
+        self.has_formatter || self.has_stringer || self.has_go_stringer
+    }
+}
+
+fn inject_noop_interface_helpers(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
+    if facts.has_fmt_interfaces() && !has_struct(items, "__GorsNoopInterface") {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1436,7 +1461,14 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
         );
     }
 
-    if has_formatter && has_state && !has_impl(items, "Formatter", "__GorsNoopInterface") {
+    if facts.has_formatter
+        && facts.has_state
+        && !has_impl(
+            items,
+            "Formatter",
+            ImplSelfType::Named("__GorsNoopInterface"),
+        )
+    {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1448,7 +1480,13 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
         );
     }
 
-    if has_stringer && !has_impl(items, "Stringer", "__GorsNoopInterface") {
+    if facts.has_stringer
+        && !has_impl(
+            items,
+            "Stringer",
+            ImplSelfType::Named("__GorsNoopInterface"),
+        )
+    {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1460,7 +1498,13 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
         );
     }
 
-    if has_go_stringer && !has_impl(items, "GoStringer", "__GorsNoopInterface") {
+    if facts.has_go_stringer
+        && !has_impl(
+            items,
+            "GoStringer",
+            ImplSelfType::Named("__GorsNoopInterface"),
+        )
+    {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1472,7 +1516,7 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
         );
     }
 
-    if (has_stringer || has_go_stringer || has_formatter) && !has_trait(items, "__GorsErrorExt") {
+    if facts.has_fmt_interfaces() && !has_trait(items, "__GorsErrorExt") {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1498,8 +1542,13 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             },
         );
     }
+}
 
-    if has_pp && has_state && !has_impl(items, "State", "& mut pp") {
+fn inject_fmt_state_ref_helper(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
+    if facts.has_pp
+        && facts.has_state
+        && !has_impl(items, "State", ImplSelfType::MutableReferenceToNamed("pp"))
+    {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1527,8 +1576,10 @@ fn inject_structural_helpers(items: &mut Vec<syn::Item>) {
             },
         );
     }
+}
 
-    if has_pp && !has_method(items, "pp", "__gors_flush_fmt") {
+fn inject_fmt_flush_helper(items: &mut Vec<syn::Item>, facts: StructuralHelperFacts) {
+    if facts.has_pp && !has_method(items, "pp", "__gors_flush_fmt") {
         items.insert(
             0,
             syn::parse_quote! {
@@ -1555,7 +1606,13 @@ fn has_struct(items: &[syn::Item], name: &str) -> bool {
         .any(|item| matches!(item, syn::Item::Struct(item_struct) if item_struct.ident == name))
 }
 
-fn has_impl(items: &[syn::Item], trait_name: &str, self_ty: &str) -> bool {
+#[derive(Clone, Copy)]
+enum ImplSelfType<'a> {
+    Named(&'a str),
+    MutableReferenceToNamed(&'a str),
+}
+
+fn has_impl(items: &[syn::Item], trait_name: &str, self_ty: ImplSelfType<'_>) -> bool {
     items.iter().any(|item| {
         let syn::Item::Impl(item_impl) = item else {
             return false;
@@ -1566,22 +1623,30 @@ fn has_impl(items: &[syn::Item], trait_name: &str, self_ty: &str) -> bool {
         path.segments
             .last()
             .is_some_and(|seg| seg.ident == trait_name)
-            && type_matches_name(&item_impl.self_ty, self_ty)
+            && type_matches_impl_self(&item_impl.self_ty, self_ty)
     })
 }
 
-fn type_matches_name(ty: &syn::Type, name: &str) -> bool {
-    match (ty, name) {
-        (syn::Type::Path(path), _) => path
-            .path
-            .segments
-            .last()
-            .is_some_and(|seg| seg.ident == name),
-        (syn::Type::Reference(reference), "& mut pp") => {
-            reference.mutability.is_some() && type_matches_name(&reference.elem, "pp")
+fn type_matches_impl_self(ty: &syn::Type, expected: ImplSelfType<'_>) -> bool {
+    match expected {
+        ImplSelfType::Named(name) => type_path_matches_name(ty, name),
+        ImplSelfType::MutableReferenceToNamed(name) => {
+            let syn::Type::Reference(reference) = ty else {
+                return false;
+            };
+            reference.mutability.is_some() && type_path_matches_name(&reference.elem, name)
         }
-        _ => false,
     }
+}
+
+fn type_path_matches_name(ty: &syn::Type, name: &str) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|seg| seg.ident == name)
 }
 
 fn has_method(items: &[syn::Item], ty_name: &str, method_name: &str) -> bool {
@@ -1687,6 +1752,73 @@ fn is_rust_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn impl_self_type_matching_distinguishes_named_and_mut_ref_self() {
+        let items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait State {}
+            },
+            syn::parse_quote! {
+                struct pp;
+            },
+            syn::parse_quote! {
+                impl<'a> State for &'a mut pp {}
+            },
+        ];
+
+        assert!(has_impl(
+            &items,
+            "State",
+            ImplSelfType::MutableReferenceToNamed("pp")
+        ));
+        assert!(!has_impl(&items, "State", ImplSelfType::Named("pp")));
+    }
+
+    #[test]
+    fn structural_helper_injection_adds_fmt_pp_helpers_once() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait State {}
+            },
+            syn::parse_quote! {
+                struct pp;
+            },
+        ];
+
+        inject_structural_helpers(&mut items);
+        inject_structural_helpers(&mut items);
+
+        let state_ref_impls = items
+            .iter()
+            .filter(|item| {
+                let syn::Item::Impl(item_impl) = item else {
+                    return false;
+                };
+                item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments.last().is_some_and(|seg| seg.ident == "State")
+                }) && type_matches_impl_self(
+                    &item_impl.self_ty,
+                    ImplSelfType::MutableReferenceToNamed("pp"),
+                )
+            })
+            .count();
+        let flush_methods = items
+            .iter()
+            .filter(|item| {
+                let syn::Item::Impl(item_impl) = item else {
+                    return false;
+                };
+                type_matches_impl_self(&item_impl.self_ty, ImplSelfType::Named("pp"))
+                    && item_impl.items.iter().any(
+                        |item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == "__gors_flush_fmt"),
+                    )
+            })
+            .count();
+
+        assert_eq!(state_ref_impls, 1);
+        assert_eq!(flush_methods, 1);
+    }
 
     #[test]
     fn reachable_names_include_instantiated_field_type_arguments()
