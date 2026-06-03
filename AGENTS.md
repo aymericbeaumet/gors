@@ -78,7 +78,9 @@ gors-builtin/
   with reflect, os, and sync replacements split under
   `gors/src/compiler/runtime_primitives/`; `reflect.TypeOf(...).Kind()`
   detection lives in `gors/src/compiler/reflect_kind.rs`; resolver-injected
-  structural helpers live in `gors/src/resolve/structural_helpers.rs`. Keep
+  structural helper dispatch lives in `gors/src/resolve/structural_helpers.rs`,
+  with noop interface sentinels, mutable-reference forwarding, and fmt flush
+  helper injection split under `gors/src/resolve/structural_helpers/`. Keep
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
   inlining these policies. Within the `coerce_types` pass, generated fmt flush
   metadata lives in
