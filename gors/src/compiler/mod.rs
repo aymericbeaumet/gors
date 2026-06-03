@@ -18,6 +18,7 @@ mod builtin_roots;
 mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
+mod imported_interface_impls;
 mod interface_hooks;
 mod interface_impls;
 mod interface_method_sets;
@@ -22358,159 +22359,6 @@ impl From<ast::Expr<'_>> for syn::Type {
     }
 }
 
-fn imported_pointer_interface_impls_for_local_structs(
-    struct_methods: &BTreeMap<String, Vec<String>>,
-    struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    method_generics: &BTreeMap<String, Vec<syn::Ident>>,
-    emitted_interface_impls: &mut std::collections::BTreeSet<(String, String, bool)>,
-    emitted_borrowed_pointer_interface_impls: &mut std::collections::BTreeSet<(String, String)>,
-) -> Vec<syn::Item> {
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        let mut items = Vec::new();
-        for interface_name in env.interface_names() {
-            if !interface_name.contains('.') {
-                continue;
-            }
-            if !interface_has_direct_import_qualifier(&interface_name) {
-                continue;
-            }
-            let Some(required_methods) = env.get_interface_methods(&interface_name) else {
-                continue;
-            };
-            if required_methods.is_empty() {
-                continue;
-            }
-            let method_set = interface_method_sets::for_impl(&interface_name, &required_methods);
-            for (struct_name, struct_method_list) in struct_methods {
-                if BORROWED_INTERFACE_STRUCTS
-                    .with(|structs| structs.borrow().contains_key(struct_name))
-                    || method_generics
-                        .get(struct_name)
-                        .is_some_and(|type_args| !type_args.is_empty())
-                {
-                    continue;
-                }
-                let pointer_satisfies = interface_method_sets::pointer_satisfies(
-                    struct_method_list,
-                    &method_set.required_methods,
-                );
-                if !pointer_satisfies {
-                    continue;
-                }
-                let pointer_methods = struct_pointer_methods.get(struct_name);
-                if emitted_interface_impls.insert((
-                    interface_name.clone(),
-                    struct_name.clone(),
-                    true,
-                )) {
-                    let trait_path = interface_trait_path_from_name(&interface_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = interface_impls::pointer_items(
-                        &interface_name,
-                        struct_name,
-                        &trait_path,
-                        &method_set.direct_methods,
-                        methods,
-                        pointer_methods,
-                    );
-                    items.push(syn::parse_quote! {
-                        impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
-                            #(#impl_items)*
-                        }
-                    });
-                }
-                if interface_impls::borrowed_pointer_can_delegate(
-                    &interface_name,
-                    &method_set.direct_methods,
-                    pointer_methods,
-                ) && emitted_borrowed_pointer_interface_impls
-                    .insert((interface_name.clone(), struct_name.clone()))
-                {
-                    let trait_path = interface_trait_path_from_name(&interface_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = interface_impls::borrowed_pointer_items(
-                        &interface_name,
-                        struct_name,
-                        &trait_path,
-                        &method_set.direct_methods,
-                        methods,
-                        pointer_methods,
-                    );
-                    items.push(syn::parse_quote! {
-                        impl<'__gors> #trait_path for &'__gors mut #struct_ident {
-                            #(#impl_items)*
-                        }
-                    });
-                }
-
-                for embedded_name in &method_set.embedded_interfaces {
-                    let embedded_method_set = interface_method_sets::for_impl(embedded_name, &[]);
-                    if !interface_method_sets::pointer_satisfies(
-                        struct_method_list,
-                        &embedded_method_set.required_methods,
-                    ) {
-                        continue;
-                    }
-                    if !emitted_interface_impls.insert((
-                        embedded_name.clone(),
-                        struct_name.clone(),
-                        true,
-                    )) {
-                        continue;
-                    }
-                    let trait_path = interface_trait_path_from_name(embedded_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = interface_impls::pointer_items(
-                        embedded_name,
-                        struct_name,
-                        &trait_path,
-                        &embedded_method_set.direct_methods,
-                        methods,
-                        pointer_methods,
-                    );
-                    items.push(syn::parse_quote! {
-                        impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
-                            #(#impl_items)*
-                        }
-                    });
-                    if interface_impls::borrowed_pointer_can_delegate(
-                        embedded_name,
-                        &embedded_method_set.direct_methods,
-                        pointer_methods,
-                    ) && emitted_borrowed_pointer_interface_impls
-                        .insert((embedded_name.clone(), struct_name.clone()))
-                    {
-                        let trait_path = interface_trait_path_from_name(embedded_name);
-                        let impl_items = interface_impls::borrowed_pointer_items(
-                            embedded_name,
-                            struct_name,
-                            &trait_path,
-                            &embedded_method_set.direct_methods,
-                            methods,
-                            pointer_methods,
-                        );
-                        items.push(syn::parse_quote! {
-                            impl<'__gors> #trait_path for &'__gors mut #struct_ident {
-                                #(#impl_items)*
-                            }
-                        });
-                    }
-                }
-            }
-        }
-        items
-    })
-}
-
-fn interface_has_direct_import_qualifier(interface_name: &str) -> bool {
-    let Some((qualifier, _)) = interface_name.split_once('.') else {
-        return false;
-    };
-    IMPORT_NAMES.with(|names| names.borrow().contains(qualifier))
-}
-
 impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
@@ -23056,7 +22904,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             }
         }
-        items.extend(imported_pointer_interface_impls_for_local_structs(
+        items.extend(imported_interface_impls::pointer_impls_for_local_structs(
             &struct_methods,
             &struct_pointer_methods,
             &methods,
