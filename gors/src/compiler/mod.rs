@@ -5575,27 +5575,7 @@ fn inject_post_prune_stdlib_helpers(
     for module in modules.values() {
         preserved.extend(external_root_collector.module_refs_from_items(&module.file.items));
     }
-    if preserved.contains("reflect")
-        && !modules
-            .values()
-            .any(|module| module.is_stdlib && module.mod_name == "reflect")
-    {
-        modules.insert(
-            "reflect".to_string(),
-            CompiledModule {
-                mod_name: "reflect".to_string(),
-                import_path: "reflect".to_string(),
-                file: syn::parse_quote! {
-                    #[derive(Clone, Default)]
-                    pub struct Value;
-                },
-                filename: "reflect.rs".to_string(),
-                content_hash: String::new(),
-                is_main: false,
-                is_stdlib: true,
-            },
-        );
-    }
+    runtime_primitives::inject_missing_preserved_modules(modules, &preserved);
     prune_unreferenced_stdlib_modules(modules, &preserved);
 }
 

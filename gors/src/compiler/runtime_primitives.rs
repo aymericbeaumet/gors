@@ -1,5 +1,5 @@
 use super::{CompiledModule, item_name, type_mentions_name};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 mod os;
 mod reflect;
@@ -17,6 +17,13 @@ pub(super) fn inject_post_prune_helpers(modules: &mut BTreeMap<String, CompiledM
             module.content_hash.clear();
         }
     }
+}
+
+pub(super) fn inject_missing_preserved_modules(
+    modules: &mut BTreeMap<String, CompiledModule>,
+    preserved: &HashSet<String>,
+) {
+    reflect::inject_missing_value_module(modules, preserved);
 }
 
 fn module_has_struct(module: &CompiledModule, name: &str) -> bool {
@@ -94,5 +101,23 @@ mod tests {
         assert!(source.contains("pub struct Pool"), "{source}");
         assert!(source.contains("pub fn Get"), "{source}");
         assert!(!source.contains("pub struct Mutex"), "{source}");
+    }
+
+    #[test]
+    fn reflect_value_module_injection_is_owned_by_runtime_primitives() {
+        let mut modules = BTreeMap::new();
+        let preserved = HashSet::from(["reflect".to_string()]);
+
+        inject_missing_preserved_modules(&mut modules, &preserved);
+
+        let module = modules.get("reflect").expect("reflect module");
+        assert_eq!(module.mod_name, "reflect");
+        assert!(module.is_stdlib);
+        let source = prettyplease::unparse(&module.file);
+        assert!(source.contains("pub struct Value"), "{source}");
+
+        inject_missing_preserved_modules(&mut modules, &preserved);
+
+        assert_eq!(modules.len(), 1);
     }
 }
