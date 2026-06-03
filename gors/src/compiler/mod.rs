@@ -38934,6 +38934,29 @@ func main() {
     }
 
     #[test]
+    fn it_should_cast_integer_typed_float_var_initializer() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func tooLarge(x int) bool {
+                    var max int = 1e6
+                    return x > max
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("let mut max: isize = (1e6 as isize);"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn it_should_support_blank_identifier_in_define() {
         test(
             r#"

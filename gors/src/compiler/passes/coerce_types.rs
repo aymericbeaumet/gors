@@ -183,25 +183,6 @@ impl VisitMut for CoerceTypes {
         if let Some(init) = &mut local.init {
             replace_self_deref_with_take(&mut init.expr);
         }
-
-        // Fix: let mut max: isize = 1e6; → 1e6 is f64, needs cast
-        let type_ann = get_type_annotation(local);
-        if let Some(init) = &mut local.init {
-            if matches!(
-                &*init.expr,
-                syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Float(_),
-                    ..
-                })
-            ) {
-                if let Some(ref pat_type) = type_ann {
-                    if is_integer_type(pat_type) {
-                        let lit = init.expr.clone();
-                        *init.expr = syn::parse_quote! { #lit as #pat_type };
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -334,26 +315,6 @@ fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
 
 fn is_self_field_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Field(field) if is_self_expr(&field.base))
-}
-
-fn get_type_annotation(local: &syn::Local) -> Option<syn::Type> {
-    if let syn::Pat::Type(pat_type) = &local.pat {
-        Some((*pat_type.ty).clone())
-    } else {
-        None
-    }
-}
-
-fn is_integer_type(ty: &syn::Type) -> bool {
-    if let syn::Type::Path(tp) = ty {
-        if let Some(seg) = tp.path.segments.last() {
-            return matches!(
-                seg.ident.to_string().as_str(),
-                "isize" | "i8" | "i16" | "i32" | "i64" | "usize" | "u8" | "u16" | "u32" | "u64"
-            );
-        }
-    }
-    false
 }
 
 #[cfg(test)]
