@@ -1434,31 +1434,6 @@ pub fn format_slice<T: std::fmt::Display>(values: &[T]) -> std::string::String {
     out
 }
 
-pub fn append_float(
-    mut dst: Vec<u8>,
-    value: f64,
-    fmt: u8,
-    prec: isize,
-    _bit_size: isize,
-) -> Vec<u8> {
-    let precision = usize::try_from(prec).ok();
-    let formatted = match fmt as char {
-        'f' => precision.map_or_else(|| format!("{value}"), |p| format!("{value:.p$}")),
-        'e' => precision.map_or_else(|| format!("{value:e}"), |p| format!("{value:.p$e}")),
-        'E' => precision.map_or_else(|| format!("{value:E}"), |p| format!("{value:.p$E}")),
-        'g' | 'G' => {
-            if prec < 0 {
-                format!("{value}")
-            } else {
-                precision.map_or_else(|| format!("{value}"), |p| format!("{value:.p$}"))
-            }
-        }
-        _ => format!("{value}"),
-    };
-    dst.extend_from_slice(formatted.as_bytes());
-    dst
-}
-
 #[macro_export]
 macro_rules! print {
     () => {};
