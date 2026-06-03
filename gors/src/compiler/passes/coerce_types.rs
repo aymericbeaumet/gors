@@ -4,18 +4,17 @@ use syn::{
 };
 
 mod pointer_cells;
+mod structural_helpers;
 
 pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = collect_tuple_newtypes(file);
     let mutable_ref_call_args = collect_mutable_ref_call_args(file);
     let pointer_cell_statics = collect_pointer_cell_statics(file);
-    let fmt_flush_receiver_types = collect_fmt_flush_receiver_types(file);
-    let self_value_reflection_receiver_types = collect_self_value_reflection_receiver_types(file);
+    let structural_helper_metadata = structural_helpers::Metadata::collect(file);
     CoerceTypes {
         mutable_ref_call_args,
         pointer_cell_statics,
-        fmt_flush_receiver_types,
-        self_value_reflection_receiver_types,
+        structural_helper_metadata,
         tuple_newtypes,
         ..Default::default()
     }
@@ -27,17 +26,7 @@ pub fn pass_after_package_merge(file: &mut syn::File) {
 }
 
 pub fn pass_after_structural_helpers(file: &mut syn::File) {
-    let fmt_flush_receiver_types = collect_fmt_flush_receiver_types(file);
-    let self_value_reflection_receiver_types = collect_self_value_reflection_receiver_types(file);
-    if fmt_flush_receiver_types.is_empty() && self_value_reflection_receiver_types.is_empty() {
-        return;
-    }
-    CoerceStructuralHelpers {
-        fmt_flush_receiver_types,
-        self_value_reflection_receiver_types,
-        impl_self_types: Vec::new(),
-    }
-    .visit_file_mut(file);
+    structural_helpers::pass_after_structural_helpers(file);
 }
 
 #[derive(Default)]
@@ -47,59 +36,9 @@ struct CoerceTypes {
     has_generic_params: Vec<bool>,
     mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
     pointer_cell_statics: std::collections::HashSet<String>,
-    fmt_flush_receiver_types: std::collections::HashSet<String>,
-    self_value_reflection_receiver_types: std::collections::HashSet<String>,
+    structural_helper_metadata: structural_helpers::Metadata,
     tuple_newtypes: std::collections::HashSet<String>,
     impl_self_types: Vec<String>,
-}
-
-struct CoerceStructuralHelpers {
-    fmt_flush_receiver_types: std::collections::HashSet<String>,
-    self_value_reflection_receiver_types: std::collections::HashSet<String>,
-    impl_self_types: Vec<String>,
-}
-
-impl VisitMut for CoerceStructuralHelpers {
-    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
-            self.impl_self_types.push(self_ty);
-            visit_mut::visit_item_impl_mut(self, item_impl);
-            self.impl_self_types.pop();
-        } else {
-            visit_mut::visit_item_impl_mut(self, item_impl);
-        }
-    }
-
-    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
-        visit_mut::visit_impl_item_fn_mut(self, func);
-        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
-            self.self_value_reflection_receiver_types.contains(ty)
-                && block_has_self_value_reflection_fallback(&func.block)
-        });
-        prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
-    }
-
-    fn visit_block_mut(&mut self, block: &mut syn::Block) {
-        let old_stmts = std::mem::take(&mut block.stmts);
-        let mut new_stmts = Vec::with_capacity(old_stmts.len());
-
-        for mut stmt in old_stmts {
-            visit_mut::visit_stmt_mut(self, &mut stmt);
-            let needs_flush = self
-                .impl_self_types
-                .last()
-                .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
-                && stmt_needs_fmt_flush(&stmt);
-            new_stmts.push(stmt);
-            if needs_flush {
-                new_stmts.push(syn::parse_quote! {
-                    self.__gors_flush_fmt();
-                });
-            }
-        }
-
-        block.stmts = new_stmts;
-    }
 }
 
 impl VisitMut for CoerceTypes {
@@ -124,7 +63,7 @@ impl VisitMut for CoerceTypes {
         self.mutable_ref_params.pop();
 
         prune_static_false_branches(&mut func.block.stmts);
-        prune_print_arg_reflection_fallback(&mut func.block.stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, false);
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
@@ -139,11 +78,10 @@ impl VisitMut for CoerceTypes {
 
         prune_static_false_branches(&mut func.block.stmts);
         let prune_self_value = self.impl_self_types.last().is_some_and(|ty| {
-            (self.fmt_flush_receiver_types.contains(ty) && should_prune_fmt_self_value(&func.block))
-                || (self.self_value_reflection_receiver_types.contains(ty)
-                    && block_has_self_value_reflection_fallback(&func.block))
+            self.structural_helper_metadata
+                .should_prune_self_value_for_initial_pass(ty, &func.block)
         });
-        prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
+        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, prune_self_value);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
@@ -156,10 +94,8 @@ impl VisitMut for CoerceTypes {
             new_stmts.extend(hoist_condition_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(hoist_method_args_read_receiver(&mut stmt));
             let needs_flush = self
-                .impl_self_types
-                .last()
-                .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
-                && stmt_needs_fmt_flush(&stmt);
+                .structural_helper_metadata
+                .should_flush_after_stmt(&self.impl_self_types, &stmt);
             new_stmts.push(stmt);
             if needs_flush {
                 new_stmts.push(syn::parse_quote! {
@@ -320,148 +256,6 @@ impl VisitMut for CoerceTypes {
     }
 }
 
-fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
-    if block_has_self_value_reflection_fallback(block) {
-        return true;
-    }
-
-    struct Finder {
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if is_self_expr(&call.receiver)
-                && matches!(
-                    call.method.to_string().as_str(),
-                    "printArg" | "printValue" | "fmtPointer"
-                )
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-    }
-
-    let mut finder = Finder { found: false };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
-}
-
-fn block_has_self_value_reflection_fallback(block: &syn::Block) -> bool {
-    struct Finder {
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
-                && expr_mentions_self_field_named(&call.receiver, "value")
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-    }
-
-    let mut finder = Finder { found: false };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
-}
-
-fn prune_print_arg_reflection_fallback(stmts: &mut Vec<syn::Stmt>, prune_self_value: bool) {
-    let old_stmts = std::mem::take(stmts);
-    *stmts = old_stmts
-        .into_iter()
-        .filter_map(|stmt| prune_print_arg_stmt(stmt, prune_self_value))
-        .collect();
-}
-
-fn prune_print_arg_stmt(stmt: syn::Stmt, prune_self_value: bool) -> Option<syn::Stmt> {
-    if print_arg_stmt_needs_reflection(&stmt, prune_self_value) {
-        match stmt {
-            syn::Stmt::Expr(expr, semi) => {
-                prune_print_arg_expr(expr, prune_self_value).map(|expr| syn::Stmt::Expr(expr, semi))
-            }
-            syn::Stmt::Local(mut local) => {
-                if let Some(init) = &mut local.init {
-                    let expr = std::mem::replace(
-                        &mut init.expr,
-                        Box::new(syn::parse_quote! { Default::default() }),
-                    );
-                    let expr = prune_print_arg_expr(*expr, prune_self_value)?;
-                    *init.expr = expr;
-                }
-                Some(syn::Stmt::Local(local))
-            }
-            syn::Stmt::Item(_) | syn::Stmt::Macro(_) => None,
-        }
-    } else {
-        Some(stmt)
-    }
-}
-
-fn prune_print_arg_expr(expr: syn::Expr, prune_self_value: bool) -> Option<syn::Expr> {
-    match expr {
-        syn::Expr::Block(expr_block) => prune_print_arg_expr_block(expr_block, prune_self_value),
-        syn::Expr::If(expr_if) => prune_print_arg_if(expr_if, prune_self_value),
-        other if print_arg_expr_needs_reflection(&other, prune_self_value) => None,
-        other => Some(other),
-    }
-}
-
-fn prune_print_arg_expr_block(
-    mut expr_block: syn::ExprBlock,
-    prune_self_value: bool,
-) -> Option<syn::Expr> {
-    expr_block.block = prune_print_arg_block(expr_block.block, prune_self_value);
-    (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
-}
-
-fn prune_print_arg_if(mut expr_if: syn::ExprIf, prune_self_value: bool) -> Option<syn::Expr> {
-    if print_arg_expr_needs_reflection(&expr_if.cond, prune_self_value) {
-        return expr_if
-            .else_branch
-            .and_then(|(_, else_expr)| prune_print_arg_expr(*else_expr, prune_self_value));
-    }
-
-    let then_had_reflection =
-        print_arg_block_needs_reflection(&expr_if.then_branch, prune_self_value);
-    expr_if.then_branch = prune_print_arg_block(expr_if.then_branch, prune_self_value);
-    let then_is_empty = expr_if.then_branch.stmts.is_empty();
-
-    expr_if.else_branch = expr_if.else_branch.and_then(|(else_token, else_expr)| {
-        prune_print_arg_expr(*else_expr, prune_self_value).map(|expr| (else_token, Box::new(expr)))
-    });
-
-    if then_had_reflection && then_is_empty {
-        return expr_if.else_branch.map(|(_, else_expr)| *else_expr);
-    }
-
-    Some(syn::Expr::If(expr_if))
-}
-
-fn prune_print_arg_block(mut block: syn::Block, prune_self_value: bool) -> syn::Block {
-    let mut dropped_names = std::collections::HashSet::new();
-    let mut stmts = vec![];
-    for stmt in block.stmts {
-        let bound_names = stmt_bound_names(&stmt);
-        if stmt_mentions_any_name(&stmt, &dropped_names) {
-            dropped_names.extend(bound_names);
-            continue;
-        }
-        if let Some(stmt) = prune_print_arg_stmt(stmt, prune_self_value) {
-            stmts.push(stmt);
-        } else {
-            dropped_names.extend(bound_names);
-        }
-    }
-    block.stmts = stmts;
-    block
-}
-
 fn prune_static_false_branches(stmts: &mut Vec<syn::Stmt>) {
     let mut false_names = std::collections::HashSet::new();
     prune_static_false_branches_with(stmts, &mut false_names);
@@ -563,178 +357,6 @@ fn collect_false_bindings(
     }
 }
 
-fn stmt_bound_names(stmt: &syn::Stmt) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
-    if let syn::Stmt::Local(local) = stmt {
-        collect_pat_names(&local.pat, &mut names);
-    }
-    names
-}
-
-fn collect_pat_names(pat: &syn::Pat, names: &mut std::collections::HashSet<String>) {
-    match pat {
-        syn::Pat::Ident(pat_ident) => {
-            names.insert(pat_ident.ident.to_string());
-        }
-        syn::Pat::Tuple(tuple) => {
-            for elem in &tuple.elems {
-                collect_pat_names(elem, names);
-            }
-        }
-        syn::Pat::Type(pat_type) => collect_pat_names(&pat_type.pat, names),
-        _ => {}
-    }
-}
-
-fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<String>) -> bool {
-    if names.is_empty() {
-        return false;
-    }
-
-    struct Visitor<'a> {
-        names: &'a std::collections::HashSet<String>,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Visitor<'_> {
-        fn visit_expr_path(&mut self, expr_path: &syn::ExprPath) {
-            if expr_path.path.leading_colon.is_none()
-                && expr_path.path.segments.len() == 1
-                && expr_path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|seg| self.names.contains(&seg.ident.to_string()))
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_path(self, expr_path);
-        }
-    }
-
-    let mut visitor = Visitor {
-        names,
-        found: false,
-    };
-    syn::visit::Visit::visit_stmt(&mut visitor, stmt);
-    visitor.found
-}
-
-fn expr_mentions_self_field_named(expr: &syn::Expr, name: &str) -> bool {
-    struct Visitor<'a> {
-        name: &'a str,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Visitor<'_> {
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_field_named(field, self.name) {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-
-    let mut visitor = Visitor { name, found: false };
-    syn::visit::Visit::visit_expr(&mut visitor, expr);
-    visitor.found
-}
-
-fn print_arg_stmt_needs_reflection(stmt: &syn::Stmt, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
-        found: false,
-    };
-    syn::visit::Visit::visit_stmt(&mut finder, stmt);
-    finder.found
-}
-
-fn print_arg_expr_needs_reflection(expr: &syn::Expr, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
-        found: false,
-    };
-    syn::visit::Visit::visit_expr(&mut finder, expr);
-    finder.found
-}
-
-fn print_arg_block_needs_reflection(block: &syn::Block, prune_self_value: bool) -> bool {
-    let mut finder = PrintArgReflectionFinder {
-        prune_self_value,
-        found: false,
-    };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
-}
-
-struct PrintArgReflectionFinder {
-    prune_self_value: bool,
-    found: bool,
-}
-
-impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
-    fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-        if path
-            .path
-            .segments
-            .iter()
-            .any(|segment| segment.ident == "reflect")
-        {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_path(self, path);
-    }
-
-    fn visit_type_path(&mut self, path: &syn::TypePath) {
-        if path
-            .path
-            .segments
-            .iter()
-            .any(|segment| segment.ident == "reflect")
-        {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_type_path(self, path);
-    }
-
-    fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-        if is_self_expr(&call.receiver)
-            && matches!(
-                call.method.to_string().as_str(),
-                "printValue" | "fmtPointer"
-            )
-        {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
-    fn visit_expr_field(&mut self, field: &syn::ExprField) {
-        if self.prune_self_value && is_self_field_named(field, "value") {
-            self.found = true;
-            return;
-        }
-        syn::visit::visit_expr_field(self, field);
-    }
-}
-
-fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
-    match member {
-        syn::Member::Named(ident) => Some(ident),
-        syn::Member::Unnamed(_) => None,
-    }
-}
-
-fn is_self_field_named(field: &syn::ExprField, name: &str) -> bool {
-    is_self_expr(&field.base)
-        && member_ident_name(&field.member).is_some_and(|member| member == name)
-}
-
 fn is_false_lit_expr(expr: &syn::Expr) -> bool {
     matches!(
         expr,
@@ -789,60 +411,6 @@ fn collect_mutable_ref_call_args(
         }
     }
     calls
-}
-
-fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashSet<String> {
-    let mut hook_receivers = std::collections::HashSet::new();
-    let mut flushable_receivers = std::collections::HashSet::new();
-    for item in &file.items {
-        let syn::Item::Impl(item_impl) = item else {
-            continue;
-        };
-        let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
-            continue;
-        };
-        if impl_has_method(item_impl, "__gors_flush_fmt") {
-            hook_receivers.insert(self_ty.clone());
-        }
-        if impl_has_method(item_impl, "printArg") || impl_has_method(item_impl, "printValue") {
-            flushable_receivers.insert(self_ty);
-        }
-    }
-    hook_receivers
-        .intersection(&flushable_receivers)
-        .cloned()
-        .collect()
-}
-
-fn collect_self_value_reflection_receiver_types(
-    file: &syn::File,
-) -> std::collections::HashSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
-                return None;
-            };
-            let self_ty = type_path_ident_name(&item_impl.self_ty)?;
-            impl_has_self_value_reflection_fallback(item_impl).then_some(self_ty)
-        })
-        .collect()
-}
-
-fn impl_has_self_value_reflection_fallback(item_impl: &syn::ItemImpl) -> bool {
-    item_impl.items.iter().any(|item| {
-        matches!(
-            item,
-            syn::ImplItem::Fn(func) if block_has_self_value_reflection_fallback(&func.block)
-        )
-    })
-}
-
-fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
-    item_impl
-        .items
-        .iter()
-        .any(|item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == name))
 }
 
 fn collect_pointer_cell_statics(file: &syn::File) -> std::collections::HashSet<String> {
@@ -1153,20 +721,6 @@ fn is_path_call(func: &syn::Expr, segments: &[&str]) -> bool {
             .iter()
             .zip(segments)
             .all(|(seg, expected)| seg.ident == *expected)
-}
-
-fn stmt_needs_fmt_flush(stmt: &syn::Stmt) -> bool {
-    matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_fmt_flush(expr))
-}
-
-fn expr_needs_fmt_flush(expr: &syn::Expr) -> bool {
-    let syn::Expr::MethodCall(call) = expr else {
-        return false;
-    };
-    if !matches!(call.method.to_string().as_str(), "printArg" | "printValue") {
-        return false;
-    }
-    is_self_expr(&call.receiver)
 }
 
 fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
@@ -1529,7 +1083,7 @@ mod tests {
             };
         }];
 
-        prune_print_arg_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, false);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
@@ -1552,7 +1106,7 @@ mod tests {
             let msg = "crate :: reflect :: ValueOf";
         }];
 
-        prune_print_arg_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, false);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
@@ -1567,7 +1121,7 @@ mod tests {
             value.is::<crate::reflect::Value>();
         }];
 
-        prune_print_arg_reflection_fallback(&mut stmts, false);
+        structural_helpers::prune_reflection_fallback(&mut stmts, false);
 
         let tokens = quote::quote!(#(#stmts)*).to_string();
         assert!(
