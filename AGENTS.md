@@ -79,7 +79,11 @@ gors-builtin/
   detection lives in `gors/src/compiler/reflect_kind.rs`, and resolver-injected
   structural helpers live in `gors/src/resolve/structural_helpers.rs`. Keep
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
-  inlining these policies.
+  inlining these policies. Within the `coerce_types` pass, generated fmt flush
+  metadata lives in
+  `gors/src/compiler/passes/coerce_types/structural_helpers/fmt_flush.rs`;
+  `structural_helpers.rs` should stay focused on post-helper orchestration and
+  reflection fallback pruning.
 
 ### Cross-module references
 
@@ -1285,8 +1289,9 @@ ordinary user fields named `value` must remain usable as `self.value`.
 Resolver-injected structural helpers are added after package merge, so helper
 dependent coercions belong in `pass_after_structural_helpers()`, not in the
 main package/file pass. Keep that post-helper pass narrow: it currently owns
-generated fmt flush insertion and self-value reflection fallback pruning after
-helpers such as `__gors_flush_fmt` have been injected.
+generated fmt flush insertion through its `fmt_flush` submodule and self-value
+reflection fallback pruning after helpers such as `__gors_flush_fmt` have been
+injected.
 
 Imported packages (`pass_for_imported_package()`): only map_type, type_conversion,
 simplify_return, flatten_block.
