@@ -10,13 +10,16 @@ pub(super) enum CompareSide {
     Right,
 }
 
-pub(super) fn detect_compare(binary_expr: &ast::BinaryExpr) -> Option<Compare> {
+pub(super) fn detect_compare(
+    binary_expr: &ast::BinaryExpr,
+    is_reflect_qualifier: impl Fn(&str) -> bool + Copy,
+) -> Option<Compare> {
     if !matches!(binary_expr.op, token::Token::EQL | token::Token::NEQ) {
         return None;
     }
 
-    if typeof_kind_arg_ref(&binary_expr.x) {
-        let kind = kind_const_ref(&binary_expr.y)?;
+    if typeof_kind_arg_ref(&binary_expr.x, is_reflect_qualifier) {
+        let kind = kind_const_ref(&binary_expr.y, is_reflect_qualifier)?;
         kind_variant_expr(kind)?;
         return Some(Compare {
             side: CompareSide::Left,
@@ -24,8 +27,8 @@ pub(super) fn detect_compare(binary_expr: &ast::BinaryExpr) -> Option<Compare> {
         });
     }
 
-    if typeof_kind_arg_ref(&binary_expr.y) {
-        let kind = kind_const_ref(&binary_expr.x)?;
+    if typeof_kind_arg_ref(&binary_expr.y, is_reflect_qualifier) {
+        let kind = kind_const_ref(&binary_expr.x, is_reflect_qualifier)?;
         kind_variant_expr(kind)?;
         return Some(Compare {
             side: CompareSide::Right,
@@ -36,7 +39,10 @@ pub(super) fn detect_compare(binary_expr: &ast::BinaryExpr) -> Option<Compare> {
     None
 }
 
-fn typeof_kind_arg_ref(expr: &ast::Expr) -> bool {
+fn typeof_kind_arg_ref(
+    expr: &ast::Expr,
+    is_reflect_qualifier: impl Fn(&str) -> bool + Copy,
+) -> bool {
     let ast::Expr::CallExpr(kind_call) = expr else {
         return false;
     };
@@ -55,7 +61,7 @@ fn typeof_kind_arg_ref(expr: &ast::Expr) -> bool {
     let ast::Expr::SelectorExpr(type_of_selector) = &*type_of_call.fun else {
         return false;
     };
-    matches!(&*type_of_selector.x, ast::Expr::Ident(pkg) if pkg.name == "reflect")
+    matches!(&*type_of_selector.x, ast::Expr::Ident(pkg) if is_reflect_qualifier(pkg.name))
         && type_of_selector.sel.name == "TypeOf"
         && matches!(type_of_call.args.as_deref(), Some([_]))
 }
@@ -78,11 +84,14 @@ pub(super) fn typeof_kind_arg(expr: ast::Expr) -> Option<ast::Expr> {
     }
 }
 
-fn kind_const_ref<'ast>(expr: &ast::Expr<'ast>) -> Option<&'ast str> {
+fn kind_const_ref<'ast>(
+    expr: &ast::Expr<'ast>,
+    is_reflect_qualifier: impl Fn(&str) -> bool + Copy,
+) -> Option<&'ast str> {
     let ast::Expr::SelectorExpr(selector) = expr else {
         return None;
     };
-    if !matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "reflect") {
+    if !matches!(&*selector.x, ast::Expr::Ident(pkg) if is_reflect_qualifier(pkg.name)) {
         return None;
     }
     Some(selector.sel.name)
@@ -168,7 +177,27 @@ mod tests {
             "#,
         );
 
-        let compare = detect_compare(&binary).expect("reflect kind compare");
+        let compare =
+            detect_compare(&binary, |name| name == "reflect").expect("reflect kind compare");
+        assert!(matches!(compare.side, CompareSide::Left));
+        assert_eq!(compare.kind, "String");
+    }
+
+    #[test]
+    fn detects_aliased_typeof_kind_compare() {
+        let binary = first_return_binary_expr(
+            r#"
+                package main
+
+                import r "reflect"
+
+                func isString(v any) bool {
+                    return r.TypeOf(v).Kind() != r.String
+                }
+            "#,
+        );
+
+        let compare = detect_compare(&binary, |name| name == "r").expect("reflect kind compare");
         assert!(matches!(compare.side, CompareSide::Left));
         assert_eq!(compare.kind, "String");
     }

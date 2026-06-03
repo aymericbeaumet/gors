@@ -43,6 +43,7 @@ thread_local! {
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static IMPORT_PATHS_BY_LOCAL_NAME: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static DOT_IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
@@ -1144,6 +1145,38 @@ fn import_local_name(import: &ast::ImportSpec<'_>) -> Option<String> {
         .with(|names| names.borrow().get(path).cloned())
         .or_else(|| crate::resolve::scan_type_env(path).map(|(package_name, _)| package_name))
         .or_else(|| path.rsplit('/').next().map(str::to_string))
+}
+
+fn set_current_file_imports(file: &ast::File<'_>) {
+    let imports = file
+        .imports()
+        .into_iter()
+        .filter_map(|import| {
+            let local_name = import_local_name(import)?;
+            let import_path = import.path.value.trim_matches('"').to_string();
+            Some((local_name, import_path))
+        })
+        .collect::<Vec<_>>();
+
+    IMPORT_NAMES.with(|names| {
+        let mut names = names.borrow_mut();
+        names.clear();
+        names.extend(imports.iter().map(|(local_name, _)| local_name.clone()));
+    });
+    IMPORT_PATHS_BY_LOCAL_NAME.with(|paths| {
+        let mut paths = paths.borrow_mut();
+        paths.clear();
+        paths.extend(imports);
+    });
+}
+
+fn import_local_name_matches_path(local_name: &str, import_path: &str) -> bool {
+    IMPORT_PATHS_BY_LOCAL_NAME.with(|paths| {
+        paths
+            .borrow()
+            .get(local_name)
+            .is_some_and(|path| path == import_path)
+    })
 }
 
 fn file_import_package_names(file: &ast::File<'_>) -> BTreeMap<String, String> {
@@ -20708,7 +20741,9 @@ fn compile_string_concat_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr 
 
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
-    if let Some(compare) = reflect_kind::detect_compare(&binary_expr) {
+    if let Some(compare) = reflect_kind::detect_compare(&binary_expr, |name| {
+        import_local_name_matches_path(name, "reflect")
+    }) {
         let is_eq = op == token::Token::EQL;
         let value = match compare.side {
             reflect_kind::CompareSide::Left => reflect_kind::typeof_kind_arg(*binary_expr.x),
@@ -24083,16 +24118,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
         let is_main_package = package_name == "main";
         let _main_package_var_mode = MainPackageVarModeGuard::set(is_main_package);
 
-        // Track import names for selector expr disambiguation
-        IMPORT_NAMES.with(|names| {
-            let mut set = names.borrow_mut();
-            set.clear();
-            for import in file.imports() {
-                if let Some(pkg_name) = import_local_name(import) {
-                    set.insert(pkg_name);
-                }
-            }
-        });
+        // Track import names for selector expr disambiguation.
+        set_current_file_imports(&file);
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
         NON_CLONE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
@@ -29019,6 +29046,32 @@ mod tests {
             Err(err) => panic!("expected invalid function signature, got {err:?}"),
             Ok(_) => panic!("expected invalid function signature, got success"),
         }
+    }
+
+    #[test]
+    fn it_should_compile_reflect_kind_compare_through_alias_import() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+import r "reflect"
+
+func isString(v any) bool {
+	return r.TypeOf(v).Kind() == r.String
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("reflect_kind_is"), "{output}");
+        assert!(output.contains("__GorsReflectKind :: String"), "{output}");
+        assert!(
+            !output.contains("unsupported reflect TypeOf Kind expression"),
+            "{output}"
+        );
     }
 
     #[test]
