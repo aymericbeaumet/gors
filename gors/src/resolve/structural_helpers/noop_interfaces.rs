@@ -2,6 +2,7 @@ use super::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
 
 const NOOP_INTERFACE: &str = "__GorsNoopInterface";
 const ERROR_EXT: &str = "__GorsErrorExt";
+const STATE_TRAIT: &str = "State";
 
 #[derive(Clone, Copy)]
 struct FmtNoopTrait {
@@ -139,37 +140,30 @@ fn noop_error_ext_impl() -> syn::Item {
     }
 }
 
-#[derive(Clone, Copy)]
 struct FmtInterfaceFacts {
-    has_formatter: bool,
-    has_stringer: bool,
-    has_go_stringer: bool,
-    has_state: bool,
+    traits: std::collections::BTreeSet<String>,
 }
 
 impl FmtInterfaceFacts {
     fn collect(items: &[syn::Item]) -> Self {
-        Self {
-            has_formatter: has_trait(items, "Formatter"),
-            has_stringer: has_trait(items, "Stringer"),
-            has_go_stringer: has_trait(items, "GoStringer"),
-            has_state: has_trait(items, "State"),
-        }
+        let traits = items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Trait(item_trait) => Some(item_trait.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        Self { traits }
     }
 
-    fn has_noop_targets(self) -> bool {
+    fn has_noop_targets(&self) -> bool {
         FMT_NOOP_TRAITS
             .iter()
             .any(|target| self.should_inject(target))
     }
 
-    fn should_inject(self, target: &FmtNoopTrait) -> bool {
-        let has_trait = match target.name {
-            "Formatter" => self.has_formatter,
-            "Stringer" => self.has_stringer,
-            "GoStringer" => self.has_go_stringer,
-            _ => false,
-        };
-        has_trait && (!target.requires_state || self.has_state)
+    fn should_inject(&self, target: &FmtNoopTrait) -> bool {
+        self.traits.contains(target.name)
+            && (!target.requires_state || self.traits.contains(STATE_TRAIT))
     }
 }
