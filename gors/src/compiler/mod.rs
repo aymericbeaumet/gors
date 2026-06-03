@@ -18,6 +18,7 @@ pub mod ir;
 pub mod manifest;
 pub(crate) mod passes;
 mod reflect_kind;
+mod reflect_slice_any;
 mod runtime_primitives;
 pub mod typeinfer;
 
@@ -18643,133 +18644,6 @@ fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
     }
 }
 
-struct ReflectSliceAnyCallArg {
-    index: usize,
-    lvalue: syn::Expr,
-    storage: syn::Ident,
-}
-
-fn is_reflect_slice_any_call_arg(
-    arg: &ast::Expr,
-    expected: Option<&typeinfer::GoType>,
-) -> Option<syn::Expr> {
-    if !matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
-        return None;
-    }
-    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(arg, &env.borrow()));
-    if !matches!(resolved_go_type(&actual), typeinfer::GoType::Slice(_)) {
-        return None;
-    }
-    lvalue_expr_from_ref(arg)
-}
-
-fn reflect_slice_any_call_args(
-    args: &[ast::Expr],
-    param_types: &[typeinfer::GoType],
-) -> Vec<ReflectSliceAnyCallArg> {
-    args.iter()
-        .enumerate()
-        .filter_map(|(index, arg)| {
-            let lvalue = is_reflect_slice_any_call_arg(arg, param_types.get(index))?;
-            Some(ReflectSliceAnyCallArg {
-                index,
-                lvalue,
-                storage: syn::Ident::new(
-                    &format!("__gors_reflect_slice_{index}"),
-                    Span::mixed_site(),
-                ),
-            })
-        })
-        .collect()
-}
-
-fn call_needs_reflect_slice_any_writeback(call_expr: &ast::CallExpr) -> bool {
-    if call_expr.ellipsis.is_some() {
-        return false;
-    }
-    if matches!(call_expr.fun.as_ref(), ast::Expr::SelectorExpr(selector) if !selector_base_is_import(selector))
-    {
-        return false;
-    }
-    let Some(args) = call_expr.args.as_ref() else {
-        return false;
-    };
-    let param_types = call_signature_param_types(call_expr);
-    !reflect_slice_any_call_args(args, &param_types).is_empty()
-}
-
-fn compile_reflect_slice_any_call(call_expr: ast::CallExpr) -> syn::Expr {
-    record_mapping(&call_expr.lparen, None);
-    let param_types = call_signature_param_types(&call_expr);
-    let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
-    let args = call_expr.args.unwrap_or_default();
-    let plans = reflect_slice_any_call_args(&args, &param_types);
-    let plan_indices: std::collections::HashMap<usize, &ReflectSliceAnyCallArg> =
-        plans.iter().map(|plan| (plan.index, plan)).collect();
-    let func = compile_call_function_expr(*call_expr.fun);
-
-    let mut call_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
-    for (idx, arg) in args.into_iter().enumerate() {
-        if let Some(plan) = plan_indices.get(&idx) {
-            let storage = &plan.storage;
-            call_args.push(syn::parse_quote! {
-                crate::builtin::reflect_slice_any(#storage.clone())
-            });
-            continue;
-        }
-
-        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-        let borrow_pointer_by_shape =
-            should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-        let should_borrow_pointer =
-            borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
-        if should_borrow_pointer && is_nil_expr(&arg) {
-            call_args.push(nil_borrowed_pointer_arg_expr());
-            continue;
-        }
-        if should_borrow_pointer && let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
-            call_args.push(arg);
-            continue;
-        }
-        let mut arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
-        if should_borrow_pointer {
-            borrow_pointer_arg_expr(&mut arg, Some(&actual));
-        }
-        call_args.push(arg);
-    }
-
-    let setup: Vec<syn::Stmt> = plans
-        .iter()
-        .map(|plan| {
-            let storage = &plan.storage;
-            let lvalue = &plan.lvalue;
-            syn::parse_quote! {
-                let #storage = std::sync::Arc::new(std::sync::Mutex::new(std::mem::take(&mut #lvalue)));
-            }
-        })
-        .collect();
-    let writeback: Vec<syn::Stmt> = plans
-        .iter()
-        .map(|plan| {
-            let storage = &plan.storage;
-            let lvalue = &plan.lvalue;
-            syn::parse_quote! {
-                #lvalue = std::sync::Arc::try_unwrap(#storage)
-                    .unwrap_or_else(|_| crate::builtin::panic_value("reflect slice still borrowed"))
-                    .into_inner()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
-        })
-        .collect();
-
-    syn::parse_quote! {{
-        #(#setup)*
-        let __gors_reflect_slice_result = #func(#call_args);
-        #(#writeback)*
-        __gors_reflect_slice_result
-    }}
-}
-
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
     let ast::Expr::CallExpr(call) = expr else {
         return Vec::new();
@@ -22719,8 +22593,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         args,
                     });
                 }
-                if call_needs_reflect_slice_any_writeback(&call_expr) {
-                    return compile_reflect_slice_any_call(call_expr);
+                if reflect_slice_any::needs_writeback(&call_expr) {
+                    return reflect_slice_any::compile_call(call_expr);
                 }
                 let param_types = call_signature_param_types(&call_expr);
                 let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
