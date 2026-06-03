@@ -94,7 +94,7 @@ pub(super) fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::
 
 fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
     match expr {
-        syn::Expr::Path(_) => super::path_ident_name(expr),
+        syn::Expr::Path(_) => super::syntax::path_ident_name(expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
             receiver_root_ident_name(&unary.expr)
         }
@@ -123,7 +123,7 @@ fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
         return None;
     };
     reference.mutability.as_ref()?;
-    super::path_ident_name(&reference.expr)
+    super::syntax::path_ident_name(&reference.expr)
 }
 
 fn expr_contains_path_ident(expr: &syn::Expr, name: &str) -> bool {

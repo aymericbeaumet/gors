@@ -64,7 +64,7 @@ fn condition_is_static_false(
     if is_false_lit_expr(expr) {
         return true;
     }
-    super::path_ident_name(expr).is_some_and(|name| false_names.contains(&name))
+    super::syntax::path_ident_name(expr).is_some_and(|name| false_names.contains(&name))
 }
 
 fn collect_false_local_names(

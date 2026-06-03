@@ -62,7 +62,7 @@ pub(super) fn collect_mutable_ref_call_args(file: &syn::File) -> MutableRefCallA
                 }
             }
             syn::Item::Impl(item_impl) => {
-                let Some(self_ty) = super::type_path_ident_name(&item_impl.self_ty) else {
+                let Some(self_ty) = super::syntax::type_path_ident_name(&item_impl.self_ty) else {
                     continue;
                 };
                 for item in &item_impl.items {
@@ -93,7 +93,7 @@ pub(super) fn coerce_scoped_call_args(
             clone_expr(arg);
             continue;
         }
-        let Some(name) = super::path_ident_name(arg) else {
+        let Some(name) = super::syntax::path_ident_name(arg) else {
             continue;
         };
         if scope.is_some_and(|scope| scope.mutable_refs.contains(&name)) {
@@ -218,13 +218,13 @@ fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
-    if super::is_path_ident(expr, "self") {
+    if super::syntax::is_path_ident(expr, "self") {
         return;
     }
     if super::pointer_cells::borrow_static_expr(expr, pointer_cell_statics) {
         return;
     }
-    if let Some(name) = super::path_ident_name(expr) {
+    if let Some(name) = super::syntax::path_ident_name(expr) {
         let ident = syn::Ident::new(&name, proc_macro2::Span::mixed_site());
         *expr = syn::parse_quote! { &mut #ident };
         return;

@@ -52,7 +52,7 @@ pub(super) fn coerce_numeric_from_call(
     if let Some(self_ty) = impl_self_types.last()
         && tuple_newtypes.contains(self_ty)
         && is_numeric_from_call(&call.func)
-        && call.args.first().is_some_and(super::is_self_expr)
+        && call.args.first().is_some_and(super::syntax::is_self_expr)
         && let Some(first) = call.args.first_mut()
     {
         *first = syn::parse_quote! { *self };
@@ -66,22 +66,22 @@ fn is_deref_self_expr(expr: &syn::Expr) -> bool {
     let syn::Expr::Unary(unary) = expr else {
         return false;
     };
-    matches!(unary.op, syn::UnOp::Deref(_)) && super::is_self_expr(&unary.expr)
+    matches!(unary.op, syn::UnOp::Deref(_)) && super::syntax::is_self_expr(&unary.expr)
 }
 
 fn is_self_or_deref_self_expr(expr: &syn::Expr) -> bool {
     if let syn::Expr::Paren(paren) = expr {
         return is_self_or_deref_self_expr(&paren.expr);
     }
-    super::is_self_expr(expr) || is_deref_self_expr(expr)
+    super::syntax::is_self_expr(expr) || is_deref_self_expr(expr)
 }
 
 fn rhs_takes_self_underlying(expr: &syn::Expr) -> bool {
     let syn::Expr::Call(call) = expr else {
         return false;
     };
-    if super::is_path_call(&call.func, &["crate", "builtin", "append"])
-        || super::is_path_call(&call.func, &["builtin", "append"])
+    if super::syntax::is_path_call(&call.func, &["crate", "builtin", "append"])
+        || super::syntax::is_path_call(&call.func, &["builtin", "append"])
     {
         return false;
     }
@@ -92,10 +92,10 @@ fn is_mem_take_self_call(expr: &syn::Expr) -> bool {
     let syn::Expr::Call(call) = expr else {
         return false;
     };
-    if !super::is_path_call(&call.func, &["std", "mem", "take"]) {
+    if !super::syntax::is_path_call(&call.func, &["std", "mem", "take"]) {
         return false;
     }
-    call.args.first().is_some_and(super::is_self_expr)
+    call.args.first().is_some_and(super::syntax::is_self_expr)
 }
 
 fn is_numeric_from_call(func: &syn::Expr) -> bool {
@@ -104,5 +104,5 @@ fn is_numeric_from_call(func: &syn::Expr) -> bool {
     ];
     NUMERIC_TYPES
         .iter()
-        .any(|ty| super::is_path_call(func, &[*ty, "from"]))
+        .any(|ty| super::syntax::is_path_call(func, &[*ty, "from"]))
 }

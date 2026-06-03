@@ -67,7 +67,7 @@ struct CoerceStructuralHelpers {
 
 impl VisitMut for CoerceStructuralHelpers {
     fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        if let Some(self_ty) = super::type_path_ident_name(&item_impl.self_ty) {
+        if let Some(self_ty) = super::syntax::type_path_ident_name(&item_impl.self_ty) {
             self.impl_self_types.push(self_ty);
             visit_mut::visit_item_impl_mut(self, item_impl);
             self.impl_self_types.pop();
@@ -117,7 +117,7 @@ fn should_prune_fmt_self_value(block: &syn::Block) -> bool {
 
     impl syn::visit::Visit<'_> for Finder {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if super::is_self_expr(&call.receiver)
+            if super::syntax::is_self_expr(&call.receiver)
                 && matches!(
                     call.method.to_string().as_str(),
                     "printArg" | "printValue" | "fmtPointer"
@@ -387,7 +387,7 @@ impl syn::visit::Visit<'_> for PrintArgReflectionFinder {
     }
 
     fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-        if super::is_self_expr(&call.receiver)
+        if super::syntax::is_self_expr(&call.receiver)
             && matches!(
                 call.method.to_string().as_str(),
                 "printValue" | "fmtPointer"
@@ -416,7 +416,7 @@ fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
 }
 
 fn is_self_field_named(field: &syn::ExprField, name: &str) -> bool {
-    super::is_self_expr(&field.base)
+    super::syntax::is_self_expr(&field.base)
         && member_ident_name(&field.member).is_some_and(|member| member == name)
 }
 
@@ -427,7 +427,7 @@ fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashS
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
-        let Some(self_ty) = super::type_path_ident_name(&item_impl.self_ty) else {
+        let Some(self_ty) = super::syntax::type_path_ident_name(&item_impl.self_ty) else {
             continue;
         };
         if impl_has_method(item_impl, "__gors_flush_fmt") {
@@ -452,7 +452,7 @@ fn collect_self_value_reflection_receiver_types(
             let syn::Item::Impl(item_impl) = item else {
                 return None;
             };
-            let self_ty = super::type_path_ident_name(&item_impl.self_ty)?;
+            let self_ty = super::syntax::type_path_ident_name(&item_impl.self_ty)?;
             impl_has_self_value_reflection_fallback(item_impl).then_some(self_ty)
         })
         .collect()
@@ -485,5 +485,5 @@ fn expr_needs_fmt_flush(expr: &syn::Expr) -> bool {
     if !matches!(call.method.to_string().as_str(), "printArg" | "printValue") {
         return false;
     }
-    super::is_self_expr(&call.receiver)
+    super::syntax::is_self_expr(&call.receiver)
 }

@@ -1,5 +1,5 @@
 pub(super) fn coerce_call(call: &mut syn::ExprCall) {
-    if super::is_path_call(&call.func, &["Box", "new"]) {
+    if super::syntax::is_path_call(&call.func, &["Box", "new"]) {
         if let Some(first) = call.args.first_mut() {
             if matches!(first, syn::Expr::Field(_)) {
                 clone_field_or_path(first);
@@ -7,8 +7,8 @@ pub(super) fn coerce_call(call: &mut syn::ExprCall) {
         }
     }
 
-    if super::is_path_call(&call.func, &["crate", "builtin", "append"])
-        || super::is_path_call(&call.func, &["builtin", "append"])
+    if super::syntax::is_path_call(&call.func, &["crate", "builtin", "append"])
+        || super::syntax::is_path_call(&call.func, &["builtin", "append"])
     {
         if let Some(first) = call.args.first_mut() {
             replace_self_deref_with_take(first);
@@ -29,7 +29,7 @@ pub(super) fn coerce_local(local: &mut syn::Local) {
 fn replace_self_deref_with_take(expr: &mut syn::Expr) {
     let replacement = match expr {
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
-            if super::is_self_expr(&unary.expr) {
+            if super::syntax::is_self_expr(&unary.expr) {
                 Some(syn::parse_quote! { std::mem::take(self) })
             } else if is_self_field_expr(&unary.expr) {
                 let inner = unary.expr.clone();
@@ -47,7 +47,7 @@ fn replace_self_deref_with_take(expr: &mut syn::Expr) {
 }
 
 fn replace_self_field_with_take(expr: &mut syn::Expr) {
-    if !matches!(expr, syn::Expr::Field(field) if super::is_self_expr(&field.base)) {
+    if !matches!(expr, syn::Expr::Field(field) if super::syntax::is_self_expr(&field.base)) {
         return;
     }
 
@@ -56,7 +56,7 @@ fn replace_self_field_with_take(expr: &mut syn::Expr) {
 }
 
 fn is_self_field_expr(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::Field(field) if super::is_self_expr(&field.base))
+    matches!(expr, syn::Expr::Field(field) if super::syntax::is_self_expr(&field.base))
 }
 
 fn clone_field_or_path(expr: &mut syn::Expr) {

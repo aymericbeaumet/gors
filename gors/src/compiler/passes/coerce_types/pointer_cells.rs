@@ -216,8 +216,10 @@ fn borrow_pointer_cell_expr(
 
 fn pointer_cell_arg_name(expr: &syn::Expr) -> Option<String> {
     mut_reference_path_name(expr)
-        .or_else(|| super::path_ident_name(expr))
-        .or_else(|| strip_clone_method_call(expr).and_then(|expr| super::path_ident_name(&expr)))
+        .or_else(|| super::syntax::path_ident_name(expr))
+        .or_else(|| {
+            strip_clone_method_call(expr).and_then(|expr| super::syntax::path_ident_name(&expr))
+        })
 }
 
 fn mut_reference_path_name(expr: &syn::Expr) -> Option<String> {
@@ -226,7 +228,7 @@ fn mut_reference_path_name(expr: &syn::Expr) -> Option<String> {
         return None;
     };
     reference.mutability.as_ref()?;
-    super::path_ident_name(&reference.expr)
+    super::syntax::path_ident_name(&reference.expr)
 }
 
 fn strip_clone_method_call(expr: &syn::Expr) -> Option<syn::Expr> {
@@ -259,7 +261,7 @@ fn deref_path_name(expr: &syn::Expr) -> Option<String> {
     if !matches!(unary.op, syn::UnOp::Deref(_)) {
         return None;
     }
-    super::path_ident_name(strip_paren_or_group(&unary.expr))
+    super::syntax::path_ident_name(strip_paren_or_group(&unary.expr))
 }
 
 fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
