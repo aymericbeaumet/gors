@@ -17,6 +17,7 @@
 pub mod ir;
 pub mod manifest;
 pub(crate) mod passes;
+mod runtime_primitives;
 pub mod typeinfer;
 
 use crate::mapping::SourceMapTracker;
@@ -5435,140 +5436,7 @@ fn inject_post_prune_stdlib_helpers(
     modules: &mut BTreeMap<String, CompiledModule>,
     roots: &[String],
 ) {
-    for module in modules.values_mut().filter(|module| module.is_stdlib) {
-        match module.mod_name.as_str() {
-            "reflect"
-                if module
-                    .file
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, syn::Item::Struct(item_struct) if item_struct.ident == "Value"))
-                => {
-                    module.file.items = vec![syn::parse_quote! {
-                        #[derive(Clone, Default)]
-                        pub struct Value;
-                    }];
-                    module.content_hash = String::new();
-                }
-            "os"
-                if module
-                    .file
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == "Stdout"))
-                => {
-                    let file_names = std::collections::HashSet::from(["File".to_string()]);
-                    module.file.items.retain(|item| match item {
-                        syn::Item::Impl(item_impl) => {
-                            !type_mentions_name(&item_impl.self_ty, &file_names)
-                        }
-                        _ => item_name(item)
-                            .as_deref()
-                            .is_none_or(|name| !matches!(name, "File" | "Stdout")),
-                    });
-                    module.file.items.extend([
-                        syn::parse_quote! {
-                            #[derive(Clone, Copy, Default)]
-                            pub struct File;
-                        },
-                        syn::parse_quote! {
-                            #[allow(non_upper_case_globals)]
-                            pub static Stdout: std::sync::LazyLock<File> =
-                                std::sync::LazyLock::new(|| File);
-                        },
-                        syn::parse_quote! {
-                            impl crate::io::Writer for File {
-                                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                                    Some(self)
-                                }
-
-                                fn __gors_clone_box(&self) -> Box<dyn crate::io::Writer> {
-                                    Box::new(*self) as Box<dyn crate::io::Writer>
-                                }
-
-                                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
-                                    let mut stdout = std::io::stdout();
-                                    match std::io::Write::write_all(&mut stdout, &b) {
-                                        Ok(()) => (
-                                            b.len() as isize,
-                                            Box::new(crate::builtin::__GorsNooperror::default())
-                                                as Box<dyn crate::builtin::error>,
-                                        ),
-                                        Err(err) => (
-                                            0,
-                                            Box::new(crate::builtin::__GorsStringError(err.to_string()))
-                                                as Box<dyn crate::builtin::error>,
-                                        ),
-                                    }
-                                }
-                            }
-                        },
-                    ]);
-                    module.content_hash = String::new();
-                }
-            "sync"
-                if module
-                    .file
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, syn::Item::Struct(item_struct) if item_struct.ident == "Pool"))
-            => {
-                module.file.items = vec![
-                    syn::parse_quote! {
-                        pub struct Pool {
-                            pub New: std::sync::Arc<
-                                std::sync::Mutex<
-                                    Option<
-                                        std::sync::Arc<
-                                            dyn Fn() -> Box<dyn std::any::Any> + Send + Sync
-                                        >
-                                    >
-                                >
-                            >,
-                            pub noCopy: (),
-                            pub local: usize,
-                            pub localSize: usize,
-                            pub victim: usize,
-                            pub victimSize: usize,
-                        }
-                    },
-                    syn::parse_quote! {
-                        impl Default for Pool {
-                            fn default() -> Self {
-                                Self {
-                                    New: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                                    noCopy: Default::default(),
-                                    local: Default::default(),
-                                    localSize: Default::default(),
-                                    victim: Default::default(),
-                                    victimSize: Default::default(),
-                                }
-                            }
-                        }
-                    },
-                    syn::parse_quote! {
-                        impl Pool {
-                            pub fn Get(&self) -> Box<dyn std::any::Any> {
-                                let new_func = self
-                                    .New
-                                    .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                    .clone();
-                                match new_func {
-                                    Some(new_func) => new_func(),
-                                    None => Box::new(()) as Box<dyn std::any::Any>,
-                                }
-                            }
-
-                            pub fn Put(&self, _x: Box<dyn std::any::Any>) {}
-                        }
-                    },
-                ];
-                module.content_hash = String::new();
-            }
-            _ => {}
-        }
-    }
+    runtime_primitives::inject_post_prune_helpers(modules);
     let mut preserved = std::collections::HashSet::from(["builtin".to_string()]);
     preserved.extend(roots.iter().map(|root| crate::resolve::module_name(root)));
     let mut module_names: std::collections::HashSet<String> = crate::resolve::list_packages()

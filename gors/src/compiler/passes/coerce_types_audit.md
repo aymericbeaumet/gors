@@ -34,9 +34,9 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | File | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| `gors/src/compiler/mod.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
-| `gors/src/compiler/mod.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
-| `gors/src/compiler/mod.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
+| `gors/src/compiler/runtime_primitives.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
+| `gors/src/compiler/runtime_primitives.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
+| `gors/src/compiler/runtime_primitives.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
 | `gors/src/compiler/mod.rs` | `reflect.TypeOf(x).Kind() == reflect.K` detection | runtime primitive | This is a reflect runtime boundary; future work should expose it as IR reflect-kind operation instead of AST pattern matching. |
 | `gors/src/resolve/mod.rs` | injected `pp` `State` impl and `__gors_flush_fmt` | stdlib workaround | Interface implementation and receiver-buffer aliasing should be produced by generic method/interface lowering, not resolver post-processing. |
 | `gors-builtin/src/lib.rs` | predeclared print/println, interface, reflect-kind helpers | runtime primitive | Builtin language/runtime support is valid, but must not implement stdlib package behavior. |
@@ -90,6 +90,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | stale `print_arg` names in reflection fallback pruning internals | Reflection pruning helpers are named for their actual fallback-pruning responsibility instead of the older `printArg` call-site workaround. |
 | mixed fmt/reflection structural-helper metadata | `Metadata` now delegates to `FmtFlushMetadata` and `ReflectionFallbackMetadata`, so flush insertion and reflection fallback pruning keep separate collection and query responsibilities. |
 | string-encoded `& mut pp` resolver helper matching | Resolver structural-helper injection is split by responsibility, and impl self-type checks now use explicit `syn::Type` matching instead of a rendered self-type string. |
+| inline runtime primitive post-prune replacement in `compiler/mod.rs` | Reflect, `os.Stdout`, and `sync.Pool` replacement policy now lives in `compiler/runtime_primitives.rs`, leaving the main compiler pipeline responsible for orchestration and module pruning. |
 | `padString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic method-call and string argument lowering, preserving width-padding behavior instead of replacing the named method with a direct write. |
 | `fmtString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic branch, receiver-method, and string argument lowering, preserving `%q`, `%x`, and `% X` string formatting behavior instead of replacing the named method with `fmtS`. |
 | `newPrinter` body replacement in `coerce_types.rs` | The generated Go body now compiles through pointer-cell ownership, generic receiver-method argument hoisting, manual cloning for structs with `any` fields, and a minimal `sync.Pool` runtime primitive instead of replacing the named function body. |
