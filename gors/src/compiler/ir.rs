@@ -362,6 +362,7 @@ pub enum CalleeKind {
     SpecialTypeConversion(SpecialTypeConversionKind),
     TypeConversion,
     Function,
+    FunctionLiteral,
     FunctionValue,
     Method,
     MethodExpression,
@@ -559,6 +560,7 @@ pub fn call_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CallAbi {
             conversion_param_abi(call, env)
         }
         CalleeKind::Function
+        | CalleeKind::FunctionLiteral
         | CalleeKind::FunctionValue
         | CalleeKind::Method
         | CalleeKind::MethodExpression
@@ -606,8 +608,20 @@ fn classify_call_callee(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CalleeKind {
         {
             CalleeKind::MethodExpression
         }
-        ast::Expr::SelectorExpr(selector) => classify_selector_call_callee(selector, env),
-        ast::Expr::FuncLit(_) => CalleeKind::FunctionValue,
+        ast::Expr::SelectorExpr(selector) => {
+            let callee = classify_selector_call_callee(selector, env);
+            if callee != CalleeKind::Unknown {
+                callee
+            } else if matches!(
+                env.resolve_alias(&GoType::infer_expr(&call.fun, env)),
+                GoType::Func { .. }
+            ) {
+                CalleeKind::FunctionValue
+            } else {
+                CalleeKind::Unknown
+            }
+        }
+        ast::Expr::FuncLit(_) => CalleeKind::FunctionLiteral,
         ast::Expr::IndexExpr(index)
             if matches!(
                 env.resolve_alias(&GoType::infer_expr(&index.x, env)),
@@ -19615,6 +19629,29 @@ mod tests {
             call.abi.args.iter().map(|arg| arg.role).collect::<Vec<_>>(),
             vec![ValueRole::InterfaceValue, ValueRole::FunctionValue]
         );
+    }
+
+    #[test]
+    fn call_abi_distinguishes_function_values_from_function_literals() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    f := func(x int) int { return x }
+                    _ = f(1)
+                    _ = (func(x int) int { return x })(1)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let stored_call = assign_rhs_call(body, 1, 0);
+        let literal_call = assign_rhs_call(body, 2, 0);
+
+        assert_eq!(stored_call.abi.callee, CalleeKind::FunctionValue);
+        assert_eq!(literal_call.abi.callee, CalleeKind::FunctionLiteral);
+        assert_eq!(stored_call.abi.signature_params, vec![GoType::Int]);
+        assert_eq!(literal_call.abi.signature_params, vec![GoType::Int]);
     }
 
     #[test]

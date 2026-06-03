@@ -14199,14 +14199,28 @@ fn type_env_name_from_type_expr(expr: &ast::Expr) -> Option<String> {
     }
 }
 
-fn is_general_type_conversion_fun(fun: &ast::Expr) -> bool {
-    TYPE_ENV.with(|env| ir::is_general_type_conversion_fun(fun, &env.borrow()))
-}
-
 fn special_type_conversion_kind(
     call_expr: &ast::CallExpr,
 ) -> Option<ir::SpecialTypeConversionKind> {
-    TYPE_ENV.with(|env| ir::special_type_conversion(call_expr, &env.borrow()))
+    match call_abi_for_backend(call_expr).callee {
+        ir::CalleeKind::SpecialTypeConversion(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+fn is_general_type_conversion_call(call_expr: &ast::CallExpr) -> bool {
+    call_expr.args.as_ref().is_some_and(|args| args.len() == 1)
+        && matches!(
+            call_abi_for_backend(call_expr).callee,
+            ir::CalleeKind::TypeConversion
+        )
+}
+
+fn is_function_value_call(call_expr: &ast::CallExpr) -> bool {
+    matches!(
+        call_abi_for_backend(call_expr).callee,
+        ir::CalleeKind::FunctionValue
+    ) && function_value_call_info(&call_expr.fun).is_some()
 }
 
 fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
@@ -14852,10 +14866,21 @@ fn shared_func_box_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn:
 }
 
 fn is_builtin_call(call_expr: &ast::CallExpr) -> bool {
-    builtin_call_kind(call_expr).is_some()
+    matches!(
+        call_abi_for_backend(call_expr).callee,
+        ir::CalleeKind::Builtin(_)
+    )
 }
 
+#[cfg(test)]
 fn builtin_call_kind(call_expr: &ast::CallExpr) -> Option<ir::BuiltinCallKind> {
+    match call_abi_for_backend(call_expr).callee {
+        ir::CalleeKind::Builtin(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+fn builtin_call_kind_for_backend(call_expr: &ast::CallExpr) -> Option<ir::BuiltinCallKind> {
     let ast::Expr::Ident(ident) = call_expr.fun.as_ref() else {
         return None;
     };
@@ -14878,7 +14903,13 @@ fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
 }
 
 fn call_abi_for_backend(call_expr: &ast::CallExpr) -> ir::CallAbi {
-    TYPE_ENV.with(|env| ir::call_abi(call_expr, &env.borrow()))
+    let mut abi = TYPE_ENV.with(|env| ir::call_abi(call_expr, &env.borrow()));
+    if let Some(kind) = builtin_call_kind_for_backend(call_expr) {
+        abi.callee = ir::CalleeKind::Builtin(kind);
+    } else if matches!(abi.callee, ir::CalleeKind::Builtin(_)) {
+        abi.callee = ir::CalleeKind::Unknown;
+    }
+    abi
 }
 
 fn call_signature_param_types(call_expr: &ast::CallExpr) -> Vec<typeinfer::GoType> {
@@ -15099,7 +15130,8 @@ fn compile_new_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
 }
 
 fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
-    let Some(kind) = builtin_call_kind(&call_expr) else {
+    let abi = call_abi_for_backend(&call_expr);
+    let ir::CalleeKind::Builtin(kind) = abi.callee else {
         return compile_error_expr("builtin call without builtin identifier");
     };
     let name = kind.name();
@@ -15159,8 +15191,13 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             let Some(src_raw) = raw_args.next() else {
                 return compile_error_expr("copy requires a source argument");
             };
-            let src_ty =
-                TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()));
+            let src_ty = abi
+                .args
+                .get(1)
+                .map(|arg| arg.actual.clone())
+                .unwrap_or_else(|| {
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&src_raw, &env.borrow()))
+                });
             let dst = match lvalue_expr_from_owned(dst_raw).ok_or_else(|| {
                 CompilerError::InvalidAssignment("copy destination is not addressable".to_string())
             }) {
@@ -20677,6 +20714,7 @@ fn compile_type_method_expression_receiver_arg(
 }
 
 fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
+    let call_abi = call_abi_for_backend(&call_expr);
     let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
         return compile_error_expr("invalid method expression call");
     };
@@ -20688,14 +20726,27 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
     };
     let method_ident: syn::Ident = selector.sel.into();
     let pointer_receiver = type_method_expression_receiver_is_pointer(&selector.x);
-    let method_key = format!("{receiver_name}.{}", method_ident);
-    let param_types = TYPE_ENV.with(|env| {
-        let env = env.borrow();
+    let param_types = if call_abi.signature_params.is_empty() {
+        let method_key = format!("{receiver_name}.{}", method_ident);
+        TYPE_ENV.with(|env| {
+            let env = env.borrow();
+            (
+                env.get_func_params(&method_key),
+                env.get_func_variadic_start(&method_key),
+            )
+        })
+    } else {
+        let mut params = call_abi.signature_params;
+        if !params.is_empty() {
+            params.remove(0);
+        }
         (
-            env.get_func_params(&method_key),
-            env.get_func_variadic_start(&method_key),
+            params,
+            call_abi
+                .variadic_start
+                .and_then(|start| start.checked_sub(1)),
         )
-    });
+    };
     let mut raw_args = call_expr.args.unwrap_or_default().into_iter();
     let Some(receiver_arg) = raw_args.next() else {
         return compile_error_expr("method expression call requires receiver argument");
@@ -22081,9 +22132,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if let Some(kind) = special_type_conversion_kind(&call_expr) {
                     return compile_type_conversion(call_expr, kind.name());
                 }
-                if call_expr.args.as_ref().is_some_and(|args| args.len() == 1)
-                    && is_general_type_conversion_fun(&call_expr.fun)
-                {
+                if is_general_type_conversion_call(&call_expr) {
                     return compile_general_type_conversion(call_expr);
                 }
                 if is_builtin_call(&call_expr) {
@@ -22103,7 +22152,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if let Some(variadic_start) = is_variadic_call(&call_expr) {
                     return compile_variadic_call(call_expr, variadic_start);
                 }
-                if function_value_call_params(&call_expr.fun).is_some() {
+                if is_function_value_call(&call_expr) {
                     return compile_function_field_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid function field call"));
                 }

@@ -136,7 +136,10 @@ impl VisitMut for CoerceTypes {
         self.mutable_ref_params.pop();
 
         prune_static_false_branches(&mut func.block.stmts);
-        let prune_self_value = self.impl_self_types.last().is_some_and(|ty| ty == "pp")
+        let prune_self_value = self
+            .impl_self_types
+            .last()
+            .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
             && should_prune_fmt_self_value(&func.block);
         prune_print_arg_reflection_fallback(&mut func.block.stmts, prune_self_value);
     }
@@ -1892,6 +1895,34 @@ mod tests {
         assert!(
             !tokens.contains("__gors_flush_fmt"),
             "expected no flush without generated flush hook: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_prunes_self_value_reflection_fallback_from_generated_flush_receivers() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer {
+                pub value: isize,
+            }
+
+            impl Printer {
+                pub fn __gors_flush_fmt(&mut self) {}
+
+                pub fn printValue(&mut self, value: isize) {}
+
+                pub fn run(&mut self) {
+                    let mut fallback = self.value;
+                    self.printValue(fallback);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            !tokens.contains("fallback") && !tokens.contains("self . value"),
+            "expected generated self.value reflection fallback to be pruned by receiver metadata: {tokens}"
         );
     }
 
