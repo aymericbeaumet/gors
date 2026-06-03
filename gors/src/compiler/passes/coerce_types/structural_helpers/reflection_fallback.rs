@@ -383,9 +383,11 @@ mod tests {
         };
 
         let metadata = Metadata::collect(&file);
-        let fields = metadata
-            .fields_for_receiver("Printer")
-            .expect("expected reflect field metadata");
+        let fields = metadata.fields_for_receiver("Printer");
+        assert!(fields.is_some(), "expected reflect field metadata");
+        let Some(fields) = fields else {
+            return;
+        };
 
         assert!(fields.contains("value"));
         assert!(!fields.contains("local_value"));

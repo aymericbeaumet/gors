@@ -151,34 +151,26 @@ mod tests {
     use super::*;
     use crate::parser::parse_file;
 
-    fn main_call<'a>(file: &'a ast::File<'a>, index: usize) -> &'a ast::CallExpr<'a> {
+    fn main_call<'a>(file: &'a ast::File<'a>, index: usize) -> Option<&'a ast::CallExpr<'a>> {
         let ast::Decl::FuncDecl(func) = file
             .decls
             .iter()
-            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))
-            .expect("main func")
+            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))?
         else {
-            panic!("expected main func");
+            return None;
         };
-        let ast::Stmt::ExprStmt(expr) = func
-            .body
-            .as_ref()
-            .expect("main body")
-            .list
-            .get(index)
-            .expect("main stmt")
-        else {
-            panic!("expected expr stmt");
+        let ast::Stmt::ExprStmt(expr) = func.body.as_ref()?.list.get(index)? else {
+            return None;
         };
         let ast::Expr::CallExpr(call) = &expr.x else {
-            panic!("expected call expr");
+            return None;
         };
-        call
+        Some(call)
     }
 
     #[test]
     fn needs_writeback_for_addressable_slice_passed_to_any_parameter() {
-        let file = parse_file(
+        let parsed = parse_file(
             "test.go",
             r#"
                 package main
@@ -191,8 +183,11 @@ mod tests {
                     takesInt(1)
                 }
             "#,
-        )
-        .unwrap();
+        );
+        assert!(parsed.is_ok(), "expected test fixture to parse");
+        let Ok(file) = parsed else {
+            return;
+        };
         let mut env = typeinfer::TypeEnv::new();
         env.scan_file(&file);
         env.set_var(
@@ -201,8 +196,19 @@ mod tests {
         );
         super::super::set_type_env(env);
 
-        assert!(needs_writeback(main_call(&file, 0)));
-        assert!(!needs_writeback(main_call(&file, 1)));
+        let takes_any_call = main_call(&file, 0);
+        assert!(takes_any_call.is_some(), "expected first call expression");
+        let Some(takes_any_call) = takes_any_call else {
+            return;
+        };
+        let takes_int_call = main_call(&file, 1);
+        assert!(takes_int_call.is_some(), "expected second call expression");
+        let Some(takes_int_call) = takes_int_call else {
+            return;
+        };
+
+        assert!(needs_writeback(takes_any_call));
+        assert!(!needs_writeback(takes_int_call));
 
         super::super::set_type_env(typeinfer::TypeEnv::new());
     }

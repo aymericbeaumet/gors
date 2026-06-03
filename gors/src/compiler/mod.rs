@@ -6523,7 +6523,7 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
 fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
     if let syn::Expr::Reference(reference) = arg {
         if reference.mutability.is_some() {
-            reference.expr = Box::new(strip_cloned_lvalue_slice_source((*reference.expr).clone()));
+            *reference.expr = strip_cloned_lvalue_slice_source((*reference.expr).clone());
         }
         return;
     }
@@ -32902,18 +32902,15 @@ func main() {
         super::dedupe_syn_types(&mut types);
 
         assert_eq!(types.len(), 3);
+        let [thing, pointer, other] = types.as_slice() else {
+            return;
+        };
+        assert!(super::syn_type_matches(thing, &rust! { crate::pkg::Thing }));
         assert!(super::syn_type_matches(
-            &types[0],
-            &rust! { crate::pkg::Thing }
-        ));
-        assert!(super::syn_type_matches(
-            &types[1],
+            pointer,
             &rust! { crate::builtin::GorsPtr<crate::pkg::Thing> }
         ));
-        assert!(super::syn_type_matches(
-            &types[2],
-            &rust! { crate::pkg::Other }
-        ));
+        assert!(super::syn_type_matches(other, &rust! { crate::pkg::Other }));
     }
 
     #[test]
@@ -32923,7 +32920,10 @@ func main() {
         super::allow_dead_code_attr(&mut existing);
 
         assert_eq!(existing.len(), 1);
-        assert!(super::attribute_allows_dead_code(&existing[0]));
+        let [existing_attr] = existing.as_slice() else {
+            return;
+        };
+        assert!(super::attribute_allows_dead_code(existing_attr));
 
         let mut missing: Vec<syn::Attribute> =
             vec![rust! { #[allow(unused)] }, rust! { #[doc = "dead_code"] }];
@@ -32931,7 +32931,11 @@ func main() {
         super::allow_dead_code_attr(&mut missing);
 
         assert_eq!(missing.len(), 3);
-        assert!(super::attribute_allows_dead_code(&missing[2]));
+        assert!(
+            missing
+                .get(2)
+                .is_some_and(super::attribute_allows_dead_code)
+        );
     }
 
     #[test]

@@ -159,6 +159,8 @@ pub struct GorsReflectValue {
     ops: Arc<Mutex<Box<dyn GorsReflectOps>>>,
 }
 
+pub type GorsReflectSwapper = Arc<Mutex<Option<Arc<dyn Fn(isize, isize) + Send + Sync>>>>;
+
 impl GorsReflectValue {
     pub fn slice<T: 'static + Send>(slice: Arc<Mutex<Vec<T>>>) -> Self {
         Self {
@@ -172,6 +174,10 @@ impl GorsReflectValue {
 
     pub fn len(&self) -> isize {
         lock_reflect_ops(&self.ops).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn swap(&self, i: isize, j: isize) {
@@ -256,9 +262,7 @@ pub fn reflect_value_len(value: &dyn Any) -> isize {
     panic_value("reflect: Len of non-slice value");
 }
 
-pub fn reflect_value_swapper(
-    value: &dyn Any,
-) -> Arc<Mutex<Option<Arc<dyn Fn(isize, isize) -> () + Send + Sync>>>> {
+pub fn reflect_value_swapper(value: &dyn Any) -> GorsReflectSwapper {
     let Some(value) = value.downcast_ref::<GorsReflectValue>() else {
         panic_value("reflect: Swapper of non-slice value");
     };

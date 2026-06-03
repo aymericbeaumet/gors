@@ -352,6 +352,13 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     let mut all_items: Vec<syn::Item> = Vec::new();
     let ast_refs: Vec<_> = parsed_files.iter().map(|(_, ast)| ast).collect();
     crate::compiler::set_borrow_pointer_arg_indices_for_files(&ast_refs);
+    let recovery_context = ResolvedRecoveryContext {
+        import_path,
+        package_type_env: &package_type_env,
+        imported_type_envs: &imported_type_envs,
+        import_renames: &import_renames,
+        roots,
+    };
 
     for (filename, ast) in parsed_files {
         let compiled = match compile_resolved_file(
@@ -371,14 +378,10 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
                     .find_map(|(file, content)| (*file == filename).then_some(*content))
                 {
                     all_items.extend(recover_resolved_file_items(
-                        import_path,
                         filename,
                         content,
                         reachable_names.as_ref(),
-                        &package_type_env,
-                        &imported_type_envs,
-                        &import_renames,
-                        roots,
+                        &recovery_context,
                     ));
                 }
                 continue;
@@ -448,15 +451,19 @@ struct DeclRecoveryPlan {
     split_specs: usize,
 }
 
+struct ResolvedRecoveryContext<'a> {
+    import_path: &'a str,
+    package_type_env: &'a TypeEnv,
+    imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
+    import_renames: &'a BTreeMap<String, String>,
+    roots: Option<&'a HashSet<String>>,
+}
+
 fn recover_resolved_file_items<'a>(
-    import_path: &str,
     filename: &'a str,
     content: &'a str,
     reachable_names: Option<&HashSet<String>>,
-    package_type_env: &TypeEnv,
-    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
-    import_renames: &BTreeMap<String, String>,
-    roots: Option<&HashSet<String>>,
+    context: &ResolvedRecoveryContext<'_>,
 ) -> Vec<syn::Item> {
     let plans = recovery_plans_for_file(filename, content, reachable_names);
     let mut items = Vec::new();
@@ -472,10 +479,10 @@ fn recover_resolved_file_items<'a>(
         };
         match compile_resolved_file(
             shard,
-            package_type_env,
-            imported_type_envs,
-            import_renames,
-            roots,
+            context.package_type_env,
+            context.imported_type_envs,
+            context.import_renames,
+            context.roots,
         ) {
             Ok(compiled) => {
                 items.extend(compiled.items);
@@ -483,8 +490,8 @@ fn recover_resolved_file_items<'a>(
             }
             Err(error) => {
                 log_skip(format_args!(
-                    "[gors] skip {import_path}/{filename} {}: compile error: {error}",
-                    plan.label
+                    "[gors] skip {}/{filename} {}: compile error: {error}",
+                    context.import_path, plan.label
                 ));
             }
         }
@@ -503,15 +510,16 @@ fn recover_resolved_file_items<'a>(
                 .unwrap_or_else(|| format!("{} spec {}", plan.label, spec_index.saturating_add(1)));
             match compile_resolved_file(
                 shard,
-                package_type_env,
-                imported_type_envs,
-                import_renames,
-                roots,
+                context.package_type_env,
+                context.imported_type_envs,
+                context.import_renames,
+                context.roots,
             ) {
                 Ok(compiled) => items.extend(compiled.items),
                 Err(error) => {
                     log_skip(format_args!(
-                        "[gors] skip {import_path}/{filename} {label}: compile error: {error}"
+                        "[gors] skip {}/{filename} {label}: compile error: {error}",
+                        context.import_path
                     ));
                 }
             }
@@ -1444,7 +1452,11 @@ mod tests {
         dedupe_use_items(&mut items);
 
         assert_eq!(items.len(), 4);
-        assert!(matches!(items[2], syn::Item::Fn(_)));
+        assert!(
+            items
+                .get(2)
+                .is_some_and(|item| matches!(item, syn::Item::Fn(_)))
+        );
         assert_eq!(matching_use_item_count(&items, &duplicate_group), 1);
         assert_eq!(matching_use_item_count(&items, &duplicate_private), 1);
         assert_eq!(matching_use_item_count(&items, &distinct_public), 1);

@@ -110,7 +110,11 @@ mod tests {
 
         inject_missing_preserved_modules(&mut modules, &preserved);
 
-        let module = modules.get("reflect").expect("reflect module");
+        let module = modules.get("reflect");
+        assert!(module.is_some(), "expected reflect module");
+        let Some(module) = module else {
+            return;
+        };
         assert_eq!(module.mod_name, "reflect");
         assert!(module.is_stdlib);
         let source = prettyplease::unparse(&module.file);

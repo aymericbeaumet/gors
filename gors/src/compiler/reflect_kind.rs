@@ -136,31 +136,21 @@ pub(super) fn kind_variant_expr(name: &str) -> Option<syn::Expr> {
 mod tests {
     use super::*;
 
-    fn first_return_binary_expr(source: &str) -> ast::BinaryExpr<'_> {
-        let file = crate::parser::parse_file("fixture.go", source).expect("parse");
-        let func = file
-            .decls
-            .into_iter()
-            .find_map(|decl| match decl {
-                ast::Decl::FuncDecl(func) => Some(func),
-                ast::Decl::GenDecl(_) => None,
-            })
-            .expect("function");
-        let stmt = func
-            .body
-            .expect("body")
-            .list
-            .into_iter()
-            .find_map(|stmt| match stmt {
-                ast::Stmt::ReturnStmt(stmt) => Some(stmt),
-                _ => None,
-            })
-            .expect("return");
-        let expr = stmt.results.into_iter().next().expect("return expression");
+    fn first_return_binary_expr(source: &str) -> Option<ast::BinaryExpr<'_>> {
+        let file = crate::parser::parse_file("fixture.go", source).ok()?;
+        let func = file.decls.into_iter().find_map(|decl| match decl {
+            ast::Decl::FuncDecl(func) => Some(func),
+            ast::Decl::GenDecl(_) => None,
+        })?;
+        let stmt = func.body?.list.into_iter().find_map(|stmt| match stmt {
+            ast::Stmt::ReturnStmt(stmt) => Some(stmt),
+            _ => None,
+        })?;
+        let expr = stmt.results.into_iter().next()?;
         let ast::Expr::BinaryExpr(binary) = expr else {
-            panic!("expected binary expression");
+            return None;
         };
-        binary
+        Some(binary)
     }
 
     #[test]
@@ -176,9 +166,16 @@ mod tests {
                 }
             "#,
         );
+        assert!(binary.is_some(), "expected first return binary expression");
+        let Some(binary) = binary else {
+            return;
+        };
 
-        let compare =
-            detect_compare(&binary, |name| name == "reflect").expect("reflect kind compare");
+        let compare = detect_compare(&binary, |name| name == "reflect");
+        assert!(compare.is_some(), "expected reflect kind compare");
+        let Some(compare) = compare else {
+            return;
+        };
         assert!(matches!(compare.side, CompareSide::Left));
         assert_eq!(compare.kind, "String");
     }
@@ -196,8 +193,16 @@ mod tests {
                 }
             "#,
         );
+        assert!(binary.is_some(), "expected first return binary expression");
+        let Some(binary) = binary else {
+            return;
+        };
 
-        let compare = detect_compare(&binary, |name| name == "r").expect("reflect kind compare");
+        let compare = detect_compare(&binary, |name| name == "r");
+        assert!(compare.is_some(), "expected reflect kind compare");
+        let Some(compare) = compare else {
+            return;
+        };
         assert!(matches!(compare.side, CompareSide::Left));
         assert_eq!(compare.kind, "String");
     }
