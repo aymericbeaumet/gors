@@ -7537,10 +7537,11 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             let refs = collect_external_refs(&main_module.file.items, &module_names);
             if let Some(semantic_graph) = &semantic_graph {
                 let roots = main_module_root_names(main_module, has_main);
-                debug_assert_eq!(
-                    refs_to_btree(&refs),
-                    semantic_graph
-                        .reachable_external_roots_for_module_roots(&main_module.mod_name, &roots)
+                debug_assert_semantic_external_refs(
+                    Some(semantic_graph),
+                    &main_module.mod_name,
+                    &roots,
+                    &refs,
                 );
             }
             required.merge(refs);
@@ -7563,6 +7564,12 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                     roots
                 };
                 let (_, refs, _) = reachable_stdlib_items(&module.file.items, roots, &module_names);
+                debug_assert_semantic_external_refs(
+                    semantic_graph.as_ref(),
+                    &module.mod_name,
+                    roots,
+                    &refs,
+                );
                 changed |= required.merge(refs);
             }
             if !changed {
@@ -7671,6 +7678,21 @@ fn refs_to_btree(
             )
         })
         .collect()
+}
+
+fn debug_assert_semantic_external_refs(
+    semantic_graph: Option<&SemanticReachabilityGraph>,
+    module: &str,
+    roots: &std::collections::HashSet<String>,
+    refs: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+) {
+    let Some(semantic_graph) = semantic_graph else {
+        return;
+    };
+    debug_assert_eq!(
+        refs_to_btree(refs),
+        semantic_graph.reachable_external_roots_for_module_roots(module, roots)
+    );
 }
 
 fn prune_display_impls_without_string_method(items: &mut Vec<syn::Item>) {
