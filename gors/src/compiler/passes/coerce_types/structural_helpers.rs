@@ -171,27 +171,7 @@ impl VisitMut for CoerceStructuralHelpers {
 }
 
 fn block_mentions_self_reflect_field(block: &syn::Block, fields: &NameSet) -> bool {
-    struct Finder<'a> {
-        fields: &'a NameSet,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_field_in(field, self.fields) {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-
-    let mut finder = Finder {
-        fields,
-        found: false,
-    };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
+    SelfFieldFinder::block_contains(block, fields)
 }
 
 fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &NameSet) -> bool {
@@ -428,27 +408,42 @@ fn expr_mentions_any_name(expr: &syn::Expr, names: &NameSet) -> bool {
 }
 
 fn expr_mentions_self_field_in(expr: &syn::Expr, fields: &NameSet) -> bool {
-    struct Visitor<'a> {
-        fields: &'a NameSet,
-        found: bool,
+    SelfFieldFinder::expr_contains(expr, fields)
+}
+
+struct SelfFieldFinder<'a> {
+    fields: &'a NameSet,
+    found: bool,
+}
+
+impl SelfFieldFinder<'_> {
+    fn block_contains(block: &syn::Block, fields: &NameSet) -> bool {
+        let mut finder = SelfFieldFinder {
+            fields,
+            found: false,
+        };
+        syn::visit::Visit::visit_block(&mut finder, block);
+        finder.found
     }
 
-    impl syn::visit::Visit<'_> for Visitor<'_> {
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_field_in(field, self.fields) {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
+    fn expr_contains(expr: &syn::Expr, fields: &NameSet) -> bool {
+        let mut finder = SelfFieldFinder {
+            fields,
+            found: false,
+        };
+        syn::visit::Visit::visit_expr(&mut finder, expr);
+        finder.found
+    }
+}
+
+impl syn::visit::Visit<'_> for SelfFieldFinder<'_> {
+    fn visit_expr_field(&mut self, field: &syn::ExprField) {
+        if is_self_field_in(field, self.fields) {
+            self.found = true;
+            return;
         }
+        syn::visit::visit_expr_field(self, field);
     }
-
-    let mut visitor = Visitor {
-        fields,
-        found: false,
-    };
-    syn::visit::Visit::visit_expr(&mut visitor, expr);
-    visitor.found
 }
 
 fn stmt_needs_reflection(stmt: &syn::Stmt, self_reflect_fields: Option<&NameSet>) -> bool {
