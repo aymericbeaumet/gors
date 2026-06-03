@@ -7513,21 +7513,6 @@ fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String
 fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has_main: bool) {
     use std::collections::HashSet;
 
-    if semantic_reachability_graph_enabled() {
-        let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
-        debug_assert!(semantic_graph.has_consistent_local_edges());
-        let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
-        if let Some(main_module) = modules.get("__main__") {
-            let roots = if has_main {
-                HashSet::from(["main".to_string()])
-            } else {
-                exported_item_reachability_names(&main_module.file.items)
-            };
-            let _main_external_roots = semantic_graph
-                .reachable_external_roots_for_module_roots(&main_module.mod_name, &roots);
-        }
-    }
-
     loop {
         let before = modules_reachability_fingerprint(modules);
         let module_names: HashSet<String> = modules
@@ -7535,22 +7520,30 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             .filter(|module| !module.is_main)
             .map(|module| module.mod_name.clone())
             .collect();
+        let semantic_graph = semantic_reachability_graph_enabled().then(|| {
+            let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
+            debug_assert!(semantic_graph.has_consistent_local_edges());
+            let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
+            semantic_graph
+        });
 
         if let Some(main_module) = modules.get_mut("__main__") {
-            let roots = if has_main {
-                HashSet::from(["main".to_string()])
-            } else {
-                exported_item_reachability_names(&main_module.file.items)
-            };
+            let roots = main_module_root_names(main_module, has_main);
             prune_items_to_roots(&mut main_module.file.items, &roots, &module_names);
         }
 
         let mut required = RequiredModuleRoots::default();
         if let Some(main_module) = modules.get("__main__") {
-            required.merge(collect_external_refs(
-                &main_module.file.items,
-                &module_names,
-            ));
+            let refs = collect_external_refs(&main_module.file.items, &module_names);
+            if let Some(semantic_graph) = &semantic_graph {
+                let roots = main_module_root_names(main_module, has_main);
+                debug_assert_eq!(
+                    refs_to_btree(&refs),
+                    semantic_graph
+                        .reachable_external_roots_for_module_roots(&main_module.mod_name, &roots)
+                );
+            }
+            required.merge(refs);
         }
 
         loop {
@@ -7651,6 +7644,33 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             break;
         }
     }
+}
+
+fn main_module_root_names(
+    module: &CompiledModule,
+    has_main: bool,
+) -> std::collections::HashSet<String> {
+    if has_main {
+        std::collections::HashSet::from(["main".to_string()])
+    } else {
+        exported_item_reachability_names(&module.file.items)
+    }
+}
+
+fn refs_to_btree(
+    refs: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+    refs.iter()
+        .map(|(module, roots)| {
+            (
+                module.clone(),
+                roots
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+        })
+        .collect()
 }
 
 fn prune_display_impls_without_string_method(items: &mut Vec<syn::Item>) {
