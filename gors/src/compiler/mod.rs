@@ -17183,10 +17183,31 @@ fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
 }
 
 fn receiver_expr_needs_scoped_temp(expr: &syn::Expr) -> bool {
-    expr.to_token_stream()
-        .to_string()
-        .replace(' ', "")
-        .contains(".lock().unwrap()")
+    struct LockUnwrapFinder {
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for LockUnwrapFinder {
+        fn visit_expr_method_call(&mut self, method_call: &syn::ExprMethodCall) {
+            if self.found {
+                return;
+            }
+            if method_call.method == "unwrap"
+                && method_call.args.is_empty()
+                && let syn::Expr::MethodCall(lock_call) = method_call.receiver.as_ref()
+                && lock_call.method == "lock"
+                && lock_call.args.is_empty()
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, method_call);
+        }
+    }
+
+    let mut finder = LockUnwrapFinder { found: false };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
 }
 
 fn method_call_expr(
@@ -34914,6 +34935,19 @@ func main() {
         assert!(base64_refs.contains("StdEncoding"), "{refs:?}");
         assert!(base64_refs.contains("StdEncoding::EncodedLen"), "{refs:?}");
         assert!(!base64_refs.contains("EncodedLen"), "{refs:?}");
+    }
+
+    #[test]
+    fn receiver_scoped_temp_detection_uses_lock_unwrap_ast_shape() {
+        let direct: syn::Expr = syn::parse_quote! { p.lock().unwrap() };
+        let nested: syn::Expr = syn::parse_quote! { (p.lock().unwrap()).field };
+        let unrelated_name: syn::Expr = syn::parse_quote! { p.locked().unwrap() };
+        let different_unwrap: syn::Expr = syn::parse_quote! { p.lock().unwrap_or_else(recover) };
+
+        assert!(super::receiver_expr_needs_scoped_temp(&direct));
+        assert!(super::receiver_expr_needs_scoped_temp(&nested));
+        assert!(!super::receiver_expr_needs_scoped_temp(&unrelated_name));
+        assert!(!super::receiver_expr_needs_scoped_temp(&different_unwrap));
     }
 
     #[test]
