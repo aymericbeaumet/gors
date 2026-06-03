@@ -73,6 +73,13 @@ gors-builtin/
   such as process stdout support, must replace only the targeted host items and
   preserve the rest of the compiled Go stdlib module so unrelated reachable
   constants, types, and functions remain generic compiler output.
+- Runtime/host stdlib helper ownership is intentionally split: post-prune
+  runtime primitive replacements live in
+  `gors/src/compiler/runtime_primitives.rs`, `reflect.TypeOf(...).Kind()`
+  detection lives in `gors/src/compiler/reflect_kind.rs`, and resolver-injected
+  structural helpers live in `gors/src/resolve/structural_helpers.rs`. Keep
+  `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
+  inlining these policies.
 
 ### Cross-module references
 
