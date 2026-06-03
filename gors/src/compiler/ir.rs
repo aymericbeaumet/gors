@@ -159,6 +159,37 @@ pub struct Assign {
     pub lhs: Vec<Expr>,
     pub op: AssignOp,
     pub rhs: Vec<Expr>,
+    pub effects: AssignEffects,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssignEffects {
+    pub targets: Vec<MutationTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationTarget {
+    pub ty: GoType,
+    pub mode: MutationMode,
+    pub ownership: OwnershipMode,
+    pub addressability: Addressability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationMode {
+    Define,
+    Store,
+    CompoundAssign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipMode {
+    Copy,
+    Clone,
+    SharedHandle,
+    InterfaceBox,
+    FunctionCell,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +344,48 @@ pub struct Call {
     pub fun: Box<Expr>,
     pub args: Vec<Expr>,
     pub spread: bool,
+    pub abi: CallAbi,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallAbi {
+    pub callee: CalleeKind,
+    pub signature_params: Vec<GoType>,
+    pub args: Vec<ParamAbi>,
+    pub results: Vec<GoType>,
+    pub variadic_start: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalleeKind {
+    Builtin(BuiltinCallKind),
+    SpecialTypeConversion(SpecialTypeConversionKind),
+    TypeConversion,
+    Function,
+    FunctionValue,
+    Method,
+    MethodExpression,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamAbi {
+    pub expected: GoType,
+    pub actual: GoType,
+    pub role: ValueRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueRole {
+    RValue,
+    LValue,
+    MutBorrow,
+    Receiver,
+    VariadicPacked,
+    VariadicSpread,
+    InterfaceValue,
+    FunctionValue,
+    TypeArgument,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,6 +530,291 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
 pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Option<usize> {
     let key = call_func_key(&call_expr.fun, env)?;
     env.get_func_variadic_start(&key)
+}
+
+pub fn call_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CallAbi {
+    let callee = classify_call_callee(call, env);
+    let signature = call_signature(call, env);
+    let signature_params = signature
+        .as_ref()
+        .map(|signature| signature.params.clone())
+        .unwrap_or_default();
+    let results = signature
+        .as_ref()
+        .map(|signature| {
+            let inferred = env.resolve_alias(&GoType::infer_expr(&call.fun, env));
+            if let GoType::Func { results, .. } = inferred {
+                results
+            } else {
+                env.get_func_returns(&signature.target)
+            }
+        })
+        .unwrap_or_default();
+    let variadic_start = signature
+        .as_ref()
+        .and_then(|signature| signature.variadic_start);
+    let args = match callee {
+        CalleeKind::Builtin(kind) => builtin_param_abi(kind, call, env),
+        CalleeKind::SpecialTypeConversion(_) | CalleeKind::TypeConversion => {
+            conversion_param_abi(call, env)
+        }
+        CalleeKind::Function
+        | CalleeKind::FunctionValue
+        | CalleeKind::Method
+        | CalleeKind::MethodExpression
+        | CalleeKind::Unknown => ordinary_param_abi(
+            call,
+            env,
+            &signature_params,
+            variadic_start,
+            callee == CalleeKind::MethodExpression,
+        ),
+    };
+
+    CallAbi {
+        callee,
+        signature_params,
+        args,
+        results,
+        variadic_start,
+    }
+}
+
+fn classify_call_callee(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CalleeKind {
+    if let Some(kind) = unshadowed_builtin_call_kind(call, env) {
+        return CalleeKind::Builtin(kind);
+    }
+    if let Some(kind) = special_type_conversion(call, env) {
+        return CalleeKind::SpecialTypeConversion(kind);
+    }
+    if call_is_type_conversion(call, env) {
+        return CalleeKind::TypeConversion;
+    }
+
+    match unparen_expr(&call.fun) {
+        ast::Expr::Ident(ident) if env.has_func(ident.name) => CalleeKind::Function,
+        ast::Expr::Ident(ident)
+            if matches!(
+                env.get_var(ident.name).map(|ty| env.resolve_alias(&ty)),
+                Some(GoType::Func { .. })
+            ) =>
+        {
+            CalleeKind::FunctionValue
+        }
+        ast::Expr::SelectorExpr(selector)
+            if call_signature_for_type_method_expression(selector, env).is_some() =>
+        {
+            CalleeKind::MethodExpression
+        }
+        ast::Expr::SelectorExpr(selector) => classify_selector_call_callee(selector, env),
+        ast::Expr::FuncLit(_) => CalleeKind::FunctionValue,
+        ast::Expr::IndexExpr(index)
+            if matches!(
+                env.resolve_alias(&GoType::infer_expr(&index.x, env)),
+                GoType::Func { .. }
+            ) =>
+        {
+            CalleeKind::FunctionValue
+        }
+        ast::Expr::IndexListExpr(index)
+            if matches!(
+                env.resolve_alias(&GoType::infer_expr(&index.x, env)),
+                GoType::Func { .. }
+            ) =>
+        {
+            CalleeKind::FunctionValue
+        }
+        _ if matches!(
+            env.resolve_alias(&GoType::infer_expr(&call.fun, env)),
+            GoType::Func { .. }
+        ) =>
+        {
+            CalleeKind::FunctionValue
+        }
+        _ => CalleeKind::Unknown,
+    }
+}
+
+fn classify_selector_call_callee(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> CalleeKind {
+    if let ast::Expr::Ident(base) = selector.x.as_ref() {
+        let package_key = format!("{}.{}", base.name, selector.sel.name);
+        if env.has_func(&package_key) {
+            return CalleeKind::Function;
+        }
+        if let Some(receiver_name) = env
+            .get_var(base.name)
+            .and_then(|ty| method_receiver_type_name(ty, env))
+        {
+            let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+            if env.has_func(&method_key) {
+                return CalleeKind::Method;
+            }
+        }
+    }
+
+    CalleeKind::Unknown
+}
+
+fn ordinary_param_abi(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+    signature_params: &[GoType],
+    variadic_start: Option<usize>,
+    has_method_expression_receiver: bool,
+) -> Vec<ParamAbi> {
+    call.args
+        .as_ref()
+        .map(|args| {
+            args.iter()
+                .enumerate()
+                .map(|(index, arg)| {
+                    let actual = GoType::infer_expr(arg, env);
+                    let expected = expected_arg_type(
+                        signature_params,
+                        variadic_start,
+                        call.ellipsis.is_some(),
+                        index,
+                    )
+                    .unwrap_or_else(|| actual.clone());
+                    let role = if has_method_expression_receiver && index == 0 {
+                        ValueRole::Receiver
+                    } else {
+                        arg_value_role(&expected, variadic_start, call.ellipsis.is_some(), index)
+                    };
+                    ParamAbi {
+                        expected,
+                        actual,
+                        role,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn expected_arg_type(
+    signature_params: &[GoType],
+    variadic_start: Option<usize>,
+    spread: bool,
+    index: usize,
+) -> Option<GoType> {
+    match variadic_start {
+        Some(start) if index >= start && !spread => {
+            signature_params.get(start).map(|ty| match ty {
+                GoType::Slice(elem) => (**elem).clone(),
+                other => other.clone(),
+            })
+        }
+        _ => signature_params.get(index).cloned(),
+    }
+}
+
+fn arg_value_role(
+    expected: &GoType,
+    variadic_start: Option<usize>,
+    spread: bool,
+    index: usize,
+) -> ValueRole {
+    if let Some(start) = variadic_start
+        && index >= start
+    {
+        return if spread {
+            ValueRole::VariadicSpread
+        } else {
+            ValueRole::VariadicPacked
+        };
+    }
+    match expected {
+        GoType::Any | GoType::Error | GoType::Interface(_) => ValueRole::InterfaceValue,
+        GoType::Func { .. } => ValueRole::FunctionValue,
+        _ => ValueRole::RValue,
+    }
+}
+
+fn builtin_param_abi(
+    kind: BuiltinCallKind,
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Vec<ParamAbi> {
+    let Some(args) = call.args.as_ref() else {
+        return Vec::new();
+    };
+    let first_type = args.first().map(|arg| GoType::infer_expr(arg, env));
+    args.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let actual = GoType::infer_expr(arg, env);
+            let expected =
+                builtin_expected_arg_type(kind, index, &actual, first_type.as_ref(), env);
+            let role = builtin_arg_value_role(kind, index, call.ellipsis.is_some());
+            ParamAbi {
+                expected,
+                actual,
+                role,
+            }
+        })
+        .collect()
+}
+
+fn builtin_expected_arg_type(
+    kind: BuiltinCallKind,
+    index: usize,
+    actual: &GoType,
+    first_type: Option<&GoType>,
+    env: &TypeEnv,
+) -> GoType {
+    match kind {
+        BuiltinCallKind::Append if index > 0 => first_type
+            .map(|ty| env.resolve_alias(ty))
+            .and_then(|ty| match ty {
+                GoType::Slice(elem) if index > 1 || !matches!(actual, GoType::Slice(_)) => {
+                    Some(*elem)
+                }
+                GoType::Slice(_) => Some(actual.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| actual.clone()),
+        BuiltinCallKind::Delete if index == 1 => first_type
+            .map(|ty| env.resolve_alias(ty))
+            .and_then(|ty| match ty {
+                GoType::Map(key, _) => Some(*key),
+                _ => None,
+            })
+            .unwrap_or_else(|| actual.clone()),
+        BuiltinCallKind::Make | BuiltinCallKind::New if index == 0 => actual.clone(),
+        _ => actual.clone(),
+    }
+}
+
+fn builtin_arg_value_role(kind: BuiltinCallKind, index: usize, spread: bool) -> ValueRole {
+    match kind {
+        BuiltinCallKind::Append if index > 0 && spread => ValueRole::VariadicSpread,
+        BuiltinCallKind::Append if index > 0 => ValueRole::VariadicPacked,
+        BuiltinCallKind::Clear | BuiltinCallKind::Copy | BuiltinCallKind::Delete if index == 0 => {
+            ValueRole::MutBorrow
+        }
+        BuiltinCallKind::Make | BuiltinCallKind::New if index == 0 => ValueRole::TypeArgument,
+        BuiltinCallKind::Panic if index == 0 => ValueRole::InterfaceValue,
+        _ => ValueRole::RValue,
+    }
+}
+
+fn conversion_param_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Vec<ParamAbi> {
+    call.args
+        .as_ref()
+        .map(|args| {
+            args.iter()
+                .map(|arg| {
+                    let actual = GoType::infer_expr(arg, env);
+                    ParamAbi {
+                        expected: actual.clone(),
+                        actual,
+                        role: ValueRole::RValue,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn range_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> RangeKind {
@@ -14503,18 +14861,23 @@ fn comm_cases_have_labeled_break_referring_to_current(
 fn lower_stmt(stmt: &ast::Stmt<'_>, env: &mut TypeEnv) -> Option<Stmt> {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
+            let lhs = assign
+                .lhs
+                .iter()
+                .map(|expr| lower_expr(expr, env))
+                .collect::<Vec<_>>();
+            let rhs = assign
+                .rhs
+                .iter()
+                .map(|expr| lower_expr(expr, env))
+                .collect::<Vec<_>>();
+            let op = lower_assign_op(assign.tok);
+            let effects = assign_effects(op, &lhs, &rhs, env);
             let lowered = Stmt::Assign(Assign {
-                lhs: assign
-                    .lhs
-                    .iter()
-                    .map(|expr| lower_expr(expr, env))
-                    .collect(),
-                op: lower_assign_op(assign.tok),
-                rhs: assign
-                    .rhs
-                    .iter()
-                    .map(|expr| lower_expr(expr, env))
-                    .collect(),
+                lhs,
+                op,
+                rhs,
+                effects,
             });
             record_define_bindings(assign, env);
             Some(lowered)
@@ -14781,6 +15144,81 @@ fn lower_call(call: &ast::CallExpr<'_>, env: &TypeEnv) -> Call {
             args.iter().map(|arg| lower_expr(arg, env)).collect()
         }),
         spread: call.ellipsis.is_some(),
+        abi: call_abi(call, env),
+    }
+}
+
+fn assign_effects(op: AssignOp, lhs: &[Expr], rhs: &[Expr], env: &TypeEnv) -> AssignEffects {
+    AssignEffects {
+        targets: lhs
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let ty = assign_target_type(op, index, target, rhs);
+                MutationTarget {
+                    ownership: ownership_mode_for_go_type(&ty, env),
+                    ty,
+                    mode: mutation_mode_for_assign_op(op),
+                    addressability: target.addressability,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn assign_target_type(op: AssignOp, index: usize, target: &Expr, rhs: &[Expr]) -> GoType {
+    if op == AssignOp::Define && matches!(target.ty, GoType::Unknown) {
+        return rhs
+            .get(index)
+            .map(|expr| expr.ty.clone())
+            .unwrap_or_else(|| target.ty.clone());
+    }
+    target.ty.clone()
+}
+
+fn mutation_mode_for_assign_op(op: AssignOp) -> MutationMode {
+    match op {
+        AssignOp::Define => MutationMode::Define,
+        AssignOp::Assign => MutationMode::Store,
+        AssignOp::Add
+        | AssignOp::Sub
+        | AssignOp::Mul
+        | AssignOp::Quo
+        | AssignOp::Rem
+        | AssignOp::And
+        | AssignOp::Or
+        | AssignOp::Xor
+        | AssignOp::Shl
+        | AssignOp::Shr
+        | AssignOp::AndNot => MutationMode::CompoundAssign,
+    }
+}
+
+pub fn ownership_mode_for_go_type(ty: &GoType, env: &TypeEnv) -> OwnershipMode {
+    match env.resolve_alias_or_type_param_constraint(ty) {
+        GoType::Bool
+        | GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr
+        | GoType::Float32
+        | GoType::Float64
+        | GoType::Complex64
+        | GoType::Complex128 => OwnershipMode::Copy,
+        GoType::String | GoType::Array(_) | GoType::Named(_) => OwnershipMode::Clone,
+        GoType::Slice(_) | GoType::Map(_, _) | GoType::Pointer(_) | GoType::Chan { .. } => {
+            OwnershipMode::SharedHandle
+        }
+        GoType::Any | GoType::Error | GoType::Interface(_) => OwnershipMode::InterfaceBox,
+        GoType::Func { .. } => OwnershipMode::FunctionCell,
+        GoType::Unknown => OwnershipMode::Unknown,
     }
 }
 
@@ -16737,7 +17175,10 @@ fn is_predeclared_name(name: &str) -> bool {
     clippy::unwrap_used
 )]
 mod tests {
-    use super::{Addressability, CaptureMode, Completion, ExprKind, Item, Stmt, lower_file};
+    use super::{
+        Addressability, Call, CalleeKind, CaptureMode, Completion, ExprKind, Item, MutationMode,
+        OwnershipMode, Stmt, ValueRole, lower_file,
+    };
     use crate::compiler::typeinfer::{GoType, TypeEnv};
     use crate::parser::parse_file;
     use std::collections::BTreeMap;
@@ -16747,6 +17188,39 @@ mod tests {
         let mut env = TypeEnv::new();
         env.scan_file(&file);
         lower_file(&file, &env)
+    }
+
+    fn main_body(ir: &super::File) -> &super::Block {
+        let Some(func) = ir.items.iter().find_map(|item| match item {
+            Item::Func(func) if func.name.as_deref() == Some("main") => Some(func),
+            Item::Func(_) | Item::GenDecl(_) => None,
+        }) else {
+            panic!("expected main function");
+        };
+        func.body.as_ref().expect("expected main body")
+    }
+
+    fn assign_rhs_call(body: &super::Block, stmt_index: usize, rhs_index: usize) -> &Call {
+        let Some(Stmt::Assign(assign)) = body.stmts.get(stmt_index) else {
+            panic!("expected assignment at {stmt_index}");
+        };
+        let Some(expr) = assign.rhs.get(rhs_index) else {
+            panic!("expected rhs {rhs_index}");
+        };
+        let ExprKind::Call(call) = &expr.kind else {
+            panic!("expected call rhs");
+        };
+        call
+    }
+
+    fn expr_stmt_call(body: &super::Block, stmt_index: usize) -> &Call {
+        let Some(Stmt::Expr(expr)) = body.stmts.get(stmt_index) else {
+            panic!("expected expression statement at {stmt_index}");
+        };
+        let ExprKind::Call(call) = &expr.kind else {
+            panic!("expected expression call");
+        };
+        call
     }
 
     #[test]
@@ -18709,6 +19183,82 @@ mod tests {
     }
 
     #[test]
+    fn assign_effects_record_mutation_modes_and_rhs_define_types() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    name := "go"
+                    name += "rs"
+                    count := 1
+                    count = 2
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let target = |index| {
+            let Some(Stmt::Assign(assign)) = body.stmts.get(index) else {
+                panic!("expected assignment at {index}");
+            };
+            assign.effects.targets.first().expect("expected target")
+        };
+
+        assert_eq!(target(0).ty, GoType::String);
+        assert_eq!(target(0).mode, MutationMode::Define);
+        assert_eq!(target(0).ownership, OwnershipMode::Clone);
+        assert_eq!(target(1).mode, MutationMode::CompoundAssign);
+        assert_eq!(target(1).ownership, OwnershipMode::Clone);
+        assert_eq!(target(2).ownership, OwnershipMode::Copy);
+        assert_eq!(target(3).mode, MutationMode::Store);
+    }
+
+    #[test]
+    fn assign_effects_record_shared_interface_and_function_ownership() {
+        let ir = lower(
+            r#"
+                package main
+
+                func helper(x int) {}
+
+                func main() {
+                    values := []int{1}
+                    lookup := map[string]int{}
+                    var iface any = 1
+                    fn := helper
+                    _ = values
+                    _ = lookup
+                    _ = iface
+                    _ = fn
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let target = |index| {
+            let Some(Stmt::Assign(assign)) = body.stmts.get(index) else {
+                panic!("expected assignment at {index}");
+            };
+            assign.effects.targets.first().expect("expected target")
+        };
+
+        assert_eq!(target(0).ownership, OwnershipMode::SharedHandle);
+        assert_eq!(target(1).ownership, OwnershipMode::SharedHandle);
+        assert_eq!(target(3).ownership, OwnershipMode::FunctionCell);
+
+        let Some(Stmt::Decl(decl)) = body.stmts.get(2) else {
+            panic!("expected var declaration");
+        };
+        let Some(super::Spec::Value { values, .. }) = decl.specs.first() else {
+            panic!("expected value spec");
+        };
+        assert_eq!(values[0].ty, GoType::Int);
+        assert_eq!(
+            super::ownership_mode_for_go_type(&GoType::Any, &TypeEnv::new()),
+            OwnershipMode::InterfaceBox
+        );
+    }
+
+    #[test]
     fn classifies_string_concat_from_types() {
         let file = parse_file(
             "test.go",
@@ -18917,6 +19467,204 @@ mod tests {
             super::variadic_call_start(pointer_method_call, &env),
             Some(0)
         );
+    }
+
+    #[test]
+    fn call_abi_records_ordinary_function_signature() {
+        let ir = lower(
+            r#"
+                package main
+
+                func twice(count int, label string) string { return label }
+
+                func main() {
+                    _ = twice(2, "go")
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = assign_rhs_call(body, 0, 0);
+
+        assert_eq!(call.abi.callee, CalleeKind::Function);
+        assert_eq!(call.abi.signature_params, vec![GoType::Int, GoType::String]);
+        assert_eq!(call.abi.results, vec![GoType::String]);
+        assert_eq!(
+            call.abi
+                .args
+                .iter()
+                .map(|arg| (arg.expected.clone(), arg.role))
+                .collect::<Vec<_>>(),
+            vec![
+                (GoType::Int, ValueRole::RValue),
+                (GoType::String, ValueRole::RValue),
+            ]
+        );
+    }
+
+    #[test]
+    fn call_abi_marks_variadic_packed_and_spread_arguments() {
+        let ir = lower(
+            r#"
+                package main
+
+                func sum(label string, nums ...int) {}
+
+                func main() {
+                    xs := []int{1, 2}
+                    sum("packed", 1, 2)
+                    sum("spread", xs...)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let packed = expr_stmt_call(body, 1);
+        let spread = expr_stmt_call(body, 2);
+
+        assert_eq!(packed.abi.callee, CalleeKind::Function);
+        assert_eq!(packed.abi.variadic_start, Some(1));
+        assert_eq!(
+            packed
+                .abi
+                .args
+                .iter()
+                .map(|arg| (arg.expected.clone(), arg.role))
+                .collect::<Vec<_>>(),
+            vec![
+                (GoType::String, ValueRole::RValue),
+                (GoType::Int, ValueRole::VariadicPacked),
+                (GoType::Int, ValueRole::VariadicPacked),
+            ]
+        );
+
+        assert!(spread.spread);
+        assert_eq!(
+            spread
+                .abi
+                .args
+                .iter()
+                .map(|arg| (arg.expected.clone(), arg.role))
+                .collect::<Vec<_>>(),
+            vec![
+                (GoType::String, ValueRole::RValue),
+                (
+                    GoType::Slice(Box::new(GoType::Int)),
+                    ValueRole::VariadicSpread,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn call_abi_marks_mutating_builtin_destinations() {
+        let ir = lower(
+            r#"
+                package main
+
+                func main() {
+                    dst := []byte{}
+                    src := "go"
+                    _ = copy(dst, src)
+                    m := map[string]int{}
+                    delete(m, "x")
+                    clear(dst)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let copy_call = assign_rhs_call(body, 2, 0);
+        let delete_call = expr_stmt_call(body, 4);
+        let clear_call = expr_stmt_call(body, 5);
+
+        assert_eq!(
+            copy_call.abi.callee,
+            CalleeKind::Builtin(super::BuiltinCallKind::Copy)
+        );
+        assert_eq!(copy_call.abi.args[0].role, ValueRole::MutBorrow);
+        assert_eq!(
+            delete_call.abi.callee,
+            CalleeKind::Builtin(super::BuiltinCallKind::Delete)
+        );
+        assert_eq!(delete_call.abi.args[0].role, ValueRole::MutBorrow);
+        assert_eq!(delete_call.abi.args[1].expected, GoType::String);
+        assert_eq!(
+            clear_call.abi.callee,
+            CalleeKind::Builtin(super::BuiltinCallKind::Clear)
+        );
+        assert_eq!(clear_call.abi.args[0].role, ValueRole::MutBorrow);
+    }
+
+    #[test]
+    fn call_abi_marks_interface_and_function_value_arguments() {
+        let ir = lower(
+            r#"
+                package main
+
+                func helper(x int) string { return "" }
+                func accepts(v any, f func(int) string) {}
+
+                func main() {
+                    accepts(42, helper)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = expr_stmt_call(body, 0);
+
+        assert_eq!(call.abi.callee, CalleeKind::Function);
+        assert_eq!(
+            call.abi.args.iter().map(|arg| arg.role).collect::<Vec<_>>(),
+            vec![ValueRole::InterfaceValue, ValueRole::FunctionValue]
+        );
+    }
+
+    #[test]
+    fn call_abi_marks_method_expression_receiver_argument() {
+        let ir = lower(
+            r#"
+                package main
+
+                type T struct{}
+                func (t T) M(x int) {}
+
+                func main() {
+                    var t T
+                    T.M(t, 1)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = expr_stmt_call(body, 1);
+
+        assert_eq!(call.abi.callee, CalleeKind::MethodExpression);
+        assert_eq!(
+            call.abi.args.iter().map(|arg| arg.role).collect::<Vec<_>>(),
+            vec![ValueRole::Receiver, ValueRole::RValue]
+        );
+        assert_eq!(
+            call.abi.signature_params,
+            vec![GoType::Named("T".to_string()), GoType::Int]
+        );
+    }
+
+    #[test]
+    fn call_abi_respects_shadowed_predeclared_builtins() {
+        let ir = lower(
+            r#"
+                package main
+
+                func len(x int) int { return x }
+
+                func main() {
+                    _ = len(1)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = assign_rhs_call(body, 0, 0);
+
+        assert_eq!(call.abi.callee, CalleeKind::Function);
+        assert_eq!(call.abi.signature_params, vec![GoType::Int]);
+        assert_eq!(call.abi.results, vec![GoType::Int]);
     }
 
     #[test]

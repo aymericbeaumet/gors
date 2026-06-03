@@ -7,9 +7,11 @@ pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = collect_tuple_newtypes(file);
     let mutable_ref_call_args = collect_mutable_ref_call_args(file);
     let pointer_cell_statics = collect_pointer_cell_statics(file);
+    let fmt_flush_receiver_types = collect_fmt_flush_receiver_types(file);
     CoerceTypes {
         mutable_ref_call_args,
         pointer_cell_statics,
+        fmt_flush_receiver_types,
         tuple_newtypes,
         ..Default::default()
     }
@@ -38,6 +40,7 @@ struct CoerceTypes {
     has_generic_params: Vec<bool>,
     mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
     pointer_cell_statics: std::collections::HashSet<String>,
+    fmt_flush_receiver_types: std::collections::HashSet<String>,
     tuple_newtypes: std::collections::HashSet<String>,
     impl_self_types: Vec<String>,
 }
@@ -147,7 +150,11 @@ impl VisitMut for CoerceTypes {
             new_stmts.extend(hoist_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(hoist_condition_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(hoist_method_args_read_receiver(&mut stmt));
-            let needs_flush = stmt_needs_fmt_flush(&stmt);
+            let needs_flush = self
+                .impl_self_types
+                .last()
+                .is_some_and(|ty| self.fmt_flush_receiver_types.contains(ty))
+                && stmt_needs_fmt_flush(&stmt);
             new_stmts.push(stmt);
             if needs_flush {
                 new_stmts.push(syn::parse_quote! {
@@ -265,7 +272,6 @@ impl VisitMut for CoerceTypes {
                     clone_field_or_path(first);
                 }
             }
-            return;
         }
 
         if is_path_call(&call.func, &["crate", "builtin", "append"])
@@ -278,7 +284,6 @@ impl VisitMut for CoerceTypes {
             if let Some(second) = call.args.iter_mut().nth(1) {
                 clone_field_or_path(second);
             }
-            return;
         }
     }
 
@@ -732,6 +737,29 @@ fn collect_mutable_ref_call_args(
         }
     }
     calls
+}
+
+fn collect_fmt_flush_receiver_types(file: &syn::File) -> std::collections::HashSet<String> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return None;
+            };
+            let self_ty = type_path_ident_name(&item_impl.self_ty)?;
+            let has_flush_hook = impl_has_method(item_impl, "__gors_flush_fmt");
+            let has_flushable_method =
+                impl_has_method(item_impl, "printArg") || impl_has_method(item_impl, "printValue");
+            (has_flush_hook && has_flushable_method).then_some(self_ty)
+        })
+        .collect()
+}
+
+fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
+    item_impl
+        .items
+        .iter()
+        .any(|item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == name))
 }
 
 fn collect_pointer_cell_statics(file: &syn::File) -> std::collections::HashSet<String> {
@@ -1820,6 +1848,54 @@ mod tests {
     }
 
     #[test]
+    fn it_inserts_flush_for_receivers_with_generated_flush_hook() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer;
+
+            impl Printer {
+                pub fn __gors_flush_fmt(&mut self) {}
+
+                pub fn printArg(&mut self, value: isize) {}
+
+                pub fn run(&mut self) {
+                    self.printArg(1);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
+            "expected generated flush hook after printArg: {tokens}"
+        );
+    }
+
+    #[test]
+    fn it_does_not_insert_flush_for_receivers_without_generated_flush_hook() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct Printer;
+
+            impl Printer {
+                pub fn printArg(&mut self, value: isize) {}
+
+                pub fn run(&mut self) {
+                    self.printArg(1);
+                }
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            !tokens.contains("__gors_flush_fmt"),
+            "expected no flush without generated flush hook: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_does_not_clone_local_initializers_by_name() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct State {
@@ -1987,12 +2063,20 @@ mod tests {
         pass(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
-        let hoist_pos = tokens
-            .find("let __gors_premethod_arg_0 = crate :: builtin :: GorsPtr :: new")
-            .unwrap_or_else(|| panic!("expected locked receiver argument to be hoisted: {tokens}"));
-        let call_pos = tokens
-            .find("(p . lock () . unwrap () . fmt) . init (__gors_premethod_arg_0)")
-            .unwrap_or_else(|| panic!("expected method call to use hoisted argument: {tokens}"));
+        let hoist_pos =
+            tokens.find("let __gors_premethod_arg_0 = crate :: builtin :: GorsPtr :: new");
+        assert!(
+            hoist_pos.is_some(),
+            "expected locked receiver argument to be hoisted: {tokens}"
+        );
+        let hoist_pos = hoist_pos.unwrap_or_default();
+        let call_pos =
+            tokens.find("(p . lock () . unwrap () . fmt) . init (__gors_premethod_arg_0)");
+        assert!(
+            call_pos.is_some(),
+            "expected method call to use hoisted argument: {tokens}"
+        );
+        let call_pos = call_pos.unwrap_or_default();
         assert!(
             hoist_pos < call_pos,
             "expected argument to be evaluated before locked receiver call: {tokens}"

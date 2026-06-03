@@ -319,7 +319,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     for (_, ast) in &parsed_files {
         package_type_env.scan_file(ast);
     }
-    let mut imported_type_envs: BTreeMap<String, (String, TypeEnv)> = BTreeMap::new();
+    let mut imported_type_envs: BTreeMap<String, crate::compiler::PackageFacts> = BTreeMap::new();
     for (_, ast) in &parsed_files {
         for import in ast.imports() {
             let imported_path = import.path.value.trim_matches('"');
@@ -327,7 +327,10 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
                 continue;
             }
             if let Some((package_name, env)) = scan_type_env(imported_path) {
-                imported_type_envs.insert(imported_path.to_string(), (package_name, env));
+                imported_type_envs.insert(
+                    imported_path.to_string(),
+                    crate::compiler::PackageFacts::new(package_name, env),
+                );
             }
         }
     }

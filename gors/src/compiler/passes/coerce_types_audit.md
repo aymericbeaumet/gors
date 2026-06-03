@@ -30,7 +30,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Reflection fallback pruning | `printArg`, `printValue`, `fmtPointer`, `reflect` AST path/type-path checks | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
 | `Box::new` field clone | field argument to `Box::new` | generated-language rule | Preserve Go value-copy semantics when boxing addressable field values. Keep this generic but move to expected-type expression lowering if possible. |
 | `builtin::append` first/second args | builtin append path | runtime primitive | Destination is an lvalue/owned slice update and appended element must be value-copied. This is a Go builtin contract. |
-| Format flush insertion | method calls `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
+| Format flush insertion | receiver impls with generated `__gors_flush_fmt` hook calling `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
 
@@ -84,3 +84,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | `fmtString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic branch, receiver-method, and string argument lowering, preserving `%q`, `%x`, and `% X` string formatting behavior instead of replacing the named method with `fmtS`. |
 | `newPrinter` body replacement in `coerce_types.rs` | The generated Go body now compiles through pointer-cell ownership, generic receiver-method argument hoisting, manual cloning for structs with `any` fields, and a minimal `sync.Pool` runtime primitive instead of replacing the named function body. |
 | `free` body removal in `coerce_types.rs` | The generated Go method body is no longer deleted by method name; currently supported pool behavior is handled at the `sync.Pool` runtime boundary. |
+| fmt flush insertion by receiver type name in `coerce_types.rs` | Flush insertion is now gated by generated receiver metadata: the impl must define `__gors_flush_fmt` and a flushable print method. Arbitrary receivers named differently or receivers without the hook no longer get name-selected flush calls. |

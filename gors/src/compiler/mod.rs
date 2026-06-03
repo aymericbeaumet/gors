@@ -4190,7 +4190,7 @@ fn compile_error_expr(message: impl AsRef<str>) -> syn::Expr {
 /// let go_ast = parser::parse_file("example.go", go_source).unwrap();
 /// let rust_ast = compiler::compile(go_ast).unwrap();
 /// ```
-pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
+fn reset_lowering_thread_state() {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
@@ -4198,6 +4198,10 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+}
+
+pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
+    reset_lowering_thread_state();
     clear_borrow_pointer_arg_indices();
     set_import_renames(BTreeMap::new());
     set_dot_import_renames(BTreeMap::new());
@@ -4230,13 +4234,7 @@ pub fn compile_with_type_env_and_import_renames(
     type_env: typeinfer::TypeEnv,
     import_renames: BTreeMap<String, String>,
 ) -> Result<syn::File, CompilerError> {
-    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
-    LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
-    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
-    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
-    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    reset_lowering_thread_state();
     clear_borrow_pointer_arg_indices();
     set_import_renames(import_renames);
     set_dot_import_renames(BTreeMap::new());
@@ -4375,6 +4373,501 @@ pub struct CompiledProgram {
     pub has_main: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SemanticItemId {
+    module: String,
+    kind: SemanticItemKind,
+    name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SemanticItemKind {
+    Const,
+    Function,
+    Static,
+    Type,
+    Trait,
+    ImplItem,
+    TraitItem,
+    Macro,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SemanticReachabilityNode {
+    local_refs: std::collections::BTreeSet<SemanticItemId>,
+    external_refs: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SemanticReachabilityGraph {
+    nodes: BTreeMap<SemanticItemId, SemanticReachabilityNode>,
+    roots: std::collections::BTreeSet<SemanticItemId>,
+}
+
+impl SemanticReachabilityGraph {
+    fn from_modules(modules: &BTreeMap<String, CompiledModule>, has_main: bool) -> Self {
+        let module_names = modules
+            .values()
+            .filter(|module| !module.is_main)
+            .map(|module| module.mod_name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut graph = Self::default();
+
+        for module in modules.values() {
+            for item in &module.file.items {
+                for id in semantic_item_ids_for_item(&module.mod_name, item) {
+                    graph.nodes.entry(id).or_default();
+                }
+            }
+        }
+
+        for module in modules.values() {
+            let name_index = semantic_item_name_index(&module.mod_name, &module.file.items);
+            graph
+                .roots
+                .extend(semantic_root_ids_for_module(module, has_main, &name_index));
+
+            let item_names = item_reachability_names(&module.file.items);
+            let top_level_names = top_level_item_names(&module.file.items);
+            let top_level_types = top_level_item_types(&module.file.items, &module_names);
+            let top_level_field_types =
+                top_level_item_field_types(&module.file.items, &module_names);
+            let top_level_element_types =
+                top_level_collection_element_types(&module.file.items, &module_names);
+            let top_level_return_types =
+                top_level_item_return_types(&module.file.items, &module_names);
+            let top_level_tuple_return_types =
+                top_level_item_tuple_return_types(&module.file.items, &module_names);
+            let context = RefCollectionContext {
+                module_names: &module_names,
+                item_names: &item_names,
+                top_level_names: &top_level_names,
+                top_level_types: &top_level_types,
+                top_level_field_types: &top_level_field_types,
+                top_level_element_types: &top_level_element_types,
+                top_level_return_types: &top_level_return_types,
+                top_level_tuple_return_types: &top_level_tuple_return_types,
+            };
+
+            for item in &module.file.items {
+                let source_ids = semantic_item_ids_for_item(&module.mod_name, item);
+                if source_ids.is_empty() {
+                    continue;
+                }
+                let mut item_clone = item.clone();
+                let (local_refs, external_refs) = collect_refs_from_item(&mut item_clone, &context);
+                let local_ref_ids = local_refs
+                    .iter()
+                    .filter_map(|name| name_index.get(name))
+                    .flat_map(|ids| ids.iter().cloned())
+                    .collect::<std::collections::BTreeSet<_>>();
+                let external_refs = external_refs
+                    .into_iter()
+                    .map(|(module, refs)| {
+                        (
+                            module,
+                            refs.into_iter().collect::<std::collections::BTreeSet<_>>(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+
+                for source_id in source_ids {
+                    let node = graph.nodes.entry(source_id).or_default();
+                    node.local_refs.extend(local_ref_ids.iter().cloned());
+                    for (module, refs) in &external_refs {
+                        node.external_refs
+                            .entry(module.clone())
+                            .or_default()
+                            .extend(refs.iter().cloned());
+                    }
+                }
+            }
+        }
+
+        graph
+    }
+
+    fn has_consistent_local_edges(&self) -> bool {
+        self.roots.iter().all(|root| self.nodes.contains_key(root))
+            && self.nodes.values().all(|node| {
+                node.local_refs
+                    .iter()
+                    .all(|target| self.nodes.contains_key(target))
+            })
+    }
+}
+
+fn semantic_reachability_graph_enabled() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("GORS_SEMANTIC_REACHABILITY_AUDIT").is_some()
+}
+
+fn semantic_item_name_index(
+    module: &str,
+    items: &[syn::Item],
+) -> BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> {
+    let mut index: BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> = BTreeMap::new();
+    for item in items {
+        for id in semantic_item_ids_for_item(module, item) {
+            index.entry(id.name.clone()).or_default().insert(id);
+        }
+    }
+    index
+}
+
+fn semantic_item_ids_for_item(module: &str, item: &syn::Item) -> Vec<SemanticItemId> {
+    let mut ids = Vec::new();
+    if let Some(name) = item_name(item)
+        && let Some(kind) = semantic_item_kind(item)
+    {
+        ids.push(SemanticItemId {
+            module: module.to_string(),
+            kind,
+            name,
+        });
+    }
+
+    match item {
+        syn::Item::Impl(item_impl) => {
+            let self_names = self_type_reachability_names(&item_impl.self_ty);
+            for impl_item in &item_impl.items {
+                let (kind, name) = match impl_item {
+                    syn::ImplItem::Const(item) => {
+                        (SemanticItemKind::ImplItem, item.ident.to_string())
+                    }
+                    syn::ImplItem::Fn(item) => {
+                        (SemanticItemKind::ImplItem, item.sig.ident.to_string())
+                    }
+                    syn::ImplItem::Type(item) => {
+                        (SemanticItemKind::ImplItem, item.ident.to_string())
+                    }
+                    _ => continue,
+                };
+                ids.push(SemanticItemId {
+                    module: module.to_string(),
+                    kind,
+                    name: name.clone(),
+                });
+                for self_name in &self_names {
+                    ids.push(SemanticItemId {
+                        module: module.to_string(),
+                        kind,
+                        name: impl_method_reachability_name(self_name, &name),
+                    });
+                }
+            }
+        }
+        syn::Item::Trait(item_trait) => {
+            let trait_name = item_trait.ident.to_string();
+            for trait_item in &item_trait.items {
+                let (kind, name) = match trait_item {
+                    syn::TraitItem::Const(item) => {
+                        (SemanticItemKind::TraitItem, item.ident.to_string())
+                    }
+                    syn::TraitItem::Fn(item) => {
+                        (SemanticItemKind::TraitItem, item.sig.ident.to_string())
+                    }
+                    syn::TraitItem::Type(item) => {
+                        (SemanticItemKind::TraitItem, item.ident.to_string())
+                    }
+                    _ => continue,
+                };
+                ids.push(SemanticItemId {
+                    module: module.to_string(),
+                    kind,
+                    name: name.clone(),
+                });
+                ids.push(SemanticItemId {
+                    module: module.to_string(),
+                    kind,
+                    name: impl_method_reachability_name(&trait_name, &name),
+                });
+            }
+        }
+        _ => {}
+    }
+    ids
+}
+
+fn semantic_item_kind(item: &syn::Item) -> Option<SemanticItemKind> {
+    match item {
+        syn::Item::Const(_) => Some(SemanticItemKind::Const),
+        syn::Item::Fn(_) => Some(SemanticItemKind::Function),
+        syn::Item::Static(_) => Some(SemanticItemKind::Static),
+        syn::Item::Trait(_) => Some(SemanticItemKind::Trait),
+        syn::Item::Macro(_) => Some(SemanticItemKind::Macro),
+        syn::Item::Enum(_) | syn::Item::Struct(_) | syn::Item::Type(_) | syn::Item::Union(_) => {
+            Some(SemanticItemKind::Type)
+        }
+        _ => None,
+    }
+}
+
+fn semantic_root_ids_for_module(
+    module: &CompiledModule,
+    has_main: bool,
+    name_index: &BTreeMap<String, std::collections::BTreeSet<SemanticItemId>>,
+) -> Vec<SemanticItemId> {
+    let root_names = if module.is_main && has_main {
+        std::collections::HashSet::from(["main".to_string()])
+    } else if module.is_main {
+        exported_item_reachability_names(&module.file.items)
+    } else {
+        std::collections::HashSet::new()
+    };
+    root_names
+        .iter()
+        .filter_map(|name| name_index.get(name))
+        .flat_map(|ids| ids.iter().cloned())
+        .collect()
+}
+
+#[derive(Clone)]
+pub(crate) struct PackageFacts {
+    package_name: String,
+    type_env: typeinfer::TypeEnv,
+}
+
+impl PackageFacts {
+    pub(crate) fn new(package_name: String, type_env: typeinfer::TypeEnv) -> Self {
+        Self {
+            package_name,
+            type_env,
+        }
+    }
+
+    fn package_name(&self) -> &str {
+        &self.package_name
+    }
+
+    fn type_env(&self) -> &typeinfer::TypeEnv {
+        &self.type_env
+    }
+}
+
+type PackageFactMap = BTreeMap<String, PackageFacts>;
+
+struct CompileSession {
+    source_map_config: Option<Vec<(String, String)>>,
+}
+
+impl CompileSession {
+    fn new(source_map_config: Option<Vec<(String, String)>>) -> Self {
+        reset_lowering_thread_state();
+        Self { source_map_config }
+    }
+
+    fn start_main_source_map_tracking(&mut self) {
+        let Some(sources) = self.source_map_config.take() else {
+            return;
+        };
+        TRACKER.with(|t| {
+            t.borrow_mut().start_many(
+                sources
+                    .into_iter()
+                    .map(|(file, source)| (file, Some(source)))
+                    .collect(),
+                "main.rs",
+            );
+        });
+    }
+}
+
+struct PackageGraph {
+    stdlib_imports: Vec<String>,
+    stdlib_type_env_paths: Vec<String>,
+    local_type_envs: PackageFactMap,
+    stdlib_type_envs: PackageFactMap,
+    import_package_names: BTreeMap<String, String>,
+    local_module_names: BTreeMap<String, String>,
+    local_init_modules: Vec<String>,
+    stdlib_module_names: BTreeMap<String, String>,
+    pkg_names: std::collections::HashSet<String>,
+}
+
+impl PackageGraph {
+    fn from_program(program: &crate::parser::ParsedProgram) -> Self {
+        let mut stdlib_imports = program.stdlib_imports.clone();
+        collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
+        for pkg in &program.imports {
+            collect_known_stdlib_imports(&pkg.ast, &mut stdlib_imports);
+        }
+
+        let mut local_type_envs = PackageFactMap::new();
+        {
+            let timer = ProfileTimer::start("compiler.local_type_inference");
+            for pkg in &program.imports {
+                let mut env = typeinfer::TypeEnv::new();
+                env.scan_file(&pkg.ast);
+                local_type_envs.insert(
+                    pkg.import_path.clone(),
+                    PackageFacts::new(pkg.name.clone(), env),
+                );
+            }
+            drop(timer);
+        }
+
+        let mut stdlib_type_env_paths = stdlib_imports.clone();
+        for stdlib_path in &stdlib_imports {
+            for transitive_import in crate::resolve::collect_transitive_imports(stdlib_path) {
+                if !stdlib_type_env_paths.contains(&transitive_import) {
+                    stdlib_type_env_paths.push(transitive_import);
+                }
+            }
+        }
+
+        let mut stdlib_type_envs = PackageFactMap::new();
+        for stdlib_path in &stdlib_type_env_paths {
+            if let Some((package_name, env)) = crate::resolve::scan_type_env(stdlib_path) {
+                stdlib_type_envs.insert(stdlib_path.clone(), PackageFacts::new(package_name, env));
+            }
+        }
+
+        let import_package_names = local_type_envs
+            .iter()
+            .map(|(path, facts)| (path.clone(), facts.package_name().to_string()))
+            .chain(
+                stdlib_type_envs
+                    .iter()
+                    .map(|(path, facts)| (path.clone(), facts.package_name().to_string())),
+            )
+            .collect::<BTreeMap<_, _>>();
+
+        let stdlib_mod_names: std::collections::HashSet<String> =
+            std::iter::once("builtin".to_string())
+                .chain(
+                    crate::resolve::list_packages()
+                        .into_iter()
+                        .map(|path| crate::resolve::module_name(&path)),
+                )
+                .chain(
+                    stdlib_imports
+                        .iter()
+                        .map(|path| crate::resolve::module_name(path)),
+                )
+                .collect();
+        let local_module_names = program
+            .imports
+            .iter()
+            .map(|pkg| {
+                let mod_name = if stdlib_mod_names.contains(&pkg.name) {
+                    import_path_to_mod_name(&pkg.import_path)
+                } else {
+                    pkg.name.clone()
+                };
+                (pkg.import_path.clone(), mod_name)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let local_init_modules = program
+            .imports
+            .iter()
+            .filter_map(|pkg| local_module_names.get(&pkg.import_path).cloned())
+            .collect();
+        let stdlib_module_names = stdlib_imports
+            .iter()
+            .map(|path| (path.clone(), crate::resolve::module_name(path)))
+            .collect::<BTreeMap<_, _>>();
+        let pkg_names = local_module_names
+            .values()
+            .cloned()
+            .chain(stdlib_module_names.values().cloned())
+            .collect();
+
+        Self {
+            stdlib_imports,
+            stdlib_type_env_paths,
+            local_type_envs,
+            stdlib_type_envs,
+            import_package_names,
+            local_module_names,
+            local_init_modules,
+            stdlib_module_names,
+            pkg_names,
+        }
+    }
+
+    fn seed_borrow_pointer_arg_indices(&self, program: &crate::parser::ParsedProgram) {
+        let stdlib_borrow_pointer_files =
+            parse_stdlib_borrow_pointer_files(&self.stdlib_type_env_paths);
+        let files = std::iter::once(&program.main_package.ast)
+            .chain(program.imports.iter().map(|pkg| &pkg.ast))
+            .chain(stdlib_borrow_pointer_files.iter())
+            .collect::<Vec<_>>();
+        set_borrow_pointer_arg_indices_for_files(&files);
+    }
+}
+
+struct ModulePlan {
+    mod_name: String,
+    import_path: String,
+    filename: String,
+    content_hash: String,
+    is_main: bool,
+    is_stdlib: bool,
+}
+
+impl ModulePlan {
+    fn builtin() -> Self {
+        Self {
+            mod_name: "builtin".to_string(),
+            import_path: "builtin".to_string(),
+            filename: "builtin.rs".to_string(),
+            content_hash: String::new(),
+            is_main: false,
+            is_stdlib: true,
+        }
+    }
+
+    fn local(pkg: &crate::parser::ParsedPackage, mod_name: String) -> Self {
+        Self {
+            mod_name,
+            import_path: pkg.import_path.clone(),
+            filename: import_path_to_filename(&pkg.import_path),
+            content_hash: compute_content_hash(&pkg.files),
+            is_main: false,
+            is_stdlib: false,
+        }
+    }
+
+    fn main(pkg: &crate::parser::ParsedPackage) -> Self {
+        Self {
+            mod_name: "main".to_string(),
+            import_path: String::new(),
+            filename: "main.rs".to_string(),
+            content_hash: compute_content_hash(&pkg.files),
+            is_main: true,
+            is_stdlib: false,
+        }
+    }
+
+    fn into_module(self, file: syn::File) -> CompiledModule {
+        CompiledModule {
+            mod_name: self.mod_name,
+            import_path: self.import_path,
+            file,
+            filename: self.filename,
+            content_hash: self.content_hash,
+            is_main: self.is_main,
+            is_stdlib: self.is_stdlib,
+        }
+    }
+}
+
+struct LoweringContext<'a> {
+    type_env: typeinfer::TypeEnv,
+    import_rewrites: BTreeMap<String, String>,
+    dot_import_rewrites: BTreeMap<String, String>,
+    import_package_names: &'a BTreeMap<String, String>,
+}
+
+impl LoweringContext<'_> {
+    fn activate(&self) {
+        set_import_package_names(self.import_package_names.clone());
+        set_type_env(self.type_env.clone());
+        set_import_renames(self.import_rewrites.clone());
+        set_dot_import_renames(self.dot_import_rewrites.clone());
+    }
+}
+
 fn crate_root_type_path(type_name: &str) -> syn::Type {
     let type_ident = syn::Ident::new(&rust_safe_ident_name(type_name), Span::mixed_site());
     syn::parse_quote! { crate::#type_ident }
@@ -4388,7 +4881,7 @@ fn crate_module_type_path(module_name: &str, type_name: &str) -> syn::Type {
 
 fn external_program_concrete_types(
     main_type_env: &typeinfer::TypeEnv,
-    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_type_envs: &PackageFactMap,
     local_module_names: &BTreeMap<String, String>,
 ) -> Vec<(String, syn::Type)> {
     let mut out = main_type_env
@@ -4401,12 +4894,12 @@ fn external_program_concrete_types(
         })
         .collect::<Vec<_>>();
 
-    for (import_path, (package_name, env)) in local_type_envs {
+    for (import_path, facts) in local_type_envs {
         let Some(module_name) = local_module_names.get(import_path) else {
             continue;
         };
-        for type_name in env.struct_type_names() {
-            let go_name = format!("{package_name}.{type_name}");
+        for type_name in facts.type_env().struct_type_names() {
+            let go_name = format!("{}.{type_name}", facts.package_name());
             let rust_ty = crate_module_type_path(module_name, &type_name);
             out.push((go_name, rust_ty));
         }
@@ -4419,7 +4912,7 @@ fn external_program_concrete_types(
 
 fn external_interface_implementors_for_program(
     main_type_env: &typeinfer::TypeEnv,
-    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_type_envs: &PackageFactMap,
     local_module_names: &BTreeMap<String, String>,
 ) -> BTreeMap<String, Vec<syn::Type>> {
     let concrete_types =
@@ -4526,187 +5019,76 @@ fn compile_program_impl(
     program: crate::parser::ParsedProgram,
     source_map_config: Option<Vec<(String, String)>>,
 ) -> Result<CompiledProgram, CompilerError> {
-    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
-    LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
-    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
-    NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
-    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    let mut session = CompileSession::new(source_map_config);
+    let graph = PackageGraph::from_program(&program);
+    graph.seed_borrow_pointer_arg_indices(&program);
     let mut modules = BTreeMap::new();
-    let mut stdlib_imports = program.stdlib_imports.clone();
-    collect_known_stdlib_imports(&program.main_package.ast, &mut stdlib_imports);
-    for pkg in &program.imports {
-        collect_known_stdlib_imports(&pkg.ast, &mut stdlib_imports);
-    }
-    let mut local_type_envs: BTreeMap<String, (String, typeinfer::TypeEnv)> = BTreeMap::new();
-    {
-        let timer = ProfileTimer::start("compiler.local_type_inference");
-        for pkg in &program.imports {
-            let mut env = typeinfer::TypeEnv::new();
-            env.scan_file(&pkg.ast);
-            local_type_envs.insert(pkg.import_path.clone(), (pkg.name.clone(), env));
-        }
-        drop(timer);
-    }
-    let mut stdlib_type_envs: BTreeMap<String, (String, typeinfer::TypeEnv)> = BTreeMap::new();
 
     let builtins_file: syn::File = syn::parse_str(crate::printer::GORS_BUILTINS).map_err(|e| {
         CompilerError::UnsupportedConstruct(format!("failed to parse builtin: {e}"))
     })?;
     modules.insert(
         "builtin".to_string(),
-        CompiledModule {
-            mod_name: "builtin".to_string(),
-            import_path: "builtin".to_string(),
-            file: builtins_file,
-            filename: "builtin.rs".to_string(),
-            content_hash: String::new(),
-            is_main: false,
-            is_stdlib: true,
-        },
+        ModulePlan::builtin().into_module(builtins_file),
     );
-
-    let mut stdlib_type_env_paths = stdlib_imports.clone();
-    for stdlib_path in &stdlib_imports {
-        for transitive_import in crate::resolve::collect_transitive_imports(stdlib_path) {
-            if !stdlib_type_env_paths.contains(&transitive_import) {
-                stdlib_type_env_paths.push(transitive_import);
-            }
-        }
-    }
-    for stdlib_path in &stdlib_type_env_paths {
-        if let Some((package_name, env)) = crate::resolve::scan_type_env(stdlib_path) {
-            stdlib_type_envs.insert(stdlib_path.clone(), (package_name, env));
-        }
-    }
-    let stdlib_borrow_pointer_files = parse_stdlib_borrow_pointer_files(&stdlib_type_env_paths);
-    {
-        let files = std::iter::once(&program.main_package.ast)
-            .chain(program.imports.iter().map(|pkg| &pkg.ast))
-            .chain(stdlib_borrow_pointer_files.iter())
-            .collect::<Vec<_>>();
-        set_borrow_pointer_arg_indices_for_files(&files);
-    }
-
-    let import_package_names: BTreeMap<String, String> = local_type_envs
-        .iter()
-        .map(|(path, (package_name, _))| (path.clone(), package_name.clone()))
-        .chain(
-            stdlib_type_envs
-                .iter()
-                .map(|(path, (package_name, _))| (path.clone(), package_name.clone())),
-        )
-        .collect();
-
-    let stdlib_mod_names: std::collections::HashSet<String> =
-        std::iter::once("builtin".to_string())
-            .chain(
-                crate::resolve::list_packages()
-                    .into_iter()
-                    .map(|path| crate::resolve::module_name(&path)),
-            )
-            .chain(
-                stdlib_imports
-                    .iter()
-                    .map(|path| crate::resolve::module_name(path)),
-            )
-            .collect();
-    let local_module_names: BTreeMap<String, String> = program
-        .imports
-        .iter()
-        .map(|pkg| {
-            let mod_name = if stdlib_mod_names.contains(&pkg.name) {
-                import_path_to_mod_name(&pkg.import_path)
-            } else {
-                pkg.name.clone()
-            };
-            (pkg.import_path.clone(), mod_name)
-        })
-        .collect();
-    let local_init_modules: Vec<String> = program
-        .imports
-        .iter()
-        .filter_map(|pkg| local_module_names.get(&pkg.import_path).cloned())
-        .collect();
-    let stdlib_module_names: BTreeMap<String, String> = stdlib_imports
-        .iter()
-        .map(|path| (path.clone(), crate::resolve::module_name(path)))
-        .collect();
-    let pkg_names: std::collections::HashSet<String> = local_module_names
-        .values()
-        .cloned()
-        .chain(stdlib_module_names.values().cloned())
-        .collect();
 
     let local_compile_timer = ProfileTimer::start("compiler.local_compile");
     for pkg in program.imports {
-        let content_hash = compute_content_hash(&pkg.files);
-        let mut type_env = local_type_envs
+        let mut type_env = graph
+            .local_type_envs
             .get(&pkg.import_path)
-            .map(|(_, env)| env.clone())
+            .map(|facts| facts.type_env().clone())
             .unwrap_or_default();
-        merge_import_type_envs(&mut type_env, &pkg.ast, &local_type_envs, &stdlib_type_envs);
+        merge_import_type_envs(
+            &mut type_env,
+            &pkg.ast,
+            &graph.local_type_envs,
+            &graph.stdlib_type_envs,
+        );
         let import_rewrites = import_module_rewrites(
             &pkg.ast,
-            &local_type_envs,
-            &local_module_names,
-            &stdlib_type_envs,
-            &stdlib_module_names,
+            &graph.local_type_envs,
+            &graph.local_module_names,
+            &graph.stdlib_type_envs,
+            &graph.stdlib_module_names,
         );
+        let lowering = LoweringContext {
+            type_env,
+            dot_import_rewrites: dot_import_module_rewrites(
+                &pkg.ast,
+                &graph.local_type_envs,
+                &graph.local_module_names,
+                &graph.stdlib_type_envs,
+                &graph.stdlib_module_names,
+            ),
+            import_rewrites,
+            import_package_names: &graph.import_package_names,
+        };
         validate_file_with_type_env_and_import_package_names(
             &pkg.ast,
-            &type_env,
-            &import_package_names,
+            &lowering.type_env,
+            &graph.import_package_names,
         )?;
-        validate_unused_imports(&pkg.ast, &import_package_names)?;
-        let _ir = ir::lower_file(&pkg.ast, &type_env);
-        set_import_package_names(import_package_names.clone());
-        set_type_env(type_env);
-        set_import_renames(import_rewrites.clone());
-        set_dot_import_renames(dot_import_module_rewrites(
-            &pkg.ast,
-            &local_type_envs,
-            &local_module_names,
-            &stdlib_type_envs,
-            &stdlib_module_names,
-        ));
-        let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
-        rewrite_import_module_paths(&mut pkg_file, &import_rewrites);
-        passes::pass_for_imported_package(&mut pkg_file);
-        rewrite_import_module_paths(&mut pkg_file, &import_rewrites);
-        prefix_sibling_paths(&mut pkg_file, &pkg_names);
-
-        let filename = import_path_to_filename(&pkg.import_path);
-        let mod_name = local_module_names
+        validate_unused_imports(&pkg.ast, &graph.import_package_names)?;
+        let _ir = ir::lower_file(&pkg.ast, &lowering.type_env);
+        lowering.activate();
+        let mod_name = graph
+            .local_module_names
             .get(&pkg.import_path)
             .cloned()
             .unwrap_or_else(|| pkg.name.clone());
-        modules.insert(
-            pkg.import_path.clone(),
-            CompiledModule {
-                mod_name,
-                import_path: pkg.import_path.clone(),
-                file: pkg_file,
-                filename,
-                content_hash,
-                is_main: false,
-                is_stdlib: false,
-            },
-        );
+        let plan = ModulePlan::local(&pkg, mod_name);
+        let module_key = pkg.import_path.clone();
+        let mut pkg_file = TryInto::<syn::File>::try_into(pkg.ast)?;
+        rewrite_import_module_paths(&mut pkg_file, &lowering.import_rewrites);
+        passes::pass_for_imported_package(&mut pkg_file);
+        rewrite_import_module_paths(&mut pkg_file, &lowering.import_rewrites);
+        prefix_sibling_paths(&mut pkg_file, &graph.pkg_names);
+
+        modules.insert(module_key, plan.into_module(pkg_file));
     }
 
-    if let Some(sources) = source_map_config {
-        TRACKER.with(|t| {
-            t.borrow_mut().start_many(
-                sources
-                    .into_iter()
-                    .map(|(file, source)| (file, Some(source)))
-                    .collect(),
-                "main.rs",
-            );
-        });
-    }
+    session.start_main_source_map_tracking();
 
     let has_main_fn = program.main_package.name == "main"
         && program
@@ -4719,73 +5101,65 @@ fn compile_program_impl(
         return Err(invalid_signature_error(invalid));
     }
 
-    let main_hash = compute_content_hash(&program.main_package.files);
     let mut main_type_env = typeinfer::TypeEnv::new();
     main_type_env.scan_file(&program.main_package.ast);
     merge_import_type_envs(
         &mut main_type_env,
         &program.main_package.ast,
-        &local_type_envs,
-        &stdlib_type_envs,
+        &graph.local_type_envs,
+        &graph.stdlib_type_envs,
     );
-    for (package_name, env) in stdlib_type_envs.values() {
-        main_type_env.merge_package(package_name, env);
+    for facts in graph.stdlib_type_envs.values() {
+        main_type_env.merge_package(facts.package_name(), facts.type_env());
     }
     let main_import_rewrites = import_module_rewrites(
         &program.main_package.ast,
-        &local_type_envs,
-        &local_module_names,
-        &stdlib_type_envs,
-        &stdlib_module_names,
+        &graph.local_type_envs,
+        &graph.local_module_names,
+        &graph.stdlib_type_envs,
+        &graph.stdlib_module_names,
     );
+    let main_lowering = LoweringContext {
+        type_env: main_type_env,
+        dot_import_rewrites: dot_import_module_rewrites(
+            &program.main_package.ast,
+            &graph.local_type_envs,
+            &graph.local_module_names,
+            &graph.stdlib_type_envs,
+            &graph.stdlib_module_names,
+        ),
+        import_rewrites: main_import_rewrites,
+        import_package_names: &graph.import_package_names,
+    };
     validate_file_with_type_env_and_import_package_names(
         &program.main_package.ast,
-        &main_type_env,
-        &import_package_names,
+        &main_lowering.type_env,
+        &graph.import_package_names,
     )?;
-    validate_unused_imports(&program.main_package.ast, &import_package_names)?;
-    let _ir = ir::lower_file(&program.main_package.ast, &main_type_env);
+    validate_unused_imports(&program.main_package.ast, &graph.import_package_names)?;
+    let _ir = ir::lower_file(&program.main_package.ast, &main_lowering.type_env);
     let external_interface_implementors = external_interface_implementors_for_program(
-        &main_type_env,
-        &local_type_envs,
-        &local_module_names,
+        &main_lowering.type_env,
+        &graph.local_type_envs,
+        &graph.local_module_names,
     );
-    set_import_package_names(import_package_names);
-    set_type_env(main_type_env);
-    set_import_renames(main_import_rewrites.clone());
-    set_dot_import_renames(dot_import_module_rewrites(
-        &program.main_package.ast,
-        &local_type_envs,
-        &local_module_names,
-        &stdlib_type_envs,
-        &stdlib_module_names,
-    ));
+    let main_plan = ModulePlan::main(&program.main_package);
+    main_lowering.activate();
     let mut main_file: syn::File = program.main_package.ast.try_into()?;
-    prepend_local_package_init_calls(&mut main_file, &local_init_modules);
-    rewrite_import_module_paths(&mut main_file, &main_import_rewrites);
+    prepend_local_package_init_calls(&mut main_file, &graph.local_init_modules);
+    rewrite_import_module_paths(&mut main_file, &main_lowering.import_rewrites);
     passes::pass(&mut main_file);
-    rewrite_import_module_paths(&mut main_file, &main_import_rewrites);
+    rewrite_import_module_paths(&mut main_file, &main_lowering.import_rewrites);
 
-    modules.insert(
-        "__main__".to_string(),
-        CompiledModule {
-            mod_name: "main".to_string(),
-            import_path: String::new(),
-            file: main_file,
-            filename: "main.rs".to_string(),
-            content_hash: main_hash,
-            is_main: true,
-            is_stdlib: false,
-        },
-    );
+    modules.insert("__main__".to_string(), main_plan.into_module(main_file));
     drop(local_compile_timer);
 
     let stdlib_timer = ProfileTimer::start("compiler.stdlib_resolution");
     {
         let _external_interface_implementors =
             ExternalInterfaceImplementorsGuard::set(external_interface_implementors);
-        resolve_required_stdlib_modules(&mut modules, &stdlib_imports);
-        prune_dependency_stdlib_modules(&mut modules, &stdlib_imports);
+        resolve_required_stdlib_modules(&mut modules, &graph.stdlib_imports);
+        prune_dependency_stdlib_modules(&mut modules, &graph.stdlib_imports);
     }
     drop(stdlib_timer);
 
@@ -4795,7 +5169,7 @@ fn compile_program_impl(
 
     let dce_timer = ProfileTimer::start("compiler.dce");
     prune_generated_dead_code(&mut modules, has_main_fn);
-    inject_post_prune_stdlib_helpers(&mut modules, &stdlib_imports);
+    inject_post_prune_stdlib_helpers(&mut modules, &graph.stdlib_imports);
     prune_generated_dead_code(&mut modules, has_main_fn);
     borrow_mutated_vec_params(&mut modules);
     restore_vec_newtype_method_receivers(&mut modules);
@@ -5249,33 +5623,22 @@ fn record_fn_arg_receiver_type(
 
 fn local_receiver_type_binding(
     local: &syn::Local,
-    current_module: &str,
-    module_names: &std::collections::HashSet<String>,
-    item_names: &std::collections::HashSet<String>,
-    top_level_return_types: &ReceiverTypeMap,
-    top_level_field_types: &ReceiverFieldTypeMap,
-    scopes: &[BTreeMap<String, ReceiverTypeRef>],
-    current_self_type: Option<&ReceiverTypeRef>,
+    context: &ReceiverTypeContext<'_>,
 ) -> Option<(String, ReceiverTypeRef)> {
     let name = rust_pat_ident_name(&local.pat)?;
     if let syn::Pat::Type(pat_type) = &local.pat
-        && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names)
+        && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, context.module_names)
     {
         return Some((name, receiver_type));
     }
     let init = local.init.as_ref()?;
-    let receiver_type = method_receiver_type_from_expr(
-        &init.expr,
-        current_module,
-        module_names,
-        item_names,
-        top_level_return_types,
-        top_level_field_types,
-        scopes,
-        current_self_type,
-    )
-    .or_else(|| {
-        receiver_type_from_init_expr(&init.expr, module_names, item_names, top_level_return_types)
+    let receiver_type = method_receiver_type_from_expr(&init.expr, context).or_else(|| {
+        receiver_type_from_init_expr(
+            &init.expr,
+            context.module_names,
+            context.item_names,
+            context.top_level_return_types,
+        )
     })?;
     Some((name, receiver_type))
 }
@@ -5292,13 +5655,7 @@ fn record_local_receiver_type(
 
 fn method_receiver_type_from_expr(
     expr: &syn::Expr,
-    current_module: &str,
-    module_names: &std::collections::HashSet<String>,
-    item_names: &std::collections::HashSet<String>,
-    top_level_return_types: &ReceiverTypeMap,
-    top_level_field_types: &ReceiverFieldTypeMap,
-    scopes: &[BTreeMap<String, ReceiverTypeRef>],
-    current_self_type: Option<&ReceiverTypeRef>,
+    context: &ReceiverTypeContext<'_>,
 ) -> Option<ReceiverTypeRef> {
     match expr {
         syn::Expr::Call(call) => {
@@ -5306,145 +5663,72 @@ fn method_receiver_type_from_expr(
                 || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "from_arc"])
             {
                 return call.args.first().and_then(|arg| {
-                    method_receiver_type_from_expr(
-                        arg,
-                        current_module,
-                        module_names,
-                        item_names,
-                        top_level_return_types,
-                        top_level_field_types,
-                        scopes,
-                        current_self_type,
-                    )
-                    .or_else(|| {
+                    method_receiver_type_from_expr(arg, context).or_else(|| {
                         receiver_type_from_init_expr(
                             arg,
-                            module_names,
-                            item_names,
-                            top_level_return_types,
+                            context.module_names,
+                            context.item_names,
+                            context.top_level_return_types,
                         )
                     })
                 });
             }
-            receiver_type_from_init_expr(expr, module_names, item_names, top_level_return_types)
-                .or_else(|| {
-                    if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
-                        call.args.first().and_then(|arg| {
-                            method_receiver_type_from_expr(
-                                arg,
-                                current_module,
-                                module_names,
-                                item_names,
-                                top_level_return_types,
-                                top_level_field_types,
-                                scopes,
-                                current_self_type,
-                            )
-                        })
-                    } else {
-                        None
-                    }
-                })
+            receiver_type_from_init_expr(
+                expr,
+                context.module_names,
+                context.item_names,
+                context.top_level_return_types,
+            )
+            .or_else(|| {
+                if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
+                    call.args
+                        .first()
+                        .and_then(|arg| method_receiver_type_from_expr(arg, context))
+                } else {
+                    None
+                }
+            })
         }
-        syn::Expr::Cast(cast) => method_receiver_type_from_expr(
-            &cast.expr,
-            current_module,
-            module_names,
-            item_names,
-            top_level_return_types,
-            top_level_field_types,
-            scopes,
-            current_self_type,
-        ),
+        syn::Expr::Cast(cast) => method_receiver_type_from_expr(&cast.expr, context),
         syn::Expr::Field(field) => {
-            let base_type = method_receiver_type_from_expr(
-                &field.base,
-                current_module,
-                module_names,
-                item_names,
-                top_level_return_types,
-                top_level_field_types,
-                scopes,
-                current_self_type,
-            )?;
+            let base_type = method_receiver_type_from_expr(&field.base, context)?;
             let syn::Member::Named(member) = &field.member else {
                 return None;
             };
-            top_level_field_types
+            context
+                .top_level_field_types
                 .get(&base_type.name)
                 .and_then(|fields| fields.get(&member.to_string()))
                 .cloned()
         }
-        syn::Expr::Group(group) => method_receiver_type_from_expr(
-            &group.expr,
-            current_module,
-            module_names,
-            item_names,
-            top_level_return_types,
-            top_level_field_types,
-            scopes,
-            current_self_type,
-        ),
+        syn::Expr::Group(group) => method_receiver_type_from_expr(&group.expr, context),
         syn::Expr::MethodCall(method)
             if matches!(
                 method.method.to_string().as_str(),
                 "clone" | "lock" | "unwrap"
             ) =>
         {
-            method_receiver_type_from_expr(
-                &method.receiver,
-                current_module,
-                module_names,
-                item_names,
-                top_level_return_types,
-                top_level_field_types,
-                scopes,
-                current_self_type,
-            )
+            method_receiver_type_from_expr(&method.receiver, context)
         }
-        syn::Expr::Paren(paren) => method_receiver_type_from_expr(
-            &paren.expr,
-            current_module,
-            module_names,
-            item_names,
-            top_level_return_types,
-            top_level_field_types,
-            scopes,
-            current_self_type,
-        ),
+        syn::Expr::Paren(paren) => method_receiver_type_from_expr(&paren.expr, context),
         syn::Expr::Path(path)
             if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
         {
             let name = path.path.segments.first()?.ident.to_string();
             if name == "self" {
-                return current_self_type.cloned();
+                return context.current_self_type.cloned();
             }
-            scopes
+            context
+                .scopes
                 .iter()
                 .rev()
                 .find_map(|scope| scope.get(&name).cloned())
         }
-        syn::Expr::Reference(reference) => method_receiver_type_from_expr(
-            &reference.expr,
-            current_module,
-            module_names,
-            item_names,
-            top_level_return_types,
-            top_level_field_types,
-            scopes,
-            current_self_type,
-        ),
-        syn::Expr::Struct(expr_struct) => receiver_type_from_path(&expr_struct.path, module_names),
-        syn::Expr::Unary(unary) => method_receiver_type_from_expr(
-            &unary.expr,
-            current_module,
-            module_names,
-            item_names,
-            top_level_return_types,
-            top_level_field_types,
-            scopes,
-            current_self_type,
-        ),
+        syn::Expr::Reference(reference) => method_receiver_type_from_expr(&reference.expr, context),
+        syn::Expr::Struct(expr_struct) => {
+            receiver_type_from_path(&expr_struct.path, context.module_names)
+        }
+        syn::Expr::Unary(unary) => method_receiver_type_from_expr(&unary.expr, context),
         _ => None,
     }
 }
@@ -5904,16 +6188,15 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
         syn::visit_mut::visit_local_mut(self, local);
-        if let Some((name, receiver_type)) = local_receiver_type_binding(
-            local,
-            &self.module_name,
-            self.module_names,
-            self.item_names,
-            self.top_level_return_types,
-            self.top_level_field_types,
-            &self.local_types,
-            self.current_self_type.as_ref(),
-        ) {
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
+        if let Some((name, receiver_type)) = local_receiver_type_binding(local, &context) {
             record_local_receiver_type(name, receiver_type, &mut self.local_types);
         }
     }
@@ -5935,20 +6218,18 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
         let Some(indices) = self.method_targets.indices_for_call(
             &self.module_name,
             &call.method.to_string(),
-            method_receiver_type_from_expr(
-                &call.receiver,
-                &self.module_name,
-                self.module_names,
-                self.item_names,
-                self.top_level_return_types,
-                self.top_level_field_types,
-                &self.local_types,
-                self.current_self_type.as_ref(),
-            )
-            .as_ref(),
+            method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
         ) else {
             return;
         };
@@ -6345,9 +6626,7 @@ fn cloneable_value_param_kind(
     if type_path.qself.is_some() {
         return None;
     }
-    let Some(segment) = type_path.path.segments.last() else {
-        return None;
-    };
+    let segment = type_path.path.segments.last()?;
     (matches!(segment.ident.to_string().as_str(), "String")
         || clone_type_params.contains(&segment.ident.to_string()))
     .then_some(CloneValueParamKind::Clone)
@@ -6428,16 +6707,15 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
         syn::visit_mut::visit_local_mut(self, local);
-        if let Some((name, receiver_type)) = local_receiver_type_binding(
-            local,
-            &self.module_name,
-            self.module_names,
-            self.item_names,
-            self.top_level_return_types,
-            self.top_level_field_types,
-            &self.local_types,
-            self.current_self_type.as_ref(),
-        ) {
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
+        if let Some((name, receiver_type)) = local_receiver_type_binding(local, &context) {
             record_local_receiver_type(name, receiver_type, &mut self.local_types);
         }
     }
@@ -6468,20 +6746,18 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
         let Some(kinds) = self.method_targets.kinds_for_call(
             &self.module_name,
             &call.method.to_string(),
-            method_receiver_type_from_expr(
-                &call.receiver,
-                &self.module_name,
-                self.module_names,
-                self.item_names,
-                self.top_level_return_types,
-                self.top_level_field_types,
-                &self.local_types,
-                self.current_self_type.as_ref(),
-            )
-            .as_ref(),
+            method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
         ) else {
             return;
         };
@@ -6739,16 +7015,15 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
 
     fn visit_local_mut(&mut self, local: &mut syn::Local) {
         syn::visit_mut::visit_local_mut(self, local);
-        if let Some((name, receiver_type)) = local_receiver_type_binding(
-            local,
-            &self.module_name,
-            self.module_names,
-            self.item_names,
-            self.top_level_return_types,
-            self.top_level_field_types,
-            &self.local_types,
-            self.current_self_type.as_ref(),
-        ) {
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
+        if let Some((name, receiver_type)) = local_receiver_type_binding(local, &context) {
             record_local_receiver_type(name, receiver_type, &mut self.local_types);
         }
     }
@@ -6770,20 +7045,18 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
 
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
+        let context = ReceiverTypeContext {
+            module_names: self.module_names,
+            item_names: self.item_names,
+            top_level_return_types: self.top_level_return_types,
+            top_level_field_types: self.top_level_field_types,
+            scopes: &self.local_types,
+            current_self_type: self.current_self_type.as_ref(),
+        };
         let Some(indices) = self.method_targets.indices_for_call(
             &self.module_name,
             &call.method.to_string(),
-            method_receiver_type_from_expr(
-                &call.receiver,
-                &self.module_name,
-                self.module_names,
-                self.item_names,
-                self.top_level_return_types,
-                self.top_level_field_types,
-                &self.local_types,
-                self.current_self_type.as_ref(),
-            )
-            .as_ref(),
+            method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
         ) else {
             return;
         };
@@ -7062,6 +7335,11 @@ fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String
 
 fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has_main: bool) {
     use std::collections::{HashMap, HashSet};
+
+    if semantic_reachability_graph_enabled() {
+        let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
+        debug_assert!(semantic_graph.has_consistent_local_edges());
+    }
 
     loop {
         let before = modules_reachability_fingerprint(modules);
@@ -7802,19 +8080,19 @@ fn prune_use_tree(tree: &mut syn::UseTree, used: &std::collections::HashSet<Stri
 pub(crate) fn merge_import_type_envs(
     type_env: &mut typeinfer::TypeEnv,
     file: &ast::File,
-    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
-    stdlib_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_type_envs: &PackageFactMap,
+    stdlib_type_envs: &PackageFactMap,
 ) {
     for import in file.imports() {
         let import_path = import.path.value.trim_matches('"');
-        if let Some((package_name, package_env)) = local_type_envs.get(import_path) {
-            let local_name = import_type_env_local_name(&import, package_name);
-            type_env.merge_package(&local_name, package_env);
+        if let Some(package_facts) = local_type_envs.get(import_path) {
+            let local_name = import_type_env_local_name(import, package_facts.package_name());
+            type_env.merge_package(&local_name, package_facts.type_env());
             continue;
         }
-        if let Some((package_name, package_env)) = stdlib_type_envs.get(import_path) {
-            let local_name = import_type_env_local_name(&import, package_name);
-            type_env.merge_package(&local_name, package_env);
+        if let Some(package_facts) = stdlib_type_envs.get(import_path) {
+            let local_name = import_type_env_local_name(import, package_facts.package_name());
+            type_env.merge_package(&local_name, package_facts.type_env());
         }
     }
 }
@@ -7832,15 +8110,15 @@ fn import_type_env_local_name(import: &ast::ImportSpec<'_>, package_name: &str) 
 
 fn import_module_rewrites(
     file: &ast::File,
-    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_type_envs: &PackageFactMap,
     local_module_names: &BTreeMap<String, String>,
-    stdlib_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    stdlib_type_envs: &PackageFactMap,
     stdlib_module_names: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut rewrites = BTreeMap::new();
     for import in file.imports() {
         let import_path = import.path.value.trim_matches('"');
-        let (Some(mod_name), Some((package_name, _))) = (
+        let (Some(mod_name), Some(package_facts)) = (
             local_module_names
                 .get(import_path)
                 .or_else(|| stdlib_module_names.get(import_path)),
@@ -7857,7 +8135,7 @@ fn import_module_rewrites(
                 "." | "_" => None,
                 other => Some(other.to_string()),
             })
-            .unwrap_or_else(|| package_name.clone());
+            .unwrap_or_else(|| package_facts.package_name().to_string());
         if local_name != *mod_name {
             rewrites.insert(local_name, mod_name.clone());
         }
@@ -7867,9 +8145,9 @@ fn import_module_rewrites(
 
 fn dot_import_module_rewrites(
     file: &ast::File,
-    local_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    local_type_envs: &PackageFactMap,
     local_module_names: &BTreeMap<String, String>,
-    stdlib_type_envs: &BTreeMap<String, (String, typeinfer::TypeEnv)>,
+    stdlib_type_envs: &PackageFactMap,
     stdlib_module_names: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut rewrites = BTreeMap::new();
@@ -7878,7 +8156,7 @@ fn dot_import_module_rewrites(
             continue;
         }
         let import_path = import.path.value.trim_matches('"');
-        let Some((mod_name, (_, env))) = local_module_names
+        let Some((mod_name, package_facts)) = local_module_names
             .get(import_path)
             .zip(local_type_envs.get(import_path))
             .or_else(|| {
@@ -7889,7 +8167,7 @@ fn dot_import_module_rewrites(
         else {
             continue;
         };
-        for name in env.exported_names() {
+        for name in package_facts.type_env().exported_names() {
             rewrites.insert(name, mod_name.clone());
         }
     }
@@ -9025,6 +9303,15 @@ type ReceiverTypeMap = std::collections::HashMap<String, ReceiverTypeRef>;
 type ReceiverFieldTypeMap = std::collections::HashMap<String, ReceiverTypeMap>;
 type ReceiverTupleTypes = Vec<Option<ReceiverTypeRef>>;
 type ReceiverTupleReturnMap = std::collections::HashMap<String, ReceiverTupleTypes>;
+
+struct ReceiverTypeContext<'a> {
+    module_names: &'a std::collections::HashSet<String>,
+    item_names: &'a std::collections::HashSet<String>,
+    top_level_return_types: &'a ReceiverTypeMap,
+    top_level_field_types: &'a ReceiverFieldTypeMap,
+    scopes: &'a [BTreeMap<String, ReceiverTypeRef>],
+    current_self_type: Option<&'a ReceiverTypeRef>,
+}
 
 struct RefCollectionContext<'a> {
     module_names: &'a ReachabilityNameSet,
@@ -12061,7 +12348,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             };
             NON_CLONE_STRUCTS.with(|structs| {
                 let mut structs = structs.borrow_mut();
-                if cannot_derive_clone && !(needs_manual_clone && !cannot_manual_clone) {
+                if cannot_derive_clone && (!needs_manual_clone || cannot_manual_clone) {
                     structs.insert(ident.to_string());
                 } else {
                     structs.remove(&ident.to_string());
@@ -13010,7 +13297,7 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
             if let Some(init) = &mut local.init
                 && matches!(&*init.expr, syn::Expr::Path(path) if path.path.is_ident("self"))
             {
-                init.expr = Box::new(syn::parse_quote! { (*self).clone() });
+                *init.expr = syn::parse_quote! { (*self).clone() };
             }
         }
 
@@ -13022,7 +13309,7 @@ fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: 
             if let Some(expr) = &mut ret.expr
                 && matches!(&**expr, syn::Expr::Path(path) if path.path.is_ident("self"))
             {
-                *expr = Box::new(syn::parse_quote! { (*self).clone() });
+                **expr = syn::parse_quote! { (*self).clone() };
             }
         }
 
@@ -14587,7 +14874,20 @@ fn builtin_call_kind(call_expr: &ast::CallExpr) -> Option<ir::BuiltinCallKind> {
 }
 
 fn is_variadic_call(call_expr: &ast::CallExpr) -> Option<usize> {
-    TYPE_ENV.with(|env| ir::variadic_call_start(call_expr, &env.borrow()))
+    call_abi_for_backend(call_expr).variadic_start
+}
+
+fn call_abi_for_backend(call_expr: &ast::CallExpr) -> ir::CallAbi {
+    TYPE_ENV.with(|env| ir::call_abi(call_expr, &env.borrow()))
+}
+
+fn call_signature_param_types(call_expr: &ast::CallExpr) -> Vec<typeinfer::GoType> {
+    let abi = call_abi_for_backend(call_expr);
+    if abi.signature_params.is_empty() {
+        call_param_types(&call_expr.fun)
+    } else {
+        abi.signature_params
+    }
 }
 
 enum VariadicCallTarget {
@@ -14629,7 +14929,7 @@ fn compile_variadic_call_target(fun: ast::Expr) -> VariadicCallTarget {
 }
 
 fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {
-    let param_types = call_param_types(&call_expr.fun);
+    let param_types = call_signature_param_types(&call_expr);
     let target = compile_variadic_call_target(*call_expr.fun);
 
     let variadic_elem = param_types.get(variadic_start).and_then(|ty| match ty {
@@ -15328,11 +15628,10 @@ fn struct_field_is_borrowed_interface(type_name: Option<&str>, field_name: &str)
     };
     let field_name = rust_safe_ident_name(field_name);
     BORROWED_INTERFACE_STRUCTS.with(|structs| {
-        structs.borrow().get(type_name).is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|field| field.field_ident.to_string() == field_name)
-        })
+        structs
+            .borrow()
+            .get(type_name)
+            .is_some_and(|fields| fields.iter().any(|field| field.field_ident == field_name))
     })
 }
 
@@ -20640,8 +20939,13 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         n
     });
     let fun_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&call.fun, &env.borrow()));
-    let param_types = call_param_types(&call.fun);
-    let variadic_start = is_variadic_call(&call);
+    let call_abi = call_abi_for_backend(&call);
+    let param_types = if call_abi.signature_params.is_empty() {
+        call_param_types(&call.fun)
+    } else {
+        call_abi.signature_params.clone()
+    };
+    let variadic_start = call_abi.variadic_start;
 
     if !is_function_item_expr(&call.fun)
         && !is_function_literal_expr(&call.fun)
@@ -21721,7 +22025,7 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::ExprBlock {
 impl From<ast::CallExpr<'_>> for syn::ExprCall {
     fn from(call_expr: ast::CallExpr) -> Self {
         record_mapping(&call_expr.lparen, None);
-        let param_types = call_param_types(&call_expr.fun);
+        let param_types = call_signature_param_types(&call_expr);
         let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
 
         let func = compile_call_function_expr(*call_expr.fun);
@@ -21817,7 +22121,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         args,
                     });
                 }
-                let param_types = call_param_types(&call_expr.fun);
+                let param_types = call_signature_param_types(&call_expr);
                 let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
                 // Detect method call vs package function call
                 let is_method_call = matches!(&*call_expr.fun, ast::Expr::SelectorExpr(sel) if {
@@ -22701,7 +23005,7 @@ fn promoted_concrete_interface_impl_item(
             syn::FnArg::Receiver(_) => None,
         })
         .collect::<Vec<_>>();
-    let mut sig = method.sig.clone();
+    let mut sig = method.sig;
     if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
         receiver.mutability = Some(<Token![mut]>::default());
         *receiver.ty = syn::parse_quote! { &mut Self };
@@ -28137,9 +28441,10 @@ mod tests {
     //! compiler passes).
 
     use super::{build_source_map, clear_source_map_tracker, compile, compile_with_source_map};
-    use crate::parser::parse_file;
+    use crate::parser::{ParsedPackage, ParsedProgram, parse_file};
     use crate::printer;
     use quote::quote;
+    use std::collections::BTreeMap;
     use std::path::Path;
     use syn::parse_quote as rust;
 
@@ -28203,6 +28508,84 @@ func main() {
         assert!(output.contains("x += 2"));
         assert!(output.contains("x <<= 1"));
         assert!(output.contains("x &= 3"));
+    }
+
+    #[test]
+    fn package_graph_collects_package_facts_and_module_names() {
+        let main_source = r#"
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("ok")
+}
+"#;
+        let local_source = r#"
+package fmt
+
+import "bytes"
+
+func F() {}
+"#;
+        let program = ParsedProgram {
+            main_package: ParsedPackage {
+                name: "main".to_string(),
+                import_path: String::new(),
+                ast: parse_file("main.go", main_source).unwrap(),
+                files: vec![("main.go".to_string(), main_source.to_string())],
+            },
+            imports: vec![ParsedPackage {
+                name: "fmt".to_string(),
+                import_path: "example/fmt".to_string(),
+                ast: parse_file("fmt.go", local_source).unwrap(),
+                files: vec![("fmt.go".to_string(), local_source.to_string())],
+            }],
+            stdlib_imports: Vec::new(),
+        };
+
+        let graph = super::PackageGraph::from_program(&program);
+
+        assert!(graph.stdlib_imports.iter().any(|path| path == "fmt"));
+        assert!(graph.stdlib_imports.iter().any(|path| path == "bytes"));
+        assert_eq!(
+            graph
+                .local_module_names
+                .get("example/fmt")
+                .map(String::as_str),
+            Some("example__fmt")
+        );
+        assert_eq!(
+            graph
+                .import_package_names
+                .get("example/fmt")
+                .map(String::as_str),
+            Some("fmt")
+        );
+        assert_eq!(graph.local_init_modules, vec!["example__fmt".to_string()]);
+    }
+
+    #[test]
+    fn module_plan_records_generated_module_metadata() {
+        let local_source = "package lib\nfunc F() {}\n";
+        let local_pkg = ParsedPackage {
+            name: "lib".to_string(),
+            import_path: "example/lib".to_string(),
+            ast: parse_file("lib.go", local_source).unwrap(),
+            files: vec![("lib.go".to_string(), local_source.to_string())],
+        };
+
+        let local_plan = super::ModulePlan::local(&local_pkg, "example__lib".to_string());
+        assert_eq!(local_plan.mod_name, "example__lib");
+        assert_eq!(local_plan.import_path, "example/lib");
+        assert_eq!(local_plan.filename, "example__lib.rs");
+        assert!(!local_plan.is_main);
+        assert!(!local_plan.is_stdlib);
+
+        let builtin_plan = super::ModulePlan::builtin();
+        assert_eq!(builtin_plan.mod_name, "builtin");
+        assert_eq!(builtin_plan.filename, "builtin.rs");
+        assert!(builtin_plan.is_stdlib);
     }
 
     fn write_fixture_file(path: &Path, source: &str) {
@@ -32979,6 +33362,105 @@ func B() {}
             }
             err => panic!("expected duplicate import rejection, got {err:?}"),
         }
+    }
+
+    fn semantic_test_module(
+        mod_name: &str,
+        file: syn::File,
+        is_main: bool,
+    ) -> super::CompiledModule {
+        super::CompiledModule {
+            mod_name: mod_name.to_string(),
+            import_path: mod_name.to_string(),
+            file,
+            filename: format!("{mod_name}.rs"),
+            content_hash: String::new(),
+            is_main,
+            is_stdlib: false,
+        }
+    }
+
+    fn semantic_item_id(
+        module: &str,
+        kind: super::SemanticItemKind,
+        name: &str,
+    ) -> super::SemanticItemId {
+        super::SemanticItemId {
+            module: module.to_string(),
+            kind,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn semantic_reachability_graph_records_roots_and_local_edges() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub fn main() {
+                        helper();
+                    }
+
+                    fn helper() {}
+                },
+                true,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let main_id = semantic_item_id("__main__", super::SemanticItemKind::Function, "main");
+        let helper_id = semantic_item_id("__main__", super::SemanticItemKind::Function, "helper");
+
+        assert!(graph.has_consistent_local_edges());
+        assert!(graph.roots.contains(&main_id));
+        assert!(graph.nodes.contains_key(&helper_id));
+        let main_node = graph.nodes.get(&main_id).expect("expected main node");
+        assert!(main_node.local_refs.contains(&helper_id), "{main_node:?}");
+    }
+
+    #[test]
+    fn semantic_reachability_graph_records_external_edges() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub fn main() {
+                        live::Hello();
+                    }
+                },
+                true,
+            ),
+        );
+        modules.insert(
+            "live".to_string(),
+            semantic_test_module(
+                "live",
+                rust! {
+                    pub fn Hello() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let main_id = semantic_item_id("__main__", super::SemanticItemKind::Function, "main");
+        let live_id = semantic_item_id("live", super::SemanticItemKind::Function, "Hello");
+
+        assert!(graph.has_consistent_local_edges());
+        assert!(graph.nodes.contains_key(&live_id));
+        let main_node = graph.nodes.get(&main_id).expect("expected main node");
+        assert!(
+            main_node
+                .external_refs
+                .get("live")
+                .is_some_and(|refs| refs.contains("Hello")),
+            "{main_node:?}"
+        );
     }
 
     #[test]
