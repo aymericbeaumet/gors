@@ -9608,10 +9608,17 @@ fn trait_impl_can_follow_self_reachability(
     {
         return true;
     }
-    if trait_name == "Stringer" && path_starts_with(path, &["crate", "fmt"]) {
+    if external_trait_impl_requires_explicit_reachability(path, trait_name) {
         return false;
     }
     !top_level_names.contains(trait_name)
+}
+
+fn external_trait_impl_requires_explicit_reachability(path: &syn::Path, trait_name: &str) -> bool {
+    // Do not generalize this to all qualified external traits: generated
+    // interface conversions for builtin errors and local packages still depend
+    // on self-reachable external impls.
+    trait_name == "Stringer" && path_starts_with(path, &["crate", "fmt"])
 }
 
 fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
