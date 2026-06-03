@@ -16,6 +16,7 @@
 
 mod builtin_roots;
 mod display_impls;
+mod interface_hooks;
 pub mod ir;
 mod item_reachability;
 pub mod manifest;
@@ -28,9 +29,7 @@ pub mod typeinfer;
 
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
-use item_reachability::{
-    impl_method_reachability_name, is_noop_interface_type_name, reachable_item_for_names,
-};
+use item_reachability::{impl_method_reachability_name, reachable_item_for_names};
 use proc_macro2::Span;
 use quote::ToTokens;
 use sha2::{Digest, Sha256};
@@ -7790,7 +7789,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         }
 
         for module in modules.values_mut() {
-            add_missing_interface_clone_hooks(&mut module.file.items);
+            interface_hooks::add_missing_clone_hooks(&mut module.file.items);
         }
 
         let empty_modules: Vec<String> = modules
@@ -8743,7 +8742,7 @@ pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
         })
         .collect::<Vec<_>>();
     file.items.extend(additions);
-    add_missing_interface_clone_hooks(&mut file.items);
+    interface_hooks::add_missing_clone_hooks(&mut file.items);
 }
 
 fn impl_trait_targets_match(left: &syn::Item, right: &syn::Item) -> bool {
@@ -10584,10 +10583,6 @@ fn is_reachability_name(name: &str) -> bool {
     )
 }
 
-fn is_runtime_interface_hook(name: &str) -> bool {
-    matches!(name, "__gors_as_any" | "__gors_clone_box")
-}
-
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
 ///
 /// This is like [`compile`], but also enables source map tracking.
@@ -11590,22 +11585,6 @@ fn interface_box_clone_impl(ident: &syn::Ident) -> syn::Item {
     }
 }
 
-fn interface_clone_box_impl_item(trait_path: &syn::Path, can_clone_self: bool) -> syn::ImplItem {
-    if can_clone_self {
-        syn::parse_quote! {
-            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
-                Box::new(self.clone()) as Box<dyn #trait_path>
-            }
-        }
-    } else {
-        syn::parse_quote! {
-            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
-                crate::builtin::panic_value("cloned non-clone interface value")
-            }
-        }
-    }
-}
-
 fn noop_interface_items(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Vec<syn::Item> {
     let noop_ident = syn::Ident::new(&format!("__GorsNoop{ident}"), Span::mixed_site());
     let mut impl_methods = Vec::new();
@@ -11905,66 +11884,6 @@ fn noop_interface_supertrait_impls(items: &[syn::Item]) -> Vec<syn::Item> {
     out
 }
 
-fn add_missing_interface_clone_hooks(items: &mut [syn::Item]) {
-    let clone_box_traits = items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Trait(item_trait) = item else {
-                return None;
-            };
-            let has_clone_box = item_trait.items.iter().any(|trait_item| {
-                matches!(trait_item, syn::TraitItem::Fn(func) if func.sig.ident == "__gors_clone_box")
-            });
-            has_clone_box.then(|| item_trait.ident.to_string())
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    if clone_box_traits.is_empty() {
-        return;
-    }
-
-    for item in items {
-        let syn::Item::Impl(item_impl) = item else {
-            continue;
-        };
-        let Some((_, trait_path, _)) = &item_impl.trait_ else {
-            continue;
-        };
-        let Some(trait_name) = trait_path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-        else {
-            continue;
-        };
-        if !clone_box_traits.contains(&trait_name) {
-            continue;
-        }
-        if item_impl.items.iter().any(|impl_item| {
-            matches!(impl_item, syn::ImplItem::Fn(func) if func.sig.ident == "__gors_clone_box")
-        }) {
-            continue;
-        }
-
-        let item = if named_self_type(&item_impl.self_ty)
-            .as_deref()
-            .is_some_and(is_noop_interface_type_name)
-        {
-            syn::parse_quote! {
-                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
-                    Box::new(Self::default()) as Box<dyn #trait_path>
-                }
-            }
-        } else {
-            syn::parse_quote! {
-                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
-                    crate::builtin::panic_value("cloned non-clone interface value")
-                }
-            }
-        };
-        item_impl.items.push(item);
-    }
-}
-
 fn collect_trait_method_fns(items: &[syn::Item]) -> BTreeMap<String, Vec<syn::TraitItemFn>> {
     let mut traits = BTreeMap::new();
     for item in items {
@@ -12027,7 +11946,7 @@ fn embedded_interface_impls(
                 }
 
                 let mut sig = trait_fn.sig.clone();
-                let is_hook = is_runtime_interface_hook(&sig.ident.to_string());
+                let is_hook = interface_hooks::is_runtime_hook(&sig.ident.to_string());
                 if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
                     if is_hook {
                         receiver.mutability = None;
@@ -12073,7 +11992,7 @@ fn embedded_interface_impls(
             for trait_fn in required_methods {
                 let mut sig = trait_fn.sig.clone();
                 let method_name = sig.ident.to_string();
-                let is_hook = is_runtime_interface_hook(&method_name);
+                let is_hook = interface_hooks::is_runtime_hook(&method_name);
                 if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
                     if is_hook {
                         receiver.mutability = None;
@@ -23314,7 +23233,10 @@ fn concrete_interface_impl_items_for_methods(
     if trait_name != "error" {
         let can_clone_self =
             NON_CLONE_STRUCTS.with(|structs| !structs.borrow().contains(struct_name));
-        impl_items.push(interface_clone_box_impl_item(&trait_path, can_clone_self));
+        impl_items.push(interface_hooks::clone_box_impl_item(
+            &trait_path,
+            can_clone_self,
+        ));
     }
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
@@ -23441,7 +23363,7 @@ fn pointer_interface_impl_items_for_methods(
         }
     }];
     if trait_name != "error" {
-        impl_items.push(interface_clone_box_impl_item(trait_path, true));
+        impl_items.push(interface_hooks::clone_box_impl_item(trait_path, true));
     }
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
@@ -23512,7 +23434,7 @@ fn borrowed_pointer_interface_impl_items_for_methods(
         }
     }];
     if trait_name != "error" {
-        impl_items.push(interface_clone_box_impl_item(trait_path, false));
+        impl_items.push(interface_hooks::clone_box_impl_item(trait_path, false));
     }
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
@@ -24319,7 +24241,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             });
         }
-        add_missing_interface_clone_hooks(&mut items);
+        interface_hooks::add_missing_clone_hooks(&mut items);
 
         Ok(Self {
             attrs: vec![],
@@ -37387,7 +37309,7 @@ func (value) M() {}
             }
         };
 
-        super::add_missing_interface_clone_hooks(&mut file.items);
+        super::interface_hooks::add_missing_clone_hooks(&mut file.items);
         let output = quote! { #file }.to_string();
 
         assert!(

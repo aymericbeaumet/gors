@@ -31,7 +31,7 @@ pub(super) fn reachable_item_for_names(
         filtered.items.retain(|trait_item| match trait_item {
             syn::TraitItem::Fn(func) => {
                 let name = func.sig.ident.to_string();
-                super::is_runtime_interface_hook(&name)
+                super::interface_hooks::is_runtime_hook(&name)
                     || trait_item_name_reachable(&trait_name, &name, names)
             }
             syn::TraitItem::Const(konst) => {
@@ -117,7 +117,7 @@ pub(super) fn reachable_item_for_names(
             filtered.items.retain(|impl_item| match impl_item {
                 syn::ImplItem::Fn(func) => {
                     let name = func.sig.ident.to_string();
-                    super::is_runtime_interface_hook(&name)
+                    super::interface_hooks::is_runtime_hook(&name)
                         || trait_item_name_reachable(&trait_name, &name, names)
                 }
                 syn::ImplItem::Const(konst) => {
@@ -144,7 +144,7 @@ pub(super) fn reachable_item_for_names(
     if item_impl.trait_.is_some() {
         if self_name
             .as_deref()
-            .is_some_and(is_noop_interface_type_name)
+            .is_some_and(super::interface_hooks::is_noop_type_name)
         {
             return Some(item.clone());
         }
@@ -233,10 +233,6 @@ fn external_trait_impl_requires_explicit_reachability(path: &syn::Path, trait_na
     // interface conversions for builtin errors and local packages still depend
     // on self-reachable external impls.
     trait_name == "Stringer" && path_starts_with(path, &["crate", "fmt"])
-}
-
-pub(super) fn is_noop_interface_type_name(name: &str) -> bool {
-    name.starts_with("__GorsNoop")
 }
 
 pub(super) fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
