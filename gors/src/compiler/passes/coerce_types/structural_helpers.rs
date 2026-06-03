@@ -1,23 +1,24 @@
 use syn::visit_mut::{self, VisitMut};
 
+type NameSet = std::collections::HashSet<String>;
+type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
+
 #[derive(Default)]
 pub(super) struct Metadata {
-    fmt_flush_methods_by_receiver:
-        std::collections::BTreeMap<String, std::collections::HashSet<String>>,
-    self_reflect_value_fields:
-        std::collections::BTreeMap<String, std::collections::HashSet<String>>,
+    fmt_flush: FmtFlushMetadata,
+    reflection_fallback: ReflectionFallbackMetadata,
 }
 
 impl Metadata {
     pub(super) fn collect(file: &syn::File) -> Self {
         Self {
-            fmt_flush_methods_by_receiver: collect_fmt_flush_methods_by_receiver(file),
-            self_reflect_value_fields: collect_self_reflect_value_fields(file),
+            fmt_flush: FmtFlushMetadata::collect(file),
+            reflection_fallback: ReflectionFallbackMetadata::collect(file),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.fmt_flush_methods_by_receiver.is_empty() && self.self_reflect_value_fields.is_empty()
+        self.fmt_flush.is_empty() && self.reflection_fallback.is_empty()
     }
 
     pub(super) fn should_flush_after_stmt(
@@ -25,13 +26,8 @@ impl Metadata {
         impl_self_types: &[String],
         stmt: &syn::Stmt,
     ) -> bool {
-        let Some(methods) = impl_self_types
-            .last()
-            .and_then(|ty| self.fmt_flush_methods_by_receiver.get(ty))
-        else {
-            return false;
-        };
-        stmt_needs_fmt_flush(stmt, methods)
+        self.fmt_flush
+            .should_flush_after_stmt(impl_self_types, stmt)
     }
 
     pub(super) fn push_stmt_with_flush(
@@ -53,10 +49,10 @@ impl Metadata {
         &self,
         self_ty: &str,
         block: &syn::Block,
-    ) -> Option<&std::collections::HashSet<String>> {
-        let fields = self.self_reflect_value_fields.get(self_ty)?;
+    ) -> Option<&NameSet> {
+        let fields = self.reflection_fallback.fields_for_receiver(self_ty)?;
         (block_has_self_reflect_field_runtime_fallback(block, fields)
-            || (self.fmt_flush_methods_by_receiver.contains_key(self_ty)
+            || (self.fmt_flush.has_receiver(self_ty)
                 && block_mentions_self_reflect_field(block, fields)))
         .then_some(fields)
     }
@@ -65,9 +61,61 @@ impl Metadata {
         &self,
         self_ty: &str,
         block: &syn::Block,
-    ) -> Option<&std::collections::HashSet<String>> {
-        let fields = self.self_reflect_value_fields.get(self_ty)?;
+    ) -> Option<&NameSet> {
+        let fields = self.reflection_fallback.fields_for_receiver(self_ty)?;
         block_has_self_reflect_field_runtime_fallback(block, fields).then_some(fields)
+    }
+}
+
+#[derive(Default)]
+struct FmtFlushMetadata {
+    methods_by_receiver: ReceiverNameMap,
+}
+
+impl FmtFlushMetadata {
+    fn collect(file: &syn::File) -> Self {
+        Self {
+            methods_by_receiver: collect_fmt_flush_methods_by_receiver(file),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.methods_by_receiver.is_empty()
+    }
+
+    fn has_receiver(&self, self_ty: &str) -> bool {
+        self.methods_by_receiver.contains_key(self_ty)
+    }
+
+    fn should_flush_after_stmt(&self, impl_self_types: &[String], stmt: &syn::Stmt) -> bool {
+        let Some(methods) = impl_self_types
+            .last()
+            .and_then(|ty| self.methods_by_receiver.get(ty))
+        else {
+            return false;
+        };
+        stmt_needs_fmt_flush(stmt, methods)
+    }
+}
+
+#[derive(Default)]
+struct ReflectionFallbackMetadata {
+    self_reflect_value_fields: ReceiverNameMap,
+}
+
+impl ReflectionFallbackMetadata {
+    fn collect(file: &syn::File) -> Self {
+        Self {
+            self_reflect_value_fields: collect_self_reflect_value_fields(file),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.self_reflect_value_fields.is_empty()
+    }
+
+    fn fields_for_receiver(&self, self_ty: &str) -> Option<&NameSet> {
+        self.self_reflect_value_fields.get(self_ty)
     }
 }
 
@@ -122,12 +170,9 @@ impl VisitMut for CoerceStructuralHelpers {
     }
 }
 
-fn block_mentions_self_reflect_field(
-    block: &syn::Block,
-    fields: &std::collections::HashSet<String>,
-) -> bool {
+fn block_mentions_self_reflect_field(block: &syn::Block, fields: &NameSet) -> bool {
     struct Finder<'a> {
-        fields: &'a std::collections::HashSet<String>,
+        fields: &'a NameSet,
         found: bool,
     }
 
@@ -149,12 +194,9 @@ fn block_mentions_self_reflect_field(
     finder.found
 }
 
-fn block_has_self_reflect_field_runtime_fallback(
-    block: &syn::Block,
-    fields: &std::collections::HashSet<String>,
-) -> bool {
+fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &NameSet) -> bool {
     struct Finder<'a> {
-        fields: &'a std::collections::HashSet<String>,
+        fields: &'a NameSet,
         found: bool,
     }
 
@@ -180,7 +222,7 @@ fn block_has_self_reflect_field_runtime_fallback(
 
 pub(super) fn prune_reflection_fallback(
     stmts: &mut Vec<syn::Stmt>,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) {
     let old_stmts = std::mem::take(stmts);
     let block = prune_reflection_block(
@@ -195,7 +237,7 @@ pub(super) fn prune_reflection_fallback(
 
 fn prune_reflection_stmt(
     stmt: syn::Stmt,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) -> Option<syn::Stmt> {
     if stmt_needs_reflection(&stmt, self_reflect_fields) {
         match stmt {
@@ -221,7 +263,7 @@ fn prune_reflection_stmt(
 
 fn prune_reflection_expr(
     expr: syn::Expr,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) -> Option<syn::Expr> {
     match expr {
         syn::Expr::Block(expr_block) => {
@@ -235,7 +277,7 @@ fn prune_reflection_expr(
 
 fn prune_reflection_expr_block(
     mut expr_block: syn::ExprBlock,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) -> Option<syn::Expr> {
     expr_block.block = prune_reflection_block(expr_block.block, self_reflect_fields);
     (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
@@ -243,7 +285,7 @@ fn prune_reflection_expr_block(
 
 fn prune_reflection_if(
     mut expr_if: syn::ExprIf,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) -> Option<syn::Expr> {
     if expr_needs_reflection(&expr_if.cond, self_reflect_fields) {
         return expr_if
@@ -269,7 +311,7 @@ fn prune_reflection_if(
 
 fn prune_reflection_block(
     mut block: syn::Block,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&NameSet>,
 ) -> syn::Block {
     let mut dropped_names = std::collections::HashSet::new();
     let mut stmts = vec![];
@@ -289,15 +331,15 @@ fn prune_reflection_block(
     block
 }
 
-fn stmt_bound_names(stmt: &syn::Stmt) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
+fn stmt_bound_names(stmt: &syn::Stmt) -> NameSet {
+    let mut names = NameSet::new();
     if let syn::Stmt::Local(local) = stmt {
         collect_pat_names(&local.pat, &mut names);
     }
     names
 }
 
-fn collect_pat_names(pat: &syn::Pat, names: &mut std::collections::HashSet<String>) {
+fn collect_pat_names(pat: &syn::Pat, names: &mut NameSet) {
     match pat {
         syn::Pat::Ident(pat_ident) => {
             names.insert(pat_ident.ident.to_string());
@@ -336,7 +378,7 @@ fn collect_pat_names(pat: &syn::Pat, names: &mut std::collections::HashSet<Strin
     }
 }
 
-fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<String>) -> bool {
+fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &NameSet) -> bool {
     if names.is_empty() {
         return false;
     }
@@ -350,13 +392,13 @@ fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &std::collections::HashSet<St
     }
 }
 
-fn expr_mentions_any_name(expr: &syn::Expr, names: &std::collections::HashSet<String>) -> bool {
+fn expr_mentions_any_name(expr: &syn::Expr, names: &NameSet) -> bool {
     if names.is_empty() {
         return false;
     }
 
     struct Visitor<'a> {
-        names: &'a std::collections::HashSet<String>,
+        names: &'a NameSet,
         found: bool,
     }
 
@@ -385,12 +427,9 @@ fn expr_mentions_any_name(expr: &syn::Expr, names: &std::collections::HashSet<St
     visitor.found
 }
 
-fn expr_mentions_self_field_in(
-    expr: &syn::Expr,
-    fields: &std::collections::HashSet<String>,
-) -> bool {
+fn expr_mentions_self_field_in(expr: &syn::Expr, fields: &NameSet) -> bool {
     struct Visitor<'a> {
-        fields: &'a std::collections::HashSet<String>,
+        fields: &'a NameSet,
         found: bool,
     }
 
@@ -412,10 +451,7 @@ fn expr_mentions_self_field_in(
     visitor.found
 }
 
-fn stmt_needs_reflection(
-    stmt: &syn::Stmt,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
-) -> bool {
+fn stmt_needs_reflection(stmt: &syn::Stmt, self_reflect_fields: Option<&NameSet>) -> bool {
     let mut finder = ReflectionFallbackFinder {
         self_reflect_fields,
         found: false,
@@ -424,10 +460,7 @@ fn stmt_needs_reflection(
     finder.found
 }
 
-fn expr_needs_reflection(
-    expr: &syn::Expr,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
-) -> bool {
+fn expr_needs_reflection(expr: &syn::Expr, self_reflect_fields: Option<&NameSet>) -> bool {
     let mut finder = ReflectionFallbackFinder {
         self_reflect_fields,
         found: false,
@@ -436,10 +469,7 @@ fn expr_needs_reflection(
     finder.found
 }
 
-fn block_needs_reflection(
-    block: &syn::Block,
-    self_reflect_fields: Option<&std::collections::HashSet<String>>,
-) -> bool {
+fn block_needs_reflection(block: &syn::Block, self_reflect_fields: Option<&NameSet>) -> bool {
     let mut finder = ReflectionFallbackFinder {
         self_reflect_fields,
         found: false,
@@ -449,7 +479,7 @@ fn block_needs_reflection(
 }
 
 struct ReflectionFallbackFinder<'a> {
-    self_reflect_fields: Option<&'a std::collections::HashSet<String>>,
+    self_reflect_fields: Option<&'a NameSet>,
     found: bool,
 }
 
@@ -512,18 +542,15 @@ fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
     }
 }
 
-fn is_self_field_in(field: &syn::ExprField, fields: &std::collections::HashSet<String>) -> bool {
+fn is_self_field_in(field: &syn::ExprField, fields: &NameSet) -> bool {
     super::syntax::is_self_expr(&field.base)
         && member_ident_name(&field.member)
             .is_some_and(|member| fields.contains(&member.to_string()))
 }
 
-fn collect_fmt_flush_methods_by_receiver(
-    file: &syn::File,
-) -> std::collections::BTreeMap<String, std::collections::HashSet<String>> {
-    let mut hook_receivers = std::collections::HashSet::new();
-    let mut methods_by_receiver =
-        std::collections::BTreeMap::<String, std::collections::HashSet<String>>::new();
+fn collect_fmt_flush_methods_by_receiver(file: &syn::File) -> ReceiverNameMap {
+    let mut hook_receivers = NameSet::new();
+    let mut methods_by_receiver = ReceiverNameMap::new();
     for item in &file.items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -546,7 +573,7 @@ fn collect_fmt_flush_methods_by_receiver(
     methods_by_receiver
 }
 
-fn impl_fmt_flush_trigger_methods(item_impl: &syn::ItemImpl) -> std::collections::HashSet<String> {
+fn impl_fmt_flush_trigger_methods(item_impl: &syn::ItemImpl) -> NameSet {
     item_impl
         .items
         .iter()
@@ -563,9 +590,7 @@ fn impl_fmt_flush_trigger_methods(item_impl: &syn::ItemImpl) -> std::collections
         .collect()
 }
 
-fn collect_self_reflect_value_fields(
-    file: &syn::File,
-) -> std::collections::BTreeMap<String, std::collections::HashSet<String>> {
+fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverNameMap {
     file.items
         .iter()
         .filter_map(|item| {
@@ -580,7 +605,7 @@ fn collect_self_reflect_value_fields(
                         .then(|| field.ident.as_ref().map(|ident| ident.to_string()))
                         .flatten()
                 })
-                .collect::<std::collections::HashSet<_>>();
+                .collect::<NameSet>();
             (!fields.is_empty()).then(|| (item_struct.ident.to_string(), fields))
         })
         .collect()
@@ -593,11 +618,11 @@ fn impl_has_method(item_impl: &syn::ItemImpl, name: &str) -> bool {
         .any(|item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == name))
 }
 
-fn stmt_needs_fmt_flush(stmt: &syn::Stmt, methods: &std::collections::HashSet<String>) -> bool {
+fn stmt_needs_fmt_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {
     matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_fmt_flush(expr, methods))
 }
 
-fn expr_needs_fmt_flush(expr: &syn::Expr, methods: &std::collections::HashSet<String>) -> bool {
+fn expr_needs_fmt_flush(expr: &syn::Expr, methods: &NameSet) -> bool {
     let syn::Expr::MethodCall(call) = expr else {
         return false;
     };
@@ -610,6 +635,46 @@ fn expr_needs_fmt_flush(expr: &syn::Expr, methods: &std::collections::HashSet<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fmt_flush_metadata_requires_hook_on_same_receiver() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer;
+            struct Other;
+
+            impl Printer {
+                fn printArg(&mut self) {}
+            }
+
+            impl Other {
+                fn __gors_flush_fmt(&mut self) {}
+            }
+        };
+
+        let metadata = FmtFlushMetadata::collect(&file);
+        assert!(!metadata.has_receiver("Printer"));
+        assert!(!metadata.has_receiver("Other"));
+    }
+
+    #[test]
+    fn reflection_metadata_collects_only_reflect_value_fields() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                value: crate::reflect::Value,
+                local_value: Value,
+                buf: Buffer,
+            }
+        };
+
+        let metadata = ReflectionFallbackMetadata::collect(&file);
+        let fields = metadata
+            .fields_for_receiver("Printer")
+            .expect("expected reflect field metadata");
+
+        assert!(fields.contains("value"));
+        assert!(!fields.contains("local_value"));
+        assert!(!fields.contains("buf"));
+    }
 
     #[test]
     fn dependency_pruning_tracks_local_method_call_arguments() {
