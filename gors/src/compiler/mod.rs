@@ -14,6 +14,7 @@
 //! - Arbitrary forward goto statements
 //! - Some complex type expressions
 
+mod display_impls;
 pub mod ir;
 pub mod manifest;
 pub(crate) mod passes;
@@ -7760,7 +7761,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                     prune_unneeded_builtin_traits(&mut module.file.items, &builtin_roots);
                 }
             }
-            prune_display_impls_without_string_method(&mut module.file.items);
+            display_impls::prune_without_string_method(&mut module.file.items);
             if has_main {
                 prune_unused_struct_fields(&mut module.file.items, roots);
             }
@@ -7922,59 +7923,6 @@ fn debug_assert_semantic_external_refs(
         refs_to_btree(refs),
         semantic_graph.reachable_external_roots_for_module_roots(module, roots)
     );
-}
-
-fn prune_display_impls_without_string_method(items: &mut Vec<syn::Item>) {
-    let stringer_types: std::collections::HashSet<String> = items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
-                return None;
-            };
-            if item_impl.trait_.is_some()
-                || !item_impl.items.iter().any(|impl_item| {
-                    matches!(impl_item, syn::ImplItem::Fn(func) if func.sig.ident == "String")
-                })
-            {
-                return None;
-            }
-            named_self_type(&item_impl.self_ty)
-        })
-        .collect();
-    let error_display_types: std::collections::HashSet<String> = items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
-                return None;
-            };
-            let is_error_impl = item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
-                path.segments
-                    .last()
-                    .is_some_and(|segment| segment.ident == "Error")
-                    && path_starts_with(path, &["std", "error"])
-            });
-            is_error_impl
-                .then(|| named_self_type(&item_impl.self_ty))
-                .flatten()
-        })
-        .collect();
-
-    items.retain(|item| {
-        let syn::Item::Impl(item_impl) = item else {
-            return true;
-        };
-        let is_display_impl = item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
-            path.segments
-                .last()
-                .is_some_and(|segment| segment.ident == "Display")
-        });
-        if !is_display_impl {
-            return true;
-        }
-        named_self_type(&item_impl.self_ty).is_none_or(|self_name| {
-            stringer_types.contains(&self_name) || error_display_types.contains(&self_name)
-        })
-    });
 }
 
 fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
@@ -35381,7 +35329,7 @@ func main() {
         let module_names = std::collections::HashSet::new();
 
         super::prune_items_to_roots(&mut file.items, &roots, &module_names);
-        super::prune_display_impls_without_string_method(&mut file.items);
+        super::display_impls::prune_without_string_method(&mut file.items);
         let source = quote! { #file }.to_string();
 
         assert!(
