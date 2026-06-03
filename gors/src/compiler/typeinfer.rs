@@ -127,6 +127,7 @@ impl GoType {
 
     pub fn from_expr(expr: &ast::Expr) -> GoType {
         match expr {
+            ast::Expr::ParenExpr(paren) => GoType::from_expr(&paren.x),
             ast::Expr::Ident(id) => GoType::from_name(id.name),
             ast::Expr::StarExpr(star) => GoType::Pointer(Box::new(GoType::from_expr(&star.x))),
             ast::Expr::ArrayType(arr) => {

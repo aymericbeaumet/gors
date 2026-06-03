@@ -2289,12 +2289,6 @@ fn const_value_to_expr_for_type(value: &ConstValue, type_name: Option<&str>) -> 
 }
 
 fn const_rust_type_from_inferred(ty: &typeinfer::GoType, value: &ConstValue) -> Option<syn::Type> {
-    if matches!(ty, typeinfer::GoType::String) {
-        return Some(syn::parse_quote! { &str });
-    }
-    if let typeinfer::GoType::Named(name) = ty {
-        return Some(named_go_type_path(name));
-    }
     if matches!(ty, typeinfer::GoType::Int) {
         match value {
             ConstValue::Int(value)
@@ -2306,7 +2300,18 @@ fn const_rust_type_from_inferred(ty: &typeinfer::GoType, value: &ConstValue) -> 
             _ => {}
         }
     }
+    if let Some(ty) = const_rust_type_from_go_type(ty) {
+        return Some(ty);
+    }
     rust_type_from_go_type(ty)
+}
+
+fn const_rust_type_from_go_type(ty: &typeinfer::GoType) -> Option<syn::Type> {
+    match ty {
+        typeinfer::GoType::String => Some(syn::parse_quote! { &str }),
+        typeinfer::GoType::Named(name) => Some(named_go_type_path(name)),
+        _ => rust_type_from_go_type(ty),
+    }
 }
 
 fn parse_go_int_literal(lit: &str) -> Option<ConstValue> {
@@ -3285,12 +3290,8 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             } else if let Some(expr) = value_expr {
                 TYPE_ENV.with(|env| {
                     let go_type = typeinfer::GoType::infer_expr(expr, &env.borrow());
-                    if matches!(go_type, typeinfer::GoType::String) {
-                        syn::parse_quote! { &str }
-                    } else {
-                        rust_type_from_go_type(&go_type)
-                            .unwrap_or_else(|| syn::parse_quote! { isize })
-                    }
+                    const_rust_type_from_go_type(&go_type)
+                        .unwrap_or_else(|| syn::parse_quote! { isize })
                 })
             } else {
                 syn::parse_quote! { isize }
@@ -3360,7 +3361,19 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
                     }
                     _ => None,
                 });
-            if let Some(type_name) = named_numeric_type {
+            let value_already_has_named_type = evaluated.is_none()
+                && value_expr.is_some_and(|expr| {
+                    matches!(expr, ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_))
+                })
+                && named_numeric_type.as_ref().is_some_and(|type_name| {
+                    matches!(
+                        inferred_go_type.as_ref(),
+                        Some(typeinfer::GoType::Named(name)) if name == type_name
+                    )
+                });
+            if let Some(type_name) = named_numeric_type
+                && !value_already_has_named_type
+            {
                 let type_path = named_go_type_path(&type_name);
                 value = syn::parse_quote! { #type_path(#value) };
             }
@@ -14769,7 +14782,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
 
     let target_ty = type_from_expr_ref(&target_fun);
     if matches!(target_fun, ast::Expr::StarExpr(_)) && is_unsafe_pointer_arg {
-        return syn::parse_quote! { Default::default() };
+        return syn::parse_quote! { <#target_ty>::default() };
     }
     if let Some(typeinfer::TypeKind::Alias(inner)) = type_kind_for_type_expr(&target_fun) {
         if type_expr_denotes_declared_alias(&target_fun) {
@@ -16709,6 +16722,8 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
         typeinfer::GoType::infer_expr(&slice_expr.x, &TYPE_ENV.with(|e| e.borrow().clone()));
     let is_string_slice = x_go_type.is_string();
     let is_any_slice = is_any_slice_range_type(&x_go_type);
+    let is_owning_pointer_array_slice =
+        go_type_is_pointer_to_array(&x_go_type) && is_owning_pointer_cell_expr_ref(&slice_expr.x);
     let x: syn::Expr = (*slice_expr.x).into();
     // Cast range bounds to usize since Rust requires usize for slice indexing
     let low: Option<syn::Expr> = slice_expr.low.map(|l| {
@@ -16755,12 +16770,31 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| syn::parse_quote! { 0usize });
-        let end: syn::Expr = high.as_ref().cloned().unwrap_or_else(|| {
-            syn::parse_quote! { crate::builtin::len(__gors_source) as usize }
-        });
         if is_string_slice {
             return compile_error_expr("full slice expression is not valid for strings");
         }
+        if is_owning_pointer_array_slice {
+            let source_ref: syn::Expr = syn::parse_quote! { (&*__gors_source) };
+            let end: syn::Expr = high.as_ref().cloned().unwrap_or_else(|| {
+                syn::parse_quote! { crate::builtin::len(#source_ref) as usize }
+            });
+            return syn::parse_quote! {{
+                let __gors_pointer_source = #x;
+                let __gors_source = __gors_pointer_source.lock().unwrap();
+                let __gors_start = #start;
+                let __gors_end = #end;
+                let __gors_max = #max;
+                let mut __gors_slice = (#source_ref[__gors_start..__gors_end]).to_vec();
+                let __gors_cap = __gors_max.saturating_sub(__gors_start);
+                if __gors_slice.capacity() < __gors_cap {
+                    __gors_slice.reserve_exact(__gors_cap - __gors_slice.capacity());
+                }
+                __gors_slice
+            }};
+        }
+        let end: syn::Expr = high.as_ref().cloned().unwrap_or_else(|| {
+            syn::parse_quote! { crate::builtin::len(__gors_source) as usize }
+        });
         return syn::parse_quote! {{
             let __gors_source = &#x;
             let __gors_start = #start;
@@ -16775,18 +16809,23 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
         }};
     }
 
+    let slice_source: syn::Expr = if is_owning_pointer_array_slice {
+        syn::parse_quote! { &*#x.lock().unwrap() }
+    } else {
+        x
+    };
     let slice: syn::Expr = match (low, high) {
         (None, None) => {
-            syn::parse_quote! { (#x)[..] }
+            syn::parse_quote! { (#slice_source)[..] }
         }
         (Some(lo), None) => {
-            syn::parse_quote! { (#x)[#lo..] }
+            syn::parse_quote! { (#slice_source)[#lo..] }
         }
         (None, Some(hi)) => {
-            syn::parse_quote! { (#x)[..#hi] }
+            syn::parse_quote! { (#slice_source)[..#hi] }
         }
         (Some(lo), Some(hi)) => {
-            syn::parse_quote! { (#x)[#lo..#hi] }
+            syn::parse_quote! { (#slice_source)[#lo..#hi] }
         }
     };
 
@@ -17515,6 +17554,15 @@ fn is_byte_seq_type_param(go_type: &typeinfer::GoType) -> bool {
 
 fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
     TYPE_ENV.with(|env| env.borrow().resolve_alias(ty))
+}
+
+fn go_type_is_pointer_to_array(ty: &typeinfer::GoType) -> bool {
+    match resolved_go_type(ty) {
+        typeinfer::GoType::Pointer(inner) => {
+            matches!(resolved_go_type(&inner), typeinfer::GoType::Array(_))
+        }
+        _ => false,
+    }
 }
 
 fn underlying_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
@@ -29424,6 +29472,43 @@ var X int
     }
 
     #[test]
+    fn it_should_infer_parenthesized_pointer_conversion_type_for_selectors() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                type ChanDir int
+                type ChanType struct {
+                    Dir ChanDir
+                }
+
+                func dir(t *ChanType) ChanDir {
+                    ch := (*ChanType)(unsafe.Pointer(t))
+                    return ch.Dir
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "let mut ch = (< crate :: builtin :: GorsPtr < ChanType > > :: default ()) . clone ()"
+            ),
+            "expected unsafe pointer conversion placeholder to keep target type: {output}"
+        );
+        assert!(
+            output.contains("ch . lock () . unwrap () . Dir"),
+            "expected selector on converted pointer to lock the pointer cell: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_convert_named_numeric_receiver_through_inner_field() {
         let parsed = parse_file(
             "test.go",
@@ -34540,6 +34625,59 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_keeps_imported_named_const_selector_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("abi").join("abi.go").as_path(),
+            r#"
+package abi
+
+type Kind uint8
+
+const Slice Kind = 23
+"#,
+        );
+        write_fixture_file(
+            tmp.path()
+                .join("reflectlite")
+                .join("reflectlite.go")
+                .as_path(),
+            r#"
+package reflectlite
+
+import "example/abi"
+
+const Slice = abi.Slice
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/reflectlite"
+
+func main() {
+	_ = reflectlite.Slice
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let reflectlite_rs = output.files.get("example__reflectlite.rs").unwrap();
+
+        assert!(
+            reflectlite_rs.contains("pub const Slice: crate::abi::Kind = crate::abi::Kind(23);"),
+            "expected imported named const selector to preserve its named type: {reflectlite_rs}"
+        );
+        assert!(
+            !reflectlite_rs.contains("pub const Slice : isize"),
+            "expected imported named const selector not to degrade to isize: {reflectlite_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_retains_referenced_stdlib_imports() {
         let go_source = r#"package main
 
@@ -36355,6 +36493,42 @@ func main() {
                     let _ = t;
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_pointer_to_array_full_slice_expression() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Method struct{}
+
+                func methods(p *[4]Method, n int) []Method {
+                    return p[:n:n]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let __gors_pointer_source = p"),
+            "expected pointer-to-array full slice to bind the pointer cell: {output}"
+        );
+        assert!(
+            output.contains("let __gors_source = __gors_pointer_source . lock () . unwrap ()"),
+            "expected pointer-to-array full slice to bind the pointer guard: {output}"
+        );
+        assert!(
+            output.contains("(& * __gors_source) [__gors_start .. __gors_end]"),
+            "expected pointer-to-array full slice to index through the guarded array: {output}"
+        );
+        assert!(
+            !output.contains("& p ["),
+            "expected pointer-to-array full slice not to index the pointer cell: {output}"
         );
     }
 
