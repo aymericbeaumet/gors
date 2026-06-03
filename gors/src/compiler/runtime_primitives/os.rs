@@ -1,4 +1,5 @@
-use super::{CompiledModule, item_name, module_has_static, type_mentions_name};
+use super::{CompiledModule, module_has_static};
+use crate::compiler::syn_inspect::{item_name, type_mentions_name};
 use std::collections::HashSet;
 
 pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {

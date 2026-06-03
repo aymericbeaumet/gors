@@ -1,4 +1,4 @@
-use super::{CompiledModule, item_name, type_mentions_name};
+use super::CompiledModule;
 use std::collections::{BTreeMap, HashSet};
 
 mod os;

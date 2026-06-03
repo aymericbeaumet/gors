@@ -31741,7 +31741,7 @@ func main() {
             .file
             .items
             .iter()
-            .filter_map(super::item_name)
+            .filter_map(super::syn_inspect::item_name)
             .collect();
         assert!(builtin_item_names.contains("println_value"));
         assert!(!builtin_item_names.contains("println_empty"));
