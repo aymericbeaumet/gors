@@ -27,7 +27,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| Reflection fallback pruning in `structural_helpers.rs` | `reflect` AST path/type-path checks and generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
+| Reflection fallback pruning in `structural_helpers/reflection_fallback.rs` | `reflect` AST path/type-path checks and generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
 | Format flush insertion in `structural_helpers/fmt_flush.rs` | generated `__gors_flush_fmt` hook source-field metadata plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
@@ -90,6 +90,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | stale `print_arg` names in reflection fallback pruning internals | Reflection pruning helpers are named for their actual fallback-pruning responsibility instead of the older `printArg` call-site workaround. |
 | mixed fmt/reflection structural-helper metadata | `Metadata` now delegates to `FmtFlushMetadata` and `ReflectionFallbackMetadata`, so flush insertion and reflection fallback pruning keep separate collection and query responsibilities. |
 | fmt flush metadata mixed into `structural_helpers.rs` | Flush-source detection, receiver self-call expansion, and flush insertion now live in `structural_helpers/fmt_flush.rs`; the parent structural helper module keeps only post-helper orchestration plus reflection fallback pruning. |
+| reflection fallback pruning mixed into `structural_helpers.rs` | Reflection fallback metadata, reflect-path detection, and dependency pruning now live in `structural_helpers/reflection_fallback.rs`; the parent structural helper module is a post-helper orchestration boundary. |
 | string-encoded `& mut pp` resolver helper matching | Resolver structural-helper injection is split by responsibility, and impl self-type checks now use explicit `syn::Type` matching instead of a rendered self-type string. |
 | inline runtime primitive post-prune replacement in `compiler/mod.rs` | Reflect, `os.Stdout`, and `sync.Pool` replacement policy now lives in `compiler/runtime_primitives.rs`, leaving the main compiler pipeline responsible for orchestration and module pruning. |
 | inline `reflect.TypeOf(...).Kind()` detector in `compiler/mod.rs` | Reflect-kind comparison detection, argument extraction, and kind mapping now live in `compiler/reflect_kind.rs`; binary expression lowering only emits the resulting builtin check. |

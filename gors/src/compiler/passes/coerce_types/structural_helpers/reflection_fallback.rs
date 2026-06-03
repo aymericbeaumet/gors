@@ -1,0 +1,463 @@
+pub(super) type FieldSet = std::collections::HashSet<String>;
+type ReceiverFieldMap = std::collections::BTreeMap<String, FieldSet>;
+
+#[derive(Default)]
+pub(super) struct Metadata {
+    self_reflect_value_fields: ReceiverFieldMap,
+}
+
+impl Metadata {
+    pub(super) fn collect(file: &syn::File) -> Self {
+        Self {
+            self_reflect_value_fields: collect_self_reflect_value_fields(file),
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.self_reflect_value_fields.is_empty()
+    }
+
+    pub(super) fn fields_for_initial_pass(
+        &self,
+        self_ty: &str,
+        block: &syn::Block,
+        receiver_has_fmt_flush: bool,
+    ) -> Option<&FieldSet> {
+        let fields = self.fields_for_receiver(self_ty)?;
+        (block_has_self_reflect_field_runtime_fallback(block, fields)
+            || (receiver_has_fmt_flush && block_mentions_self_reflect_field(block, fields)))
+        .then_some(fields)
+    }
+
+    pub(super) fn fields_after_helpers(
+        &self,
+        self_ty: &str,
+        block: &syn::Block,
+    ) -> Option<&FieldSet> {
+        let fields = self.fields_for_receiver(self_ty)?;
+        block_has_self_reflect_field_runtime_fallback(block, fields).then_some(fields)
+    }
+
+    fn fields_for_receiver(&self, self_ty: &str) -> Option<&FieldSet> {
+        self.self_reflect_value_fields.get(self_ty)
+    }
+}
+
+fn block_mentions_self_reflect_field(block: &syn::Block, fields: &FieldSet) -> bool {
+    SelfFieldFinder::block_contains(block, fields)
+}
+
+fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &FieldSet) -> bool {
+    struct Finder<'a> {
+        fields: &'a FieldSet,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
+                && expr_mentions_self_field_in(&call.receiver, self.fields)
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        fields,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+pub(super) fn prune(stmts: &mut Vec<syn::Stmt>, self_reflect_fields: Option<&FieldSet>) {
+    let old_stmts = std::mem::take(stmts);
+    let block = prune_block(
+        syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: old_stmts,
+        },
+        self_reflect_fields,
+    );
+    *stmts = block.stmts;
+}
+
+fn prune_stmt(stmt: syn::Stmt, self_reflect_fields: Option<&FieldSet>) -> Option<syn::Stmt> {
+    if stmt_needs_reflection(&stmt, self_reflect_fields) {
+        match stmt {
+            syn::Stmt::Expr(expr, semi) => {
+                prune_expr(expr, self_reflect_fields).map(|expr| syn::Stmt::Expr(expr, semi))
+            }
+            syn::Stmt::Local(mut local) => {
+                if let Some(init) = &mut local.init {
+                    let expr = std::mem::replace(
+                        &mut init.expr,
+                        Box::new(syn::parse_quote! { Default::default() }),
+                    );
+                    let expr = prune_expr(*expr, self_reflect_fields)?;
+                    *init.expr = expr;
+                }
+                Some(syn::Stmt::Local(local))
+            }
+            syn::Stmt::Item(_) | syn::Stmt::Macro(_) => None,
+        }
+    } else {
+        Some(stmt)
+    }
+}
+
+fn prune_expr(expr: syn::Expr, self_reflect_fields: Option<&FieldSet>) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::Block(expr_block) => prune_expr_block(expr_block, self_reflect_fields),
+        syn::Expr::If(expr_if) => prune_if(expr_if, self_reflect_fields),
+        other if expr_needs_reflection(&other, self_reflect_fields) => None,
+        other => Some(other),
+    }
+}
+
+fn prune_expr_block(
+    mut expr_block: syn::ExprBlock,
+    self_reflect_fields: Option<&FieldSet>,
+) -> Option<syn::Expr> {
+    expr_block.block = prune_block(expr_block.block, self_reflect_fields);
+    (!expr_block.block.stmts.is_empty()).then_some(syn::Expr::Block(expr_block))
+}
+
+fn prune_if(mut expr_if: syn::ExprIf, self_reflect_fields: Option<&FieldSet>) -> Option<syn::Expr> {
+    if expr_needs_reflection(&expr_if.cond, self_reflect_fields) {
+        return expr_if
+            .else_branch
+            .and_then(|(_, else_expr)| prune_expr(*else_expr, self_reflect_fields));
+    }
+
+    let then_had_reflection = block_needs_reflection(&expr_if.then_branch, self_reflect_fields);
+    expr_if.then_branch = prune_block(expr_if.then_branch, self_reflect_fields);
+    let then_is_empty = expr_if.then_branch.stmts.is_empty();
+
+    expr_if.else_branch = expr_if.else_branch.and_then(|(else_token, else_expr)| {
+        prune_expr(*else_expr, self_reflect_fields).map(|expr| (else_token, Box::new(expr)))
+    });
+
+    if then_had_reflection && then_is_empty {
+        return expr_if.else_branch.map(|(_, else_expr)| *else_expr);
+    }
+
+    Some(syn::Expr::If(expr_if))
+}
+
+fn prune_block(mut block: syn::Block, self_reflect_fields: Option<&FieldSet>) -> syn::Block {
+    let mut dropped_names = std::collections::HashSet::new();
+    let mut stmts = vec![];
+    for stmt in block.stmts {
+        let bound_names = stmt_bound_names(&stmt);
+        if stmt_mentions_any_name(&stmt, &dropped_names) {
+            dropped_names.extend(bound_names);
+            continue;
+        }
+        if let Some(stmt) = prune_stmt(stmt, self_reflect_fields) {
+            stmts.push(stmt);
+        } else {
+            dropped_names.extend(bound_names);
+        }
+    }
+    block.stmts = stmts;
+    block
+}
+
+fn stmt_bound_names(stmt: &syn::Stmt) -> FieldSet {
+    let mut names = FieldSet::new();
+    if let syn::Stmt::Local(local) = stmt {
+        collect_pat_names(&local.pat, &mut names);
+    }
+    names
+}
+
+fn collect_pat_names(pat: &syn::Pat, names: &mut FieldSet) {
+    match pat {
+        syn::Pat::Ident(pat_ident) => {
+            names.insert(pat_ident.ident.to_string());
+        }
+        syn::Pat::Or(pat_or) => {
+            for case in &pat_or.cases {
+                collect_pat_names(case, names);
+            }
+        }
+        syn::Pat::Paren(paren) => collect_pat_names(&paren.pat, names),
+        syn::Pat::Reference(reference) => collect_pat_names(&reference.pat, names),
+        syn::Pat::Rest(_) => {}
+        syn::Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                collect_pat_names(elem, names);
+            }
+        }
+        syn::Pat::Struct(pat_struct) => {
+            for field in &pat_struct.fields {
+                collect_pat_names(&field.pat, names);
+            }
+        }
+        syn::Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_pat_names(elem, names);
+            }
+        }
+        syn::Pat::TupleStruct(tuple_struct) => {
+            for elem in &tuple_struct.elems {
+                collect_pat_names(elem, names);
+            }
+        }
+        syn::Pat::Type(pat_type) => collect_pat_names(&pat_type.pat, names),
+        syn::Pat::Wild(_) => {}
+        _ => {}
+    }
+}
+
+fn stmt_mentions_any_name(stmt: &syn::Stmt, names: &FieldSet) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    match stmt {
+        syn::Stmt::Expr(expr, _) => expr_mentions_any_name(expr, names),
+        syn::Stmt::Local(local) => local
+            .init
+            .as_ref()
+            .is_some_and(|init| expr_mentions_any_name(&init.expr, names)),
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => false,
+    }
+}
+
+fn expr_mentions_any_name(expr: &syn::Expr, names: &FieldSet) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+
+    struct Visitor<'a> {
+        names: &'a FieldSet,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Visitor<'_> {
+        fn visit_expr_path(&mut self, expr_path: &syn::ExprPath) {
+            if expr_path.path.leading_colon.is_none()
+                && expr_path.path.segments.len() == 1
+                && expr_path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|seg| self.names.contains(&seg.ident.to_string()))
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_path(self, expr_path);
+        }
+    }
+
+    let mut visitor = Visitor {
+        names,
+        found: false,
+    };
+    syn::visit::Visit::visit_expr(&mut visitor, expr);
+    visitor.found
+}
+
+fn expr_mentions_self_field_in(expr: &syn::Expr, fields: &FieldSet) -> bool {
+    SelfFieldFinder::expr_contains(expr, fields)
+}
+
+struct SelfFieldFinder<'a> {
+    fields: &'a FieldSet,
+    found: bool,
+}
+
+impl SelfFieldFinder<'_> {
+    fn block_contains(block: &syn::Block, fields: &FieldSet) -> bool {
+        let mut finder = SelfFieldFinder {
+            fields,
+            found: false,
+        };
+        syn::visit::Visit::visit_block(&mut finder, block);
+        finder.found
+    }
+
+    fn expr_contains(expr: &syn::Expr, fields: &FieldSet) -> bool {
+        let mut finder = SelfFieldFinder {
+            fields,
+            found: false,
+        };
+        syn::visit::Visit::visit_expr(&mut finder, expr);
+        finder.found
+    }
+}
+
+impl syn::visit::Visit<'_> for SelfFieldFinder<'_> {
+    fn visit_expr_field(&mut self, field: &syn::ExprField) {
+        if is_self_field_in(field, self.fields) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_field(self, field);
+    }
+}
+
+fn stmt_needs_reflection(stmt: &syn::Stmt, self_reflect_fields: Option<&FieldSet>) -> bool {
+    let mut finder = Finder {
+        self_reflect_fields,
+        found: false,
+    };
+    syn::visit::Visit::visit_stmt(&mut finder, stmt);
+    finder.found
+}
+
+fn expr_needs_reflection(expr: &syn::Expr, self_reflect_fields: Option<&FieldSet>) -> bool {
+    let mut finder = Finder {
+        self_reflect_fields,
+        found: false,
+    };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
+fn block_needs_reflection(block: &syn::Block, self_reflect_fields: Option<&FieldSet>) -> bool {
+    let mut finder = Finder {
+        self_reflect_fields,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
+struct Finder<'a> {
+    self_reflect_fields: Option<&'a FieldSet>,
+    found: bool,
+}
+
+impl syn::visit::Visit<'_> for Finder<'_> {
+    fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+        if is_reflect_module_path(&path.path) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_type_path(&mut self, path: &syn::TypePath) {
+        if is_reflect_module_path(&path.path) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_type_path(self, path);
+    }
+
+    fn visit_expr_field(&mut self, field: &syn::ExprField) {
+        if self
+            .self_reflect_fields
+            .is_some_and(|fields| is_self_field_in(field, fields))
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_field(self, field);
+    }
+}
+
+fn is_reflect_module_path(path: &syn::Path) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    matches!(
+        segments.as_slice(),
+        [first, second, ..] if first == "crate" && second == "reflect"
+    ) || matches!(segments.as_slice(), [first, _, ..] if first == "reflect")
+}
+
+fn is_reflect_value_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Value")
+        && is_reflect_module_path(&path.path)
+}
+
+fn member_ident_name(member: &syn::Member) -> Option<&syn::Ident> {
+    match member {
+        syn::Member::Named(ident) => Some(ident),
+        syn::Member::Unnamed(_) => None,
+    }
+}
+
+fn is_self_field_in(field: &syn::ExprField, fields: &FieldSet) -> bool {
+    super::super::syntax::is_self_expr(&field.base)
+        && member_ident_name(&field.member)
+            .is_some_and(|member| fields.contains(&member.to_string()))
+}
+
+fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverFieldMap {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Struct(item_struct) = item else {
+                return None;
+            };
+            let fields = item_struct
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    is_reflect_value_type(&field.ty)
+                        .then(|| field.ident.as_ref().map(|ident| ident.to_string()))
+                        .flatten()
+                })
+                .collect::<FieldSet>();
+            (!fields.is_empty()).then(|| (item_struct.ident.to_string(), fields))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_collects_only_reflect_value_fields() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                value: crate::reflect::Value,
+                local_value: Value,
+                buf: Buffer,
+            }
+        };
+
+        let metadata = Metadata::collect(&file);
+        let fields = metadata
+            .fields_for_receiver("Printer")
+            .expect("expected reflect field metadata");
+
+        assert!(fields.contains("value"));
+        assert!(!fields.contains("local_value"));
+        assert!(!fields.contains("buf"));
+    }
+
+    #[test]
+    fn dependency_pruning_tracks_local_method_call_arguments() {
+        let local: syn::Stmt = syn::parse_quote! {
+            let mut fallback = self.value;
+        };
+        let names = stmt_bound_names(&local);
+        assert!(names.contains("fallback"), "expected local name: {names:?}");
+
+        let call: syn::Stmt = syn::parse_quote! {
+            self.printValue(fallback);
+        };
+        assert!(
+            stmt_mentions_any_name(&call, &names),
+            "expected method-call argument to mention dropped local"
+        );
+    }
+}
