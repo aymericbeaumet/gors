@@ -7,7 +7,7 @@ pub(super) fn prune_without_string_method(items: &mut Vec<syn::Item>) {
         if !is_display_impl(item_impl) {
             return true;
         }
-        super::named_self_type(&item_impl.self_ty)
+        super::item_reachability::named_self_type(&item_impl.self_ty)
             .is_none_or(|self_name| display_required_types.contains(&self_name))
     });
 }
@@ -26,7 +26,7 @@ fn types_with_inherent_string_method(items: &[syn::Item]) -> std::collections::H
                 return None;
             };
             (item_impl.trait_.is_none() && impl_has_method(item_impl, "String"))
-                .then(|| super::named_self_type(&item_impl.self_ty))
+                .then(|| super::item_reachability::named_self_type(&item_impl.self_ty))
                 .flatten()
         })
         .collect()
@@ -43,7 +43,7 @@ fn types_with_std_error_impl(items: &[syn::Item]) -> std::collections::HashSet<S
                 .trait_
                 .as_ref()
                 .is_some_and(|(_, path, _)| is_std_error_trait(path))
-                .then(|| super::named_self_type(&item_impl.self_ty))
+                .then(|| super::item_reachability::named_self_type(&item_impl.self_ty))
                 .flatten()
         })
         .collect()
@@ -63,7 +63,8 @@ fn is_display_impl(item_impl: &syn::ItemImpl) -> bool {
 }
 
 fn is_std_error_trait(path: &syn::Path) -> bool {
-    path_ends_with(path, "Error") && super::path_starts_with(path, &["std", "error"])
+    path_ends_with(path, "Error")
+        && super::item_reachability::path_starts_with(path, &["std", "error"])
 }
 
 fn path_ends_with(path: &syn::Path, name: &str) -> bool {
