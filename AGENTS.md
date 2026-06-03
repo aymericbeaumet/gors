@@ -371,8 +371,10 @@ scaffold records item-level local/external refs, supports traversal from
 explicit module root names, and mirrors DCE expansion for supertraits plus
 top-level receiver-method roots through `SyntheticRoot` nodes such as
 `LittleEndian::Uint32` pointing at concrete receiver methods such as
-`littleEndian::Uint32`. Broaden that graph toward the remaining existing DCE
-semantics before replacing token-derived pruning paths.
+`littleEndian::Uint32`. The DCE audit path compares semantic external-root
+traversal against the current token-derived collector for both main-package
+roots and transitive non-main module roots. Broaden that graph toward the
+remaining existing DCE semantics before replacing token-derived pruning paths.
 
 ## Go toolchain
 
