@@ -56,29 +56,31 @@ fn type_matches_impl_self(ty: &syn::Type, expected: ImplSelfType<'_>) -> bool {
 }
 
 fn type_path_is_pointer_cell_to_name(ty: &syn::Type, name: &str) -> bool {
+    type_path_pointer_cell_inner_name(ty).is_some_and(|inner| inner == name)
+}
+
+fn type_path_pointer_cell_inner_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(type_path) = ty else {
-        return false;
+        return None;
     };
     if type_path.qself.is_some() {
-        return false;
+        return None;
     }
-    let Some(segment) = type_path.path.segments.last() else {
-        return false;
-    };
+    let segment = type_path.path.segments.last()?;
     if segment.ident != "GorsPtr" {
-        return false;
+        return None;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-        return false;
+        return None;
     };
     let mut args = arguments.args.iter();
     let Some(syn::GenericArgument::Type(inner)) = args.next() else {
-        return false;
+        return None;
     };
     if args.next().is_some() {
-        return false;
+        return None;
     }
-    type_path_matches_name(inner, name)
+    type_path_ident_name(inner)
 }
 
 fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
@@ -166,6 +168,14 @@ mod tests {
                 }
             },
             syn::parse_quote! {
+                struct fmtState {
+                    buf: crate::builtin::GorsPtr<byteBuffer>,
+                }
+            },
+            syn::parse_quote! {
+                struct byteBuffer(Vec<u8>);
+            },
+            syn::parse_quote! {
                 struct pp {
                     fmt: fmtState,
                     buf: byteBuffer,
@@ -222,9 +232,17 @@ mod tests {
                 }
             },
             syn::parse_quote! {
+                struct FormatState {
+                    pending: crate::builtin::GorsPtr<ByteBuffer>,
+                }
+            },
+            syn::parse_quote! {
+                struct ByteBuffer(Vec<u8>);
+            },
+            syn::parse_quote! {
                 struct Printer {
-                    fmt: fmtState,
-                    buf: byteBuffer,
+                    scratch: FormatState,
+                    out: ByteBuffer,
                 }
             },
             syn::parse_quote! {
@@ -236,8 +254,14 @@ mod tests {
 
         inject(&mut items);
 
+        let tokens = quote::quote!(#(#items)*).to_string();
         assert!(has_method(&items, "Printer", "__gors_flush_fmt"));
         assert!(!has_method(&items, "pp", "__gors_flush_fmt"));
+        assert!(
+            tokens.contains("self . scratch . pending . lock () . unwrap () . 0")
+                && tokens.contains("self . out . 0 . extend (bytes)"),
+            "expected flush hook to use detected field names: {tokens}"
+        );
     }
 
     #[test]
