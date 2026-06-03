@@ -352,25 +352,33 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     crate::compiler::set_borrow_pointer_arg_indices_for_files(&ast_refs);
 
     for (filename, ast) in parsed_files {
-        let mut type_env = package_type_env.clone();
-        crate::compiler::merge_import_type_envs(
-            &mut type_env,
-            &ast,
-            &BTreeMap::new(),
+        let compiled = match compile_resolved_file(
+            ast,
+            &package_type_env,
             &imported_type_envs,
-        );
-        let compiled = match crate::compiler::with_active_reachability_roots(roots, || {
-            crate::compiler::compile_with_type_env_and_import_renames(
-                ast,
-                type_env,
-                import_renames.clone(),
-            )
-        }) {
+            &import_renames,
+            roots,
+        ) {
             Ok(compiled) => compiled,
             Err(e) => {
                 log_skip(format_args!(
                     "[gors] skip {import_path}/{filename}: compile error: {e}"
                 ));
+                if let Some(content) = files
+                    .iter()
+                    .find_map(|(file, content)| (*file == filename).then_some(*content))
+                {
+                    all_items.extend(recover_resolved_file_items(
+                        import_path,
+                        filename,
+                        content,
+                        reachable_names.as_ref(),
+                        &package_type_env,
+                        &imported_type_envs,
+                        &import_renames,
+                        roots,
+                    ));
+                }
                 continue;
             }
         };
@@ -407,6 +415,252 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     prefix_crate_paths(&mut all_items, &module_refs);
 
     Some(item_mod_for(import_path, all_items))
+}
+
+fn compile_resolved_file(
+    ast: crate::ast::File<'_>,
+    package_type_env: &TypeEnv,
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+    import_renames: &BTreeMap<String, String>,
+    roots: Option<&HashSet<String>>,
+) -> Result<syn::File, crate::compiler::CompilerError> {
+    let mut type_env = package_type_env.clone();
+    crate::compiler::merge_import_type_envs(
+        &mut type_env,
+        &ast,
+        &BTreeMap::new(),
+        imported_type_envs,
+    );
+    crate::compiler::with_active_reachability_roots(roots, || {
+        crate::compiler::compile_with_type_env_and_import_renames(
+            ast,
+            type_env,
+            import_renames.clone(),
+        )
+    })
+}
+
+struct DeclRecoveryPlan {
+    non_import_index: usize,
+    label: String,
+    split_specs: usize,
+}
+
+fn recover_resolved_file_items<'a>(
+    import_path: &str,
+    filename: &'a str,
+    content: &'a str,
+    reachable_names: Option<&HashSet<String>>,
+    package_type_env: &TypeEnv,
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+    import_renames: &BTreeMap<String, String>,
+    roots: Option<&HashSet<String>>,
+) -> Vec<syn::Item> {
+    let plans = recovery_plans_for_file(filename, content, reachable_names);
+    let mut items = Vec::new();
+    for plan in plans {
+        let Some(shard) = parse_recovery_shard(
+            filename,
+            content,
+            reachable_names,
+            plan.non_import_index,
+            None,
+        ) else {
+            continue;
+        };
+        match compile_resolved_file(
+            shard,
+            package_type_env,
+            imported_type_envs,
+            import_renames,
+            roots,
+        ) {
+            Ok(compiled) => {
+                items.extend(compiled.items);
+                continue;
+            }
+            Err(error) => {
+                log_skip(format_args!(
+                    "[gors] skip {import_path}/{filename} {}: compile error: {error}",
+                    plan.label
+                ));
+            }
+        }
+
+        for spec_index in 0..plan.split_specs {
+            let Some(shard) = parse_recovery_shard(
+                filename,
+                content,
+                reachable_names,
+                plan.non_import_index,
+                Some(spec_index),
+            ) else {
+                continue;
+            };
+            let label = spec_label_for_shard(&shard)
+                .unwrap_or_else(|| format!("{} spec {}", plan.label, spec_index.saturating_add(1)));
+            match compile_resolved_file(
+                shard,
+                package_type_env,
+                imported_type_envs,
+                import_renames,
+                roots,
+            ) {
+                Ok(compiled) => items.extend(compiled.items),
+                Err(error) => {
+                    log_skip(format_args!(
+                        "[gors] skip {import_path}/{filename} {label}: compile error: {error}"
+                    ));
+                }
+            }
+        }
+    }
+    items
+}
+
+fn recovery_plans_for_file<'a>(
+    filename: &'a str,
+    content: &'a str,
+    reachable_names: Option<&HashSet<String>>,
+) -> Vec<DeclRecoveryPlan> {
+    let Some(file) = parse_filtered_file(filename, content, reachable_names) else {
+        return Vec::new();
+    };
+
+    file.decls
+        .iter()
+        .filter(|decl| !is_import_decl(decl))
+        .enumerate()
+        .map(|(non_import_index, decl)| DeclRecoveryPlan {
+            non_import_index,
+            label: decl_label(decl),
+            split_specs: splittable_spec_count(decl),
+        })
+        .collect()
+}
+
+fn parse_recovery_shard<'a>(
+    filename: &'a str,
+    content: &'a str,
+    reachable_names: Option<&HashSet<String>>,
+    target_non_import_index: usize,
+    target_spec_index: Option<usize>,
+) -> Option<crate::ast::File<'a>> {
+    let file = parse_filtered_file(filename, content, reachable_names)?;
+    file_with_recovery_shard(file, target_non_import_index, target_spec_index)
+}
+
+fn parse_filtered_file<'a>(
+    filename: &'a str,
+    content: &'a str,
+    reachable_names: Option<&HashSet<String>>,
+) -> Option<crate::ast::File<'a>> {
+    let ast = match crate::parser::parse_file(filename, content) {
+        Ok(ast) => ast,
+        Err(error) => {
+            log_skip(format_args!("[gors] skip {filename}: parse error: {error}"));
+            return None;
+        }
+    };
+    let filtered = match reachable_names {
+        Some(reachable) => filter_file_to_reachable(ast, reachable),
+        None => ast,
+    };
+    file_has_compilable_decl(&filtered).then_some(filtered)
+}
+
+fn file_with_recovery_shard<'a>(
+    mut file: crate::ast::File<'a>,
+    target_non_import_index: usize,
+    target_spec_index: Option<usize>,
+) -> Option<crate::ast::File<'a>> {
+    let mut decls = Vec::new();
+    let mut selected = None;
+    let mut non_import_index = 0;
+    for decl in std::mem::take(&mut file.decls) {
+        if is_import_decl(&decl) {
+            decls.push(decl);
+            continue;
+        }
+        if non_import_index == target_non_import_index {
+            selected = match target_spec_index {
+                Some(spec_index) => single_spec_decl(decl, spec_index),
+                None => Some(decl),
+            };
+        }
+        non_import_index += 1;
+    }
+
+    decls.push(selected?);
+    file.decls = decls;
+    Some(file)
+}
+
+fn single_spec_decl<'a>(
+    decl: crate::ast::Decl<'a>,
+    target_spec_index: usize,
+) -> Option<crate::ast::Decl<'a>> {
+    let crate::ast::Decl::GenDecl(mut gen_decl) = decl else {
+        return None;
+    };
+    if gen_decl.tok == crate::token::Token::IMPORT {
+        return None;
+    }
+    let spec = std::mem::take(&mut gen_decl.specs)
+        .into_iter()
+        .nth(target_spec_index)?;
+    gen_decl.specs = vec![spec];
+    Some(crate::ast::Decl::GenDecl(gen_decl))
+}
+
+fn is_import_decl(decl: &crate::ast::Decl<'_>) -> bool {
+    matches!(
+        decl,
+        crate::ast::Decl::GenDecl(gen_decl) if gen_decl.tok == crate::token::Token::IMPORT
+    )
+}
+
+fn splittable_spec_count(decl: &crate::ast::Decl<'_>) -> usize {
+    let crate::ast::Decl::GenDecl(gen_decl) = decl else {
+        return 0;
+    };
+    if gen_decl.tok == crate::token::Token::IMPORT || gen_decl.specs.len() <= 1 {
+        return 0;
+    }
+    gen_decl.specs.len()
+}
+
+fn decl_label(decl: &crate::ast::Decl<'_>) -> String {
+    match decl {
+        crate::ast::Decl::FuncDecl(func) => {
+            if let Some(receiver) = receiver_type_name(func) {
+                format!("method {receiver}.{}", func.name.name)
+            } else {
+                format!("func {}", func.name.name)
+            }
+        }
+        crate::ast::Decl::GenDecl(gen_decl) => {
+            let token: &'static str = (&gen_decl.tok).into();
+            let names = gen_decl
+                .specs
+                .iter()
+                .flat_map(spec_names)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if names.is_empty() {
+                format!("{token} declaration")
+            } else {
+                format!("{token} {names}")
+            }
+        }
+    }
+}
+
+fn spec_label_for_shard(file: &crate::ast::File<'_>) -> Option<String> {
+    file.decls
+        .iter()
+        .find(|decl| !is_import_decl(decl))
+        .map(decl_label)
 }
 
 fn runtime_primitive_module(
@@ -1374,6 +1628,59 @@ mod tests {
     }
 
     #[test]
+    fn reachable_names_include_package_vars_reached_from_transitive_functions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let entry_file = crate::parser::parse_file(
+            "entry.go",
+            r#"
+                package fixture
+
+                func Entry() bool {
+                    return helper()
+                }
+
+                func helper() bool {
+                    return !flag
+                }
+            "#,
+        )?;
+        let var_file = crate::parser::parse_file(
+            "vars.go",
+            r#"
+                package fixture
+
+                var flag = true
+            "#,
+        )?;
+        let parsed_files = vec![("entry.go", entry_file), ("vars.go", var_file)];
+        let roots = HashSet::from(["Entry".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        assert!(reachable.contains("Entry"), "{reachable:?}");
+        assert!(reachable.contains("helper"), "{reachable:?}");
+        assert!(reachable.contains("flag"), "{reachable:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn reachable_names_include_internal_strconv_appendfloat_package_var()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let files =
+            package_files("internal/strconv").ok_or_else(|| std::io::Error::other("files"))?;
+        let mut parsed_files = Vec::new();
+        for (filename, content) in files.iter() {
+            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
+        }
+        let roots = HashSet::from(["AppendFloat".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        assert!(reachable.contains("AppendFloat"), "{reachable:?}");
+        assert!(reachable.contains("genericFtoa"), "{reachable:?}");
+        assert!(reachable.contains("optimize"), "{reachable:?}");
+        Ok(())
+    }
+
+    #[test]
     fn runtime_gomaxprocs_resolves_as_runtime_primitive() -> Result<(), Box<dyn std::error::Error>>
     {
         let roots = HashSet::from(["GOMAXPROCS".to_string()]);
@@ -1384,6 +1691,20 @@ mod tests {
         assert!(tokens.contains("pub fn GOMAXPROCS"));
         assert!(!tokens.contains("sched"));
         assert!(collect_resolved_imports("runtime", &roots).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_roots_retain_package_vars_reached_through_functions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["AppendFloat".to_string()]);
+        let module = resolve_with_roots("internal/strconv", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve internal/strconv"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("pub fn AppendFloat"), "{tokens}");
+        assert!(tokens.contains("fn genericFtoa"), "{tokens}");
+        assert!(tokens.contains("static optimize_"), "{tokens}");
         Ok(())
     }
 }

@@ -185,6 +185,10 @@ struct PanicReturnsThroughDeferGuard {
 
 struct LocalConstScopeGuard;
 
+struct LocalTypeEnvScopeGuard {
+    previous: typeinfer::TypeEnv,
+}
+
 struct ActiveLocalNamesGuard {
     previous: std::collections::HashSet<String>,
 }
@@ -487,6 +491,21 @@ impl Drop for LocalConstScopeGuard {
     fn drop(&mut self) {
         LOCAL_CONST_VALUES.with(|values| {
             values.borrow_mut().pop();
+        });
+    }
+}
+
+impl LocalTypeEnvScopeGuard {
+    fn push() -> Self {
+        let previous = TYPE_ENV.with(|env| env.borrow().clone());
+        Self { previous }
+    }
+}
+
+impl Drop for LocalTypeEnvScopeGuard {
+    fn drop(&mut self) {
+        TYPE_ENV.with(|env| {
+            *env.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -15786,16 +15805,12 @@ fn compile_builtin_print(args: Vec<syn::Expr>) -> syn::Expr {
 
 enum StdlibCallWorkaround {
     SortSlice,
-    StrconvAppendFloat,
 }
 
 impl StdlibCallWorkaround {
     fn classify(call_expr: &ast::CallExpr<'_>) -> Option<Self> {
         if is_sort_slice_call(call_expr) {
             return Some(Self::SortSlice);
-        }
-        if is_append_float_call(call_expr) {
-            return Some(Self::StrconvAppendFloat);
         }
         None
     }
@@ -15804,8 +15819,6 @@ impl StdlibCallWorkaround {
         match self {
             Self::SortSlice => compile_sort_slice_call(call_expr)
                 .unwrap_or_else(|| compile_error_expr("invalid sort slice call")),
-            Self::StrconvAppendFloat => compile_append_float_call(call_expr)
-                .unwrap_or_else(|| compile_error_expr("invalid strconv AppendFloat call")),
         }
     }
 }
@@ -15868,39 +15881,6 @@ fn is_sort_slice_call(call_expr: &ast::CallExpr) -> bool {
     };
     matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "sort")
         && matches!(selector.sel.name, "Slice" | "SliceStable" | "SliceIsSorted")
-}
-
-fn compile_append_float_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
-    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
-        return None;
-    };
-    if !matches!(*selector.x, ast::Expr::Ident(pkg) if pkg.name == "strconv") {
-        return None;
-    }
-    if selector.sel.name != "AppendFloat" {
-        return None;
-    }
-    let args = call_expr.args.unwrap_or_default();
-    if args.len() != 5 {
-        return None;
-    }
-    let mut args = args.into_iter();
-    let dst = compile_expr_with_expected(args.next()?, None);
-    let value = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Float64));
-    let fmt = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Uint8));
-    let prec = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Int));
-    let bit_size = compile_expr_with_expected(args.next()?, Some(&typeinfer::GoType::Int));
-    Some(syn::parse_quote! {
-        crate::builtin::append_float(#dst, #value, (#fmt) as u8, #prec, #bit_size)
-    })
-}
-
-fn is_append_float_call(call_expr: &ast::CallExpr) -> bool {
-    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
-        return false;
-    };
-    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "strconv")
-        && selector.sel.name == "AppendFloat"
 }
 
 fn ordered_builtin_arg_expected_type(raw_args: &[ast::Expr]) -> Option<typeinfer::GoType> {
@@ -17075,8 +17055,30 @@ fn lvalue_expr_from_owned(expr: ast::Expr) -> Option<syn::Expr> {
     }
 }
 
+fn const_index_usize_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let value = const_eval_expr_in_active_env(expr, 0, &BTreeMap::new())?;
+    let value = match value {
+        ConstValue::Int(value) => u128::try_from(value).ok()?,
+        ConstValue::Uint(value, _) => value,
+        ConstValue::Float(value) if value.is_finite() && value.fract() == 0.0 && value >= 0.0 => {
+            value as u128
+        }
+        _ => return None,
+    };
+    let value = usize::try_from(value).ok()?;
+    let lit = syn::LitInt::new(&format!("{value}usize"), Span::mixed_site());
+    Some(syn::parse_quote! { #lit })
+}
+
+fn compile_index_component_expr(expr: ast::Expr) -> syn::Expr {
+    const_index_usize_expr(&expr).unwrap_or_else(|| expr.into())
+}
+
 fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     if let Some(expr) = syn_expr_from_type_expr_like(expr) {
+        return Some(expr);
+    }
+    if let Some(expr) = const_index_usize_expr(expr) {
         return Some(expr);
     }
     match expr {
@@ -17414,7 +17416,7 @@ fn shared_capture_lvalue_expr(name: &str) -> Option<syn::Expr> {
         return None;
     }
     let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
-    Some(syn::parse_quote! { *#ident.lock().unwrap() })
+    Some(syn::parse_quote! { (*#ident.lock().unwrap()) })
 }
 
 fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
@@ -20119,7 +20121,7 @@ fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
 fn compile_index_assignment_lhs(index: ast::IndexExpr<'_>) -> Option<syn::Expr> {
     let ast::IndexExpr { x, index, .. } = index;
     let base = lvalue_expr_from_owned(*x)?;
-    let index: syn::Expr = (*index).into();
+    let index = compile_index_component_expr(*index);
     Some(syn::parse_quote! { (#base)[(#index) as usize] })
 }
 
@@ -20780,6 +20782,12 @@ fn compile_numeric_binary_expr_with_expected(
         }
         Err(binary_expr) => binary_expr,
     };
+    let env = TYPE_ENV.with(|e| e.borrow().clone());
+    let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
+    let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
+    let natural_type =
+        typed_operand_type_for_untyped_constant_binary(&binary_expr, &left_ty, &right_ty)
+            .unwrap_or_else(|| expected.clone());
     let op = binary_expr.op;
     let left_child_op = match &*binary_expr.x {
         ast::Expr::BinaryExpr(binary) => Some(binary.op),
@@ -20790,7 +20798,7 @@ fn compile_numeric_binary_expr_with_expected(
         _ => None,
     };
     let left = parenthesize_binary_child_if_needed(
-        compile_expr_with_expected(*binary_expr.x, Some(expected)),
+        compile_expr_with_expected(*binary_expr.x, Some(&natural_type)),
         left_child_op,
         op,
         BinarySide::Left,
@@ -20798,15 +20806,39 @@ fn compile_numeric_binary_expr_with_expected(
     let right = if matches!(op, token::Token::SHL | token::Token::SHR) {
         syn::Expr::from(*binary_expr.y)
     } else {
-        compile_expr_with_expected(*binary_expr.y, Some(expected))
+        compile_expr_with_expected(*binary_expr.y, Some(&natural_type))
     };
     let right = parenthesize_binary_child_if_needed(right, right_child_op, op, BinarySide::Right);
-    if op == token::Token::AND_NOT {
+    let expr = if op == token::Token::AND_NOT {
         let not_right: syn::Expr = syn::parse_quote! { !#right };
-        return syn::parse_quote! { #left & #not_right };
+        syn::parse_quote! { #left & #not_right }
+    } else {
+        let op: syn::BinOp = op.into();
+        syn::parse_quote! { #left #op #right }
+    };
+    coerce_numeric_expr(expected, &natural_type, expr)
+}
+
+fn typed_operand_type_for_untyped_constant_binary(
+    binary_expr: &ast::BinaryExpr,
+    left_ty: &typeinfer::GoType,
+    right_ty: &typeinfer::GoType,
+) -> Option<typeinfer::GoType> {
+    if matches!(binary_expr.op, token::Token::SHL | token::Token::SHR) {
+        return None;
     }
-    let op: syn::BinOp = op.into();
-    syn::parse_quote! { #left #op #right }
+    let left_const = is_const_like_expr(&binary_expr.x);
+    let right_const = is_const_like_expr(&binary_expr.y);
+    if left_const == right_const {
+        return None;
+    }
+    let typed_ty = if left_const { right_ty } else { left_ty };
+    let resolved = resolved_go_type(typed_ty);
+    if matches!(resolved, typeinfer::GoType::Unknown) {
+        return None;
+    }
+    (resolved.is_numeric() || matches!(resolved, typeinfer::GoType::Uintptr))
+        .then(|| typed_ty.clone())
 }
 
 struct ReflectKindCompare {
@@ -22159,6 +22191,7 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
 
     fn try_from(block_stmt: ast::BlockStmt) -> Result<Self, Self::Error> {
         let _local_const_scope = LocalConstScopeGuard::push();
+        let _local_type_env_scope = LocalTypeEnvScopeGuard::push();
         let _active_local_names_scope = ActiveLocalNamesGuard::push_scope();
         let shared_capture_names = TYPE_ENV
             .with(|env| ir::mutable_func_lit_capture_names_in_block(&block_stmt, &env.borrow()));
@@ -22868,7 +22901,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     }};
                 }
 
-                let idx: syn::Expr = (*index_expr.index).into();
+                let idx = compile_index_component_expr(*index_expr.index);
 
                 if is_byte_seq_type_param(&container_type) {
                     return syn::parse_quote! { crate::builtin::byte_at(&#base, (#idx) as usize) };
@@ -29504,6 +29537,53 @@ var X int
     }
 
     #[test]
+    fn it_should_preserve_typed_operand_type_inside_expected_numeric_binary() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func pair() (first uint32, ok bool) {
+                    return 0, true
+                }
+
+                func trim(v uint64) (uint64, int) {
+                    return v, 0
+                }
+
+                func use() uint64 {
+                    const (
+                        p10 = 10
+                        p100 = p10 * 10
+                    )
+                    zi, _ := pair()
+                    s, r := zi/p100, uint32(zi%p100)
+                    t := r/10
+                    if r < 1 {
+                        s, zeros := trim(uint64(s))
+                        _, _ = s, zeros
+                    }
+                    y := 10*s + uint32(t)
+                    return uint64(y)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(10 as u32) * s"),
+            "expected untyped constant to adopt typed operand before outer cast: {output}"
+        );
+        assert!(
+            !output.contains("(10 as u64) * s"),
+            "expected outer uint64 context not to coerce only one side of 10*s: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_not_move_non_copy_expression_switch_tags() {
         let parsed = parse_file(
             "test.go",
@@ -33747,7 +33827,7 @@ func main() {
         assert!(main_rs.contains("crate::builtin::copy_slice"), "{main_rs}");
         assert!(!main_rs.contains("compile_error!"), "{main_rs}");
         assert!(
-            main_rs.contains("(e.lock().unwrap().encode)[(1 + 1) as usize]"),
+            main_rs.contains("(e.lock().unwrap().encode)[(2usize) as usize]"),
             "{main_rs}"
         );
     }
@@ -34601,6 +34681,26 @@ func main() {
     }
 
     #[test]
+    fn prune_items_to_roots_retains_dereferenced_package_statics() {
+        let mut file: syn::File = rust! {
+            fn Entry() -> bool {
+                !*flag_
+            }
+
+            #[allow(non_upper_case_globals)]
+            static flag_: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| true);
+        };
+        let roots = std::collections::HashSet::from(["Entry".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        super::prune_items_to_roots(&mut file.items, &roots, &module_names);
+        let source = quote! { #file }.to_string();
+
+        assert!(source.contains("fn Entry"), "{source}");
+        assert!(source.contains("static flag_"), "{source}");
+    }
+
+    #[test]
     fn prune_unused_struct_fields_keeps_reachable_root_struct_shape() {
         let file: syn::File = rust! {
             pub struct Block {
@@ -35034,7 +35134,7 @@ func main() {
             "expected slice view method: {output}"
         );
         assert!(
-            output.contains("(* h . name ()) [(0) as usize] ="),
+            output.contains("(* h . name ()) [(0usize) as usize] ="),
             "expected index assignment through returned slice view: {output}"
         );
         assert!(
@@ -35352,7 +35452,7 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("(* c . lock () . unwrap ()) . Increment ()"),
+            output.contains("((* c . lock () . unwrap ())) . Increment ()"),
             "expected dereferenced shared receiver to be parenthesized before method call: {output}"
         );
         assert!(
@@ -36157,7 +36257,7 @@ func main() {
                         (t)[(0) as usize] = __gors_slice_alias_value;
                         s[((0) as usize + (1) as usize) as usize] = __gors_slice_alias_value;
                     }
-                    (s)[(1) as usize] = 7;
+                    (s)[(1usize) as usize] = 7;
                     {
                         let __gors_slice_base_index = (1) as usize;
                         let __gors_slice_alias_offset = (1) as usize;
@@ -36299,6 +36399,73 @@ func main() {
             output.contains("std :: mem :: take (& mut self . sp)")
                 && output.contains(") . to_vec ()"),
             "expected self-slice assignment to move the source before wrapping: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_assign_slice_fields_on_shared_struct_lvalues() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type holder struct {
+                    data []byte
+                }
+
+                func use(*holder) {}
+
+                func main() {
+                    var h holder
+                    var buf [8]byte
+                    h.data = buf[:]
+                    use(&h)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(* h . lock () . unwrap ()) . data ="),
+            "expected shared struct field assignment to dereference the locked struct: {output}"
+        );
+        assert!(
+            !output.contains("* h . lock () . unwrap () . data"),
+            "expected dereference not to bind to the slice field: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_fold_constant_index_expressions_before_bounds_checks() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    const (
+                        div = 0xc767074b22e90e21
+                    )
+                    var assert [1]int
+                    _ = assert[(div*5*5*5*5*5*5*5*5)%(1<<64)-1]
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let __gors_index = (0usize) as usize"),
+            "expected constant index expression to be folded before emission: {output}"
+        );
+        assert!(
+            !output.contains("5612680138843163012890625"),
+            "expected oversized intermediate constant not to appear in generated index code: {output}"
         );
     }
 
