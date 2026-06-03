@@ -5533,8 +5533,13 @@ fn inject_post_prune_stdlib_helpers(
             .filter(|module| !module.is_main)
             .map(|module| module.mod_name.clone()),
     );
+    let external_root_collector = ExternalRootCollector::new(&module_names);
     for module in modules.values() {
-        preserved.extend(collect_external_refs(&module.file.items, &module_names).into_keys());
+        preserved.extend(
+            external_root_collector
+                .refs_from_items(&module.file.items)
+                .into_keys(),
+        );
     }
     if preserved.contains("reflect")
         && !modules
@@ -7526,10 +7531,8 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
             semantic_graph
         });
-        let external_root_collector = DceExternalRootCollector {
-            module_names: &module_names,
-            semantic_graph: semantic_graph.as_ref(),
-        };
+        let external_root_collector =
+            ExternalRootCollector::with_semantic_audit(&module_names, semantic_graph.as_ref());
 
         if let Some(main_module) = modules.get_mut("__main__") {
             let roots = main_module_root_names(main_module, has_main);
@@ -7539,7 +7542,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         let mut required = RequiredModuleRoots::default();
         if let Some(main_module) = modules.get("__main__") {
             let roots = main_module_root_names(main_module, has_main);
-            let refs = external_root_collector.refs_from_items(
+            let refs = external_root_collector.refs_from_items_with_roots(
                 &main_module.mod_name,
                 &roots,
                 &main_module.file.items,
@@ -7563,7 +7566,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 } else {
                     roots
                 };
-                let refs = external_root_collector.refs_from_module_roots(module, roots);
+                let refs = external_root_collector.refs_from_reachable_module_roots(module, roots);
                 changed |= required.merge(refs);
             }
             if !changed {
@@ -7601,8 +7604,9 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
                 prune_unneeded_builtin_traits(&mut module.file.items, roots);
             } else {
                 let mut builtin_roots = required.cloned_or_default("builtin");
-                if let Some(local_builtin_roots) =
-                    collect_external_refs(&module.file.items, &module_names).remove("builtin")
+                if let Some(local_builtin_roots) = external_root_collector
+                    .refs_from_items(&module.file.items)
+                    .remove("builtin")
                 {
                     builtin_roots.extend(local_builtin_roots);
                 }
@@ -7674,24 +7678,48 @@ fn refs_to_btree(
         .collect()
 }
 
-struct DceExternalRootCollector<'a> {
+struct ExternalRootCollector<'a> {
     module_names: &'a std::collections::HashSet<String>,
     semantic_graph: Option<&'a SemanticReachabilityGraph>,
 }
 
-impl DceExternalRootCollector<'_> {
+impl<'a> ExternalRootCollector<'a> {
+    fn new(module_names: &'a std::collections::HashSet<String>) -> Self {
+        Self {
+            module_names,
+            semantic_graph: None,
+        }
+    }
+
+    fn with_semantic_audit(
+        module_names: &'a std::collections::HashSet<String>,
+        semantic_graph: Option<&'a SemanticReachabilityGraph>,
+    ) -> Self {
+        Self {
+            module_names,
+            semantic_graph,
+        }
+    }
+
     fn refs_from_items(
+        &self,
+        items: &[syn::Item],
+    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        collect_external_refs(items, self.module_names)
+    }
+
+    fn refs_from_items_with_roots(
         &self,
         module: &str,
         roots: &std::collections::HashSet<String>,
         items: &[syn::Item],
     ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        let refs = collect_external_refs(items, self.module_names);
+        let refs = self.refs_from_items(items);
         debug_assert_semantic_external_refs(self.semantic_graph, module, roots, &refs);
         refs
     }
 
-    fn refs_from_module_roots(
+    fn refs_from_reachable_module_roots(
         &self,
         module: &CompiledModule,
         roots: &std::collections::HashSet<String>,
@@ -8509,8 +8537,11 @@ fn resolve_required_stdlib_modules(
     for path in roots {
         required.insert_module(crate::resolve::module_name(path));
     }
-    for module in modules.values().filter(|module| !module.is_stdlib) {
-        required.merge(collect_external_refs(&module.file.items, &stdlib_mod_names));
+    {
+        let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
+        for module in modules.values().filter(|module| !module.is_stdlib) {
+            required.merge(external_root_collector.refs_from_items(&module.file.items));
+        }
     }
 
     let mut loaded_roots: HashMap<String, HashSet<String>> = HashMap::new();
@@ -8591,14 +8622,13 @@ fn resolve_required_stdlib_modules(
             loaded_any = true;
         }
 
+        let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
         let mut changed = false;
         for module in modules.values().filter(|module| module.is_stdlib) {
             let refs = if module.mod_name == "builtin" {
-                collect_external_refs(&module.file.items, &stdlib_mod_names)
+                external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
-                let (_, refs, _) =
-                    reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
-                refs
+                external_root_collector.refs_from_reachable_module_roots(module, roots)
             } else {
                 continue;
             };
@@ -8657,10 +8687,14 @@ fn prune_dependency_stdlib_modules(
     }
 
     let root_mod_names: HashSet<String> = std::iter::once("builtin".to_string()).collect();
+    let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
     let mut preserved_mod_names: HashSet<String> = root_mod_names.iter().cloned().collect();
     for module in modules.values().filter(|module| !module.is_stdlib) {
-        preserved_mod_names
-            .extend(collect_external_refs(&module.file.items, &stdlib_mod_names).into_keys());
+        preserved_mod_names.extend(
+            external_root_collector
+                .refs_from_items(&module.file.items)
+                .into_keys(),
+        );
     }
     trace_stdlib_resolution(format_args!("[gors] preserve stdlib roots: {}", {
         let mut names: Vec<_> = preserved_mod_names.iter().cloned().collect();
@@ -8675,7 +8709,7 @@ fn prune_dependency_stdlib_modules(
 
     let mut required = RequiredModuleRoots::default();
     for module in modules.values().filter(|module| !module.is_stdlib) {
-        required.merge(collect_external_refs(&module.file.items, &stdlib_mod_names));
+        required.merge(external_root_collector.refs_from_items(&module.file.items));
     }
     for (module, roots) in required.iter() {
         trace_stdlib_resolution(format_args!(
@@ -8688,11 +8722,9 @@ fn prune_dependency_stdlib_modules(
         let mut changed = false;
         for module in modules.values().filter(|module| module.is_stdlib) {
             let refs = if root_mod_names.contains(&module.mod_name) {
-                collect_external_refs(&module.file.items, &stdlib_mod_names)
+                external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
-                let (_, refs, _) =
-                    reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
-                refs
+                external_root_collector.refs_from_reachable_module_roots(module, roots)
             } else {
                 continue;
             };
@@ -8764,12 +8796,13 @@ fn prune_unreferenced_stdlib_modules(
             .filter(|module| module.is_stdlib)
             .map(|module| module.mod_name.clone())
             .collect();
+        let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
         let mut referenced = HashSet::new();
         for module in modules.values() {
             if module.mod_name == "builtin" {
                 continue;
             }
-            let refs = collect_external_refs(&module.file.items, &stdlib_mod_names);
+            let refs = external_root_collector.refs_from_items(&module.file.items);
             for module_name in refs.into_keys() {
                 referenced.insert(module_name);
             }
