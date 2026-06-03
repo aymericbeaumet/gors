@@ -5551,11 +5551,7 @@ fn inject_post_prune_stdlib_helpers(
     );
     let external_root_collector = ExternalRootCollector::new(&module_names);
     for module in modules.values() {
-        preserved.extend(
-            external_root_collector
-                .refs_from_items(&module.file.items)
-                .into_keys(),
-        );
+        preserved.extend(external_root_collector.module_refs_from_items(&module.file.items));
     }
     if preserved.contains("reflect")
         && !modules
@@ -7743,6 +7739,10 @@ impl<'a> ExternalRootCollector<'a> {
         collect_external_refs(items, self.module_names)
     }
 
+    fn module_refs_from_items(&self, items: &[syn::Item]) -> std::collections::HashSet<String> {
+        self.refs_from_items(items).into_keys().collect()
+    }
+
     fn refs_from_items_with_roots(
         &self,
         module: &str,
@@ -8741,11 +8741,8 @@ fn prune_dependency_stdlib_modules(
     let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
     let mut preserved_mod_names: HashSet<String> = root_mod_names.iter().cloned().collect();
     for module in modules.values().filter(|module| !module.is_stdlib) {
-        preserved_mod_names.extend(
-            external_root_collector
-                .refs_from_items(&module.file.items)
-                .into_keys(),
-        );
+        preserved_mod_names
+            .extend(external_root_collector.module_refs_from_items(&module.file.items));
     }
     trace_stdlib_resolution(format_args!("[gors] preserve stdlib roots: {}", {
         let mut names: Vec<_> = preserved_mod_names.iter().cloned().collect();
@@ -8839,10 +8836,7 @@ fn prune_unreferenced_stdlib_modules(
             if module.mod_name == "builtin" {
                 continue;
             }
-            let refs = external_root_collector.refs_from_items(&module.file.items);
-            for module_name in refs.into_keys() {
-                referenced.insert(module_name);
-            }
+            referenced.extend(external_root_collector.module_refs_from_items(&module.file.items));
         }
         referenced.insert("builtin".to_string());
 
