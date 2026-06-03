@@ -7,7 +7,7 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
 
     noop_interfaces::inject(items, facts);
     mut_ref_forwarders::inject_state(items, facts);
-    fmt_flush::inject(items, facts);
+    fmt_flush::inject(items);
 }
 
 #[derive(Clone, Copy)]
@@ -16,7 +16,6 @@ struct StructuralHelperFacts {
     has_stringer: bool,
     has_go_stringer: bool,
     has_state: bool,
-    has_pp: bool,
 }
 
 impl StructuralHelperFacts {
@@ -26,7 +25,6 @@ impl StructuralHelperFacts {
             has_stringer: has_trait(items, "Stringer"),
             has_go_stringer: has_trait(items, "GoStringer"),
             has_state: has_trait(items, "State"),
-            has_pp: has_struct(items, "pp"),
         }
     }
 
@@ -51,6 +49,7 @@ fn has_struct(items: &[syn::Item], name: &str) -> bool {
 enum ImplSelfType<'a> {
     Named(&'a str),
     MutableReferenceToNamed(&'a str),
+    PointerCellToNamed(&'a str),
 }
 
 fn has_impl(items: &[syn::Item], trait_name: &str, self_ty: ImplSelfType<'_>) -> bool {
@@ -77,7 +76,34 @@ fn type_matches_impl_self(ty: &syn::Type, expected: ImplSelfType<'_>) -> bool {
             };
             reference.mutability.is_some() && type_path_matches_name(&reference.elem, name)
         }
+        ImplSelfType::PointerCellToNamed(name) => type_path_is_pointer_cell_to_name(ty, name),
     }
+}
+
+fn type_path_is_pointer_cell_to_name(ty: &syn::Type, name: &str) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    if type_path.qself.is_some() {
+        return false;
+    }
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "GorsPtr" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    let mut args = arguments.args.iter();
+    let Some(syn::GenericArgument::Type(inner)) = args.next() else {
+        return false;
+    };
+    if args.next().is_some() {
+        return false;
+    }
+    type_path_matches_name(inner, name)
 }
 
 fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
@@ -137,12 +163,20 @@ mod tests {
             syn::parse_quote! {
                 impl<'a> State for &'a mut pp {}
             },
+            syn::parse_quote! {
+                impl State for crate::builtin::GorsPtr<pp> {}
+            },
         ];
 
         assert!(has_impl(
             &items,
             "State",
             ImplSelfType::MutableReferenceToNamed("pp")
+        ));
+        assert!(has_impl(
+            &items,
+            "State",
+            ImplSelfType::PointerCellToNamed("pp")
         ));
         assert!(!has_impl(&items, "State", ImplSelfType::Named("pp")));
     }
@@ -157,7 +191,10 @@ mod tests {
                 }
             },
             syn::parse_quote! {
-                struct pp;
+                struct pp {
+                    fmt: fmtState,
+                    buf: byteBuffer,
+                }
             },
             syn::parse_quote! {
                 impl State for pp {
@@ -199,6 +236,33 @@ mod tests {
 
         assert_eq!(state_ref_impls, 1);
         assert_eq!(flush_methods, 1);
+    }
+
+    #[test]
+    fn fmt_flush_injection_uses_receiver_shape() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait State {
+                    fn Write(&mut self, b: Vec<u8>) -> usize;
+                }
+            },
+            syn::parse_quote! {
+                struct Printer {
+                    fmt: fmtState,
+                    buf: byteBuffer,
+                }
+            },
+            syn::parse_quote! {
+                impl State for crate::builtin::GorsPtr<Printer> {
+                    fn Write(&mut self, b: Vec<u8>) -> usize { b.len() }
+                }
+            },
+        ];
+
+        inject(&mut items);
+
+        assert!(has_method(&items, "Printer", "__gors_flush_fmt"));
+        assert!(!has_method(&items, "pp", "__gors_flush_fmt"));
     }
 
     #[test]
