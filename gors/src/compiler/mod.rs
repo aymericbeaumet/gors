@@ -7886,6 +7886,14 @@ fn prune_items_to_roots(
     module_names: &std::collections::HashSet<String>,
 ) {
     let reachable = reachable_stdlib_items(items, roots, module_names);
+    retain_reachable_items(items, roots, &reachable);
+}
+
+fn retain_reachable_items(
+    items: &mut Vec<syn::Item>,
+    roots: &std::collections::HashSet<String>,
+    reachable: &ReachableItems,
+) {
     let item_names = item_reachability_names(items);
     let top_level_names = top_level_item_names(items);
     *items = items
@@ -8807,29 +8815,7 @@ fn prune_dependency_stdlib_modules(
             module.content_hash = String::new();
             continue;
         }
-        let item_names = item_reachability_names(&module.file.items);
-        let top_level_names = top_level_item_names(&module.file.items);
-        module.file.items = module
-            .file
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                reachable
-                    .keep
-                    .contains(&idx)
-                    .then(|| {
-                        reachable_item_for_names(
-                            item,
-                            &reachable.names,
-                            &item_names,
-                            &top_level_names,
-                            roots,
-                        )
-                    })
-                    .flatten()
-            })
-            .collect();
+        retain_reachable_items(&mut module.file.items, roots, &reachable);
         module.content_hash = String::new();
     }
     prune_unreferenced_stdlib_modules(modules, &preserved_mod_names);
