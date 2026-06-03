@@ -22524,314 +22524,6 @@ fn value_type_satisfies_interface_for_impl(
     })
 }
 
-#[derive(Clone)]
-struct PromotedMethodStep {
-    field_name: String,
-    field_is_pointer: bool,
-}
-
-#[derive(Clone)]
-struct PromotedMethodInfo {
-    owner_type: String,
-    steps: Vec<PromotedMethodStep>,
-    method_is_pointer_receiver: bool,
-}
-
-fn direct_method_key_for_impl(
-    env: &typeinfer::TypeEnv,
-    type_name: &str,
-    method_name: &str,
-    include_pointer_receiver_methods: bool,
-) -> Option<String> {
-    let method_key = format!("{type_name}.{method_name}");
-    let has_method = if include_pointer_receiver_methods {
-        env.has_func(&method_key)
-    } else {
-        env.has_value_method(&method_key)
-    };
-    has_method.then_some(method_key)
-}
-
-fn promoted_method_info_for_impl(
-    struct_name: &str,
-    method_name: &str,
-    include_pointer_receiver_methods: bool,
-) -> Option<PromotedMethodInfo> {
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        promoted_method_info_for_impl_inner(
-            &env,
-            struct_name,
-            method_name,
-            include_pointer_receiver_methods,
-            &mut std::collections::HashSet::new(),
-        )
-    })
-}
-
-fn promoted_method_info_for_impl_inner(
-    env: &typeinfer::TypeEnv,
-    struct_name: &str,
-    method_name: &str,
-    include_pointer_receiver_methods: bool,
-    visiting: &mut std::collections::HashSet<String>,
-) -> Option<PromotedMethodInfo> {
-    if !visiting.insert(struct_name.to_string()) {
-        return None;
-    }
-    for (field_name, field_ty) in env.get_struct_fields(struct_name) {
-        if !env.is_struct_embedded_field(struct_name, &field_name) {
-            continue;
-        }
-        let Some((owner_type, field_is_pointer)) = embedded_field_target(&field_ty, env) else {
-            continue;
-        };
-        let include_owner_pointer_methods = include_pointer_receiver_methods || field_is_pointer;
-        if let Some(method_key) =
-            direct_method_key_for_impl(env, &owner_type, method_name, include_owner_pointer_methods)
-        {
-            visiting.remove(struct_name);
-            return Some(PromotedMethodInfo {
-                owner_type,
-                steps: vec![PromotedMethodStep {
-                    field_name,
-                    field_is_pointer,
-                }],
-                method_is_pointer_receiver: env.method_has_pointer_receiver(&method_key),
-            });
-        }
-        if let Some(mut nested) = promoted_method_info_for_impl_inner(
-            env,
-            &owner_type,
-            method_name,
-            include_owner_pointer_methods,
-            visiting,
-        ) {
-            let mut steps = vec![PromotedMethodStep {
-                field_name,
-                field_is_pointer,
-            }];
-            steps.append(&mut nested.steps);
-            nested.steps = steps;
-            visiting.remove(struct_name);
-            return Some(nested);
-        }
-    }
-    visiting.remove(struct_name);
-    None
-}
-
-fn promoted_method_receiver_expr(
-    steps: &[PromotedMethodStep],
-    call_receiver_kind: interface_impls::PointerCallReceiver,
-) -> syn::Expr {
-    let mut expr: syn::Expr = syn::parse_quote! { self };
-    for step in steps {
-        let field_ident =
-            syn::Ident::new(&rust_safe_ident_name(&step.field_name), Span::mixed_site());
-        expr = if step.field_is_pointer {
-            syn::parse_quote! { (*#expr.#field_ident.lock().unwrap()) }
-        } else {
-            syn::parse_quote! { #expr.#field_ident }
-        };
-    }
-    match call_receiver_kind {
-        interface_impls::PointerCallReceiver::ImmutableRef => syn::parse_quote! { &#expr },
-        interface_impls::PointerCallReceiver::MutableRef => syn::parse_quote! { &mut #expr },
-        interface_impls::PointerCallReceiver::Owned => syn::parse_quote! { (#expr).clone() },
-    }
-}
-
-fn promoted_concrete_interface_impl_item(
-    struct_name: &str,
-    method_name: &str,
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-) -> Option<syn::ImplItem> {
-    let promoted = promoted_method_info_for_impl(struct_name, method_name, false)?;
-    let method = methods
-        .get(&promoted.owner_type)?
-        .iter()
-        .find(|method| method.sig.ident == method_name)?
-        .clone();
-    let method_ident = method.sig.ident.clone();
-    let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
-    let call_receiver_kind = interface_impls::call_receiver(&method, method_is_pointer_receiver);
-    let owner_ident = syn::Ident::new(
-        &rust_safe_ident_name(&promoted.owner_type),
-        Span::mixed_site(),
-    );
-    let arg_idents = signature_arg_idents(&method.sig);
-    let mut sig = method.sig;
-    if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-        receiver.mutability = Some(<Token![mut]>::default());
-        *receiver.ty = syn::parse_quote! { &mut Self };
-    }
-    let receiver = promoted_method_receiver_expr(&promoted.steps, call_receiver_kind);
-    let block = if matches!(sig.output, syn::ReturnType::Default) {
-        syn::parse_quote!({
-            #owner_ident::#method_ident(#receiver, #(#arg_idents),*);
-        })
-    } else {
-        syn::parse_quote!({
-            #owner_ident::#method_ident(#receiver, #(#arg_idents),*)
-        })
-    };
-    Some(syn::ImplItem::Fn(syn::ImplItemFn {
-        attrs: vec![],
-        vis: syn::Visibility::Inherited,
-        defaultness: None,
-        sig,
-        block,
-    }))
-}
-
-fn concrete_interface_impl_can_emit_method(
-    struct_name: &str,
-    method_name: &str,
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-) -> bool {
-    methods.get(struct_name).is_some_and(|method_list| {
-        method_list
-            .iter()
-            .any(|method| method.sig.ident == method_name)
-    }) || promoted_method_info_for_impl(struct_name, method_name, false).is_some_and(|promoted| {
-        methods
-            .get(&promoted.owner_type)
-            .is_some_and(|method_list| {
-                method_list
-                    .iter()
-                    .any(|method| method.sig.ident == method_name)
-            })
-    })
-}
-
-fn concrete_interface_impl_can_emit_methods(
-    struct_name: &str,
-    method_names: &[String],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-) -> bool {
-    method_names.iter().all(|method_name| {
-        concrete_interface_impl_can_emit_method(struct_name, method_name, methods)
-    })
-}
-
-fn concrete_interface_impl_items_for_methods(
-    trait_name: &str,
-    struct_name: &str,
-    method_names: &[String],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    exposes_any: bool,
-) -> Vec<syn::ImplItem> {
-    let mut impl_items: Vec<syn::ImplItem> = vec![];
-    let trait_path = interface_trait_path_from_name(trait_name);
-    let as_any_method: syn::ImplItem = if exposes_any {
-        syn::parse_quote! {
-            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                Some(self)
-            }
-        }
-    } else {
-        syn::parse_quote! {
-            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-                None
-            }
-        }
-    };
-    impl_items.push(as_any_method);
-    if trait_name != "error" {
-        let can_clone_self =
-            NON_CLONE_STRUCTS.with(|structs| !structs.borrow().contains(struct_name));
-        impl_items.push(interface_hooks::clone_box_impl_item(
-            &trait_path,
-            can_clone_self,
-        ));
-    }
-    if let Some(method_list) = methods.get(struct_name) {
-        for method in method_list {
-            if method_names.contains(&method.sig.ident.to_string()) {
-                let mut m = method.clone();
-                m.vis = syn::Visibility::Inherited;
-                let method_ident = m.sig.ident.clone();
-                let immutable_error_method = trait_name == "error" && method_ident == "Error";
-                let original_receiver = method
-                    .sig
-                    .inputs
-                    .first()
-                    .and_then(|arg| match arg {
-                        syn::FnArg::Receiver(receiver) => {
-                            Some((receiver.reference.is_some(), receiver.mutability.is_some()))
-                        }
-                        syn::FnArg::Typed(_) => None,
-                    })
-                    .unwrap_or((true, false));
-                if let Some(syn::FnArg::Receiver(receiver)) = m.sig.inputs.first_mut() {
-                    if immutable_error_method {
-                        receiver.mutability = None;
-                        *receiver.ty = syn::parse_quote! { &Self };
-                    } else {
-                        receiver.mutability = Some(<Token![mut]>::default());
-                        *receiver.ty = syn::parse_quote! { &mut Self };
-                    }
-                }
-                if immutable_error_method {
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let arg_idents = signature_arg_idents(&method.sig);
-                    let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
-                    m.block = if original_receiver_is_mut {
-                        if matches!(m.sig.output, syn::ReturnType::Default) {
-                            let receiver: syn::Expr = if original_receiver_is_ref {
-                                syn::parse_quote! { &mut __gors_receiver }
-                            } else {
-                                syn::parse_quote! { __gors_receiver }
-                            };
-                            syn::parse_quote!({
-                                let mut __gors_receiver = (*self).clone();
-                                #struct_ident::#method_ident(#receiver, #(#arg_idents),*);
-                            })
-                        } else {
-                            let receiver: syn::Expr = if original_receiver_is_ref {
-                                syn::parse_quote! { &mut __gors_receiver }
-                            } else {
-                                syn::parse_quote! { __gors_receiver }
-                            };
-                            syn::parse_quote!({
-                                let mut __gors_receiver = (*self).clone();
-                                #struct_ident::#method_ident(#receiver, #(#arg_idents),*)
-                            })
-                        }
-                    } else if matches!(m.sig.output, syn::ReturnType::Default) {
-                        syn::parse_quote!({
-                            #struct_ident::#method_ident(self, #(#arg_idents),*);
-                        })
-                    } else {
-                        syn::parse_quote!({
-                            #struct_ident::#method_ident(self, #(#arg_idents),*)
-                        })
-                    };
-                }
-                impl_items.push(syn::ImplItem::Fn(m));
-            }
-        }
-    }
-    let emitted_method_names = impl_items
-        .iter()
-        .filter_map(|item| match item {
-            syn::ImplItem::Fn(func) => Some(func.sig.ident.to_string()),
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    for method_name in method_names {
-        if emitted_method_names.contains(method_name) {
-            continue;
-        }
-        if let Some(item) = promoted_concrete_interface_impl_item(struct_name, method_name, methods)
-        {
-            impl_items.push(item);
-        }
-    }
-    impl_items
-}
-
 fn imported_pointer_interface_impls_for_local_structs(
     struct_methods: &BTreeMap<String, Vec<String>>,
     struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -23312,7 +23004,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     struct_method_list,
                     pointer_methods,
                     &method_set.required_methods,
-                ) && concrete_interface_impl_can_emit_methods(
+                ) && interface_impls::concrete_can_emit_methods(
                     struct_name,
                     &method_set.direct_methods,
                     &methods,
@@ -23331,8 +23023,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         struct_name.clone(),
                         false,
                     )) {
-                        let impl_items = concrete_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::concrete_items(
                             trait_name,
+                            &trait_path,
                             struct_name,
                             &method_set.direct_methods,
                             &methods,
@@ -23373,7 +23066,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             struct_method_list,
                             pointer_methods,
                             &embedded_method_set.required_methods,
-                        ) && concrete_interface_impl_can_emit_methods(
+                        ) && interface_impls::concrete_can_emit_methods(
                             struct_name,
                             &embedded_method_set.direct_methods,
                             &methods,
@@ -23388,8 +23081,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             continue;
                         }
                         let trait_path = interface_trait_path_from_name(embedded_name);
-                        let impl_items = concrete_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::concrete_items(
                             embedded_name,
+                            &trait_path,
                             struct_name,
                             &embedded_method_set.direct_methods,
                             &methods,
