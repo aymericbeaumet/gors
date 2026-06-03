@@ -8483,12 +8483,25 @@ fn prune_unused_struct_fields(
 }
 
 fn allow_dead_code_attr(attrs: &mut Vec<syn::Attribute>) {
-    let has_attr = attrs.iter().any(|attr| {
-        attr.path().is_ident("allow") && quote::quote!(#attr).to_string().contains("dead_code")
-    });
+    let has_attr = attrs.iter().any(attribute_allows_dead_code);
     if !has_attr {
         attrs.push(syn::parse_quote!(#[allow(dead_code)]));
     }
+}
+
+fn attribute_allows_dead_code(attr: &syn::Attribute) -> bool {
+    if !attr.path().is_ident("allow") {
+        return false;
+    }
+
+    let mut allows_dead_code = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("dead_code") {
+            allows_dead_code = true;
+        }
+        Ok(())
+    });
+    allows_dead_code
 }
 
 fn declared_named_fields(items: &[syn::Item]) -> std::collections::HashSet<String> {
@@ -32877,6 +32890,24 @@ func main() {
             &types[2],
             &rust! { crate::pkg::Other }
         ));
+    }
+
+    #[test]
+    fn allow_dead_code_attr_matches_attribute_meta_structurally() {
+        let mut existing: Vec<syn::Attribute> = vec![rust! { #[allow(unused, dead_code)] }];
+
+        super::allow_dead_code_attr(&mut existing);
+
+        assert_eq!(existing.len(), 1);
+        assert!(super::attribute_allows_dead_code(&existing[0]));
+
+        let mut missing: Vec<syn::Attribute> =
+            vec![rust! { #[allow(unused)] }, rust! { #[doc = "dead_code"] }];
+
+        super::allow_dead_code_attr(&mut missing);
+
+        assert_eq!(missing.len(), 3);
+        assert!(super::attribute_allows_dead_code(&missing[2]));
     }
 
     #[test]
