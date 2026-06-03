@@ -9,35 +9,49 @@ use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::Token;
 
-struct CallArg {
+struct ReflectSliceWritebackPlan {
+    param_types: Vec<typeinfer::GoType>,
+    args: Vec<WritebackArg>,
+}
+
+struct WritebackArg {
     index: usize,
     lvalue: syn::Expr,
     storage: syn::Ident,
 }
 
+impl ReflectSliceWritebackPlan {
+    fn from_call(call_expr: &ast::CallExpr) -> Option<Self> {
+        if call_expr.ellipsis.is_some() {
+            return None;
+        }
+        if matches!(call_expr.fun.as_ref(), ast::Expr::SelectorExpr(selector) if !selector_base_is_import(selector))
+        {
+            return None;
+        }
+        let args = call_expr.args.as_ref()?;
+        let param_types = call_signature_param_types(call_expr);
+        let args = writeback_args(args, &param_types);
+        (!args.is_empty()).then_some(Self { param_types, args })
+    }
+}
+
 pub(super) fn needs_writeback(call_expr: &ast::CallExpr) -> bool {
-    if call_expr.ellipsis.is_some() {
-        return false;
-    }
-    if matches!(call_expr.fun.as_ref(), ast::Expr::SelectorExpr(selector) if !selector_base_is_import(selector))
-    {
-        return false;
-    }
-    let Some(args) = call_expr.args.as_ref() else {
-        return false;
-    };
-    let param_types = call_signature_param_types(call_expr);
-    !call_args(args, &param_types).is_empty()
+    ReflectSliceWritebackPlan::from_call(call_expr).is_some()
 }
 
 pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
     record_mapping(&call_expr.lparen, None);
-    let param_types = call_signature_param_types(&call_expr);
+    let plan = ReflectSliceWritebackPlan::from_call(&call_expr).unwrap_or_else(|| {
+        ReflectSliceWritebackPlan {
+            param_types: call_signature_param_types(&call_expr),
+            args: Vec::new(),
+        }
+    });
     let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
     let args = call_expr.args.unwrap_or_default();
-    let plans = call_args(&args, &param_types);
-    let plan_indices: HashMap<usize, &CallArg> =
-        plans.iter().map(|plan| (plan.index, plan)).collect();
+    let plan_indices: HashMap<usize, &WritebackArg> =
+        plan.args.iter().map(|plan| (plan.index, plan)).collect();
     let func = compile_call_function_expr(*call_expr.fun);
 
     let mut call_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
@@ -52,7 +66,7 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
 
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
         let borrow_pointer_by_shape =
-            should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
+            should_borrow_pointer_arg_by_shape(&arg, plan.param_types.get(idx));
         let should_borrow_pointer =
             borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
         if should_borrow_pointer && is_nil_expr(&arg) {
@@ -63,14 +77,15 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
             call_args.push(arg);
             continue;
         }
-        let mut arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
+        let mut arg = compile_call_arg_with_expected(arg, plan.param_types.get(idx), &actual);
         if should_borrow_pointer {
             borrow_pointer_arg_expr(&mut arg, Some(&actual));
         }
         call_args.push(arg);
     }
 
-    let setup: Vec<syn::Stmt> = plans
+    let setup: Vec<syn::Stmt> = plan
+        .args
         .iter()
         .map(|plan| {
             let storage = &plan.storage;
@@ -80,7 +95,8 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
             }
         })
         .collect();
-    let writeback: Vec<syn::Stmt> = plans
+    let writeback: Vec<syn::Stmt> = plan
+        .args
         .iter()
         .map(|plan| {
             let storage = &plan.storage;
@@ -102,12 +118,12 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
     }}
 }
 
-fn call_args(args: &[ast::Expr], param_types: &[typeinfer::GoType]) -> Vec<CallArg> {
+fn writeback_args(args: &[ast::Expr], param_types: &[typeinfer::GoType]) -> Vec<WritebackArg> {
     args.iter()
         .enumerate()
         .filter_map(|(index, arg)| {
             let lvalue = call_arg_lvalue(arg, param_types.get(index))?;
-            Some(CallArg {
+            Some(WritebackArg {
                 index,
                 lvalue,
                 storage: syn::Ident::new(
