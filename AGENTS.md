@@ -364,6 +364,12 @@ imports with no surviving references should not force module generation.
 Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
 stream, requested roots, and known module names; keep that key aligned with any
 future reachability input that can change the kept item set.
+`reachable_stdlib_items()` returns a named `ReachableItems` result: `keep`
+drives item retention, `refs` drives external module-root propagation, and
+`names` drives intra-module item/member retention. Do not return anonymous
+tuples or unpack positional reachability slots in callers. Cache lookup/storage
+belongs behind the reachable-items cache helpers so the reachability function
+stays focused on computation rather than lock mechanics.
 Compiler-side root propagation should go through the private
 `RequiredModuleRoots` helper rather than open-coded
 `HashMap<String, HashSet<String>>` loops. The `SemanticReachabilityGraph`
@@ -375,6 +381,11 @@ top-level receiver-method roots through `SyntheticRoot` nodes such as
 traversal against the current token-derived collector for both main-package
 roots and transitive non-main module roots. Broaden that graph toward the
 remaining existing DCE semantics before replacing token-derived pruning paths.
+Per-iteration DCE state belongs in `DceIterationContext`, and cross-module
+external-root discovery should go through `ExternalRootCollector`. Keep semantic
+reachability auditing attached to that collector boundary instead of scattering
+ad hoc `collect_external_refs()` calls through stdlib resolution, pruning, or
+post-prune preservation code.
 
 ## Go toolchain
 
