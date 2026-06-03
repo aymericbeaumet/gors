@@ -1,12 +1,4 @@
 pub(super) fn coerce_call(call: &mut syn::ExprCall) {
-    if super::syntax::is_path_call(&call.func, &["Box", "new"]) {
-        if let Some(first) = call.args.first_mut() {
-            if matches!(first, syn::Expr::Field(_)) {
-                clone_field_or_path(first);
-            }
-        }
-    }
-
     if super::syntax::is_path_call(&call.func, &["crate", "builtin", "append"])
         || super::syntax::is_path_call(&call.func, &["builtin", "append"])
     {

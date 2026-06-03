@@ -126,6 +126,7 @@ pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
         };
     }
 
+    clone_if!(GorsReflectValue);
     clone_if!(std::string::String);
     clone_if!(&'static str);
     clone_if!(bool);
@@ -145,6 +146,126 @@ pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
     clone_if!(Vec<std::string::String>);
 
     Box::new(())
+}
+
+trait GorsReflectOps: Send + Sync {
+    fn kind(&self) -> __GorsReflectKind;
+    fn len(&self) -> isize;
+    fn swap(&mut self, i: isize, j: isize);
+}
+
+#[derive(Clone)]
+pub struct GorsReflectValue {
+    ops: Arc<Mutex<Box<dyn GorsReflectOps>>>,
+}
+
+impl GorsReflectValue {
+    pub fn slice<T: 'static + Send>(slice: Arc<Mutex<Vec<T>>>) -> Self {
+        Self {
+            ops: Arc::new(Mutex::new(Box::new(GorsReflectSlice { slice }))),
+        }
+    }
+
+    pub fn kind(&self) -> __GorsReflectKind {
+        lock_reflect_ops(&self.ops).kind()
+    }
+
+    pub fn len(&self) -> isize {
+        lock_reflect_ops(&self.ops).len()
+    }
+
+    pub fn swap(&self, i: isize, j: isize) {
+        lock_reflect_ops(&self.ops).swap(i, j);
+    }
+}
+
+struct GorsReflectSlice<T> {
+    slice: Arc<Mutex<Vec<T>>>,
+}
+
+impl<T: 'static + Send> GorsReflectOps for GorsReflectSlice<T> {
+    fn kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Slice
+    }
+
+    fn len(&self) -> isize {
+        self.slice
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len() as isize
+    }
+
+    fn swap(&mut self, i: isize, j: isize) {
+        let i =
+            usize::try_from(i).unwrap_or_else(|_| panic_value("reflect: slice index out of range"));
+        let j =
+            usize::try_from(j).unwrap_or_else(|_| panic_value("reflect: slice index out of range"));
+        let mut slice = self
+            .slice
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if i >= slice.len() || j >= slice.len() {
+            panic_value("reflect: slice index out of range");
+        }
+        slice.swap(i, j);
+    }
+}
+
+fn lock_reflect_ops(
+    ops: &Arc<Mutex<Box<dyn GorsReflectOps>>>,
+) -> MutexGuard<'_, Box<dyn GorsReflectOps>> {
+    ops.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn reflect_slice_any<T: 'static + Send>(slice: Arc<Mutex<Vec<T>>>) -> Box<dyn Any> {
+    Box::new(GorsReflectValue::slice(slice)) as Box<dyn Any>
+}
+
+pub fn reflect_value_kind(value: &dyn Any) -> __GorsReflectKind {
+    if let Some(value) = value.downcast_ref::<GorsReflectValue>() {
+        return value.kind();
+    }
+    reflect_kind_of_any(value)
+}
+
+pub fn reflect_value_len(value: &dyn Any) -> isize {
+    if let Some(value) = value.downcast_ref::<GorsReflectValue>() {
+        return value.len();
+    }
+    macro_rules! len_if_vec {
+        ($ty:ty) => {
+            if let Some(value) = value.downcast_ref::<Vec<$ty>>() {
+                return value.len() as isize;
+            }
+        };
+    }
+    len_if_vec!(std::string::String);
+    len_if_vec!(bool);
+    len_if_vec!(isize);
+    len_if_vec!(i8);
+    len_if_vec!(i16);
+    len_if_vec!(i32);
+    len_if_vec!(i64);
+    len_if_vec!(usize);
+    len_if_vec!(u8);
+    len_if_vec!(u16);
+    len_if_vec!(u32);
+    len_if_vec!(u64);
+    len_if_vec!(f32);
+    len_if_vec!(f64);
+    panic_value("reflect: Len of non-slice value");
+}
+
+pub fn reflect_value_swapper(
+    value: &dyn Any,
+) -> Arc<Mutex<Option<Arc<dyn Fn(isize, isize) -> () + Send + Sync>>>> {
+    let Some(value) = value.downcast_ref::<GorsReflectValue>() else {
+        panic_value("reflect: Swapper of non-slice value");
+    };
+    let value = value.clone();
+    Arc::new(Mutex::new(Some(Arc::new(move |i, j| {
+        value.swap(i, j);
+    }))))
 }
 
 pub const r#true: r#bool = true;

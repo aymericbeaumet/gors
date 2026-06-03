@@ -17,10 +17,8 @@
 pub mod ir;
 pub mod manifest;
 pub(crate) mod passes;
-mod stdlib_workarounds;
 pub mod typeinfer;
 
-use crate::compiler::stdlib_workarounds::StdlibCallWorkaround;
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use proc_macro2::Span;
@@ -8092,6 +8090,37 @@ fn expand_builtin_roots(
             expanded.insert(root.to_string());
         }
     }
+    let needs_reflect_value_methods = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "__GorsReflectKind"
+                | "GorsReflectOps"
+                | "GorsReflectSlice"
+                | "GorsReflectValue"
+                | "reflect_kind_of_any"
+                | "reflect_slice_any"
+                | "reflect_value_kind"
+                | "reflect_value_len"
+                | "reflect_value_swapper"
+        ) || root.starts_with("GorsReflectOps::")
+            || root.starts_with("GorsReflectSlice::")
+            || root.starts_with("GorsReflectValue::")
+    });
+    if needs_reflect_value_methods {
+        for root in [
+            "__GorsReflectKind",
+            "GorsReflectOps",
+            "GorsReflectSlice",
+            "GorsReflectValue",
+            "GorsReflectValue::kind",
+            "GorsReflectValue::len",
+            "GorsReflectValue::slice",
+            "GorsReflectValue::swap",
+            "lock_reflect_ops",
+        ] {
+            expanded.insert(root.to_string());
+        }
+    }
     expanded
 }
 
@@ -15479,13 +15508,12 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
 
     if has_variadic_spread {
         for (i, arg) in raw_args.into_iter().enumerate() {
-            let should_clone =
-                i >= variadic_start && !variadic_is_any && is_ir_addressable_expr(&arg) && {
-                    let actual =
-                        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                    !go_type_is_copy(&actual)
-                };
-            let arg = compile_expr_with_expected(arg, param_types.get(i));
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+            let should_clone = i >= variadic_start
+                && !variadic_is_any
+                && is_ir_addressable_expr(&arg)
+                && !go_type_is_copy(&actual);
+            let arg = compile_call_arg_with_expected(arg, param_types.get(i), &actual);
             if should_clone {
                 final_args.push(syn::parse_quote! { (#arg).clone() });
             } else {
@@ -15497,7 +15525,12 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
 
     for (i, arg) in raw_args.into_iter().enumerate() {
         if i < variadic_start {
-            final_args.push(compile_expr_with_expected(arg, param_types.get(i)));
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+            final_args.push(compile_call_arg_with_expected(
+                arg,
+                param_types.get(i),
+                &actual,
+            ));
         } else if variadic_is_any {
             let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
             final_args
@@ -16961,6 +16994,38 @@ fn clone_any_expr(expr: syn::Expr) -> syn::Expr {
         syn::parse_quote! { crate::builtin::clone_any(&(#expr)) }
     } else {
         syn::parse_quote! { crate::builtin::clone_any(&#expr) }
+    }
+}
+
+fn any_call_arg_needs_clone(
+    arg: &ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+    actual: &typeinfer::GoType,
+) -> bool {
+    matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any))
+        && matches!(resolved_go_type(actual), typeinfer::GoType::Any)
+        && any_value_arg_is_reusable(arg)
+}
+
+fn any_value_arg_is_reusable(arg: &ast::Expr) -> bool {
+    match arg {
+        ast::Expr::Ident(ident) => ident.name != "nil",
+        ast::Expr::ParenExpr(paren) => any_value_arg_is_reusable(&paren.x),
+        _ => false,
+    }
+}
+
+fn compile_call_arg_with_expected(
+    arg: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+    actual: &typeinfer::GoType,
+) -> syn::Expr {
+    let should_clone = any_call_arg_needs_clone(&arg, expected, actual);
+    let arg = compile_expr_with_expected(arg, expected);
+    if should_clone {
+        clone_any_expr(arg)
+    } else {
+        arg
     }
 }
 
@@ -18554,6 +18619,7 @@ fn compile_function_value_arg_with_expected(
     if expected.is_some_and(is_go_byte_slice_type) {
         return compile_borrowed_slice_arg_expr(arg);
     }
+    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
     let should_clone = expected.map(resolved_go_type).is_some_and(|expected| {
         matches!(
             expected,
@@ -18562,7 +18628,7 @@ fn compile_function_value_arg_with_expected(
                 | typeinfer::GoType::Func { .. }
         )
     }) && is_ir_addressable_expr(&arg);
-    let expr = compile_expr_with_expected(arg, expected);
+    let expr = compile_call_arg_with_expected(arg, expected, &actual);
     if should_clone {
         syn::parse_quote! { (#expr).clone() }
     } else {
@@ -18601,6 +18667,133 @@ fn compile_borrowed_slice_arg_expr(arg: ast::Expr) -> syn::Expr {
             syn::parse_quote! { &mut #expr }
         }
     }
+}
+
+struct ReflectSliceAnyCallArg {
+    index: usize,
+    lvalue: syn::Expr,
+    storage: syn::Ident,
+}
+
+fn is_reflect_slice_any_call_arg(
+    arg: &ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+) -> Option<syn::Expr> {
+    if !matches!(expected.map(resolved_go_type), Some(typeinfer::GoType::Any)) {
+        return None;
+    }
+    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(arg, &env.borrow()));
+    if !matches!(resolved_go_type(&actual), typeinfer::GoType::Slice(_)) {
+        return None;
+    }
+    lvalue_expr_from_ref(arg)
+}
+
+fn reflect_slice_any_call_args(
+    args: &[ast::Expr],
+    param_types: &[typeinfer::GoType],
+) -> Vec<ReflectSliceAnyCallArg> {
+    args.iter()
+        .enumerate()
+        .filter_map(|(index, arg)| {
+            let lvalue = is_reflect_slice_any_call_arg(arg, param_types.get(index))?;
+            Some(ReflectSliceAnyCallArg {
+                index,
+                lvalue,
+                storage: syn::Ident::new(
+                    &format!("__gors_reflect_slice_{index}"),
+                    Span::mixed_site(),
+                ),
+            })
+        })
+        .collect()
+}
+
+fn call_needs_reflect_slice_any_writeback(call_expr: &ast::CallExpr) -> bool {
+    if call_expr.ellipsis.is_some() {
+        return false;
+    }
+    if matches!(call_expr.fun.as_ref(), ast::Expr::SelectorExpr(selector) if !selector_base_is_import(selector))
+    {
+        return false;
+    }
+    let Some(args) = call_expr.args.as_ref() else {
+        return false;
+    };
+    let param_types = call_signature_param_types(call_expr);
+    !reflect_slice_any_call_args(args, &param_types).is_empty()
+}
+
+fn compile_reflect_slice_any_call(call_expr: ast::CallExpr) -> syn::Expr {
+    record_mapping(&call_expr.lparen, None);
+    let param_types = call_signature_param_types(&call_expr);
+    let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
+    let args = call_expr.args.unwrap_or_default();
+    let plans = reflect_slice_any_call_args(&args, &param_types);
+    let plan_indices: std::collections::HashMap<usize, &ReflectSliceAnyCallArg> =
+        plans.iter().map(|plan| (plan.index, plan)).collect();
+    let func = compile_call_function_expr(*call_expr.fun);
+
+    let mut call_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    for (idx, arg) in args.into_iter().enumerate() {
+        if let Some(plan) = plan_indices.get(&idx) {
+            let storage = &plan.storage;
+            call_args.push(syn::parse_quote! {
+                crate::builtin::reflect_slice_any(#storage.clone())
+            });
+            continue;
+        }
+
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+        let borrow_pointer_by_shape =
+            should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
+        let should_borrow_pointer =
+            borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
+        if should_borrow_pointer && is_nil_expr(&arg) {
+            call_args.push(nil_borrowed_pointer_arg_expr());
+            continue;
+        }
+        if should_borrow_pointer && let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
+            call_args.push(arg);
+            continue;
+        }
+        let mut arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
+        if should_borrow_pointer {
+            borrow_pointer_arg_expr(&mut arg, Some(&actual));
+        }
+        call_args.push(arg);
+    }
+
+    let setup: Vec<syn::Stmt> = plans
+        .iter()
+        .map(|plan| {
+            let storage = &plan.storage;
+            let lvalue = &plan.lvalue;
+            syn::parse_quote! {
+                let #storage = std::sync::Arc::new(std::sync::Mutex::new(std::mem::take(&mut #lvalue)));
+            }
+        })
+        .collect();
+    let writeback: Vec<syn::Stmt> = plans
+        .iter()
+        .map(|plan| {
+            let storage = &plan.storage;
+            let lvalue = &plan.lvalue;
+            syn::parse_quote! {
+                #lvalue = std::sync::Arc::try_unwrap(#storage)
+                    .unwrap_or_else(|_| crate::builtin::panic_value("reflect slice still borrowed"))
+                    .into_inner()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        })
+        .collect();
+
+    syn::parse_quote! {{
+        #(#setup)*
+        let __gors_reflect_slice_result = #func(#call_args);
+        #(#writeback)*
+        __gors_reflect_slice_result
+    }}
 }
 
 fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
@@ -21268,13 +21461,13 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
         );
         if call_expr.ellipsis.is_some() {
             for (idx, arg) in raw_method_args.into_iter().enumerate() {
-                let should_clone =
-                    idx >= variadic_start && !variadic_is_any && is_ir_addressable_expr(&arg) && {
-                        let actual =
-                            TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                        !go_type_is_copy(&actual)
-                    };
-                let arg = compile_expr_with_expected(arg, param_types.get(idx));
+                let actual =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                let should_clone = idx >= variadic_start
+                    && !variadic_is_any
+                    && is_ir_addressable_expr(&arg)
+                    && !go_type_is_copy(&actual);
+                let arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
                 if should_clone {
                     args.push(syn::parse_quote! { (#arg).clone() });
                 } else {
@@ -21287,7 +21480,13 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
         let mut method_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
         for (idx, arg) in raw_method_args.into_iter().enumerate() {
             if idx < variadic_start {
-                method_args.push(compile_expr_with_expected(arg, param_types.get(idx)));
+                let actual =
+                    TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+                method_args.push(compile_call_arg_with_expected(
+                    arg,
+                    param_types.get(idx),
+                    &actual,
+                ));
             } else if variadic_is_any {
                 let arg = compile_variadic_any_arg(arg, variadic_elem.as_ref());
                 method_args
@@ -21313,7 +21512,12 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
         return syn::parse_quote! { #receiver_path::#method_ident(#args) };
     }
     for (idx, arg) in raw_method_args.into_iter().enumerate() {
-        args.push(compile_expr_with_expected(arg, param_types.get(idx)));
+        let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+        args.push(compile_call_arg_with_expected(
+            arg,
+            param_types.get(idx),
+            &actual,
+        ));
     }
     syn::parse_quote! { #receiver_path::#method_ident(#args) }
 }
@@ -22600,7 +22804,7 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
                         continue;
                     }
                 }
-                let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
+                let mut arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
                 if should_borrow_pointer {
                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                 }
@@ -22638,9 +22842,6 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_builtin_call(&call_expr) {
                     return compile_builtin(call_expr);
                 }
-                if let Some(workaround) = StdlibCallWorkaround::classify(&call_expr) {
-                    return workaround.compile(call_expr);
-                }
                 if is_type_method_expression_call(&call_expr) {
                     return compile_type_method_expression_call(call_expr);
                 }
@@ -22664,6 +22865,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         paren_token: syn::token::Paren::default(),
                         args,
                     });
+                }
+                if call_needs_reflect_slice_any_writeback(&call_expr) {
+                    return compile_reflect_slice_any_call(call_expr);
                 }
                 let param_types = call_signature_param_types(&call_expr);
                 let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
@@ -22704,7 +22908,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                         continue;
                                     }
                                 }
-                                let mut arg = compile_expr_with_expected(arg, param_types.get(idx));
+                                let mut arg = compile_call_arg_with_expected(
+                                    arg,
+                                    param_types.get(idx),
+                                    &actual,
+                                );
                                 if should_borrow_pointer {
                                     borrow_pointer_arg_expr(&mut arg, Some(&actual));
                                 }
@@ -33205,6 +33413,41 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_clones_any_identifier_call_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func keep(arg any) any {
+	return arg
+}
+
+func pair(arg any) {
+	_ = keep(arg)
+	_ = keep(arg)
+}
+
+func main() {
+	pair(1)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert_eq!(
+            main_rs
+                .matches("keep(crate::builtin::clone_any(&arg))")
+                .count(),
+            2,
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_clones_addressable_noncopy_assignment_rhs() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -34359,6 +34602,21 @@ func main() {
         let builtin_rs = output.files.get("builtin.rs").unwrap();
         assert!(!builtin_rs.contains("Chan"), "{builtin_rs}");
         assert!(!builtin_rs.contains("make_chan"), "{builtin_rs}");
+    }
+
+    #[test]
+    fn builtin_root_expansion_keeps_reflect_slice_swapper_methods() {
+        let roots = std::collections::HashSet::from(["reflect_value_swapper".to_string()]);
+        let expanded = super::expand_builtin_roots(&roots);
+
+        for root in [
+            "GorsReflectOps",
+            "GorsReflectValue::swap",
+            "GorsReflectValue::slice",
+            "lock_reflect_ops",
+        ] {
+            assert!(expanded.contains(root), "{expanded:?}");
+        }
     }
 
     #[test]

@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 223,
-    "unsupportedCaseCount": 12195,
+    "passingCaseCount": 226,
+    "unsupportedCaseCount": 12192,
     "fixtureCount": 81
   },
   "groups": [
@@ -106341,13 +106341,15 @@
       "id": "sort",
       "title": "sort",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "sort"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 37,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 37,
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 34,
         "fixtureCount": 0
       },
       "cases": [
@@ -106572,8 +106574,10 @@
           "title": "Slice",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -106581,8 +106585,10 @@
           "title": "SliceIsSorted",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {
@@ -106590,8 +106596,10 @@
           "title": "SliceStable",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {

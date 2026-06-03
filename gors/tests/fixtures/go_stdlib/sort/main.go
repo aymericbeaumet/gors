@@ -268,6 +268,7 @@ func case_sort_slice_keepOrder(i int, j int) bool {
 
 func case_sort_slice() {
 	values := []int{1, 2, 3}
+	// gors:stdlib-cover sort::Slice
 	sort.Slice(values, case_sort_slice_keepOrder)
 	fmt.Println(values)
 }
@@ -278,6 +279,7 @@ func case_sort_slice_is_sorted_keepOrder(i int, j int) bool {
 
 func case_sort_slice_is_sorted() {
 	values := []int{3, 2, 1}
+	// gors:stdlib-cover sort::SliceIsSorted
 	fmt.Println(sort.SliceIsSorted(values, case_sort_slice_is_sorted_keepOrder))
 }
 
@@ -287,6 +289,7 @@ func case_sort_slice_stable_keepOrder(i int, j int) bool {
 
 func case_sort_slice_stable() {
 	values := []string{"a", "b", "c"}
+	// gors:stdlib-cover sort::SliceStable
 	sort.SliceStable(values, case_sort_slice_stable_keepOrder)
 	fmt.Println(values)
 }

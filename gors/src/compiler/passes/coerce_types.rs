@@ -555,6 +555,31 @@ mod tests {
     }
 
     #[test]
+    fn it_does_not_clone_arbitrary_box_new_field_args() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub struct State {
+                pub value: String,
+            }
+
+            pub fn call(mut state: State) -> Box<String> {
+                Box::new(state.value)
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("Box :: new (state . value)"),
+            "expected arbitrary Box::new field argument to stay untouched: {tokens}"
+        );
+        assert!(
+            !tokens.contains("Box :: new ((state . value) . clone ())"),
+            "expected no broad boxed-field clone rewrite: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_does_not_coerce_print_value_args_by_name() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Pair {
