@@ -5,9 +5,10 @@ mod evaluation_order;
 mod pointer_cells;
 mod static_false;
 mod structural_helpers;
+mod tuple_newtypes;
 
 pub fn pass(file: &mut syn::File) {
-    let tuple_newtypes = collect_tuple_newtypes(file);
+    let tuple_newtypes = tuple_newtypes::collect(file);
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = collect_pointer_cell_statics(file);
     let structural_helper_metadata = structural_helpers::Metadata::collect(file);
@@ -35,7 +36,7 @@ struct CoerceTypes {
     mutable_ref_call_args: call_args::MutableRefCallArgs,
     pointer_cell_statics: std::collections::HashSet<String>,
     structural_helper_metadata: structural_helpers::Metadata,
-    tuple_newtypes: std::collections::HashSet<String>,
+    tuple_newtypes: tuple_newtypes::Names,
     impl_self_types: Vec<String>,
 }
 
@@ -136,39 +137,17 @@ impl VisitMut for CoerceTypes {
 
     fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
         visit_mut::visit_expr_assign_mut(self, assign);
-
-        if let Some(self_ty) = self.impl_self_types.last()
-            && self.tuple_newtypes.contains(self_ty)
-            && is_deref_self_expr(&assign.left)
-            && rhs_takes_self_underlying(&assign.right)
-        {
-            let ident = syn::Ident::new(self_ty, proc_macro2::Span::mixed_site());
-            let right = assign.right.clone();
-            *assign.right = syn::parse_quote! { #ident(#right) };
-        }
+        tuple_newtypes::coerce_assignment(assign, &self.impl_self_types, &self.tuple_newtypes);
     }
 
     fn visit_expr_cast_mut(&mut self, cast: &mut syn::ExprCast) {
         visit_mut::visit_expr_cast_mut(self, cast);
-
-        if let Some(self_ty) = self.impl_self_types.last()
-            && self.tuple_newtypes.contains(self_ty)
-            && is_self_or_deref_self_expr(&cast.expr)
-        {
-            *cast.expr = syn::parse_quote! { self.0 };
-        }
+        tuple_newtypes::coerce_cast(cast, &self.impl_self_types, &self.tuple_newtypes);
     }
 
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         visit_mut::visit_expr_call_mut(self, call);
-        if let Some(self_ty) = self.impl_self_types.last()
-            && self.tuple_newtypes.contains(self_ty)
-            && is_numeric_from_call(&call.func)
-            && call.args.first().is_some_and(is_self_expr)
-            && let Some(first) = call.args.first_mut()
-        {
-            *first = syn::parse_quote! { *self };
-        }
+        tuple_newtypes::coerce_numeric_from_call(call, &self.impl_self_types, &self.tuple_newtypes);
         call_args::coerce_scoped_call_args(&mut call.args, self.call_arg_scopes.last());
         call_args::coerce_signature_call_args(
             &call.func,
@@ -226,21 +205,6 @@ impl VisitMut for CoerceTypes {
     }
 }
 
-fn collect_tuple_newtypes(file: &syn::File) -> std::collections::HashSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Struct(item_struct) = item else {
-                return None;
-            };
-            let syn::Fields::Unnamed(fields) = &item_struct.fields else {
-                return None;
-            };
-            (fields.unnamed.len() == 1).then(|| item_struct.ident.to_string())
-        })
-        .collect()
-}
-
 fn collect_pointer_cell_statics(file: &syn::File) -> std::collections::HashSet<String> {
     file.items
         .iter()
@@ -294,45 +258,6 @@ fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
         .segments
         .first()
         .map(|segment| segment.ident.to_string())
-}
-
-fn is_deref_self_expr(expr: &syn::Expr) -> bool {
-    if let syn::Expr::Paren(paren) = expr {
-        return is_deref_self_expr(&paren.expr);
-    }
-    let syn::Expr::Unary(unary) = expr else {
-        return false;
-    };
-    matches!(unary.op, syn::UnOp::Deref(_)) && is_self_expr(&unary.expr)
-}
-
-fn is_self_or_deref_self_expr(expr: &syn::Expr) -> bool {
-    if let syn::Expr::Paren(paren) = expr {
-        return is_self_or_deref_self_expr(&paren.expr);
-    }
-    is_self_expr(expr) || is_deref_self_expr(expr)
-}
-
-fn rhs_takes_self_underlying(expr: &syn::Expr) -> bool {
-    let syn::Expr::Call(call) = expr else {
-        return false;
-    };
-    if is_path_call(&call.func, &["crate", "builtin", "append"])
-        || is_path_call(&call.func, &["builtin", "append"])
-    {
-        return false;
-    }
-    call.args.first().is_some_and(is_mem_take_self_call)
-}
-
-fn is_mem_take_self_call(expr: &syn::Expr) -> bool {
-    let syn::Expr::Call(call) = expr else {
-        return false;
-    };
-    if !is_path_call(&call.func, &["std", "mem", "take"]) {
-        return false;
-    }
-    call.args.first().is_some_and(is_self_expr)
 }
 
 fn path_ident_name(expr: &syn::Expr) -> Option<String> {
@@ -440,15 +365,6 @@ fn is_self_expr(expr: &syn::Expr) -> bool {
         if path.path.leading_colon.is_none()
             && path.path.segments.len() == 1
             && path.path.segments.first().is_some_and(|seg| seg.ident == "self"))
-}
-
-fn is_numeric_from_call(func: &syn::Expr) -> bool {
-    const NUMERIC_TYPES: &[&str] = &[
-        "isize", "i8", "i16", "i32", "i64", "usize", "u8", "u16", "u32", "u64", "f32", "f64",
-    ];
-    NUMERIC_TYPES
-        .iter()
-        .any(|ty| is_path_call(func, &[*ty, "from"]))
 }
 
 fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
