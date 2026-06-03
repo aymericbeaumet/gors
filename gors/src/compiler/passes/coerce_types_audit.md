@@ -34,9 +34,9 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | File | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| `gors/src/compiler/runtime_primitives.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
-| `gors/src/compiler/runtime_primitives.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
-| `gors/src/compiler/runtime_primitives.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
+| `gors/src/compiler/runtime_primitives/reflect.rs` | `reflect` module replacement in post-prune helpers | runtime primitive | Reflect support is currently a runtime primitive boundary; keep isolated until generic reflect IR/runtime support exists. |
+| `gors/src/compiler/runtime_primitives/sync.rs` | `sync.Pool` module replacement in post-prune helpers | runtime primitive | Pooling is modeled as a minimal runtime primitive for host allocation reuse; keep it isolated and avoid package consumer rewrites. |
+| `gors/src/compiler/runtime_primitives/os.rs` | `os.Stdout`/`os.File` host-resource replacement | runtime primitive | Host resources may be injected, but must preserve unrelated compiled stdlib items. |
 | `gors/src/compiler/reflect_kind.rs` | import-path-aware `reflect.TypeOf(x).Kind() == reflect.K` detection | runtime primitive | This is a reflect runtime boundary; future work should expose it as IR reflect-kind operation instead of AST pattern matching. |
 | `gors/src/resolve/structural_helpers.rs` | generated mutable-reference `State` forwarding impls and injected `pp.__gors_flush_fmt` | stdlib workaround | Interface implementation and receiver-buffer aliasing should be produced by generic method/interface lowering, not resolver post-processing. |
 | `gors-builtin/src/lib.rs` | predeclared print/println, interface, reflect-kind helpers | runtime primitive | Builtin language/runtime support is valid, but must not implement stdlib package behavior. |
@@ -94,6 +94,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | duplicated structural self-field visitors | `structural_helpers/self_fields.rs` now owns self-field detection and direct self-field collection shared by fmt flush metadata and reflection fallback pruning. |
 | string-encoded `& mut pp` resolver helper matching | Resolver structural-helper injection is split by responsibility, and impl self-type checks now use explicit `syn::Type` matching instead of a rendered self-type string. |
 | inline runtime primitive post-prune replacement in `compiler/mod.rs` | Reflect, `os.Stdout`, and `sync.Pool` replacement policy now lives in `compiler/runtime_primitives.rs`, leaving the main compiler pipeline responsible for orchestration and module pruning. |
+| mixed runtime primitive replacements in `runtime_primitives.rs` | The runtime primitive dispatcher now delegates reflect, os, and sync replacement bodies to focused modules under `compiler/runtime_primitives/`. |
 | inline `reflect.TypeOf(...).Kind()` detector in `compiler/mod.rs` | Reflect-kind comparison detection, argument extraction, and kind mapping now live in `compiler/reflect_kind.rs`; binary expression lowering only emits the resulting builtin check. |
 | inline resolver structural-helper injection in `resolve/mod.rs` | Resolver-owned generated helper insertion now lives in `resolve/structural_helpers.rs`, so package resolution no longer owns the helper predicates and injected item bodies inline. |
 | literal `reflect` qualifier in reflect-kind detection | `compiler/reflect_kind.rs` now receives an import-path predicate from current-file import facts, so aliased imports such as `import r "reflect"` lower through the same runtime primitive. |
