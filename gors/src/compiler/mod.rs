@@ -91,6 +91,23 @@ struct ReachableItems {
 
 static REACHABLE_ITEMS_CACHE: OnceLock<Mutex<BTreeMap<String, ReachableItems>>> = OnceLock::new();
 
+fn reachable_items_cache() -> &'static Mutex<BTreeMap<String, ReachableItems>> {
+    REACHABLE_ITEMS_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn cached_reachable_items(cache_key: &str) -> Option<ReachableItems> {
+    reachable_items_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+}
+
+fn store_reachable_items(cache_key: String, entry: &ReachableItems) {
+    if let Ok(mut cache) = reachable_items_cache().lock() {
+        cache.insert(cache_key, entry.clone());
+    }
+}
+
 struct MainPackageVarModeGuard {
     previous: bool,
 }
@@ -8927,12 +8944,8 @@ fn reachable_stdlib_items(
     module_names: &std::collections::HashSet<String>,
 ) -> ReachableItems {
     let cache_key = reachable_items_cache_key(items, roots, module_names);
-    if let Ok(cache) = REACHABLE_ITEMS_CACHE
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        && let Some(entry) = cache.get(&cache_key)
-    {
-        return entry.clone();
+    if let Some(entry) = cached_reachable_items(&cache_key) {
+        return entry;
     }
 
     let mut names = roots.clone();
@@ -8988,12 +9001,7 @@ fn reachable_stdlib_items(
         refs: external_refs,
         names,
     };
-    if let Ok(mut cache) = REACHABLE_ITEMS_CACHE
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-    {
-        cache.insert(cache_key, entry.clone());
-    }
+    store_reachable_items(cache_key, &entry);
     entry
 }
 
