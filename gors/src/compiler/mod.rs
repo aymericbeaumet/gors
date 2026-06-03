@@ -8862,17 +8862,31 @@ fn resolve_required_stdlib_modules(
 }
 
 pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
-    let existing = file
-        .items
-        .iter()
-        .map(|item| item.to_token_stream().to_string())
-        .collect::<std::collections::HashSet<_>>();
     let additions = noop_interface_supertrait_impls(&file.items)
         .into_iter()
-        .filter(|item| !existing.contains(&item.to_token_stream().to_string()))
+        .filter(|item| {
+            !file
+                .items
+                .iter()
+                .any(|existing| impl_trait_targets_match(existing, item))
+        })
         .collect::<Vec<_>>();
     file.items.extend(additions);
     add_missing_interface_clone_hooks(&mut file.items);
+}
+
+fn impl_trait_targets_match(left: &syn::Item, right: &syn::Item) -> bool {
+    let (syn::Item::Impl(left), syn::Item::Impl(right)) = (left, right) else {
+        return false;
+    };
+    let (Some((left_polarity, left_trait, _)), Some((right_polarity, right_trait, _))) =
+        (&left.trait_, &right.trait_)
+    else {
+        return false;
+    };
+    left_polarity.is_some() == right_polarity.is_some()
+        && syn_path_matches(left_trait, right_trait)
+        && syn_type_matches(&left.self_ty, &right.self_ty)
 }
 
 fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
@@ -38889,9 +38903,30 @@ func main() {
 
         super::add_post_merge_interface_helpers(&mut file);
         let tokens = quote::quote!(#file).to_string();
+        let state_impl_target: syn::Item = rust! {
+            impl State for __GorsNoopReader {}
+        };
 
         assert!(tokens.contains("impl State for __GorsNoopReader"));
         assert!(tokens.contains("fn Remaining"));
+        assert_eq!(
+            matching_impl_trait_target_count(&file.items, &state_impl_target),
+            1
+        );
+
+        super::add_post_merge_interface_helpers(&mut file);
+
+        assert_eq!(
+            matching_impl_trait_target_count(&file.items, &state_impl_target),
+            1
+        );
+    }
+
+    fn matching_impl_trait_target_count(items: &[syn::Item], expected: &syn::Item) -> usize {
+        items
+            .iter()
+            .filter(|item| super::impl_trait_targets_match(item, expected))
+            .count()
     }
 
     #[test]
