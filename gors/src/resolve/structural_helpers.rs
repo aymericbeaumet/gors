@@ -282,4 +282,78 @@ mod tests {
             "expected generated &mut State impl to forward through named impl: {tokens}"
         );
     }
+
+    #[test]
+    fn noop_interface_impl_is_derived_from_trait_signatures() {
+        let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
+            trait Stringer {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn __gors_clone_box(&self) -> Box<dyn Stringer>;
+                fn String(&mut self) -> String;
+                fn Count(&mut self) -> isize;
+            }
+        }];
+
+        inject(&mut items);
+        inject(&mut items);
+
+        let stringer_impls = items
+            .iter()
+            .filter(|item| {
+                let syn::Item::Impl(item_impl) = item else {
+                    return false;
+                };
+                item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|seg| seg.ident == "Stringer")
+                }) && type_matches_impl_self(
+                    &item_impl.self_ty,
+                    ImplSelfType::Named("__GorsNoopInterface"),
+                )
+            })
+            .count();
+        let tokens = quote::quote!(#(#items)*).to_string();
+
+        assert_eq!(stringer_impls, 1, "{tokens}");
+        assert!(has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(has_trait(&items, "__GorsErrorExt"), "{tokens}");
+        assert!(
+            tokens.contains(
+                "fn __gors_clone_box (& self) -> Box < dyn Stringer > { Box :: new (Self :: default ()) as Box < dyn Stringer > }"
+            ),
+            "expected noop clone hook to be derived from the trait signature: {tokens}"
+        );
+        assert!(
+            tokens.contains("fn Count (& mut self) -> isize { Default :: default () }"),
+            "expected non-void noop methods to use a signature-derived zero value: {tokens}"
+        );
+        assert!(
+            tokens.contains("impl __GorsErrorExt for __GorsNoopInterface")
+                && tokens.contains("fn Error (& mut self) -> String { Default :: default () }"),
+            "expected noop error extension body to use the shared noop method builder: {tokens}"
+        );
+    }
+
+    #[test]
+    fn formatter_noop_interface_requires_state_trait() {
+        let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
+            trait Formatter {
+                fn Format(&mut self, f: &mut dyn State, verb: i32);
+            }
+        }];
+
+        inject(&mut items);
+
+        let tokens = quote::quote!(#(#items)*).to_string();
+        assert!(!has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(
+            !has_impl(
+                &items,
+                "Formatter",
+                ImplSelfType::Named("__GorsNoopInterface")
+            ),
+            "{tokens}"
+        );
+    }
 }

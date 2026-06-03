@@ -1,74 +1,123 @@
 use super::{ImplSelfType, has_impl, has_struct, has_trait};
 
+const NOOP_INTERFACE: &str = "__GorsNoopInterface";
+const ERROR_EXT: &str = "__GorsErrorExt";
+
+#[derive(Clone, Copy)]
+struct FmtNoopTrait {
+    name: &'static str,
+    requires_state: bool,
+}
+
+const FMT_NOOP_TRAITS: &[FmtNoopTrait] = &[
+    FmtNoopTrait {
+        name: "Formatter",
+        requires_state: true,
+    },
+    FmtNoopTrait {
+        name: "Stringer",
+        requires_state: false,
+    },
+    FmtNoopTrait {
+        name: "GoStringer",
+        requires_state: false,
+    },
+];
+
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
     let facts = FmtInterfaceFacts::collect(items);
 
-    if facts.has_fmt_interfaces() && !has_struct(items, "__GorsNoopInterface") {
-        items.insert(
-            0,
-            syn::parse_quote! {
-                #[derive(Clone, Default)]
-                struct __GorsNoopInterface;
-            },
-        );
+    if !facts.has_noop_targets() {
+        return;
     }
 
-    if facts.has_formatter
-        && facts.has_state
-        && !has_impl(
-            items,
-            "Formatter",
-            ImplSelfType::Named("__GorsNoopInterface"),
-        )
-    {
-        items.insert(
-            0,
-            syn::parse_quote! {
-                impl Formatter for __GorsNoopInterface {
-                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
-                    fn Format(&mut self, _f: &mut dyn State, _verb: i32) {}
-                }
-            },
-        );
+    if !has_struct(items, NOOP_INTERFACE) {
+        items.insert(0, noop_struct_item());
     }
 
-    if facts.has_stringer
-        && !has_impl(
-            items,
-            "Stringer",
-            ImplSelfType::Named("__GorsNoopInterface"),
-        )
-    {
-        items.insert(
-            0,
-            syn::parse_quote! {
-                impl Stringer for __GorsNoopInterface {
-                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
-                    fn String(&mut self) -> String { String::new() }
-                }
-            },
-        );
+    for target in FMT_NOOP_TRAITS {
+        if !facts.should_inject(target)
+            || has_impl(items, target.name, ImplSelfType::Named(NOOP_INTERFACE))
+        {
+            continue;
+        }
+        let Some(methods) = trait_methods(items, target.name) else {
+            continue;
+        };
+        items.insert(0, noop_trait_impl(target.name, &methods));
     }
 
-    if facts.has_go_stringer
-        && !has_impl(
-            items,
-            "GoStringer",
-            ImplSelfType::Named("__GorsNoopInterface"),
-        )
-    {
-        items.insert(
-            0,
-            syn::parse_quote! {
-                impl GoStringer for __GorsNoopInterface {
-                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
-                    fn GoString(&mut self) -> String { String::new() }
-                }
-            },
-        );
-    }
+    inject_error_ext(items);
+}
 
-    if facts.has_fmt_interfaces() && !has_trait(items, "__GorsErrorExt") {
+fn noop_struct_item() -> syn::Item {
+    syn::parse_quote! {
+        #[derive(Clone, Default)]
+        struct __GorsNoopInterface;
+    }
+}
+
+fn trait_methods(items: &[syn::Item], trait_name: &str) -> Option<Vec<syn::TraitItemFn>> {
+    items.iter().find_map(|item| {
+        let syn::Item::Trait(item_trait) = item else {
+            return None;
+        };
+        (item_trait.ident == trait_name).then(|| {
+            item_trait
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let syn::TraitItem::Fn(func) = item else {
+                        return None;
+                    };
+                    Some(func.clone())
+                })
+                .collect()
+        })
+    })
+}
+
+fn noop_trait_impl(trait_name: &str, methods: &[syn::TraitItemFn]) -> syn::Item {
+    let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::mixed_site());
+    let noop_ident = syn::Ident::new(NOOP_INTERFACE, proc_macro2::Span::mixed_site());
+    let impl_methods = methods
+        .iter()
+        .map(|method| noop_impl_method(&trait_ident, method))
+        .collect::<Vec<_>>();
+
+    syn::parse_quote! {
+        impl #trait_ident for #noop_ident {
+            #(#impl_methods)*
+        }
+    }
+}
+
+fn noop_impl_method(trait_ident: &syn::Ident, method: &syn::TraitItemFn) -> syn::ImplItemFn {
+    let sig = method.sig.clone();
+    let block = noop_method_body(trait_ident, &sig);
+    syn::ImplItemFn {
+        attrs: vec![],
+        vis: syn::Visibility::Inherited,
+        defaultness: None,
+        sig,
+        block,
+    }
+}
+
+fn noop_method_body(trait_ident: &syn::Ident, sig: &syn::Signature) -> syn::Block {
+    if sig.ident == "__gors_as_any" {
+        syn::parse_quote!({ None })
+    } else if sig.ident == "__gors_clone_box" {
+        syn::parse_quote!({ Box::new(Self::default()) as Box<dyn #trait_ident> })
+    } else if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({})
+    } else {
+        syn::parse_quote!({ Default::default() })
+    }
+}
+
+fn inject_error_ext(items: &mut Vec<syn::Item>) {
+    if !has_trait(items, ERROR_EXT) {
         items.insert(
             0,
             syn::parse_quote! {
@@ -77,6 +126,9 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
                 }
             },
         );
+    }
+
+    if !has_impl(items, ERROR_EXT, ImplSelfType::Named("String")) {
         items.insert(
             0,
             syn::parse_quote! {
@@ -85,14 +137,25 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
                 }
             },
         );
-        items.insert(
-            0,
-            syn::parse_quote! {
-                impl __GorsErrorExt for __GorsNoopInterface {
-                    fn Error(&mut self) -> String { String::new() }
-                }
-            },
-        );
+    }
+
+    if !has_impl(items, ERROR_EXT, ImplSelfType::Named(NOOP_INTERFACE)) {
+        items.insert(0, noop_error_ext_impl());
+    }
+}
+
+fn noop_error_ext_impl() -> syn::Item {
+    let method: syn::TraitItemFn = syn::parse_quote! {
+        fn Error(&mut self) -> String;
+    };
+    let trait_ident = syn::Ident::new(ERROR_EXT, proc_macro2::Span::mixed_site());
+    let noop_ident = syn::Ident::new(NOOP_INTERFACE, proc_macro2::Span::mixed_site());
+    let impl_method = noop_impl_method(&trait_ident, &method);
+
+    syn::parse_quote! {
+        impl #trait_ident for #noop_ident {
+            #impl_method
+        }
     }
 }
 
@@ -114,7 +177,19 @@ impl FmtInterfaceFacts {
         }
     }
 
-    fn has_fmt_interfaces(self) -> bool {
-        self.has_formatter || self.has_stringer || self.has_go_stringer
+    fn has_noop_targets(self) -> bool {
+        FMT_NOOP_TRAITS
+            .iter()
+            .any(|target| self.should_inject(target))
+    }
+
+    fn should_inject(self, target: &FmtNoopTrait) -> bool {
+        let has_trait = match target.name {
+            "Formatter" => self.has_formatter,
+            "Stringer" => self.has_stringer,
+            "GoStringer" => self.has_go_stringer,
+            _ => false,
+        };
+        has_trait && (!target.requires_state || self.has_state)
     }
 }
