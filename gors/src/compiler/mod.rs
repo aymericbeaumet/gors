@@ -17280,35 +17280,30 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, lhs_ty: &typeinfer::GoType, rhs: &mut 
     let Some(target) = lvalue_expr_from_ref(lhs) else {
         return;
     };
-    let target_key = target.to_token_stream().to_string();
 
-    struct TakeMatchingRead {
-        target_key: String,
+    struct TakeMatchingRead<'a> {
+        target: &'a syn::Expr,
         replaced: bool,
     }
 
     fn unparen_expr(expr: syn::Expr) -> syn::Expr {
         match expr {
             syn::Expr::Paren(paren) => *paren.expr,
+            syn::Expr::Group(group) => *group.expr,
             other => other,
         }
     }
 
-    fn receiver_matches_target(receiver: &syn::Expr, target_key: &str) -> bool {
-        let key = receiver.to_token_stream().to_string();
-        key == target_key || key == format!("({target_key})")
-    }
-
-    impl syn::visit_mut::VisitMut for TakeMatchingRead {
+    impl syn::visit_mut::VisitMut for TakeMatchingRead<'_> {
         fn visit_expr_index_mut(&mut self, expr: &mut syn::ExprIndex) {
-            if expr.expr.to_token_stream().to_string() == self.target_key {
+            if syn_expr_matches_target(&expr.expr, self.target) {
                 return;
             }
             syn::visit_mut::visit_expr_index_mut(self, expr);
         }
 
         fn visit_expr_reference_mut(&mut self, expr: &mut syn::ExprReference) {
-            if expr.expr.to_token_stream().to_string() == self.target_key {
+            if syn_expr_matches_target(&expr.expr, self.target) {
                 return;
             }
             syn::visit_mut::visit_expr_reference_mut(self, expr);
@@ -17319,14 +17314,14 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, lhs_ty: &typeinfer::GoType, rhs: &mut 
                 && let syn::Expr::MethodCall(method_call) = expr
                 && method_call.method == "clone"
                 && method_call.args.is_empty()
-                && receiver_matches_target(&method_call.receiver, &self.target_key)
+                && syn_expr_matches_target(&method_call.receiver, self.target)
             {
                 let inner = unparen_expr((*method_call.receiver).clone());
                 *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
                 self.replaced = true;
                 return;
             }
-            if !self.replaced && expr.to_token_stream().to_string() == self.target_key {
+            if !self.replaced && syn_expr_matches_target(expr, self.target) {
                 let inner = expr.clone();
                 *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
                 self.replaced = true;
@@ -17338,11 +17333,160 @@ fn take_rhs_lvalue_reads(lhs: &ast::Expr, lhs_ty: &typeinfer::GoType, rhs: &mut 
 
     syn::visit_mut::VisitMut::visit_expr_mut(
         &mut TakeMatchingRead {
-            target_key,
+            target: &target,
             replaced: false,
         },
         rhs,
     );
+}
+
+fn syn_expr_matches_target(expr: &syn::Expr, target: &syn::Expr) -> bool {
+    let expr = strip_syn_expr_wrappers(expr);
+    let target = strip_syn_expr_wrappers(target);
+    match (expr, target) {
+        (syn::Expr::Path(left), syn::Expr::Path(right)) => {
+            left.qself.is_none()
+                && right.qself.is_none()
+                && syn_path_matches(&left.path, &right.path)
+        }
+        (syn::Expr::Field(left), syn::Expr::Field(right)) => {
+            syn_member_matches(&left.member, &right.member)
+                && syn_expr_matches_target(&left.base, &right.base)
+        }
+        (syn::Expr::Index(left), syn::Expr::Index(right)) => {
+            syn_expr_matches_target(&left.expr, &right.expr)
+                && syn_expr_matches_target(&left.index, &right.index)
+        }
+        (syn::Expr::Reference(left), syn::Expr::Reference(right)) => {
+            left.mutability.is_some() == right.mutability.is_some()
+                && syn_expr_matches_target(&left.expr, &right.expr)
+        }
+        (syn::Expr::Unary(left), syn::Expr::Unary(right)) => {
+            syn_unop_matches(&left.op, &right.op)
+                && syn_expr_matches_target(&left.expr, &right.expr)
+        }
+        (syn::Expr::MethodCall(left), syn::Expr::MethodCall(right)) => {
+            left.method == right.method
+                && left.turbofish.is_none()
+                && right.turbofish.is_none()
+                && syn_expr_matches_target(&left.receiver, &right.receiver)
+                && syn_expr_args_match(&left.args, &right.args)
+        }
+        (syn::Expr::Call(left), syn::Expr::Call(right)) => {
+            syn_expr_matches_target(&left.func, &right.func)
+                && syn_expr_args_match(&left.args, &right.args)
+        }
+        (syn::Expr::Cast(left), syn::Expr::Cast(right)) => {
+            syn_expr_matches_target(&left.expr, &right.expr)
+                && syn_type_matches(&left.ty, &right.ty)
+        }
+        (syn::Expr::Lit(left), syn::Expr::Lit(right)) => syn_lit_matches(&left.lit, &right.lit),
+        (syn::Expr::Tuple(left), syn::Expr::Tuple(right)) => {
+            left.elems.len() == right.elems.len()
+                && left
+                    .elems
+                    .iter()
+                    .zip(right.elems.iter())
+                    .all(|(left, right)| syn_expr_matches_target(left, right))
+        }
+        _ => false,
+    }
+}
+
+fn strip_syn_expr_wrappers(expr: &syn::Expr) -> &syn::Expr {
+    match expr {
+        syn::Expr::Paren(paren) => strip_syn_expr_wrappers(&paren.expr),
+        syn::Expr::Group(group) => strip_syn_expr_wrappers(&group.expr),
+        other => other,
+    }
+}
+
+fn syn_expr_args_match(
+    left: &syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+    right: &syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| syn_expr_matches_target(left, right))
+}
+
+fn syn_path_matches(left: &syn::Path, right: &syn::Path) -> bool {
+    left.leading_colon.is_some() == right.leading_colon.is_some()
+        && left.segments.len() == right.segments.len()
+        && left
+            .segments
+            .iter()
+            .zip(right.segments.iter())
+            .all(|(left, right)| {
+                left.ident == right.ident
+                    && syn_path_arguments_match(&left.arguments, &right.arguments)
+            })
+}
+
+fn syn_path_arguments_match(left: &syn::PathArguments, right: &syn::PathArguments) -> bool {
+    match (left, right) {
+        (syn::PathArguments::None, syn::PathArguments::None) => true,
+        _ => false,
+    }
+}
+
+fn syn_member_matches(left: &syn::Member, right: &syn::Member) -> bool {
+    match (left, right) {
+        (syn::Member::Named(left), syn::Member::Named(right)) => left == right,
+        (syn::Member::Unnamed(left), syn::Member::Unnamed(right)) => left.index == right.index,
+        _ => false,
+    }
+}
+
+fn syn_unop_matches(left: &syn::UnOp, right: &syn::UnOp) -> bool {
+    matches!(
+        (left, right),
+        (syn::UnOp::Deref(_), syn::UnOp::Deref(_))
+            | (syn::UnOp::Not(_), syn::UnOp::Not(_))
+            | (syn::UnOp::Neg(_), syn::UnOp::Neg(_))
+    )
+}
+
+fn syn_type_matches(left: &syn::Type, right: &syn::Type) -> bool {
+    match (left, right) {
+        (syn::Type::Path(left), syn::Type::Path(right)) => {
+            left.qself.is_none()
+                && right.qself.is_none()
+                && syn_path_matches(&left.path, &right.path)
+        }
+        (syn::Type::Reference(left), syn::Type::Reference(right)) => {
+            left.mutability.is_some() == right.mutability.is_some()
+                && syn_type_matches(&left.elem, &right.elem)
+        }
+        (syn::Type::Tuple(left), syn::Type::Tuple(right)) => {
+            left.elems.len() == right.elems.len()
+                && left
+                    .elems
+                    .iter()
+                    .zip(right.elems.iter())
+                    .all(|(left, right)| syn_type_matches(left, right))
+        }
+        _ => false,
+    }
+}
+
+fn syn_lit_matches(left: &syn::Lit, right: &syn::Lit) -> bool {
+    match (left, right) {
+        (syn::Lit::Str(left), syn::Lit::Str(right)) => left.value() == right.value(),
+        (syn::Lit::ByteStr(left), syn::Lit::ByteStr(right)) => left.value() == right.value(),
+        (syn::Lit::Byte(left), syn::Lit::Byte(right)) => left.value() == right.value(),
+        (syn::Lit::Char(left), syn::Lit::Char(right)) => left.value() == right.value(),
+        (syn::Lit::Int(left), syn::Lit::Int(right)) => {
+            left.base10_digits() == right.base10_digits() && left.suffix() == right.suffix()
+        }
+        (syn::Lit::Float(left), syn::Lit::Float(right)) => {
+            left.base10_digits() == right.base10_digits() && left.suffix() == right.suffix()
+        }
+        (syn::Lit::Bool(left), syn::Lit::Bool(right)) => left.value == right.value,
+        _ => false,
+    }
 }
 
 fn is_named_numeric_alias(type_name: &str) -> bool {
@@ -37305,6 +37449,25 @@ func main() {
                 }
             },
         );
+    }
+
+    #[test]
+    fn syn_expr_matches_target_uses_lvalue_ast_shape() {
+        let field_target: syn::Expr = syn::parse_quote! { self.xs };
+        let field_read: syn::Expr = syn::parse_quote! { (self.xs) };
+        let other_field: syn::Expr = syn::parse_quote! { self.ys };
+        let pointer_target: syn::Expr = syn::parse_quote! { *p.lock().unwrap() };
+        let pointer_read: syn::Expr = syn::parse_quote! { *(p.lock().unwrap()) };
+        let index_target: syn::Expr = syn::parse_quote! { values[(i) as usize] };
+        let index_read: syn::Expr = syn::parse_quote! { (values[((i) as usize)]) };
+
+        assert!(super::syn_expr_matches_target(&field_read, &field_target));
+        assert!(!super::syn_expr_matches_target(&other_field, &field_target));
+        assert!(super::syn_expr_matches_target(
+            &pointer_read,
+            &pointer_target
+        ));
+        assert!(super::syn_expr_matches_target(&index_read, &index_target));
     }
 
     #[test]
