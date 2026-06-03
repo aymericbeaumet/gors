@@ -1,7 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
 pub(super) fn pass_after_package_merge(file: &mut syn::File) {
-    let mutable_ref_call_args = super::collect_mutable_ref_call_args(file);
+    let mutable_ref_call_args = super::call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = super::collect_pointer_cell_statics(file);
     if mutable_ref_call_args.is_empty() {
         return;
@@ -16,7 +16,7 @@ pub(super) fn pass_after_package_merge(file: &mut syn::File) {
 }
 
 struct CoercePointerCellArgs {
-    mutable_ref_call_args: std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    mutable_ref_call_args: super::call_args::MutableRefCallArgs,
     pointer_cell_statics: std::collections::HashSet<String>,
     pointer_cell_names: Vec<std::collections::HashSet<String>>,
     pointer_cell_iter_names: Vec<std::collections::HashSet<String>>,
@@ -83,7 +83,7 @@ fn pointer_cell_arg_scope(sig: &syn::Signature) -> PointerCellArgScope {
         let syn::FnArg::Typed(pat_type) = input else {
             continue;
         };
-        let Some(name) = super::pat_ident_name(&pat_type.pat) else {
+        let Some(name) = super::call_args::pat_ident_name(&pat_type.pat) else {
             continue;
         };
         if type_is_pointer_cell(&pat_type.ty) {
@@ -160,11 +160,11 @@ fn pat_ident_names(pat: &syn::Pat) -> Vec<String> {
 fn coerce_pointer_cell_call_args(
     func: &syn::Expr,
     args: &mut syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
-    mutable_ref_call_args: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    mutable_ref_call_args: &super::call_args::MutableRefCallArgs,
     pointer_cell_statics: &std::collections::HashSet<String>,
     pointer_cell_name_scopes: &[std::collections::HashSet<String>],
 ) {
-    let Some(name) = super::call_func_name(func) else {
+    let Some(name) = super::call_args::call_func_name(func) else {
         return;
     };
     let Some(indices) = mutable_ref_call_args.get(&name) else {
