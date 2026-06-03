@@ -4544,8 +4544,23 @@ impl SemanticReachabilityGraph {
     fn reachable_external_roots_by_module(
         &self,
     ) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        self.external_roots_for_item_ids(self.reachable_item_ids())
+    }
+
+    fn reachable_external_roots_for_module_roots(
+        &self,
+        module: &str,
+        roots: &std::collections::HashSet<String>,
+    ) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        self.external_roots_for_item_ids(self.reachable_item_ids_for_module_roots(module, roots))
+    }
+
+    fn external_roots_for_item_ids(
+        &self,
+        item_ids: impl IntoIterator<Item = SemanticItemId>,
+    ) -> BTreeMap<String, std::collections::BTreeSet<String>> {
         let mut external_roots = BTreeMap::new();
-        for item_id in self.reachable_item_ids() {
+        for item_id in item_ids {
             let Some(node) = self.nodes.get(&item_id) else {
                 continue;
             };
@@ -4560,8 +4575,35 @@ impl SemanticReachabilityGraph {
     }
 
     fn reachable_item_ids(&self) -> std::collections::BTreeSet<SemanticItemId> {
+        self.reachable_item_ids_from(self.roots.iter().cloned())
+    }
+
+    fn reachable_item_ids_for_module_roots(
+        &self,
+        module: &str,
+        roots: &std::collections::HashSet<String>,
+    ) -> std::collections::BTreeSet<SemanticItemId> {
+        self.reachable_item_ids_from(self.item_ids_for_module_roots(module, roots))
+    }
+
+    fn item_ids_for_module_roots(
+        &self,
+        module: &str,
+        roots: &std::collections::HashSet<String>,
+    ) -> std::collections::BTreeSet<SemanticItemId> {
+        self.nodes
+            .keys()
+            .filter(|id| id.module == module && roots.contains(&id.name))
+            .cloned()
+            .collect()
+    }
+
+    fn reachable_item_ids_from(
+        &self,
+        roots: impl IntoIterator<Item = SemanticItemId>,
+    ) -> std::collections::BTreeSet<SemanticItemId> {
         let mut reachable = std::collections::BTreeSet::new();
-        let mut pending = self.roots.iter().cloned().collect::<Vec<_>>();
+        let mut pending = roots.into_iter().collect::<Vec<_>>();
         while let Some(item_id) = pending.pop() {
             if !reachable.insert(item_id.clone()) {
                 continue;
@@ -7475,6 +7517,15 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
         debug_assert!(semantic_graph.has_consistent_local_edges());
         let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
+        if let Some(main_module) = modules.get("__main__") {
+            let roots = if has_main {
+                HashSet::from(["main".to_string()])
+            } else {
+                exported_item_reachability_names(&main_module.file.items)
+            };
+            let _main_external_roots = semantic_graph
+                .reachable_external_roots_for_module_roots(&main_module.mod_name, &roots);
+        }
     }
 
     loop {
@@ -33806,6 +33857,67 @@ func B() {}
             synthetic_node.local_refs.contains(&concrete_method_id),
             "{synthetic_node:?}"
         );
+
+        let roots = std::collections::HashSet::from([
+            "LittleEndian".to_string(),
+            "LittleEndian::Uint32".to_string(),
+        ]);
+        let reachable = graph.reachable_item_ids_for_module_roots("__main__", &roots);
+        assert!(reachable.contains(&synthetic_id), "{reachable:?}");
+        assert!(reachable.contains(&concrete_method_id), "{reachable:?}");
+    }
+
+    #[test]
+    fn semantic_reachability_graph_collects_external_roots_from_explicit_roots() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "pkg".to_string(),
+            semantic_test_module(
+                "pkg",
+                rust! {
+                    pub fn Entry() {
+                        live::Hello();
+                    }
+
+                    pub fn Dead() {
+                        unused::Nope();
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "live".to_string(),
+            semantic_test_module(
+                "live",
+                rust! {
+                    pub fn Hello() {}
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "unused".to_string(),
+            semantic_test_module(
+                "unused",
+                rust! {
+                    pub fn Nope() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let roots = std::collections::HashSet::from(["Entry".to_string()]);
+        let external_roots = graph.reachable_external_roots_for_module_roots("pkg", &roots);
+
+        assert!(
+            external_roots
+                .get("live")
+                .is_some_and(|refs| refs.contains("Hello")),
+            "{external_roots:?}"
+        );
+        assert!(!external_roots.contains_key("unused"), "{external_roots:?}");
     }
 
     #[test]
