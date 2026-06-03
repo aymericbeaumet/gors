@@ -27273,7 +27273,51 @@ fn is_any_type(ty: &syn::Type) -> bool {
 }
 
 fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
-    expr.to_token_stream().to_string() == "Box :: new (()) as Box < dyn std :: any :: Any >"
+    match expr {
+        syn::Expr::Cast(cast) => is_any_type(&cast.ty) && is_box_new_unit_expr(&cast.expr),
+        syn::Expr::Paren(paren) => is_box_dyn_any_expr(&paren.expr),
+        syn::Expr::Group(group) => is_box_dyn_any_expr(&group.expr),
+        _ => false,
+    }
+}
+
+fn is_box_new_unit_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Call(call) => {
+            call.args.len() == 1
+                && expr_path_is_box_new(&call.func)
+                && call.args.first().is_some_and(expr_is_unit)
+        }
+        syn::Expr::Paren(paren) => is_box_new_unit_expr(&paren.expr),
+        syn::Expr::Group(group) => is_box_new_unit_expr(&group.expr),
+        _ => false,
+    }
+}
+
+fn expr_path_is_box_new(expr: &syn::Expr) -> bool {
+    let syn::Expr::Path(path) = expr else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() < 2 {
+        return false;
+    }
+    let mut segments = path.path.segments.iter().rev();
+    let Some(method) = segments.next() else {
+        return false;
+    };
+    let Some(receiver) = segments.next() else {
+        return false;
+    };
+    method.ident == "new" && receiver.ident == "Box"
+}
+
+fn expr_is_unit(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Tuple(tuple) => tuple.elems.is_empty(),
+        syn::Expr::Paren(paren) => expr_is_unit(&paren.expr),
+        syn::Expr::Group(group) => expr_is_unit(&group.expr),
+        _ => false,
+    }
 }
 
 fn is_box_dyn_any_cast_expr(expr: &syn::Expr) -> bool {
@@ -33184,6 +33228,23 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("h.err = (err).clone();"), "{main_rs}");
+    }
+
+    #[test]
+    fn box_dyn_any_zero_value_detection_uses_ast_shape() {
+        let empty_any: syn::Expr = syn::parse_quote! {
+            Box::new(()) as Box<dyn std::any::Any>
+        };
+        let empty_any_send_sync: syn::Expr = syn::parse_quote! {
+            (Box::new(()) as Box<dyn std::any::Any + Send + Sync>)
+        };
+        let boxed_value: syn::Expr = syn::parse_quote! {
+            Box::new(value) as Box<dyn std::any::Any>
+        };
+
+        assert!(super::is_box_dyn_any_expr(&empty_any));
+        assert!(super::is_box_dyn_any_expr(&empty_any_send_sync));
+        assert!(!super::is_box_dyn_any_expr(&boxed_value));
     }
 
     #[test]
