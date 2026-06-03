@@ -1,6 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
 mod call_args;
+mod comparisons;
 mod evaluation_order;
 mod pointer_cells;
 mod static_false;
@@ -108,31 +109,7 @@ impl VisitMut for CoerceTypes {
 
     fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
         visit_mut::visit_expr_binary_mut(self, binary);
-
-        if is_rune_self_path(&binary.right) && matches!(&*binary.left, syn::Expr::Index(_)) {
-            let left = (*binary.left).clone();
-            *binary.left = syn::parse_quote! { (#left as u32) };
-        }
-
-        if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
-            return;
-        }
-
-        if let Some(inner) = box_new_call_arg(&binary.right) {
-            let left = binary.left.clone();
-            *binary.left = syn::parse_quote! { *#left };
-            *binary.right = inner;
-        } else if let Some(inner) = box_new_call_arg(&binary.left) {
-            let right = binary.right.clone();
-            *binary.left = inner;
-            *binary.right = syn::parse_quote! { *#right };
-        } else if let (Some(left), Some(right)) = (
-            arc_mutex_new_call_arg(&binary.left),
-            arc_mutex_new_call_arg(&binary.right),
-        ) {
-            *binary.left = left;
-            *binary.right = right;
-        }
+        comparisons::coerce_binary_expr(binary);
     }
 
     fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
@@ -232,34 +209,6 @@ fn is_path_call(func: &syn::Expr, segments: &[&str]) -> bool {
             .all(|(seg, expected)| seg.ident == *expected)
 }
 
-fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Call(call) = expr else {
-        return None;
-    };
-    if !is_path_call(&call.func, &["Box", "new"]) || call.args.len() != 1 {
-        return None;
-    }
-    call.args.first().cloned()
-}
-
-fn arc_mutex_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Call(call) = expr else {
-        return None;
-    };
-    if !is_path_call(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
-        return None;
-    }
-    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
-        return None;
-    };
-    if !is_path_call(&mutex_call.func, &["std", "sync", "Mutex", "new"])
-        || mutex_call.args.len() != 1
-    {
-        return None;
-    }
-    mutex_call.args.first().cloned()
-}
-
 fn replace_self_deref_with_take(expr: &mut syn::Expr) {
     let replacement = match expr {
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
@@ -287,16 +236,6 @@ fn replace_self_field_with_take(expr: &mut syn::Expr) {
 
     let inner = expr.clone();
     *expr = syn::parse_quote! { std::mem::take(&mut #inner) };
-}
-
-fn is_rune_self_path(expr: &syn::Expr) -> bool {
-    let syn::Expr::Path(path) = expr else {
-        return false;
-    };
-    path.path
-        .segments
-        .last()
-        .is_some_and(|seg| seg.ident == "RuneSelf")
 }
 
 fn is_self_expr(expr: &syn::Expr) -> bool {
