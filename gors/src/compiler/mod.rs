@@ -6883,10 +6883,19 @@ fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
     else {
         return false;
     };
-    trait_object
-        .bounds
-        .iter()
-        .any(|bound| matches!(bound, syn::TypeParamBound::Trait(trait_bound) if trait_bound.path.to_token_stream().to_string() == "dyn std :: any :: Any" || trait_bound.path.to_token_stream().to_string() == "std :: any :: Any" || trait_bound.path.to_token_stream().to_string() == "Any"))
+    trait_object_has_any_bound(trait_object)
+}
+
+fn trait_object_has_any_bound(trait_object: &syn::TypeTraitObject) -> bool {
+    trait_object.bounds.iter().any(|bound| {
+        matches!(bound, syn::TypeParamBound::Trait(trait_bound) if trait_path_is_any(&trait_bound.path))
+    })
+}
+
+fn trait_path_is_any(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Any")
 }
 
 struct CloneVecValueCallArgs<'a> {
@@ -27263,13 +27272,9 @@ fn is_any_type(ty: &syn::Type) -> bool {
     let syn::PathArguments::AngleBracketed(args) = &first.arguments else {
         return false;
     };
-    args.args.iter().any(|a| matches!(a, syn::GenericArgument::Type(syn::Type::TraitObject(to)) if to.bounds.iter().any(|b| {
-        if let syn::TypeParamBound::Trait(t) = b {
-            t.path.segments.last().is_some_and(|s| s.ident == "Any")
-        } else {
-            false
-        }
-    })))
+    args.args.iter().any(
+        |arg| matches!(arg, syn::GenericArgument::Type(syn::Type::TraitObject(to)) if trait_object_has_any_bound(to)),
+    )
 }
 
 fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
@@ -33260,6 +33265,17 @@ func main() {
         assert!(super::is_box_dyn_any_expr(&empty_any));
         assert!(super::is_box_dyn_any_expr(&empty_any_send_sync));
         assert!(!super::is_box_dyn_any_expr(&boxed_value));
+    }
+
+    #[test]
+    fn box_dyn_any_type_detection_uses_trait_bound_shape() {
+        let std_any: syn::Type = syn::parse_quote! { Box<dyn std::any::Any> };
+        let any_with_bounds: syn::Type = syn::parse_quote! { Box<dyn Any + Send + Sync> };
+        let other_trait: syn::Type = syn::parse_quote! { Box<dyn std::fmt::Display> };
+
+        assert!(super::is_box_dyn_any_type(&std_any));
+        assert!(super::is_box_dyn_any_type(&any_with_bounds));
+        assert!(!super::is_box_dyn_any_type(&other_trait));
     }
 
     #[test]
