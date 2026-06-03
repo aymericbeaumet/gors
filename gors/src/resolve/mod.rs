@@ -7,6 +7,7 @@ use quote::ToTokens;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
+mod runtime_primitives;
 mod structural_helpers;
 
 #[derive(Clone, Copy)]
@@ -274,7 +275,7 @@ fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> Stri
 }
 
 fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
-    if let Some(module) = runtime_primitive_module(import_path, roots) {
+    if let Some(module) = runtime_primitives::module(import_path, roots) {
         cache_resolved_imports(import_path, roots, Vec::new());
         return Some(module);
     }
@@ -663,147 +664,6 @@ fn spec_label_for_shard(file: &crate::ast::File<'_>) -> Option<String> {
         .iter()
         .find(|decl| !is_import_decl(decl))
         .map(decl_label)
-}
-
-fn runtime_primitive_module(
-    import_path: &str,
-    roots: Option<&HashSet<String>>,
-) -> Option<syn::ItemMod> {
-    match import_path {
-        "internal/reflectlite" => return reflectlite_runtime_primitive_module(import_path, roots),
-        "runtime" => {}
-        _ => return None,
-    }
-    let roots = roots?;
-    if roots.is_empty() {
-        return None;
-    }
-
-    let mut items = Vec::new();
-    if roots.contains("GOMAXPROCS") {
-        items.push(syn::parse_quote! {
-            pub fn GOMAXPROCS(mut n: isize) -> isize {
-                let current = std::thread::available_parallelism()
-                    .map(|parallelism| parallelism.get() as isize)
-                    .unwrap_or(1)
-                    .max(1);
-                if n < 1 {
-                    return current;
-                }
-                current
-            }
-        });
-    }
-    if roots.contains("GOARCH") {
-        items.push(syn::parse_quote! {
-            pub fn GOARCH() -> String {
-                std::env::consts::ARCH.to_string()
-            }
-        });
-    }
-    if roots.contains("GOOS") {
-        items.push(syn::parse_quote! {
-            pub fn GOOS() -> String {
-                std::env::consts::OS.to_string()
-            }
-        });
-    }
-
-    (!items.is_empty()).then(|| item_mod_for(import_path, items))
-}
-
-fn reflectlite_runtime_primitive_module(
-    import_path: &str,
-    roots: Option<&HashSet<String>>,
-) -> Option<syn::ItemMod> {
-    let roots = roots?;
-    if roots.is_empty() {
-        return None;
-    }
-
-    let needs_value = roots.iter().any(|root| {
-        matches!(
-            root.as_str(),
-            "Value" | "ValueOf" | "Swapper" | "Value::Len" | "Value::Kind"
-        )
-    });
-    let needs_kind = roots
-        .iter()
-        .any(|root| matches!(root.as_str(), "Kind" | "Slice" | "Invalid"));
-    let needs_swapper = roots.contains("Swapper");
-
-    let mut items = Vec::new();
-    if needs_kind || needs_value {
-        items.extend([
-            syn::parse_quote! {
-                pub type Kind = crate::builtin::__GorsReflectKind;
-            },
-            syn::parse_quote! {
-                pub const Invalid: Kind = crate::builtin::__GorsReflectKind::Invalid;
-            },
-            syn::parse_quote! {
-                pub const Slice: Kind = crate::builtin::__GorsReflectKind::Slice;
-            },
-        ]);
-    }
-    if needs_value {
-        items.extend([
-            syn::parse_quote! {
-                pub struct Value {
-                    value: Box<dyn std::any::Any>,
-                }
-            },
-            syn::parse_quote! {
-                impl Clone for Value {
-                    fn clone(&self) -> Self {
-                        Self {
-                            value: crate::builtin::clone_any(&self.value),
-                        }
-                    }
-                }
-            },
-            syn::parse_quote! {
-                impl Default for Value {
-                    fn default() -> Self {
-                        Self {
-                            value: Box::new(()) as Box<dyn std::any::Any>,
-                        }
-                    }
-                }
-            },
-            syn::parse_quote! {
-                impl Value {
-                    pub fn Len(&self) -> isize {
-                        crate::builtin::reflect_value_len(self.value.as_ref())
-                    }
-
-                    pub fn Kind(&self) -> Kind {
-                        crate::builtin::reflect_value_kind(self.value.as_ref())
-                    }
-                }
-            },
-            syn::parse_quote! {
-                pub fn ValueOf(i: Box<dyn std::any::Any>) -> Value {
-                    Value { value: i }
-                }
-            },
-        ]);
-    }
-    if needs_swapper {
-        items.push(syn::parse_quote! {
-            pub fn Swapper(
-                slice: Box<dyn std::any::Any>,
-            ) -> std::sync::Arc<
-                std::sync::Mutex<
-                    Option<std::sync::Arc<dyn Fn(isize, isize) -> () + Send + Sync>>
-                >
-            > {
-                crate::builtin::reflect_value_swapper(slice.as_ref())
-            }
-        });
-    }
-
-    (!items.is_empty()).then(|| item_mod_for(import_path, items))
 }
 
 fn item_mod_for(import_path: &str, items: Vec<syn::Item>) -> syn::ItemMod {
