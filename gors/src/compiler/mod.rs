@@ -7520,23 +7520,13 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
 
     loop {
         let before = modules_reachability_fingerprint(modules);
-        let module_names: HashSet<String> = modules
-            .values()
-            .filter(|module| !module.is_main)
-            .map(|module| module.mod_name.clone())
-            .collect();
-        let semantic_graph = semantic_reachability_graph_enabled().then(|| {
-            let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
-            debug_assert!(semantic_graph.has_consistent_local_edges());
-            let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
-            semantic_graph
-        });
-        let external_root_collector =
-            ExternalRootCollector::with_semantic_audit(&module_names, semantic_graph.as_ref());
+        let context = DceIterationContext::new(modules, has_main);
+        let module_names = &context.module_names;
+        let external_root_collector = context.external_root_collector();
 
         if let Some(main_module) = modules.get_mut("__main__") {
             let roots = main_module_root_names(main_module, has_main);
-            prune_items_to_roots(&mut main_module.file.items, &roots, &module_names);
+            prune_items_to_roots(&mut main_module.file.items, &roots, module_names);
         }
 
         let mut required = RequiredModuleRoots::default();
@@ -7596,7 +7586,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             } else {
                 roots
             };
-            prune_items_to_roots(&mut module.file.items, roots, &module_names);
+            prune_items_to_roots(&mut module.file.items, roots, module_names);
             if module.mod_name == "builtin" {
                 prune_builtin_channel_helpers(&mut module.file.items, roots);
                 prune_builtin_complex_helpers(&mut module.file.items, roots);
@@ -7659,6 +7649,35 @@ fn main_module_root_names(
         std::collections::HashSet::from(["main".to_string()])
     } else {
         exported_item_reachability_names(&module.file.items)
+    }
+}
+
+struct DceIterationContext {
+    module_names: std::collections::HashSet<String>,
+    semantic_graph: Option<SemanticReachabilityGraph>,
+}
+
+impl DceIterationContext {
+    fn new(modules: &BTreeMap<String, CompiledModule>, has_main: bool) -> Self {
+        let module_names = modules
+            .values()
+            .filter(|module| !module.is_main)
+            .map(|module| module.mod_name.clone())
+            .collect();
+        let semantic_graph = semantic_reachability_graph_enabled().then(|| {
+            let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
+            debug_assert!(semantic_graph.has_consistent_local_edges());
+            let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
+            semantic_graph
+        });
+        Self {
+            module_names,
+            semantic_graph,
+        }
+    }
+
+    fn external_root_collector(&self) -> ExternalRootCollector<'_> {
+        ExternalRootCollector::with_semantic_audit(&self.module_names, self.semantic_graph.as_ref())
     }
 }
 
