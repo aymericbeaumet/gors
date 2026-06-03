@@ -28,7 +28,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
 | Reflection fallback pruning in `structural_helpers.rs` | `reflect` AST path/type-path checks and generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
-| Format flush insertion in `structural_helpers.rs` | receiver impls with generated `__gors_flush_fmt` hook calling `self.printArg` / `self.printValue` | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
+| Format flush insertion in `structural_helpers.rs` | generated `__gors_flush_fmt` hook source-field metadata plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
 
@@ -94,6 +94,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | inline `reflect.TypeOf(...).Kind()` detector in `compiler/mod.rs` | Reflect-kind comparison detection, argument extraction, and kind mapping now live in `compiler/reflect_kind.rs`; binary expression lowering only emits the resulting builtin check. |
 | inline resolver structural-helper injection in `resolve/mod.rs` | Resolver-owned generated helper insertion now lives in `resolve/structural_helpers.rs`, so package resolution no longer owns the helper predicates and injected item bodies inline. |
 | literal `reflect` qualifier in reflect-kind detection | `compiler/reflect_kind.rs` now receives an import-path predicate from current-file import facts, so aliased imports such as `import r "reflect"` lower through the same runtime primitive. |
+| literal `printArg` / `printValue` fmt flush triggers | Flush insertion now derives trigger methods from the generated hook's source field and the receiver's self-call graph, so arbitrary method names only flush when they can write through the buffered source field. |
 | `padString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic method-call and string argument lowering, preserving width-padding behavior instead of replacing the named method with a direct write. |
 | `fmtString` body replacement in `coerce_types.rs` | The generated Go body now compiles through generic branch, receiver-method, and string argument lowering, preserving `%q`, `%x`, and `% X` string formatting behavior instead of replacing the named method with `fmtS`. |
 | `newPrinter` body replacement in `coerce_types.rs` | The generated Go body now compiles through pointer-cell ownership, generic receiver-method argument hoisting, manual cloning for structs with `any` fields, and a minimal `sync.Pool` runtime primitive instead of replacing the named function body. |

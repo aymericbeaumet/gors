@@ -391,15 +391,33 @@ mod tests {
     #[test]
     fn it_inserts_flush_for_receivers_with_generated_flush_hook() {
         let mut file: syn::File = syn::parse_quote! {
-            pub struct Printer;
+            pub struct Printer {
+                pub inner: Inner,
+                pub buf: Buffer,
+            }
+
+            pub struct Inner {
+                pub buf: Buffer,
+            }
+
+            pub struct Buffer(pub Vec<u8>);
+
+            impl Inner {
+                pub fn write(&mut self, value: isize) {}
+            }
 
             impl Printer {
-                pub fn __gors_flush_fmt(&mut self) {}
+                pub fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
 
-                pub fn printArg(&mut self, value: isize) {}
+                pub fn emit(&mut self, value: isize) {
+                    self.inner.write(value);
+                }
 
                 pub fn run(&mut self) {
-                    self.printArg(1);
+                    self.emit(1);
                 }
             }
         };
@@ -408,26 +426,44 @@ mod tests {
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
-            tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
-            "expected generated flush hook after printArg: {tokens}"
+            tokens.contains("self . emit (1) ; self . __gors_flush_fmt ()"),
+            "expected generated flush hook after method using the hook source field: {tokens}"
         );
     }
 
     #[test]
     fn it_inserts_flush_after_structural_helpers_are_injected() {
         let mut file: syn::File = syn::parse_quote! {
-            pub struct Printer;
+            pub struct Printer {
+                pub inner: Inner,
+                pub buf: Buffer,
+            }
+
+            pub struct Inner {
+                pub buf: Buffer,
+            }
+
+            pub struct Buffer(pub Vec<u8>);
+
+            impl Inner {
+                pub fn write(&mut self, value: isize) {}
+            }
 
             impl Printer {
-                pub fn printArg(&mut self, value: isize) {}
+                pub fn emit(&mut self, value: isize) {
+                    self.inner.write(value);
+                }
 
                 pub fn run(&mut self) {
-                    self.printArg(1);
+                    self.emit(1);
                 }
             }
 
             impl Printer {
-                pub fn __gors_flush_fmt(&mut self) {}
+                pub fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
             }
         };
 
@@ -435,7 +471,7 @@ mod tests {
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
-            tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
+            tokens.contains("self . emit (1) ; self . __gors_flush_fmt ()"),
             "expected generated flush hook after structural helpers are injected: {tokens}"
         );
     }
@@ -464,14 +500,26 @@ mod tests {
     }
 
     #[test]
-    fn it_does_not_insert_flush_for_uncollected_flush_method_names() {
+    fn it_does_not_insert_flush_by_method_name_alone() {
         let mut file: syn::File = syn::parse_quote! {
-            pub struct Printer;
+            pub struct Printer {
+                pub inner: Inner,
+                pub buf: Buffer,
+            }
+
+            pub struct Inner {
+                pub buf: Buffer,
+            }
+
+            pub struct Buffer(pub Vec<u8>);
 
             impl Printer {
-                pub fn __gors_flush_fmt(&mut self) {}
+                pub fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
 
-                pub fn printValue(&mut self, value: isize) {}
+                pub fn printArg(&mut self, value: isize) {}
 
                 pub fn run(&mut self) {
                     self.printArg(1);
@@ -485,7 +533,7 @@ mod tests {
         assert!(
             tokens.contains("self . printArg (1)")
                 && !tokens.contains("self . printArg (1) ; self . __gors_flush_fmt ()"),
-            "expected flush insertion to use collected receiver methods: {tokens}"
+            "expected flush insertion to require source-field use, not a method name: {tokens}"
         );
     }
 
@@ -493,13 +541,30 @@ mod tests {
     fn it_prunes_self_value_reflection_fallback_from_generated_flush_receivers() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Printer {
+                pub inner: Inner,
+                pub buf: Buffer,
                 pub value: crate::reflect::Value,
             }
 
-            impl Printer {
-                pub fn __gors_flush_fmt(&mut self) {}
+            pub struct Inner {
+                pub buf: Buffer,
+            }
 
-                pub fn printValue(&mut self, value: crate::reflect::Value) {}
+            pub struct Buffer(pub Vec<u8>);
+
+            impl Inner {
+                pub fn write(&mut self, value: isize) {}
+            }
+
+            impl Printer {
+                pub fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
+
+                pub fn printValue(&mut self, value: crate::reflect::Value) {
+                    self.inner.write(0);
+                }
 
                 pub fn run(&mut self) {
                     let mut fallback = self.value;
