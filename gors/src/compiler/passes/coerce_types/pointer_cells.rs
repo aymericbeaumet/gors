@@ -122,10 +122,12 @@ fn pointer_cell_for_loop_bindings(
         .flatten()
         .cloned()
         .collect::<std::collections::HashSet<_>>();
-    if iter_names.is_empty() || !super::expr_contains_any_path_ident(iter, &iter_names) {
+    if iter_names.is_empty()
+        || !super::evaluation_order::expr_contains_any_path_ident(iter, &iter_names)
+    {
         return std::collections::HashSet::new();
     }
-    let skip_first = super::expr_contains_method_call(iter, "enumerate");
+    let skip_first = super::evaluation_order::expr_contains_method_call(iter, "enumerate");
     pat_value_ident_names(pat, skip_first)
 }
 
