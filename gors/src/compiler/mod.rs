@@ -4495,6 +4495,39 @@ impl SemanticReachabilityGraph {
                     .all(|target| self.nodes.contains_key(target))
             })
     }
+
+    fn reachable_external_roots_by_module(
+        &self,
+    ) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        let mut external_roots = BTreeMap::new();
+        for item_id in self.reachable_item_ids() {
+            let Some(node) = self.nodes.get(&item_id) else {
+                continue;
+            };
+            for (module, refs) in &node.external_refs {
+                external_roots
+                    .entry(module.clone())
+                    .or_insert_with(std::collections::BTreeSet::new)
+                    .extend(refs.iter().cloned());
+            }
+        }
+        external_roots
+    }
+
+    fn reachable_item_ids(&self) -> std::collections::BTreeSet<SemanticItemId> {
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut pending = self.roots.iter().cloned().collect::<Vec<_>>();
+        while let Some(item_id) = pending.pop() {
+            if !reachable.insert(item_id.clone()) {
+                continue;
+            }
+            let Some(node) = self.nodes.get(&item_id) else {
+                continue;
+            };
+            pending.extend(node.local_refs.iter().cloned());
+        }
+        reachable
+    }
 }
 
 fn semantic_reachability_graph_enabled() -> bool {
@@ -7339,6 +7372,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
     if semantic_reachability_graph_enabled() {
         let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
         debug_assert!(semantic_graph.has_consistent_local_edges());
+        let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
     }
 
     loop {
@@ -33479,7 +33513,15 @@ func B() {}
                 "__main__",
                 rust! {
                     pub fn main() {
+                        helper();
+                    }
+
+                    fn helper() {
                         live::Hello();
+                    }
+
+                    fn dead() {
+                        unused::Nope();
                     }
                 },
                 true,
@@ -33495,21 +33537,42 @@ func B() {}
                 false,
             ),
         );
+        modules.insert(
+            "unused".to_string(),
+            semantic_test_module(
+                "unused",
+                rust! {
+                    pub fn Nope() {}
+                },
+                false,
+            ),
+        );
 
         let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
         let main_id = semantic_item_id("__main__", super::SemanticItemKind::Function, "main");
+        let helper_id = semantic_item_id("__main__", super::SemanticItemKind::Function, "helper");
         let live_id = semantic_item_id("live", super::SemanticItemKind::Function, "Hello");
 
         assert!(graph.has_consistent_local_edges());
         assert!(graph.nodes.contains_key(&live_id));
         let main_node = graph.nodes.get(&main_id).expect("expected main node");
+        assert!(main_node.local_refs.contains(&helper_id), "{main_node:?}");
+        let helper_node = graph.nodes.get(&helper_id).expect("expected helper node");
         assert!(
-            main_node
+            helper_node
                 .external_refs
                 .get("live")
                 .is_some_and(|refs| refs.contains("Hello")),
-            "{main_node:?}"
+            "{helper_node:?}"
         );
+        let external_roots = graph.reachable_external_roots_by_module();
+        assert!(
+            external_roots
+                .get("live")
+                .is_some_and(|refs| refs.contains("Hello")),
+            "{external_roots:?}"
+        );
+        assert!(!external_roots.contains_key("unused"), "{external_roots:?}");
     }
 
     #[test]
