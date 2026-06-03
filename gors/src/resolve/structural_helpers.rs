@@ -14,6 +14,26 @@ fn has_trait(items: &[syn::Item], name: &str) -> bool {
         .any(|item| matches!(item, syn::Item::Trait(item_trait) if item_trait.ident == name))
 }
 
+fn trait_methods(items: &[syn::Item], trait_name: &str) -> Option<Vec<syn::TraitItemFn>> {
+    items.iter().find_map(|item| {
+        let syn::Item::Trait(item_trait) = item else {
+            return None;
+        };
+        (item_trait.ident == trait_name).then(|| {
+            item_trait
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let syn::TraitItem::Fn(func) = item else {
+                        return None;
+                    };
+                    Some(func.clone())
+                })
+                .collect()
+        })
+    })
+}
+
 fn has_struct(items: &[syn::Item], name: &str) -> bool {
     items
         .iter()

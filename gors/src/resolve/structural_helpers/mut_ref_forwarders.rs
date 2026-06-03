@@ -1,4 +1,4 @@
-use super::{ImplSelfType, has_impl, type_path_ident_name};
+use super::{ImplSelfType, has_impl, trait_methods, type_path_ident_name};
 
 pub(super) fn inject_state(items: &mut Vec<syn::Item>) {
     let Some(methods) = trait_methods(items, "State") else {
@@ -19,26 +19,6 @@ pub(super) fn inject_state(items: &mut Vec<syn::Item>) {
     for forwarder in forwarders {
         items.insert(0, forwarder);
     }
-}
-
-fn trait_methods(items: &[syn::Item], trait_name: &str) -> Option<Vec<syn::TraitItemFn>> {
-    items.iter().find_map(|item| {
-        let syn::Item::Trait(item_trait) = item else {
-            return None;
-        };
-        (item_trait.ident == trait_name).then(|| {
-            item_trait
-                .items
-                .iter()
-                .filter_map(|item| {
-                    let syn::TraitItem::Fn(func) = item else {
-                        return None;
-                    };
-                    Some(func.clone())
-                })
-                .collect()
-        })
-    })
 }
 
 fn named_trait_impl_self_types(items: &[syn::Item], trait_name: &str) -> Vec<String> {

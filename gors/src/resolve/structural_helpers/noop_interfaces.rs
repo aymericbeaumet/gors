@@ -1,4 +1,4 @@
-use super::{ImplSelfType, has_impl, has_struct, has_trait};
+use super::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
 
 const NOOP_INTERFACE: &str = "__GorsNoopInterface";
 const ERROR_EXT: &str = "__GorsErrorExt";
@@ -55,26 +55,6 @@ fn noop_struct_item() -> syn::Item {
         #[derive(Clone, Default)]
         struct __GorsNoopInterface;
     }
-}
-
-fn trait_methods(items: &[syn::Item], trait_name: &str) -> Option<Vec<syn::TraitItemFn>> {
-    items.iter().find_map(|item| {
-        let syn::Item::Trait(item_trait) = item else {
-            return None;
-        };
-        (item_trait.ident == trait_name).then(|| {
-            item_trait
-                .items
-                .iter()
-                .filter_map(|item| {
-                    let syn::TraitItem::Fn(func) = item else {
-                        return None;
-                    };
-                    Some(func.clone())
-                })
-                .collect()
-        })
-    })
 }
 
 fn noop_trait_impl(trait_name: &str, methods: &[syn::TraitItemFn]) -> syn::Item {
