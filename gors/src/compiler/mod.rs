@@ -19,6 +19,7 @@ mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
 mod interface_hooks;
+mod interface_impls;
 mod interface_type_env;
 pub mod ir;
 mod item_reachability;
@@ -22622,7 +22623,7 @@ fn promoted_method_info_for_impl_inner(
 
 fn promoted_method_receiver_expr(
     steps: &[PromotedMethodStep],
-    call_receiver_kind: PointerInterfaceCallReceiver,
+    call_receiver_kind: interface_impls::PointerCallReceiver,
 ) -> syn::Expr {
     let mut expr: syn::Expr = syn::parse_quote! { self };
     for step in steps {
@@ -22635,9 +22636,9 @@ fn promoted_method_receiver_expr(
         };
     }
     match call_receiver_kind {
-        PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &#expr },
-        PointerInterfaceCallReceiver::MutableRef => syn::parse_quote! { &mut #expr },
-        PointerInterfaceCallReceiver::Owned => syn::parse_quote! { (#expr).clone() },
+        interface_impls::PointerCallReceiver::ImmutableRef => syn::parse_quote! { &#expr },
+        interface_impls::PointerCallReceiver::MutableRef => syn::parse_quote! { &mut #expr },
+        interface_impls::PointerCallReceiver::Owned => syn::parse_quote! { (#expr).clone() },
     }
 }
 
@@ -22654,7 +22655,7 @@ fn promoted_concrete_interface_impl_item(
         .clone();
     let method_ident = method.sig.ident.clone();
     let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
-    let call_receiver_kind = pointer_interface_call_receiver(&method, method_is_pointer_receiver);
+    let call_receiver_kind = interface_impls::call_receiver(&method, method_is_pointer_receiver);
     let owner_ident = syn::Ident::new(
         &rust_safe_ident_name(&promoted.owner_type),
         Span::mixed_site(),
@@ -22831,196 +22832,6 @@ fn concrete_interface_impl_items_for_methods(
     impl_items
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PointerInterfaceCallReceiver {
-    ImmutableRef,
-    MutableRef,
-    Owned,
-}
-
-fn pointer_interface_call_receiver(
-    method: &syn::ImplItemFn,
-    method_is_pointer_receiver: bool,
-) -> PointerInterfaceCallReceiver {
-    match method.sig.inputs.first() {
-        Some(syn::FnArg::Receiver(receiver)) if receiver.reference.is_some() => {
-            if receiver.mutability.is_some() {
-                PointerInterfaceCallReceiver::MutableRef
-            } else {
-                PointerInterfaceCallReceiver::ImmutableRef
-            }
-        }
-        Some(syn::FnArg::Receiver(_)) => PointerInterfaceCallReceiver::Owned,
-        _ if method_is_pointer_receiver => PointerInterfaceCallReceiver::MutableRef,
-        _ => PointerInterfaceCallReceiver::Owned,
-    }
-}
-
-fn pointer_interface_impl_items_for_methods(
-    trait_name: &str,
-    struct_name: &str,
-    trait_path: &syn::Path,
-    method_names: &[String],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    pointer_methods: Option<&std::collections::BTreeSet<String>>,
-) -> Vec<syn::ImplItem> {
-    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
-        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-            Some(self)
-        }
-    }];
-    if trait_name != "error" {
-        impl_items.push(interface_hooks::clone_box_impl_item(trait_path, true));
-    }
-    if let Some(method_list) = methods.get(struct_name) {
-        for method in method_list {
-            if !method_names.contains(&method.sig.ident.to_string()) {
-                continue;
-            }
-            let method_ident = method.sig.ident.clone();
-            let method_is_pointer_receiver =
-                pointer_methods.is_some_and(|methods| methods.contains(&method_ident.to_string()));
-            let call_receiver_kind =
-                pointer_interface_call_receiver(method, method_is_pointer_receiver);
-            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-            let arg_idents = signature_arg_idents(&method.sig);
-            let mut sig = method.sig.clone();
-            let immutable_error_method = trait_name == "error" && method_ident == "Error";
-            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                if immutable_error_method {
-                    receiver.mutability = None;
-                    *receiver.ty = syn::parse_quote! { &Self };
-                } else {
-                    receiver.mutability = Some(<Token![mut]>::default());
-                    *receiver.ty = syn::parse_quote! { &mut Self };
-                }
-            }
-            let call_receiver: syn::Expr = match call_receiver_kind {
-                PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &*__gors_guard },
-                PointerInterfaceCallReceiver::MutableRef => {
-                    syn::parse_quote! { &mut *__gors_guard }
-                }
-                PointerInterfaceCallReceiver::Owned => {
-                    syn::parse_quote! { (*__gors_guard).clone() }
-                }
-            };
-            let block = if matches!(sig.output, syn::ReturnType::Default) {
-                syn::parse_quote!({
-                    let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
-                })
-            } else {
-                syn::parse_quote!({
-                    let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
-                })
-            };
-            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                attrs: vec![],
-                vis: syn::Visibility::Inherited,
-                defaultness: None,
-                sig,
-                block,
-            }));
-        }
-    }
-    impl_items
-}
-
-fn borrowed_pointer_interface_impl_items_for_methods(
-    trait_name: &str,
-    struct_name: &str,
-    trait_path: &syn::Path,
-    method_names: &[String],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    pointer_methods: Option<&std::collections::BTreeSet<String>>,
-) -> Vec<syn::ImplItem> {
-    let mut impl_items: Vec<syn::ImplItem> = vec![syn::parse_quote! {
-        fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
-            None
-        }
-    }];
-    if trait_name != "error" {
-        impl_items.push(interface_hooks::clone_box_impl_item(trait_path, false));
-    }
-    if let Some(method_list) = methods.get(struct_name) {
-        for method in method_list {
-            if !method_names.contains(&method.sig.ident.to_string()) {
-                continue;
-            }
-            let method_ident = method.sig.ident.clone();
-            let method_is_pointer_receiver =
-                pointer_methods.is_some_and(|methods| methods.contains(&method_ident.to_string()));
-            let call_receiver_kind =
-                pointer_interface_call_receiver(method, method_is_pointer_receiver);
-            let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-            let arg_idents = signature_arg_idents(&method.sig);
-            let mut sig = method.sig.clone();
-            let immutable_error_method = trait_name == "error" && method_ident == "Error";
-            if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-                if immutable_error_method {
-                    receiver.mutability = None;
-                    *receiver.ty = syn::parse_quote! { &Self };
-                } else {
-                    receiver.mutability = Some(<Token![mut]>::default());
-                    *receiver.ty = syn::parse_quote! { &mut Self };
-                }
-            }
-            let call_receiver: syn::Expr = match call_receiver_kind {
-                PointerInterfaceCallReceiver::ImmutableRef => syn::parse_quote! { &**self },
-                PointerInterfaceCallReceiver::MutableRef => syn::parse_quote! { &mut **self },
-                PointerInterfaceCallReceiver::Owned => syn::parse_quote! { (**self).clone() },
-            };
-            let block = if immutable_error_method
-                && matches!(call_receiver_kind, PointerInterfaceCallReceiver::MutableRef)
-            {
-                if matches!(sig.output, syn::ReturnType::Default) {
-                    syn::parse_quote!({
-                        let mut __gors_receiver = (**self).clone();
-                        #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*);
-                    })
-                } else {
-                    syn::parse_quote!({
-                        let mut __gors_receiver = (**self).clone();
-                        #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*)
-                    })
-                }
-            } else if matches!(sig.output, syn::ReturnType::Default) {
-                syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
-                })
-            } else {
-                syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
-                })
-            };
-            impl_items.push(syn::ImplItem::Fn(syn::ImplItemFn {
-                attrs: vec![],
-                vis: syn::Visibility::Inherited,
-                defaultness: None,
-                sig,
-                block,
-            }));
-        }
-    }
-    impl_items
-}
-
-fn borrowed_pointer_interface_impl_can_delegate(
-    trait_name: &str,
-    method_names: &[String],
-    pointer_methods: Option<&std::collections::BTreeSet<String>>,
-) -> bool {
-    method_names.iter().all(|method_name| {
-        !pointer_methods.is_some_and(|methods| methods.contains(method_name))
-            || interface_method_allows_mutable_borrowed_delegate(trait_name, method_name)
-    })
-}
-
-fn interface_method_allows_mutable_borrowed_delegate(trait_name: &str, method_name: &str) -> bool {
-    trait_name != "error" || method_name != "Error"
-}
-
 fn imported_pointer_interface_impls_for_local_structs(
     struct_methods: &BTreeMap<String, Vec<String>>,
     struct_pointer_methods: &BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -23070,7 +22881,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                 )) {
                     let trait_path = interface_trait_path_from_name(&interface_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = pointer_interface_impl_items_for_methods(
+                    let impl_items = interface_impls::pointer_items(
                         &interface_name,
                         struct_name,
                         &trait_path,
@@ -23084,7 +22895,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                         }
                     });
                 }
-                if borrowed_pointer_interface_impl_can_delegate(
+                if interface_impls::borrowed_pointer_can_delegate(
                     &interface_name,
                     &method_set.direct_methods,
                     pointer_methods,
@@ -23093,7 +22904,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                 {
                     let trait_path = interface_trait_path_from_name(&interface_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                    let impl_items = interface_impls::borrowed_pointer_items(
                         &interface_name,
                         struct_name,
                         &trait_path,
@@ -23125,7 +22936,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                     }
                     let trait_path = interface_trait_path_from_name(embedded_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-                    let impl_items = pointer_interface_impl_items_for_methods(
+                    let impl_items = interface_impls::pointer_items(
                         embedded_name,
                         struct_name,
                         &trait_path,
@@ -23138,7 +22949,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                             #(#impl_items)*
                         }
                     });
-                    if borrowed_pointer_interface_impl_can_delegate(
+                    if interface_impls::borrowed_pointer_can_delegate(
                         embedded_name,
                         &embedded_method_set.direct_methods,
                         pointer_methods,
@@ -23146,7 +22957,7 @@ fn imported_pointer_interface_impls_for_local_structs(
                         .insert((embedded_name.clone(), struct_name.clone()))
                     {
                         let trait_path = interface_trait_path_from_name(embedded_name);
-                        let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::borrowed_pointer_items(
                             embedded_name,
                             struct_name,
                             &trait_path,
@@ -23625,7 +23436,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         struct_name.clone(),
                         true,
                     )) {
-                        let impl_items = pointer_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::pointer_items(
                             trait_name,
                             struct_name,
                             &trait_path,
@@ -23639,14 +23450,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             }
                         });
                     }
-                    if borrowed_pointer_interface_impl_can_delegate(
+                    if interface_impls::borrowed_pointer_can_delegate(
                         trait_name,
                         &method_set.direct_methods,
                         pointer_methods,
                     ) && emitted_borrowed_pointer_interface_impls
                         .insert((trait_name.clone(), struct_name.clone()))
                     {
-                        let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::borrowed_pointer_items(
                             trait_name,
                             struct_name,
                             &trait_path,
@@ -23677,7 +23488,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             continue;
                         }
                         let trait_path = interface_trait_path_from_name(embedded_name);
-                        let impl_items = pointer_interface_impl_items_for_methods(
+                        let impl_items = interface_impls::pointer_items(
                             embedded_name,
                             struct_name,
                             &trait_path,
@@ -23690,14 +23501,14 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 #(#impl_items)*
                             }
                         });
-                        if borrowed_pointer_interface_impl_can_delegate(
+                        if interface_impls::borrowed_pointer_can_delegate(
                             embedded_name,
                             &embedded_method_set.direct_methods,
                             pointer_methods,
                         ) && emitted_borrowed_pointer_interface_impls
                             .insert((embedded_name.clone(), struct_name.clone()))
                         {
-                            let impl_items = borrowed_pointer_interface_impl_items_for_methods(
+                            let impl_items = interface_impls::borrowed_pointer_items(
                                 embedded_name,
                                 struct_name,
                                 &trait_path,
