@@ -4390,6 +4390,7 @@ enum SemanticItemKind {
     ImplItem,
     TraitItem,
     Macro,
+    SyntheticRoot,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4414,22 +4415,42 @@ impl SemanticReachabilityGraph {
         let mut graph = Self::default();
 
         for module in modules.values() {
+            let item_names = item_reachability_names(&module.file.items);
+            let top_level_types = top_level_item_types(&module.file.items, &module_names);
             for item in &module.file.items {
                 for id in semantic_item_ids_for_item(&module.mod_name, item) {
                     graph.nodes.entry(id).or_default();
                 }
             }
+            for id in semantic_synthetic_receiver_method_ids_for_module(
+                &module.mod_name,
+                &item_names,
+                &top_level_types,
+            ) {
+                graph.nodes.entry(id).or_default();
+            }
         }
 
         for module in modules.values() {
-            let name_index = semantic_item_name_index(&module.mod_name, &module.file.items);
+            let item_names = item_reachability_names(&module.file.items);
+            let top_level_names = top_level_item_names(&module.file.items);
+            let top_level_types = top_level_item_types(&module.file.items, &module_names);
+            let synthetic_ids = semantic_synthetic_receiver_method_ids_for_module(
+                &module.mod_name,
+                &item_names,
+                &top_level_types,
+            );
+            let mut name_index = semantic_item_name_index(&module.mod_name, &module.file.items);
+            for id in &synthetic_ids {
+                name_index
+                    .entry(id.name.clone())
+                    .or_default()
+                    .insert(id.clone());
+            }
             graph
                 .roots
                 .extend(semantic_root_ids_for_module(module, has_main, &name_index));
 
-            let item_names = item_reachability_names(&module.file.items);
-            let top_level_names = top_level_item_names(&module.file.items);
-            let top_level_types = top_level_item_types(&module.file.items, &module_names);
             let top_level_field_types =
                 top_level_item_field_types(&module.file.items, &module_names);
             let top_level_element_types =
@@ -4450,6 +4471,19 @@ impl SemanticReachabilityGraph {
                 top_level_return_types: &top_level_return_types,
                 top_level_tuple_return_types: &top_level_tuple_return_types,
             };
+
+            for source_id in synthetic_ids {
+                let expansion_ref_ids = semantic_expansion_ref_ids_for_name(
+                    &source_id.name,
+                    &name_index,
+                    &trait_supertraits,
+                    &trait_methods,
+                    &item_names,
+                    &top_level_types,
+                );
+                let node = graph.nodes.entry(source_id).or_default();
+                node.local_refs.extend(expansion_ref_ids);
+            }
 
             for item in &module.file.items {
                 let source_ids = semantic_item_ids_for_item(&module.mod_name, item);
@@ -4479,6 +4513,8 @@ impl SemanticReachabilityGraph {
                         &name_index,
                         &trait_supertraits,
                         &trait_methods,
+                        &item_names,
+                        &top_level_types,
                     );
                     let node = graph.nodes.entry(source_id).or_default();
                     node.local_refs.extend(expansion_ref_ids);
@@ -4544,16 +4580,56 @@ fn semantic_expansion_ref_ids_for_name(
     name_index: &BTreeMap<String, std::collections::BTreeSet<SemanticItemId>>,
     trait_supertraits: &BTreeMap<String, Vec<String>>,
     trait_methods: &BTreeMap<String, Vec<String>>,
+    item_names: &std::collections::HashSet<String>,
+    top_level_types: &ReceiverTypeMap,
 ) -> std::collections::BTreeSet<SemanticItemId> {
     let mut expanded = std::collections::HashSet::from([name.to_string()]);
     expand_supertrait_names(&mut expanded, trait_supertraits, trait_methods);
     expand_supertrait_method_names(&mut expanded, trait_supertraits);
+    if let Some((value_name, method_name)) = name.split_once("::")
+        && let Some(receiver_type) = top_level_types.get(value_name)
+        && receiver_type.module.is_none()
+    {
+        let method_root = impl_method_reachability_name(&receiver_type.name, method_name);
+        if item_names.contains(&method_root) {
+            expanded.insert(method_root);
+        }
+    }
     expanded.remove(name);
     expanded
         .into_iter()
         .filter_map(|name| name_index.get(&name))
         .flat_map(|ids| ids.iter().cloned())
         .collect()
+}
+
+fn semantic_synthetic_receiver_method_ids_for_module(
+    module: &str,
+    item_names: &std::collections::HashSet<String>,
+    top_level_types: &ReceiverTypeMap,
+) -> std::collections::BTreeSet<SemanticItemId> {
+    let mut ids = std::collections::BTreeSet::new();
+    for (value_name, receiver_type) in top_level_types {
+        if receiver_type.module.is_some() {
+            continue;
+        }
+        let receiver_prefix = format!("{}::", receiver_type.name);
+        for item_name in item_names {
+            let Some(method_name) = item_name.strip_prefix(&receiver_prefix) else {
+                continue;
+            };
+            let synthetic_name = impl_method_reachability_name(value_name, method_name);
+            if synthetic_name == *item_name {
+                continue;
+            }
+            ids.insert(SemanticItemId {
+                module: module.to_string(),
+                kind: SemanticItemKind::SyntheticRoot,
+                name: synthetic_name,
+            });
+        }
+    }
+    ids
 }
 
 fn semantic_reachability_graph_enabled() -> bool {
@@ -33681,6 +33757,55 @@ func B() {}
         assert!(reachable.contains(&child_id), "{reachable:?}");
         assert!(reachable.contains(&parent_id), "{reachable:?}");
         assert!(reachable.contains(&parent_method_id), "{reachable:?}");
+    }
+
+    #[test]
+    fn semantic_reachability_graph_expands_top_level_receiver_method_roots() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub struct littleEndian;
+
+                    pub static LittleEndian: littleEndian = littleEndian;
+
+                    impl littleEndian {
+                        pub fn Uint32(&self, buf: Vec<u8>) -> isize {
+                            buf.len() as isize
+                        }
+                    }
+
+                    pub fn main() {}
+                },
+                true,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let synthetic_id = semantic_item_id(
+            "__main__",
+            super::SemanticItemKind::SyntheticRoot,
+            "LittleEndian::Uint32",
+        );
+        let concrete_method_id = semantic_item_id(
+            "__main__",
+            super::SemanticItemKind::ImplItem,
+            "littleEndian::Uint32",
+        );
+
+        assert!(graph.has_consistent_local_edges());
+        assert!(graph.nodes.contains_key(&synthetic_id), "{graph:?}");
+        assert!(graph.nodes.contains_key(&concrete_method_id), "{graph:?}");
+        let synthetic_node = graph
+            .nodes
+            .get(&synthetic_id)
+            .expect("expected synthetic receiver method root");
+        assert!(
+            synthetic_node.local_refs.contains(&concrete_method_id),
+            "{synthetic_node:?}"
+        );
     }
 
     #[test]
