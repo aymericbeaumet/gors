@@ -24,7 +24,7 @@ pub(super) fn reachable_item_for_names(
         }
         if roots.contains(&trait_name) {
             let mut preserved = item_trait.clone();
-            super::allow_dead_code_attr(&mut preserved.attrs);
+            super::generated_attrs::allow_dead_code(&mut preserved.attrs);
             return Some(syn::Item::Trait(preserved));
         }
         let mut filtered = item_trait.clone();
@@ -105,12 +105,12 @@ pub(super) fn reachable_item_for_names(
                 qualified_external_trait_path(path, &trait_name, top_level_names)
             }) {
                 let mut preserved = item_impl.clone();
-                super::allow_dead_code_attr(&mut preserved.attrs);
+                super::generated_attrs::allow_dead_code(&mut preserved.attrs);
                 return Some(syn::Item::Impl(preserved));
             }
             if roots.contains(&trait_name) {
                 let mut preserved = item_impl.clone();
-                super::allow_dead_code_attr(&mut preserved.attrs);
+                super::generated_attrs::allow_dead_code(&mut preserved.attrs);
                 return Some(syn::Item::Impl(preserved));
             }
             let mut filtered = item_impl.clone();

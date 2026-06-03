@@ -16,6 +16,7 @@
 
 mod builtin_roots;
 mod display_impls;
+mod generated_attrs;
 mod interface_hooks;
 pub mod ir;
 mod item_reachability;
@@ -8303,7 +8304,7 @@ fn prune_unused_struct_fields(
             continue;
         };
         if preserved_structs.contains(&item_struct.ident.to_string()) {
-            allow_dead_code_attr(&mut item_struct.attrs);
+            generated_attrs::allow_dead_code(&mut item_struct.attrs);
             continue;
         }
         fields.named = fields
@@ -8350,28 +8351,6 @@ fn prune_unused_struct_fields(
     for item in items {
         pruner.visit_item_mut(item);
     }
-}
-
-fn allow_dead_code_attr(attrs: &mut Vec<syn::Attribute>) {
-    let has_attr = attrs.iter().any(attribute_allows_dead_code);
-    if !has_attr {
-        attrs.push(syn::parse_quote!(#[allow(dead_code)]));
-    }
-}
-
-fn attribute_allows_dead_code(attr: &syn::Attribute) -> bool {
-    if !attr.path().is_ident("allow") {
-        return false;
-    }
-
-    let mut allows_dead_code = false;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("dead_code") {
-            allows_dead_code = true;
-        }
-        Ok(())
-    });
-    allows_dead_code
 }
 
 fn declared_named_fields(items: &[syn::Item]) -> std::collections::HashSet<String> {
@@ -32261,24 +32240,26 @@ func main() {
     fn allow_dead_code_attr_matches_attribute_meta_structurally() {
         let mut existing: Vec<syn::Attribute> = vec![rust! { #[allow(unused, dead_code)] }];
 
-        super::allow_dead_code_attr(&mut existing);
+        super::generated_attrs::allow_dead_code(&mut existing);
 
         assert_eq!(existing.len(), 1);
         let [existing_attr] = existing.as_slice() else {
             return;
         };
-        assert!(super::attribute_allows_dead_code(existing_attr));
+        assert!(super::generated_attrs::attribute_allows_dead_code(
+            existing_attr
+        ));
 
         let mut missing: Vec<syn::Attribute> =
             vec![rust! { #[allow(unused)] }, rust! { #[doc = "dead_code"] }];
 
-        super::allow_dead_code_attr(&mut missing);
+        super::generated_attrs::allow_dead_code(&mut missing);
 
         assert_eq!(missing.len(), 3);
         assert!(
             missing
                 .get(2)
-                .is_some_and(super::attribute_allows_dead_code)
+                .is_some_and(super::generated_attrs::attribute_allows_dead_code)
         );
     }
 
