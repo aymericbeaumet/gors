@@ -5278,12 +5278,24 @@ fn external_interface_implementors_for_program(
         }
 
         if !interface_implementors.is_empty() {
-            let mut seen = std::collections::BTreeSet::new();
-            interface_implementors.retain(|ty| seen.insert(ty.to_token_stream().to_string()));
+            dedupe_syn_types(&mut interface_implementors);
             implementors.insert(interface_name, interface_implementors);
         }
     }
     implementors
+}
+
+fn dedupe_syn_types(types: &mut Vec<syn::Type>) {
+    let mut deduped = Vec::new();
+    for ty in std::mem::take(types) {
+        if !deduped
+            .iter()
+            .any(|existing| syn_type_matches(existing, &ty))
+        {
+            deduped.push(ty);
+        }
+    }
+    *types = deduped;
 }
 
 pub fn import_path_to_filename(import_path: &str) -> String {
@@ -17503,6 +17515,48 @@ fn syn_path_matches(left: &syn::Path, right: &syn::Path) -> bool {
 fn syn_path_arguments_match(left: &syn::PathArguments, right: &syn::PathArguments) -> bool {
     match (left, right) {
         (syn::PathArguments::None, syn::PathArguments::None) => true,
+        (syn::PathArguments::AngleBracketed(left), syn::PathArguments::AngleBracketed(right)) => {
+            left.args.len() == right.args.len()
+                && left
+                    .args
+                    .iter()
+                    .zip(right.args.iter())
+                    .all(|(left, right)| syn_generic_argument_matches(left, right))
+        }
+        (syn::PathArguments::Parenthesized(left), syn::PathArguments::Parenthesized(right)) => {
+            left.inputs.len() == right.inputs.len()
+                && left
+                    .inputs
+                    .iter()
+                    .zip(right.inputs.iter())
+                    .all(|(left, right)| syn_type_matches(left, right))
+                && syn_return_type_matches(&left.output, &right.output)
+        }
+        _ => false,
+    }
+}
+
+fn syn_generic_argument_matches(left: &syn::GenericArgument, right: &syn::GenericArgument) -> bool {
+    match (left, right) {
+        (syn::GenericArgument::Lifetime(left), syn::GenericArgument::Lifetime(right)) => {
+            left.ident == right.ident
+        }
+        (syn::GenericArgument::Type(left), syn::GenericArgument::Type(right)) => {
+            syn_type_matches(left, right)
+        }
+        (syn::GenericArgument::Const(left), syn::GenericArgument::Const(right)) => {
+            syn_expr_matches_target(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn syn_return_type_matches(left: &syn::ReturnType, right: &syn::ReturnType) -> bool {
+    match (left, right) {
+        (syn::ReturnType::Default, syn::ReturnType::Default) => true,
+        (syn::ReturnType::Type(_, left), syn::ReturnType::Type(_, right)) => {
+            syn_type_matches(left, right)
+        }
         _ => false,
     }
 }
@@ -27773,8 +27827,7 @@ fn interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
         implementors
     });
     implementors.extend(external_interface_assertion_implementors(interface_name));
-    let mut seen = std::collections::BTreeSet::new();
-    implementors.retain(|ty| seen.insert(ty.to_token_stream().to_string()));
+    dedupe_syn_types(&mut implementors);
     implementors
 }
 
@@ -32797,6 +32850,33 @@ func main() {
         assert!(!output.contains("impl ReadWriter for Source"), "{output}");
         assert!(!output.contains("impl Reader for Source"), "{output}");
         assert!(!output.contains("impl Writer for Source"), "{output}");
+    }
+
+    #[test]
+    fn dedupe_syn_types_matches_parameterized_types_structurally() {
+        let mut types: Vec<syn::Type> = vec![
+            rust! { crate::pkg::Thing },
+            rust! { crate::pkg::Thing },
+            rust! { crate::builtin::GorsPtr<crate::pkg::Thing> },
+            rust! { crate::builtin::GorsPtr<crate::pkg::Thing> },
+            rust! { crate::pkg::Other },
+        ];
+
+        super::dedupe_syn_types(&mut types);
+
+        assert_eq!(types.len(), 3);
+        assert!(super::syn_type_matches(
+            &types[0],
+            &rust! { crate::pkg::Thing }
+        ));
+        assert!(super::syn_type_matches(
+            &types[1],
+            &rust! { crate::builtin::GorsPtr<crate::pkg::Thing> }
+        ));
+        assert!(super::syn_type_matches(
+            &types[2],
+            &rust! { crate::pkg::Other }
+        ));
     }
 
     #[test]
