@@ -4438,6 +4438,8 @@ impl SemanticReachabilityGraph {
                 top_level_item_return_types(&module.file.items, &module_names);
             let top_level_tuple_return_types =
                 top_level_item_tuple_return_types(&module.file.items, &module_names);
+            let trait_supertraits = trait_supertrait_names(&module.file.items);
+            let trait_methods = trait_method_names(&module.file.items);
             let context = RefCollectionContext {
                 module_names: &module_names,
                 item_names: &item_names,
@@ -4472,7 +4474,14 @@ impl SemanticReachabilityGraph {
                     .collect::<BTreeMap<_, _>>();
 
                 for source_id in source_ids {
+                    let expansion_ref_ids = semantic_expansion_ref_ids_for_name(
+                        &source_id.name,
+                        &name_index,
+                        &trait_supertraits,
+                        &trait_methods,
+                    );
                     let node = graph.nodes.entry(source_id).or_default();
+                    node.local_refs.extend(expansion_ref_ids);
                     node.local_refs.extend(local_ref_ids.iter().cloned());
                     for (module, refs) in &external_refs {
                         node.external_refs
@@ -4528,6 +4537,23 @@ impl SemanticReachabilityGraph {
         }
         reachable
     }
+}
+
+fn semantic_expansion_ref_ids_for_name(
+    name: &str,
+    name_index: &BTreeMap<String, std::collections::BTreeSet<SemanticItemId>>,
+    trait_supertraits: &BTreeMap<String, Vec<String>>,
+    trait_methods: &BTreeMap<String, Vec<String>>,
+) -> std::collections::BTreeSet<SemanticItemId> {
+    let mut expanded = std::collections::HashSet::from([name.to_string()]);
+    expand_supertrait_names(&mut expanded, trait_supertraits, trait_methods);
+    expand_supertrait_method_names(&mut expanded, trait_supertraits);
+    expanded.remove(name);
+    expanded
+        .into_iter()
+        .filter_map(|name| name_index.get(&name))
+        .flat_map(|ids| ids.iter().cloned())
+        .collect()
 }
 
 fn semantic_reachability_graph_enabled() -> bool {
@@ -33605,6 +33631,56 @@ func B() {}
             "{external_roots:?}"
         );
         assert!(!external_roots.contains_key("unused"), "{external_roots:?}");
+    }
+
+    #[test]
+    fn semantic_reachability_graph_expands_supertrait_edges() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub fn main() {
+                        need_child();
+                    }
+
+                    fn need_child() -> Box<dyn Child> {
+                        todo!()
+                    }
+
+                    trait Parent {
+                        fn parent(&self);
+                    }
+
+                    trait Child: Parent {
+                        fn child(&self);
+                    }
+                },
+                true,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let child_id = semantic_item_id("__main__", super::SemanticItemKind::Trait, "Child");
+        let parent_id = semantic_item_id("__main__", super::SemanticItemKind::Trait, "Parent");
+        let parent_method_id = semantic_item_id(
+            "__main__",
+            super::SemanticItemKind::TraitItem,
+            "Parent::parent",
+        );
+
+        let child_node = graph.nodes.get(&child_id).expect("expected child node");
+        assert!(child_node.local_refs.contains(&parent_id), "{child_node:?}");
+        assert!(
+            child_node.local_refs.contains(&parent_method_id),
+            "{child_node:?}"
+        );
+
+        let reachable = graph.reachable_item_ids();
+        assert!(reachable.contains(&child_id), "{reachable:?}");
+        assert!(reachable.contains(&parent_id), "{reachable:?}");
+        assert!(reachable.contains(&parent_method_id), "{reachable:?}");
     }
 
     #[test]
