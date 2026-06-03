@@ -10,7 +10,7 @@ mod tuple_newtypes;
 pub fn pass(file: &mut syn::File) {
     let tuple_newtypes = tuple_newtypes::collect(file);
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
-    let pointer_cell_statics = collect_pointer_cell_statics(file);
+    let pointer_cell_statics = pointer_cells::collect_statics(file);
     let structural_helper_metadata = structural_helpers::Metadata::collect(file);
     CoerceTypes {
         mutable_ref_call_args,
@@ -34,7 +34,7 @@ pub fn pass_after_structural_helpers(file: &mut syn::File) {
 struct CoerceTypes {
     call_arg_scopes: Vec<call_args::FnArgScope>,
     mutable_ref_call_args: call_args::MutableRefCallArgs,
-    pointer_cell_statics: std::collections::HashSet<String>,
+    pointer_cell_statics: pointer_cells::StaticNames,
     structural_helper_metadata: structural_helpers::Metadata,
     tuple_newtypes: tuple_newtypes::Names,
     impl_self_types: Vec<String>,
@@ -203,48 +203,6 @@ impl VisitMut for CoerceTypes {
             }
         }
     }
-}
-
-fn collect_pointer_cell_statics(file: &syn::File) -> std::collections::HashSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Static(item_static) = item else {
-                return None;
-            };
-            lazylock_contains_arc_mutex(&item_static.ty).then(|| item_static.ident.to_string())
-        })
-        .collect()
-}
-
-fn lazylock_contains_arc_mutex(ty: &syn::Type) -> bool {
-    let Some(inner) = first_type_arg_if_path_last_ident(ty, "LazyLock") else {
-        return false;
-    };
-    let Some(mutex) = first_type_arg_if_path_last_ident(inner, "Arc") else {
-        return false;
-    };
-    first_type_arg_if_path_last_ident(mutex, "Mutex").is_some()
-}
-
-fn first_type_arg_if_path_last_ident<'a>(ty: &'a syn::Type, ident: &str) -> Option<&'a syn::Type> {
-    let syn::Type::Path(path) = ty else {
-        return None;
-    };
-    let segment = path.path.segments.last()?;
-    if segment.ident != ident {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| {
-        if let syn::GenericArgument::Type(ty) = arg {
-            Some(ty)
-        } else {
-            None
-        }
-    })
 }
 
 fn type_path_ident_name(ty: &syn::Type) -> Option<String> {

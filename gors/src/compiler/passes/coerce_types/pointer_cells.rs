@@ -1,8 +1,10 @@
 use syn::visit_mut::{self, VisitMut};
 
+pub(super) type StaticNames = std::collections::HashSet<String>;
+
 pub(super) fn pass_after_package_merge(file: &mut syn::File) {
     let mutable_ref_call_args = super::call_args::collect_mutable_ref_call_args(file);
-    let pointer_cell_statics = super::collect_pointer_cell_statics(file);
+    let pointer_cell_statics = collect_statics(file);
     if mutable_ref_call_args.is_empty() {
         return;
     }
@@ -17,7 +19,7 @@ pub(super) fn pass_after_package_merge(file: &mut syn::File) {
 
 struct CoercePointerCellArgs {
     mutable_ref_call_args: super::call_args::MutableRefCallArgs,
-    pointer_cell_statics: std::collections::HashSet<String>,
+    pointer_cell_statics: StaticNames,
     pointer_cell_names: Vec<std::collections::HashSet<String>>,
     pointer_cell_iter_names: Vec<std::collections::HashSet<String>>,
 }
@@ -98,17 +100,17 @@ fn pointer_cell_arg_scope(sig: &syn::Signature) -> PointerCellArgScope {
 }
 
 fn type_is_pointer_cell(ty: &syn::Type) -> bool {
-    let Some(inner) = super::first_type_arg_if_path_last_ident(ty, "Arc") else {
+    let Some(inner) = first_type_arg_if_path_last_ident(ty, "Arc") else {
         return false;
     };
-    super::first_type_arg_if_path_last_ident(inner, "Mutex").is_some()
+    first_type_arg_if_path_last_ident(inner, "Mutex").is_some()
 }
 
 fn type_is_pointer_cell_iterable(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Reference(reference) => type_is_pointer_cell_iterable(&reference.elem),
         syn::Type::Slice(slice) => type_is_pointer_cell(&slice.elem),
-        _ => super::first_type_arg_if_path_last_ident(ty, "Vec").is_some_and(type_is_pointer_cell),
+        _ => first_type_arg_if_path_last_ident(ty, "Vec").is_some_and(type_is_pointer_cell),
     }
 }
 
@@ -177,10 +179,7 @@ fn coerce_pointer_cell_call_args(
     }
 }
 
-pub(super) fn borrow_static_expr(
-    expr: &mut syn::Expr,
-    pointer_cell_statics: &std::collections::HashSet<String>,
-) -> bool {
+pub(super) fn borrow_static_expr(expr: &mut syn::Expr, pointer_cell_statics: &StaticNames) -> bool {
     let Some(name) = deref_clone_path_name(expr) else {
         return false;
     };
@@ -194,7 +193,7 @@ pub(super) fn borrow_static_expr(
 
 fn borrow_pointer_cell_expr(
     expr: &mut syn::Expr,
-    pointer_cell_statics: &std::collections::HashSet<String>,
+    pointer_cell_statics: &StaticNames,
     pointer_cell_name_scopes: &[std::collections::HashSet<String>],
 ) -> bool {
     if borrow_static_expr(expr, pointer_cell_statics) {
@@ -271,4 +270,46 @@ fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
             _ => return expr,
         }
     }
+}
+
+pub(super) fn collect_statics(file: &syn::File) -> StaticNames {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Static(item_static) = item else {
+                return None;
+            };
+            lazylock_contains_arc_mutex(&item_static.ty).then(|| item_static.ident.to_string())
+        })
+        .collect()
+}
+
+fn lazylock_contains_arc_mutex(ty: &syn::Type) -> bool {
+    let Some(inner) = first_type_arg_if_path_last_ident(ty, "LazyLock") else {
+        return false;
+    };
+    let Some(mutex) = first_type_arg_if_path_last_ident(inner, "Arc") else {
+        return false;
+    };
+    first_type_arg_if_path_last_ident(mutex, "Mutex").is_some()
+}
+
+fn first_type_arg_if_path_last_ident<'a>(ty: &'a syn::Type, ident: &str) -> Option<&'a syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != ident {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| {
+        if let syn::GenericArgument::Type(ty) = arg {
+            Some(ty)
+        } else {
+            None
+        }
+    })
 }
