@@ -1278,8 +1278,11 @@ needs fuller interface method-set modeling.
 ## Compiler passes (in order)
 
 Main package (`pass()`):
-1. `simplify_return` — remove trailing `return` (Rust style only)
-2. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+1. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+
+Final explicit `return expr` cleanup belongs to function/method block
+finalization during Go-to-Rust lowering. Do not reintroduce a style-only
+whole-file postpass for this.
 
 Local variables, parameters, range bindings, and other value bindings that would
 shadow generated item names are disambiguated during Go-to-Rust lowering. Do not
@@ -1304,8 +1307,7 @@ generated fmt flush insertion through its `fmt_flush` submodule and self-value
 reflection fallback pruning through its `reflection_fallback` submodule after
 helpers such as `__gors_flush_fmt` have been injected.
 
-Imported packages (`pass_for_imported_package()`): simplify_return,
-coerce_types.
+Imported packages (`pass_for_imported_package()`): coerce_types.
 
 ## Stdlib system — embedded Go source
 

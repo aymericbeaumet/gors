@@ -12177,6 +12177,7 @@ fn compile_method(
     if !named_return_info.is_empty() {
         wrap_named_return_block(&mut block, &named_return_info, &named_return_idents);
     }
+    lower_final_return_to_tail_expr(&mut block);
 
     let mut output = if let Some(info) = mutable_slice_view_return {
         let elem = info.elem_ty;
@@ -21874,6 +21875,18 @@ fn block_ends_with_value(block: &syn::Block) -> bool {
     })
 }
 
+fn lower_final_return_to_tail_expr(block: &mut syn::Block) {
+    let Some(syn::Stmt::Expr(syn::Expr::Return(ret), _)) = block.stmts.last_mut() else {
+        return;
+    };
+    let Some(expr) = ret.expr.take() else {
+        return;
+    };
+    if let Some(last) = block.stmts.last_mut() {
+        *last = syn::Stmt::Expr(*expr, None);
+    }
+}
+
 fn append_missing_return_panic(
     block: &mut syn::Block,
     output: &syn::ReturnType,
@@ -22165,6 +22178,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         } else {
             append_missing_return_panic(&mut block, &output, body_completion);
         }
+        lower_final_return_to_tail_expr(&mut block);
 
         // Convert type parameters to Rust generics (Go 1.18+ generics)
         let generics = compile_go_type_params(func_decl.type_.type_params);
@@ -25981,6 +25995,45 @@ func main() {
         assert!(output.contains("let mut helper__local = 3;"), "{output}");
         assert!(output.contains("let _ = helper__local;"), "{output}");
         assert!(!output.contains("helper__local();"), "{output}");
+    }
+
+    #[test]
+    fn final_return_simplifies_during_function_lowering_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter int
+
+                func value() int {
+                    if true {
+                        return 1
+                    }
+                    return 2
+                }
+
+                func (c Counter) get() int {
+                    return int(c)
+                }
+
+                func named() (x int) {
+                    return 3
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("if true { return 1 } 2"), "{output}");
+        assert!(!output.contains("return 2"), "{output}");
+        assert!(!output.contains("return x"), "{output}");
+        assert!(
+            !output.contains("fn get (& self) -> isize { return"),
+            "{output}"
+        );
     }
 
     #[test]
