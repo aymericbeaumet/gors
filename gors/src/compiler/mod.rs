@@ -69,12 +69,11 @@ use syn_inspect::{
     direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
     fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr, is_box_dyn_any_type,
     is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
-    is_direct_self_field_expr, is_lock_guard_wrapper_method, is_path_call_expr,
-    is_receiver_type_wrapper_method, is_self_expr, is_self_or_ref_self_expr,
-    is_slice_range_index_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
-    pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
-    slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
-    vec_type_inner, zero_arg_method_call_receiver_expr,
+    is_lock_guard_wrapper_method, is_path_call_expr, is_receiver_type_wrapper_method,
+    is_self_or_ref_self_expr, is_slice_range_index_expr, item_macro_name, item_name,
+    macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
+    self_type_reachability_names, slice_type_inner, syn_expr_matches_target, type_mentions_name,
+    type_param_bound_matches, vec_type_inner, zero_arg_method_call_receiver_expr,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -5398,10 +5397,6 @@ fn compile_program_impl(
     }
     drop(stdlib_timer);
 
-    for module in modules.values_mut() {
-        cast_self_in_pointer_comparisons(&mut module.file);
-    }
-
     let dce_timer = ProfileTimer::start("compiler.dce");
     prune_generated_dead_code(&mut modules, has_main_fn);
     inject_post_prune_stdlib_helpers(&mut modules, &graph.stdlib_imports);
@@ -7282,29 +7277,6 @@ fn debug_assert_semantic_external_refs(
         token_refs, semantic_refs,
         "semantic reachability external refs mismatch for module {module} roots {roots:?}"
     );
-}
-
-fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
-    use syn::visit_mut::VisitMut;
-
-    struct Visitor;
-
-    impl VisitMut for Visitor {
-        fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
-            syn::visit_mut::visit_expr_binary_mut(self, binary);
-            if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
-                return;
-            }
-
-            if is_self_expr(&binary.left) && is_direct_self_field_expr(&binary.right) {
-                *binary.left = syn::parse_quote! { self as *mut Self };
-            } else if is_self_expr(&binary.right) && is_direct_self_field_expr(&binary.left) {
-                *binary.right = syn::parse_quote! { self as *mut Self };
-            }
-        }
-    }
-
-    Visitor.visit_file_mut(file);
 }
 
 fn prune_items_to_roots(
@@ -18394,6 +18366,80 @@ fn compile_runtime_interface_nil_check(other_expr: syn::Expr, is_eq: bool) -> sy
     }
 }
 
+fn current_pointer_receiver_type_name() -> Option<String> {
+    CURRENT_RECEIVER.with(|receiver| {
+        let receiver = receiver.borrow();
+        let receiver = receiver.as_ref()?;
+        match resolved_go_type(&receiver.go_type) {
+            typeinfer::GoType::Pointer(inner) => match *inner {
+                typeinfer::GoType::Named(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        }
+    })
+}
+
+fn expr_is_current_receiver_name(expr: &ast::Expr) -> bool {
+    let ast::Expr::Ident(ident) = expr else {
+        return false;
+    };
+    let ident_name = rust_safe_ident_name(ident.name);
+    CURRENT_RECEIVER.with(|receiver| {
+        receiver
+            .borrow()
+            .as_ref()
+            .is_some_and(|receiver| receiver.rust_name == ident_name)
+    })
+}
+
+fn expr_is_current_receiver_self_pointer_field(
+    expr: &ast::Expr,
+    receiver_type_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Ident> {
+    let ast::Expr::SelectorExpr(selector) = expr else {
+        return None;
+    };
+    if !expr_is_current_receiver_name(&selector.x) {
+        return None;
+    }
+    matches!(
+        env.resolve_alias(&typeinfer::GoType::infer_expr(expr, env)),
+        typeinfer::GoType::Pointer(inner)
+            if matches!(*inner, typeinfer::GoType::Named(ref name) if name == receiver_type_name)
+    )
+    .then(|| syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site()))
+}
+
+fn compile_current_receiver_raw_pointer_comparison(
+    binary_expr: &ast::BinaryExpr,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Expr> {
+    if !matches!(binary_expr.op, token::Token::EQL | token::Token::NEQ) {
+        return None;
+    }
+    let receiver_type_name = current_pointer_receiver_type_name()?;
+    let left_is_receiver = expr_is_current_receiver_name(&binary_expr.x);
+    let right_is_receiver = expr_is_current_receiver_name(&binary_expr.y);
+    let left_field =
+        expr_is_current_receiver_self_pointer_field(&binary_expr.x, &receiver_type_name, env);
+    let right_field =
+        expr_is_current_receiver_self_pointer_field(&binary_expr.y, &receiver_type_name, env);
+    let field = match (left_is_receiver, left_field, right_is_receiver, right_field) {
+        (true, None, _, Some(field)) => field,
+        (_, Some(field), true, None) => field,
+        _ => return None,
+    };
+    let field_expr: syn::Expr = syn::parse_quote! { self.#field };
+    let receiver_expr: syn::Expr = syn::parse_quote! { self as *mut Self };
+    if binary_expr.op == token::Token::EQL {
+        Some(syn::parse_quote! { #field_expr == #receiver_expr })
+    } else {
+        Some(syn::parse_quote! { #field_expr != #receiver_expr })
+    }
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if let Some(compare) = reflect_kind::detect_compare(&binary_expr, |name| {
@@ -18519,6 +18565,10 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
     let (left_cast, right_cast) =
         byte_index_const_comparison_casts(&binary_expr.x, &binary_expr.y, op, &env);
+
+    if let Some(expr) = compile_current_receiver_raw_pointer_comparison(&binary_expr, &env) {
+        return expr;
+    }
 
     if matches!(op, token::Token::EQL | token::Token::NEQ)
         && matches!(resolved_go_type(&left_ty), typeinfer::GoType::Pointer(_))
@@ -26158,6 +26208,37 @@ func main() {
         assert!(
             !output.contains("Box :: new"),
             "expected equality lowering not to depend on Box::new normalization: {output}"
+        );
+    }
+
+    #[test]
+    fn pointer_receiver_field_comparison_lowers_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type node struct {
+                    next *node
+                }
+
+                func (n *node) different() bool {
+                    return n.next != n
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("self . next != self as * mut Self"),
+            "expected source lowering to cast current pointer receiver directly: {output}"
+        );
+        assert!(
+            !output.contains("self . next != self }"),
+            "expected pointer receiver comparison not to need a generated-Rust cleanup: {output}"
         );
     }
 
