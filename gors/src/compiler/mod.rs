@@ -5339,55 +5339,6 @@ fn merged_top_level_field_types(
         .collect()
 }
 
-fn record_fn_arg_receiver_type(
-    arg: &syn::FnArg,
-    module_names: &std::collections::HashSet<String>,
-    scopes: &mut [BTreeMap<String, ReceiverTypeRef>],
-) {
-    let syn::FnArg::Typed(pat_type) = arg else {
-        return;
-    };
-    let Some(name) = rust_pat_ident_name(&pat_type.pat) else {
-        return;
-    };
-    let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names) else {
-        return;
-    };
-    record_local_receiver_type(name, receiver_type, scopes);
-}
-
-fn local_receiver_type_binding(
-    local: &syn::Local,
-    context: &ReceiverTypeContext<'_>,
-) -> Option<(String, ReceiverTypeRef)> {
-    let name = rust_pat_ident_name(&local.pat)?;
-    if let syn::Pat::Type(pat_type) = &local.pat
-        && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, context.module_names)
-    {
-        return Some((name, receiver_type));
-    }
-    let init = local.init.as_ref()?;
-    let receiver_type = method_receiver_type_from_expr(&init.expr, context).or_else(|| {
-        receiver_type_from_init_expr(
-            &init.expr,
-            context.module_names,
-            context.item_names,
-            context.top_level_return_types,
-        )
-    })?;
-    Some((name, receiver_type))
-}
-
-fn record_local_receiver_type(
-    name: String,
-    receiver_type: ReceiverTypeRef,
-    scopes: &mut [BTreeMap<String, ReceiverTypeRef>],
-) {
-    if let Some(scope) = scopes.last_mut() {
-        scope.insert(name, receiver_type);
-    }
-}
-
 fn method_receiver_type_from_expr(
     expr: &syn::Expr,
     context: &ReceiverTypeContext<'_>,
