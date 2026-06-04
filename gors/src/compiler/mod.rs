@@ -66,7 +66,8 @@ use syn_inspect::{
     direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
     fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr, is_box_dyn_any_type,
     is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
-    is_direct_self_field_expr, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    is_direct_self_field_expr, is_lock_guard_wrapper_method, is_path_call_expr,
+    is_receiver_type_wrapper_method, is_self_expr, is_self_or_ref_self_expr,
     is_slice_range_index_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
     pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
     slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
@@ -5818,9 +5819,7 @@ fn expr_can_be_mutably_borrowed(expr: &syn::Expr) -> bool {
         syn::Expr::Field(field) => expr_can_be_mutably_borrowed(&field.base),
         syn::Expr::Group(group) => expr_can_be_mutably_borrowed(&group.expr),
         syn::Expr::Index(index) => expr_can_be_mutably_borrowed(&index.expr),
-        syn::Expr::MethodCall(method)
-            if matches!(method.method.to_string().as_str(), "lock" | "unwrap") =>
-        {
+        syn::Expr::MethodCall(method) if is_lock_guard_wrapper_method(&method.method) => {
             expr_can_be_mutably_borrowed(&method.receiver)
         }
         syn::Expr::Paren(paren) => expr_can_be_mutably_borrowed(&paren.expr),
@@ -8359,10 +8358,7 @@ fn collect_refs_from_item(
                     self.top_level_element_types.get(&base_type.name).cloned()
                 }
                 syn::Expr::MethodCall(method)
-                    if matches!(
-                        method.method.to_string().as_str(),
-                        "clone" | "lock" | "unwrap"
-                    ) =>
+                    if is_receiver_type_wrapper_method(&method.method) =>
                 {
                     receiver_type_from_init_expr(
                         &method.receiver,
@@ -8608,12 +8604,7 @@ fn collect_refs_from_item(
                 external_path_symbol_from_expr(&try_expr.expr, module_names)
             }
             syn::Expr::Unary(unary) => external_path_symbol_from_expr(&unary.expr, module_names),
-            syn::Expr::MethodCall(method)
-                if matches!(
-                    method.method.to_string().as_str(),
-                    "clone" | "lock" | "unwrap"
-                ) =>
-            {
+            syn::Expr::MethodCall(method) if is_receiver_type_wrapper_method(&method.method) => {
                 external_path_symbol_from_expr(&method.receiver, module_names)
             }
             syn::Expr::Field(field) => {
@@ -8698,10 +8689,7 @@ fn collect_refs_from_item(
                 })
                 .or_else(|| self.receiver_type_from_expr(&call.func)),
                 syn::Expr::MethodCall(method)
-                    if matches!(
-                        method.method.to_string().as_str(),
-                        "clone" | "lock" | "unwrap"
-                    ) =>
+                    if is_receiver_type_wrapper_method(&method.method) =>
                 {
                     self.receiver_type_from_expr(&method.receiver)
                 }

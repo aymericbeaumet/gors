@@ -171,6 +171,18 @@ pub(super) fn is_zero_arg_method_call(expr: &syn::Expr, method_name: &str) -> bo
     zero_arg_method_call_receiver_expr(expr, method_name).is_some()
 }
 
+pub(super) fn ident_matches_any(ident: &syn::Ident, names: &[&str]) -> bool {
+    names.iter().any(|name| ident == *name)
+}
+
+pub(super) fn is_receiver_type_wrapper_method(method: &syn::Ident) -> bool {
+    ident_matches_any(method, &["clone", "lock", "unwrap"])
+}
+
+pub(super) fn is_lock_guard_wrapper_method(method: &syn::Ident) -> bool {
+    ident_matches_any(method, &["lock", "unwrap"])
+}
+
 pub(super) fn direct_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
     zero_arg_method_call_receiver_expr(expr, "clone").cloned()
 }
@@ -223,10 +235,7 @@ pub(super) fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
 }
 
 fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
-    matches!(
-        method.to_string().as_str(),
-        "as_mut" | "as_ref" | "clone" | "lock" | "unwrap"
-    )
+    ident_matches_any(method, &["as_mut", "as_ref"]) || is_receiver_type_wrapper_method(method)
 }
 
 pub(super) fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
@@ -1146,6 +1155,24 @@ mod tests {
         assert!(zero_arg_method_call_receiver_expr(&with_arg, "clone").is_none());
         assert!(!is_zero_arg_method_call(&other, "clone"));
         assert!(!is_zero_arg_method_call(&path, "clone"));
+    }
+
+    #[test]
+    fn method_identifier_helpers_capture_generated_receiver_wrappers() {
+        let clone = syn::Ident::new("clone", proc_macro2::Span::mixed_site());
+        let lock = syn::Ident::new("lock", proc_macro2::Span::mixed_site());
+        let unwrap = syn::Ident::new("unwrap", proc_macro2::Span::mixed_site());
+        let as_ref = syn::Ident::new("as_ref", proc_macro2::Span::mixed_site());
+        let type_ = syn::Ident::new("Type", proc_macro2::Span::mixed_site());
+
+        assert!(is_receiver_type_wrapper_method(&clone));
+        assert!(is_receiver_type_wrapper_method(&lock));
+        assert!(is_receiver_type_wrapper_method(&unwrap));
+        assert!(!is_receiver_type_wrapper_method(&as_ref));
+        assert!(!is_lock_guard_wrapper_method(&clone));
+        assert!(is_lock_guard_wrapper_method(&lock));
+        assert!(is_lock_guard_wrapper_method(&unwrap));
+        assert!(ident_matches_any(&type_, &["IsValid", "Type"]));
     }
 
     #[test]

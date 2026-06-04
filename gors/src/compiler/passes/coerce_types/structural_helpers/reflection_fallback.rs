@@ -1,5 +1,5 @@
 pub(super) type FieldSet = super::local_names::NameSet;
-use crate::compiler::reflect_semantics;
+use crate::compiler::{reflect_semantics, syn_inspect};
 
 type ReceiverFieldMap = std::collections::BTreeMap<String, FieldSet>;
 type ReceiverMethodMap = std::collections::BTreeMap<String, FieldSet>;
@@ -58,7 +58,7 @@ fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &Fi
 
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if matches!(call.method.to_string().as_str(), "IsValid" | "Type")
+            if syn_inspect::ident_matches_any(&call.method, &["IsValid", "Type"])
                 && super::self_fields::expr_mentions(&call.receiver, self.fields)
             {
                 self.found = true;
