@@ -32,6 +32,7 @@ mod reflect_kind;
 mod reflect_semantics;
 mod reflect_slice_any;
 mod runtime_primitives;
+mod struct_derives;
 mod syn_inspect;
 pub mod typeinfer;
 
@@ -11251,26 +11252,6 @@ fn interface_box_clone_impl(ident: &syn::Ident) -> syn::Item {
     }
 }
 
-fn manual_clone_expr_for_struct_field(
-    field_ident: &syn::Ident,
-    field_go_type: &typeinfer::GoType,
-) -> syn::Expr {
-    match resolved_go_type(field_go_type) {
-        typeinfer::GoType::Any => {
-            syn::parse_quote! { crate::builtin::clone_any(&self.#field_ident) }
-        }
-        typeinfer::GoType::Slice(inner) if matches!(*inner, typeinfer::GoType::Any) => {
-            syn::parse_quote! {
-                self.#field_ident
-                    .iter()
-                    .map(|__gors_any_item| crate::builtin::clone_any(__gors_any_item))
-                    .collect()
-            }
-        }
-        _ => syn::parse_quote! { self.#field_ident.clone() },
-    }
-}
-
 fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError> {
     let name = ts
         .name
@@ -11295,14 +11276,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut has_borrowed_interface_field = false;
             let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
             let mut clone_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
-            let mut needs_manual_default = false;
-            let mut needs_manual_clone = false;
-            let mut cannot_manual_clone = false;
-            let mut cannot_derive_clone = false;
-            let mut cannot_derive_partial_eq = false;
-            let mut cannot_default = false;
-            let mut can_derive_copy = true;
-            let mut needs_manual_send_sync = false;
+            let mut derive_state = struct_derives::State::new();
             let mut blank_field_index = 0usize;
             if let Some(field_list) = struct_type.fields {
                 for field in field_list.list {
@@ -11317,24 +11291,15 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     } else {
                         interface_trait_path.clone()
                     };
-                    let field_contains_func = contains_func_type(&field_type);
-                    let field_contains_any = contains_any_type(&field_type);
-                    let field_needs_manual_default = contains_array_type(&field_type)
-                        || field_contains_func
-                        || field_is_error
-                        || borrowed_interface_trait_path.is_some();
-                    let field_cannot_derive_clone = field_contains_any
-                        || (!field_is_error && contains_interface_type(&field_type))
-                        || (!field_is_error && interface_trait_path.is_some());
-                    let field_cannot_derive_partial_eq =
-                        field_is_error || !expr_supports_derived_partial_eq(&field_type, &ident);
-                    let field_cannot_default = borrowed_interface_trait_path.is_some();
-                    let field_can_derive_copy = !field_contains_func
-                        && interface_trait_path.is_none()
-                        && (self_referential_pointer_type(&field_type, &ident).is_some()
-                            || go_type_is_copy(&field_go_type));
+                    let field_derive_facts = struct_derives::FieldFacts::collect(
+                        &field_type,
+                        &ident,
+                        &field_go_type,
+                        field_is_error,
+                        interface_trait_path.is_some(),
+                        borrowed_interface_trait_path.is_some(),
+                    );
                     let field_default = default_expr_for_type(&field_type);
-                    can_derive_copy &= field_can_derive_copy;
 
                     if let Some(names) = field.names {
                         let rust_type: syn::Type =
@@ -11358,15 +11323,12 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             clone_fields.push((
                                 field_ident.clone(),
-                                manual_clone_expr_for_struct_field(&field_ident, &field_go_type),
+                                struct_derives::manual_clone_expr_for_field(
+                                    &field_ident,
+                                    &field_go_type,
+                                ),
                             ));
-                            needs_manual_default |= field_needs_manual_default;
-                            needs_manual_clone |= field_cannot_derive_clone && field_contains_any;
-                            cannot_manual_clone |= field_cannot_derive_clone && !field_contains_any;
-                            cannot_derive_clone |= field_cannot_derive_clone;
-                            cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
-                            cannot_default |= field_cannot_default;
-                            needs_manual_send_sync |= field_contains_any;
+                            derive_state.record_field(field_derive_facts);
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -11407,17 +11369,14 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                                 borrowed_interface_trait_path.clone(),
                             ));
                             default_fields.push((field_ident.clone(), field_default.clone()));
-                            needs_manual_default |= field_needs_manual_default;
                             clone_fields.push((
                                 field_ident.clone(),
-                                manual_clone_expr_for_struct_field(&field_ident, &field_go_type),
+                                struct_derives::manual_clone_expr_for_field(
+                                    &field_ident,
+                                    &field_go_type,
+                                ),
                             ));
-                            needs_manual_clone |= field_cannot_derive_clone && field_contains_any;
-                            cannot_manual_clone |= field_cannot_derive_clone && !field_contains_any;
-                            cannot_derive_clone |= field_cannot_derive_clone;
-                            cannot_derive_partial_eq |= field_cannot_derive_partial_eq;
-                            cannot_default |= field_cannot_default;
-                            needs_manual_send_sync |= field_contains_any;
+                            derive_state.record_field(field_derive_facts);
                             fields.push(syn::Field {
                                 attrs: vec![],
                                 vis: field_vis,
@@ -11452,26 +11411,28 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let generics_for_impl = generics.clone();
             let (impl_generics, ty_generics, where_clause) = generics_for_impl.split_for_impl();
-            let mut attrs = if cannot_derive_clone {
+            let mut attrs = if derive_state.cannot_derive_clone {
                 vec![]
-            } else if needs_manual_default {
-                if can_derive_copy {
+            } else if derive_state.needs_manual_default {
+                if derive_state.can_derive_copy {
                     vec![syn::parse_quote! { #[derive(Clone, Copy, PartialEq)] }]
-                } else if cannot_derive_partial_eq {
+                } else if derive_state.cannot_derive_partial_eq {
                     vec![syn::parse_quote! { #[derive(Clone)] }]
                 } else {
                     vec![syn::parse_quote! { #[derive(Clone, PartialEq)] }]
                 }
-            } else if can_derive_copy {
+            } else if derive_state.can_derive_copy {
                 vec![syn::parse_quote! { #[derive(Clone, Copy, Default, PartialEq)] }]
-            } else if cannot_derive_partial_eq {
+            } else if derive_state.cannot_derive_partial_eq {
                 vec![syn::parse_quote! { #[derive(Clone, Default)] }]
             } else {
                 vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
             };
             NON_CLONE_STRUCTS.with(|structs| {
                 let mut structs = structs.borrow_mut();
-                if cannot_derive_clone && (!needs_manual_clone || cannot_manual_clone) {
+                if derive_state.cannot_derive_clone
+                    && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone)
+                {
                     structs.insert(ident.to_string());
                 } else {
                     structs.remove(&ident.to_string());
@@ -11491,7 +11452,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 semi_token: None,
             });
 
-            let default_impl = if !cannot_default && (needs_manual_default || cannot_derive_clone) {
+            let default_impl = if !derive_state.cannot_default
+                && (derive_state.needs_manual_default || derive_state.cannot_derive_clone)
+            {
                 let defaults = default_fields.iter().map(|(field_ident, default_expr)| {
                     quote::quote! { #field_ident: #default_expr }
                 });
@@ -11507,21 +11470,22 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 None
             };
-            let manual_clone_impl = (needs_manual_clone && !cannot_manual_clone).then(|| {
-                let clones = clone_fields.iter().map(|(field_ident, clone_expr)| {
-                    quote::quote! { #field_ident: #clone_expr }
-                });
-                syn::parse_quote! {
-                    impl #impl_generics Clone for #ident #ty_generics #where_clause {
-                        fn clone(&self) -> Self {
-                            Self {
-                                #(#clones),*
+            let manual_clone_impl =
+                (derive_state.needs_manual_clone && !derive_state.cannot_manual_clone).then(|| {
+                    let clones = clone_fields.iter().map(|(field_ident, clone_expr)| {
+                        quote::quote! { #field_ident: #clone_expr }
+                    });
+                    syn::parse_quote! {
+                        impl #impl_generics Clone for #ident #ty_generics #where_clause {
+                            fn clone(&self) -> Self {
+                                Self {
+                                    #(#clones),*
+                                }
                             }
                         }
                     }
-                }
-            });
-            let send_sync_impls = if needs_manual_send_sync {
+                });
+            let send_sync_impls = if derive_state.needs_manual_send_sync {
                 vec![
                     syn::parse_quote! {
                         #[allow(unsafe_code)]
