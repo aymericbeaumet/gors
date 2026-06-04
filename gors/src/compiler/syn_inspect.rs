@@ -231,6 +231,29 @@ pub(super) fn expr_contains_method_call(expr: &syn::Expr, method: &str) -> bool 
     finder.found
 }
 
+pub(super) fn is_box_new_call(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Call(call) if is_path_call_expr(&call.func, &["Box", "new"]))
+}
+
+pub(super) fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
+    single_call_arg_for_path(expr, &["Box", "new"]).cloned()
+}
+
+pub(super) fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    let mutex_call = single_call_arg_for_path(expr, &["std", "sync", "Arc", "new"])?;
+    single_call_arg_for_path(mutex_call, &["std", "sync", "Mutex", "new"]).cloned()
+}
+
+fn single_call_arg_for_path<'a>(expr: &'a syn::Expr, segments: &[&str]) -> Option<&'a syn::Expr> {
+    let syn::Expr::Call(call) = expr else {
+        return None;
+    };
+    if !is_path_call_expr(&call.func, segments) || call.args.len() != 1 {
+        return None;
+    }
+    call.args.first()
+}
+
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
@@ -639,6 +662,32 @@ mod tests {
         assert!(!expr_contains_path_ident(&expr, "crate"));
         assert!(expr_contains_method_call(&expr, "wrap"));
         assert!(!expr_contains_method_call(&expr, "missing"));
+    }
+
+    #[test]
+    fn call_shape_helpers_read_box_and_arc_mutex_wrappers() {
+        let boxed: syn::Expr = parse_quote! { Box::new(value) };
+        let qualified_boxed: syn::Expr = parse_quote! { crate::Box::new(value) };
+        let arc_mutex: syn::Expr =
+            parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(value)) };
+        let arc_other: syn::Expr = parse_quote! { std::sync::Arc::new(value) };
+
+        assert!(is_box_new_call(&boxed));
+        assert_eq!(
+            box_new_call_arg(&boxed)
+                .map(|expr| expr.to_token_stream().to_string())
+                .as_deref(),
+            Some("value")
+        );
+        assert!(!is_box_new_call(&qualified_boxed));
+        assert!(box_new_call_arg(&qualified_boxed).is_none());
+        assert_eq!(
+            arc_mutex_new_inner_expr(&arc_mutex)
+                .map(|expr| expr.to_token_stream().to_string())
+                .as_deref(),
+            Some("value")
+        );
+        assert!(arc_mutex_new_inner_expr(&arc_other).is_none());
     }
 
     #[test]

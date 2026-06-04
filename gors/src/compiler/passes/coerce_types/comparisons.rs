@@ -1,3 +1,5 @@
+use super::super::super::syn_inspect::{arc_mutex_new_inner_expr, box_new_call_arg};
+
 pub(super) fn coerce_binary_expr(binary: &mut syn::ExprBinary) {
     if is_rune_self_path(&binary.right) && matches!(&*binary.left, syn::Expr::Index(_)) {
         let left = (*binary.left).clone();
@@ -17,42 +19,12 @@ pub(super) fn coerce_binary_expr(binary: &mut syn::ExprBinary) {
         *binary.left = inner;
         *binary.right = syn::parse_quote! { *#right };
     } else if let (Some(left), Some(right)) = (
-        arc_mutex_new_call_arg(&binary.left),
-        arc_mutex_new_call_arg(&binary.right),
+        arc_mutex_new_inner_expr(&binary.left),
+        arc_mutex_new_inner_expr(&binary.right),
     ) {
         *binary.left = left;
         *binary.right = right;
     }
-}
-
-fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Call(call) = expr else {
-        return None;
-    };
-    if !super::syntax::is_path_call(&call.func, &["Box", "new"]) || call.args.len() != 1 {
-        return None;
-    }
-    call.args.first().cloned()
-}
-
-fn arc_mutex_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Call(call) = expr else {
-        return None;
-    };
-    if !super::syntax::is_path_call(&call.func, &["std", "sync", "Arc", "new"])
-        || call.args.len() != 1
-    {
-        return None;
-    }
-    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
-        return None;
-    };
-    if !super::syntax::is_path_call(&mutex_call.func, &["std", "sync", "Mutex", "new"])
-        || mutex_call.args.len() != 1
-    {
-        return None;
-    }
-    mutex_call.args.first().cloned()
 }
 
 fn is_rune_self_path(expr: &syn::Expr) -> bool {

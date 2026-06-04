@@ -61,10 +61,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    clone_call_receiver_expr, direct_clone_call_receiver_expr, expr_path_ident,
-    expr_path_ident_or_clone, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
-    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
-    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
+    arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr,
+    direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone, is_box_new_call,
+    is_path_call_expr, is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name,
+    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
+    slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -15627,40 +15628,6 @@ fn ast_expr_mentions_ident(expr: &ast::Expr, name: &str) -> bool {
     }
 }
 
-fn is_box_new_call(expr: &syn::Expr) -> bool {
-    let syn::Expr::Call(call) = expr else {
-        return false;
-    };
-    let syn::Expr::Path(path) = &*call.func else {
-        return false;
-    };
-    let segments: Vec<_> = path
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect();
-    matches!(segments.as_slice(), [box_name, new_name] if box_name == "Box" && new_name == "new")
-}
-
-fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::Call(call) = expr else {
-        return None;
-    };
-    if !is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"]) || call.args.len() != 1 {
-        return None;
-    }
-    let Some(syn::Expr::Call(mutex_call)) = call.args.first() else {
-        return None;
-    };
-    if !is_path_call_expr(&mutex_call.func, &["std", "sync", "Mutex", "new"])
-        || mutex_call.args.len() != 1
-    {
-        return None;
-    }
-    mutex_call.args.first().cloned()
-}
-
 fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     let ast::Expr::UnaryExpr(unary) = expr else {
         return None;
@@ -21672,22 +21639,11 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
     if is_box_leak_expr(expr) {
         return;
     }
-    if let syn::Expr::Call(call) = expr
-        && is_path_call_expr(&call.func, &["Box", "new"])
-        && call.args.len() == 1
-        && let Some(inner) = call.args.first()
-    {
+    if let Some(inner) = box_new_call_arg(expr) {
         *expr = syn::parse_quote! { &mut #inner };
         return;
     }
-    if let syn::Expr::Call(call) = expr
-        && is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"])
-        && call.args.len() == 1
-        && let Some(syn::Expr::Call(mutex_call)) = call.args.first()
-        && is_path_call_expr(&mutex_call.func, &["std", "sync", "Mutex", "new"])
-        && mutex_call.args.len() == 1
-        && let Some(inner) = mutex_call.args.first()
-    {
+    if let Some(inner) = arc_mutex_new_inner_expr(expr) {
         *expr = syn::parse_quote! { &mut #inner };
         return;
     }
