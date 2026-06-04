@@ -92,6 +92,12 @@ mod tests {
             syn::parse_quote! {
                 pub struct Pool;
                 pub struct Mutex;
+                impl Pool {
+                    pub fn old(&self) {}
+                }
+                impl Mutex {
+                    pub fn Lock(&self) {}
+                }
             },
         );
 
@@ -100,7 +106,10 @@ mod tests {
 
         assert!(source.contains("pub struct Pool"), "{source}");
         assert!(source.contains("pub fn Get"), "{source}");
-        assert!(!source.contains("pub struct Mutex"), "{source}");
+        assert!(!source.contains("pub fn old"), "{source}");
+        assert!(source.contains("#[allow(dead_code)]"), "{source}");
+        assert!(source.contains("pub struct Mutex"), "{source}");
+        assert!(source.contains("pub fn Lock"), "{source}");
     }
 
     #[test]
