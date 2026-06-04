@@ -211,17 +211,41 @@ fn method_calls_flush_source_field(func: &syn::ImplItemFn, source_fields: &NameS
 }
 
 fn stmt_needs_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {
-    matches!(stmt, syn::Stmt::Expr(expr, _) if expr_needs_flush(expr, methods))
+    let mut finder = FlushCallFinder {
+        methods,
+        found: false,
+    };
+    syn::visit::Visit::visit_stmt(&mut finder, stmt);
+    finder.found
 }
 
-fn expr_needs_flush(expr: &syn::Expr, methods: &NameSet) -> bool {
-    let syn::Expr::MethodCall(call) = expr else {
-        return false;
-    };
-    if !methods.contains(&call.method.to_string()) {
-        return false;
+struct FlushCallFinder<'a> {
+    methods: &'a NameSet,
+    found: bool,
+}
+
+impl syn::visit::Visit<'_> for FlushCallFinder<'_> {
+    fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+        if self.methods.contains(&call.method.to_string())
+            && super::super::syntax::is_self_expr(&call.receiver)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_method_call(self, call);
     }
-    super::super::syntax::is_self_expr(&call.receiver)
+
+    fn visit_block(&mut self, _block: &syn::Block) {}
+
+    fn visit_expr_closure(&mut self, _closure: &syn::ExprClosure) {}
+
+    fn visit_expr_if(&mut self, _expr_if: &syn::ExprIf) {}
+
+    fn visit_expr_loop(&mut self, _expr_loop: &syn::ExprLoop) {}
+
+    fn visit_expr_match(&mut self, _expr_match: &syn::ExprMatch) {}
+
+    fn visit_expr_while(&mut self, _expr_while: &syn::ExprWhile) {}
 }
 
 #[cfg(test)]
@@ -297,6 +321,68 @@ mod tests {
 
         assert!(metadata.should_flush_after_stmt(&receiver, &emit_stmt));
         assert!(metadata.should_flush_after_stmt(&receiver, &run_stmt));
+    }
+
+    #[test]
+    fn metadata_flushes_immediate_local_initializer_calls() {
+        let metadata = flushable_printer_metadata(syn::parse_quote! {
+            fn emit(&mut self, value: isize) -> isize {
+                self.inner.write(value)
+            }
+        });
+        let receiver = ["Printer".to_string()];
+        let stmt: syn::Stmt = syn::parse_quote! {
+            let written = self.emit(1);
+        };
+
+        assert!(metadata.should_flush_after_stmt(&receiver, &stmt));
+    }
+
+    #[test]
+    fn metadata_leaves_nested_block_calls_to_nested_block_rewrite() {
+        let metadata = flushable_printer_metadata(syn::parse_quote! {
+            fn emit(&mut self, value: isize) {
+                self.inner.write(value);
+            }
+        });
+        let receiver = ["Printer".to_string()];
+        let stmt: syn::Stmt = syn::parse_quote! {
+            {
+                self.emit(1);
+            }
+        };
+
+        assert!(!metadata.should_flush_after_stmt(&receiver, &stmt));
+    }
+
+    fn flushable_printer_metadata(emit_method: syn::ImplItemFn) -> Metadata {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                inner: Inner,
+                buf: Buffer,
+            }
+
+            struct Inner {
+                buf: Buffer,
+            }
+
+            struct Buffer(Vec<u8>);
+
+            impl Inner {
+                fn write(&mut self, value: isize) -> isize { value }
+            }
+
+            impl Printer {
+                fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
+
+                #emit_method
+            }
+        };
+
+        Metadata::collect(&file)
     }
 
     #[test]
