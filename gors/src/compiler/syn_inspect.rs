@@ -27,6 +27,46 @@ pub(super) fn pat_ident_names(pat: &syn::Pat) -> Vec<String> {
     }
 }
 
+pub(super) fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    first_type_arg_if_path_last_ident(ty, "Vec").cloned()
+}
+
+pub(super) fn slice_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Slice(slice) = ty else {
+        return None;
+    };
+    Some((*slice.elem).clone())
+}
+
+pub(super) fn first_type_arg_if_path_last_ident<'a>(
+    ty: &'a syn::Type,
+    ident: &str,
+) -> Option<&'a syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != ident {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| {
+        if let syn::GenericArgument::Type(ty) = arg {
+            Some(ty)
+        } else {
+            None
+        }
+    })
+}
+
 pub(super) fn named_self_type(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(path) => named_self_type_from_path(&path.path),
@@ -216,6 +256,7 @@ pub(super) fn trait_method_fns(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quote::ToTokens;
     use syn::parse_quote;
 
     #[test]
@@ -234,5 +275,32 @@ mod tests {
     fn pat_ident_names_reads_nested_bindings() {
         let pat: syn::Pat = parse_quote! { (first, &second, Some(third)) };
         assert_eq!(pat_ident_names(&pat), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn type_shape_helpers_read_vec_slice_and_nested_type_args() {
+        let vec_ty: syn::Type = parse_quote! { Vec<u8> };
+        assert_eq!(
+            vec_type_inner(&vec_ty)
+                .map(|ty| ty.to_token_stream().to_string())
+                .as_deref(),
+            Some("u8")
+        );
+
+        let slice_ty: syn::Type = parse_quote! { [String] };
+        assert_eq!(
+            slice_type_inner(&slice_ty)
+                .map(|ty| ty.to_token_stream().to_string())
+                .as_deref(),
+            Some("String")
+        );
+
+        let lazy_ty: syn::Type = parse_quote! { std::sync::LazyLock<Arc<Mutex<i32>>> };
+        assert_eq!(
+            first_type_arg_if_path_last_ident(&lazy_ty, "LazyLock")
+                .map(|ty| ty.to_token_stream().to_string())
+                .as_deref(),
+            Some("Arc < Mutex < i32 > >")
+        );
     }
 }

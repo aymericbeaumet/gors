@@ -1,6 +1,8 @@
 use syn::visit_mut::{self, VisitMut};
 
-use super::super::super::syn_inspect::{pat_ident_name, pat_ident_names};
+use super::super::super::syn_inspect::{
+    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names,
+};
 
 pub(super) type StaticNames = std::collections::HashSet<String>;
 
@@ -285,24 +287,4 @@ fn lazylock_contains_arc_mutex(ty: &syn::Type) -> bool {
         return false;
     };
     first_type_arg_if_path_last_ident(mutex, "Mutex").is_some()
-}
-
-fn first_type_arg_if_path_last_ident<'a>(ty: &'a syn::Type, ident: &str) -> Option<&'a syn::Type> {
-    let syn::Type::Path(path) = ty else {
-        return None;
-    };
-    let segment = path.path.segments.last()?;
-    if segment.ident != ident {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| {
-        if let syn::GenericArgument::Type(ty) = arg {
-            Some(ty)
-        } else {
-            None
-        }
-    })
 }

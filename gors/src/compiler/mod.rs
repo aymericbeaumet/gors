@@ -62,7 +62,7 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
-    self_type_reachability_names, type_mentions_name,
+    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -5674,33 +5674,6 @@ fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     };
     syn::visit::Visit::visit_block(&mut finder, block);
     finder.found
-}
-
-fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
-    let syn::Type::Path(path) = ty else {
-        return None;
-    };
-    if path.qself.is_some() || path.path.segments.len() != 1 {
-        return None;
-    }
-    let segment = path.path.segments.first()?;
-    if segment.ident != "Vec" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    let syn::GenericArgument::Type(inner) = args.args.first()? else {
-        return None;
-    };
-    Some(inner.clone())
-}
-
-fn slice_type_inner(ty: &syn::Type) -> Option<syn::Type> {
-    let syn::Type::Slice(slice) = ty else {
-        return None;
-    };
-    Some((*slice.elem).clone())
 }
 
 fn rewrite_vec_params_as_mut_refs(
