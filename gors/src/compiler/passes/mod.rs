@@ -1,6 +1,5 @@
 mod avoid_item_shadowing;
 mod coerce_types;
-mod flatten_block;
 mod hoist_use;
 mod inject_channel;
 mod simplify_return;
@@ -9,14 +8,12 @@ pub fn pass(file: &mut syn::File) {
     inject_channel::pass(file);
     hoist_use::pass(file);
     simplify_return::pass(file);
-    flatten_block::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }
 
 pub fn pass_for_imported_package(file: &mut syn::File) {
     simplify_return::pass(file);
-    flatten_block::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }
@@ -74,20 +71,6 @@ mod tests {
         test(
             rust! { fn a() { ::std::println!("hello"); ::std::println!("world"); } },
             rust! { use ::std::println; fn a() { println!("hello"); println!("world"); } },
-        );
-    }
-
-    #[test]
-    fn it_should_flatten_blocks_composed_of_one_expr() {
-        test(rust! { fn a() { { { a } } } }, rust! { fn a() { a } });
-        test(
-            rust! { fn a() { { loop { { loop {} } } } } },
-            rust! { fn a() { loop { loop {} } } },
-        );
-        test(rust! { fn a() { { { a; } } } }, rust! { fn a() { { a; } } });
-        test(
-            rust! { fn a() { { { return a; } } } },
-            rust! { fn a() { { return a; } } },
         );
     }
 }
