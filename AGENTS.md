@@ -1276,11 +1276,14 @@ needs fuller interface method-set modeling.
 ## Compiler passes (in order)
 
 Main package (`pass()`):
-1. `inject_channel` — channel send/receive
-2. `hoist_use` — extract multi-segment paths to `use` declarations
-3. `simplify_return` — remove trailing `return` (Rust style only)
-4. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-5. `avoid_item_shadowing` — rename generated locals that shadow item names
+1. `hoist_use` — extract multi-segment paths to `use` declarations
+2. `simplify_return` — remove trailing `return` (Rust style only)
+3. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+4. `avoid_item_shadowing` — rename generated locals that shadow item names
+
+Channel lowering uses the shared `crate::builtin::Chan` runtime copied from
+`gors-builtin/src/lib.rs`; do not inject a generated `gors_channel` module from
+postpasses.
 
 Array, slice, and string index expressions cast index components to `usize`
 at Go index/slice lowering sites; do not reintroduce a global generated-Rust

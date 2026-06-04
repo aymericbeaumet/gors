@@ -1,11 +1,9 @@
 mod avoid_item_shadowing;
 mod coerce_types;
 mod hoist_use;
-mod inject_channel;
 mod simplify_return;
 
 pub fn pass(file: &mut syn::File) {
-    inject_channel::pass(file);
     hoist_use::pass(file);
     simplify_return::pass(file);
     coerce_types::pass(file);
