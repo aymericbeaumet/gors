@@ -404,6 +404,20 @@ pub(super) fn syn_type_matches(left: &syn::Type, right: &syn::Type) -> bool {
     }
 }
 
+pub(super) fn impl_trait_targets_match(left: &syn::Item, right: &syn::Item) -> bool {
+    let (syn::Item::Impl(left), syn::Item::Impl(right)) = (left, right) else {
+        return false;
+    };
+    let (Some((left_polarity, left_trait, _)), Some((right_polarity, right_trait, _))) =
+        (&left.trait_, &right.trait_)
+    else {
+        return false;
+    };
+    left_polarity.is_some() == right_polarity.is_some()
+        && syn_path_matches(left_trait, right_trait)
+        && syn_type_matches(&left.self_ty, &right.self_ty)
+}
+
 pub(super) fn type_param_bound_matches(
     left: &syn::TypeParamBound,
     right: &syn::TypeParamBound,
@@ -1049,6 +1063,22 @@ mod tests {
         assert!(!syn_expr_matches_target(&other_field, &field_target));
         assert!(syn_expr_matches_target(&pointer_read, &pointer_target));
         assert!(syn_expr_matches_target(&index_read, &index_target));
+    }
+
+    #[test]
+    fn impl_trait_targets_match_compares_trait_and_self_targets() {
+        let target: syn::Item = parse_quote! { impl Reader for Source {} };
+        let same_target: syn::Item = parse_quote! { impl Reader for Source { fn read(&self) {} } };
+        let other_trait: syn::Item = parse_quote! { impl Writer for Source {} };
+        let other_self: syn::Item = parse_quote! { impl Reader for Sink {} };
+        let inherent_impl: syn::Item = parse_quote! { impl Source {} };
+        let negative_impl: syn::Item = parse_quote! { impl !Reader for Source {} };
+
+        assert!(impl_trait_targets_match(&target, &same_target));
+        assert!(!impl_trait_targets_match(&target, &other_trait));
+        assert!(!impl_trait_targets_match(&target, &other_self));
+        assert!(!impl_trait_targets_match(&target, &inherent_impl));
+        assert!(!impl_trait_targets_match(&target, &negative_impl));
     }
 
     #[test]

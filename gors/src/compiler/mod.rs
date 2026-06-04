@@ -63,10 +63,10 @@ use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr,
     direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
-    is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr, is_box_type_with_any_bound,
-    is_path_call_expr, is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
-    slice_type_inner, syn_expr_matches_target, syn_path_matches, syn_type_matches,
+    impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
+    is_box_type_with_any_bound, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
+    self_type_reachability_names, slice_type_inner, syn_expr_matches_target, syn_type_matches,
     type_mentions_name, type_param_bound_matches, vec_type_inner,
 };
 
@@ -7837,20 +7837,6 @@ pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
     .collect::<Vec<_>>();
     file.items.extend(additions);
     interface_hooks::add_missing_clone_hooks(&mut file.items);
-}
-
-fn impl_trait_targets_match(left: &syn::Item, right: &syn::Item) -> bool {
-    let (syn::Item::Impl(left), syn::Item::Impl(right)) = (left, right) else {
-        return false;
-    };
-    let (Some((left_polarity, left_trait, _)), Some((right_polarity, right_trait, _))) =
-        (&left.trait_, &right.trait_)
-    else {
-        return false;
-    };
-    left_polarity.is_some() == right_polarity.is_some()
-        && syn_path_matches(left_trait, right_trait)
-        && syn_type_matches(&left.self_ty, &right.self_ty)
 }
 
 fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
