@@ -617,6 +617,30 @@ mod tests {
     }
 
     #[test]
+    fn it_keeps_shadowed_names_after_reflect_field_local_drop() {
+        let mut stmts: Vec<syn::Stmt> = vec![
+            syn::parse_quote! {
+                let mut fallback = self.value;
+            },
+            syn::parse_quote! {
+                {
+                    let fallback = 1;
+                    keep(fallback);
+                }
+            },
+        ];
+        let fields = std::collections::HashSet::from(["value".to_string()]);
+
+        structural_helpers::prune_reflection_fallback(&mut stmts, Some(&fields));
+
+        let tokens = quote::quote!(#(#stmts)*).to_string();
+        assert!(
+            !tokens.contains("self . value") && tokens.contains("keep (fallback)"),
+            "expected shadowed fallback name to remain after reflect fallback drop: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_prunes_self_value_reflection_fallback_without_print_call() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Printer {

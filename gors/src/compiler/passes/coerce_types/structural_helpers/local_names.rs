@@ -66,34 +66,130 @@ pub(super) fn expr_mentions_any_name(expr: &syn::Expr, names: &NameSet) -> bool 
         return false;
     }
 
-    struct Visitor<'a> {
-        names: &'a NameSet,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Visitor<'_> {
-        fn visit_expr_path(&mut self, expr_path: &syn::ExprPath) {
-            if expr_path.path.leading_colon.is_none()
-                && expr_path.path.segments.len() == 1
-                && expr_path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|seg| self.names.contains(&seg.ident.to_string()))
-            {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_path(self, expr_path);
-        }
-    }
-
-    let mut visitor = Visitor {
+    let mut visitor = NameUseVisitor {
         names,
+        shadowed: std::collections::BTreeMap::new(),
         found: false,
     };
     syn::visit::Visit::visit_expr(&mut visitor, expr);
     visitor.found
+}
+
+struct NameUseVisitor<'a> {
+    names: &'a NameSet,
+    shadowed: std::collections::BTreeMap<String, usize>,
+    found: bool,
+}
+
+impl NameUseVisitor<'_> {
+    fn is_visible_target(&self, ident: &syn::Ident) -> bool {
+        let name = ident.to_string();
+        self.names.contains(&name) && !self.shadowed.contains_key(&name)
+    }
+
+    fn push_shadowed(&mut self, names: &NameSet) -> Vec<String> {
+        names
+            .iter()
+            .filter(|name| self.names.contains(*name))
+            .map(|name| {
+                *self.shadowed.entry(name.clone()).or_default() += 1;
+                name.clone()
+            })
+            .collect()
+    }
+
+    fn pop_shadowed(&mut self, pushed: Vec<String>) {
+        for name in pushed {
+            let Some(count) = self.shadowed.get_mut(&name) else {
+                continue;
+            };
+            *count -= 1;
+            if *count == 0 {
+                self.shadowed.remove(&name);
+            }
+        }
+    }
+
+    fn visit_stmt_with_shadowed(&mut self, stmt: &syn::Stmt, shadowed: &NameSet) {
+        let pushed = self.push_shadowed(shadowed);
+        match stmt {
+            syn::Stmt::Expr(expr, _) => syn::visit::Visit::visit_expr(self, expr),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    syn::visit::Visit::visit_expr(self, &init.expr);
+                }
+            }
+            syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+        }
+        self.pop_shadowed(pushed);
+    }
+}
+
+impl syn::visit::Visit<'_> for NameUseVisitor<'_> {
+    fn visit_block(&mut self, block: &syn::Block) {
+        let mut shadowed = NameSet::new();
+        for stmt in &block.stmts {
+            self.visit_stmt_with_shadowed(stmt, &shadowed);
+            if self.found {
+                return;
+            }
+            for name in stmt_bound_names(stmt) {
+                if self.names.contains(&name) {
+                    shadowed.insert(name);
+                }
+            }
+        }
+    }
+
+    fn visit_arm(&mut self, arm: &syn::Arm) {
+        let mut shadowed = NameSet::new();
+        collect_pat_names(&arm.pat, &mut shadowed);
+        let pushed = self.push_shadowed(&shadowed);
+        if let Some((_, guard)) = &arm.guard {
+            syn::visit::Visit::visit_expr(self, guard);
+        }
+        if !self.found {
+            syn::visit::Visit::visit_expr(self, &arm.body);
+        }
+        self.pop_shadowed(pushed);
+    }
+
+    fn visit_expr_closure(&mut self, closure: &syn::ExprClosure) {
+        let mut shadowed = NameSet::new();
+        for input in &closure.inputs {
+            collect_pat_names(input, &mut shadowed);
+        }
+        let pushed = self.push_shadowed(&shadowed);
+        syn::visit::Visit::visit_expr(self, &closure.body);
+        self.pop_shadowed(pushed);
+    }
+
+    fn visit_expr_for_loop(&mut self, for_loop: &syn::ExprForLoop) {
+        syn::visit::Visit::visit_expr(self, &for_loop.expr);
+        if self.found {
+            return;
+        }
+        let mut shadowed = NameSet::new();
+        collect_pat_names(&for_loop.pat, &mut shadowed);
+        let pushed = self.push_shadowed(&shadowed);
+        syn::visit::Visit::visit_block(self, &for_loop.body);
+        self.pop_shadowed(pushed);
+    }
+
+    fn visit_expr_path(&mut self, expr_path: &syn::ExprPath) {
+        if expr_path.path.leading_colon.is_none()
+            && expr_path.path.segments.len() == 1
+            && expr_path
+                .path
+                .segments
+                .first()
+                .is_some_and(|seg| self.is_visible_target(&seg.ident))
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_path(self, expr_path);
+    }
 }
 
 #[cfg(test)]
@@ -127,5 +223,67 @@ mod tests {
         assert!(names.contains("left"), "{names:?}");
         assert!(names.contains("right"), "{names:?}");
         assert!(!names.contains("value"), "{names:?}");
+    }
+
+    #[test]
+    fn ignores_shadowed_names_inside_nested_blocks() {
+        let names = NameSet::from(["fallback".to_string()]);
+        let block: syn::Stmt = syn::parse_quote! {
+            {
+                let fallback = 1;
+                self.printValue(fallback);
+            }
+        };
+
+        assert!(
+            !stmt_mentions_any_name(&block, &names),
+            "expected shadowed fallback local not to count as outer use"
+        );
+    }
+
+    #[test]
+    fn detects_outer_names_before_nested_shadowing() {
+        let names = NameSet::from(["fallback".to_string()]);
+        let block: syn::Stmt = syn::parse_quote! {
+            {
+                self.printValue(fallback);
+                let fallback = 1;
+                self.printValue(fallback);
+            }
+        };
+
+        assert!(
+            stmt_mentions_any_name(&block, &names),
+            "expected use before shadowing to count as outer use"
+        );
+    }
+
+    #[test]
+    fn detects_outer_names_in_shadowing_initializers() {
+        let names = NameSet::from(["fallback".to_string()]);
+        let block: syn::Stmt = syn::parse_quote! {
+            {
+                let fallback = fallback;
+                self.printValue(fallback);
+            }
+        };
+
+        assert!(
+            stmt_mentions_any_name(&block, &names),
+            "expected initializer to see outer name before local binding shadows it"
+        );
+    }
+
+    #[test]
+    fn closure_parameters_shadow_outer_names() {
+        let names = NameSet::from(["fallback".to_string()]);
+        let closure: syn::Stmt = syn::parse_quote! {
+            let f = |fallback| fallback + 1;
+        };
+
+        assert!(
+            !stmt_mentions_any_name(&closure, &names),
+            "expected closure parameter to shadow outer name"
+        );
     }
 }
