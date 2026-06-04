@@ -51,6 +51,7 @@ mod reflect_slice_any;
 mod return_context;
 mod runtime_primitives;
 mod shared_captures;
+mod source_map_context;
 mod struct_derives;
 mod syn_inspect;
 mod synthetic_names;
@@ -59,7 +60,6 @@ pub mod typeinfer;
 mod zero_values;
 
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident, noop_interface_ident};
-use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use active_names::{
     ActiveItemNamesGuard, ActiveLocalNamesGuard, active_local_shadows_unqualified_name,
@@ -115,6 +115,7 @@ use shared_captures::{
     shared_capture_init_expr, shared_capture_lvalue_expr, shared_capture_read_expr,
     shared_capture_type,
 };
+use source_map_context::record_mapping;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -132,9 +133,7 @@ use syn_inspect::{
 };
 use type_param_context::{ByteSeqTypeParamsGuard, TypeParamKindsGuard, is_byte_seq_type_param};
 
-// Thread-local storage for source map tracker during compilation
 thread_local! {
-    static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
@@ -482,21 +481,6 @@ fn is_rust_keyword(name: &str) -> bool {
             | "optimize"
             | "yield"
     )
-}
-
-/// Record a mapping if tracking is enabled.
-fn record_mapping(pos: &token::Position, name: Option<&str>) {
-    let source = if pos.file.is_empty() {
-        None
-    } else if pos.file.starts_with('/') {
-        Some(pos.file.to_string())
-    } else {
-        Some(format!("{}/{}", pos.directory, pos.file))
-    };
-    TRACKER.with(|t| {
-        t.borrow_mut()
-            .record_for_source(source, pos.line as u32, pos.column as u32, name);
-    });
 }
 
 /// Convert a Go type constraint expression to Rust trait bounds.
@@ -3712,15 +3696,13 @@ impl CompileSession {
         let Some(sources) = self.source_map_config.take() else {
             return;
         };
-        TRACKER.with(|t| {
-            t.borrow_mut().start_many(
-                sources
-                    .into_iter()
-                    .map(|(file, source)| (file, Some(source)))
-                    .collect(),
-                "main.rs",
-            );
-        });
+        source_map_context::start_many(
+            sources
+                .into_iter()
+                .map(|(file, source)| (file, Some(source)))
+                .collect(),
+            "main.rs",
+        );
     }
 }
 
@@ -6583,10 +6565,7 @@ pub fn compile_with_source_map(
     go_file: &str,
     go_source: &str,
 ) -> Result<syn::File, CompilerError> {
-    // Start tracking
-    TRACKER.with(|t| {
-        t.borrow_mut().start(go_file, "output.rs", Some(go_source));
-    });
+    source_map_context::start(go_file, "output.rs", Some(go_source));
 
     synthetic_names::reset_lowering_counters();
     loop_control::reset_counter();
@@ -6610,17 +6589,12 @@ pub fn compile_with_source_map(
 /// Build the source map from the tracker given the generated Rust source.
 /// This should be called after code generation.
 pub fn build_source_map(rust_source: &str) -> sourcemap::SourceMap {
-    TRACKER.with(|t| {
-        let tracker = t.borrow();
-        tracker.build_source_map(rust_source)
-    })
+    source_map_context::build_source_map(rust_source)
 }
 
 /// Clear the source map tracker.
 pub fn clear_source_map_tracker() {
-    TRACKER.with(|t| {
-        t.borrow_mut().clear();
-    });
+    source_map_context::clear();
 }
 
 fn is_byte_slice_type(expr: &ast::Expr) -> bool {
