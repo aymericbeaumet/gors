@@ -25471,6 +25471,36 @@ var X int
     }
 
     #[test]
+    fn imported_interface_param_type_uses_type_env_not_trait_name() {
+        fn ident(name: &'static str) -> crate::ast::Ident<'static> {
+            crate::ast::Ident {
+                name_pos: crate::token::Position::default(),
+                name,
+                obj: None,
+            }
+        }
+
+        let _guard = super::LocalTypeEnvScopeGuard::push();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind(
+            "contract.StringWriter",
+            super::typeinfer::TypeKind::Interface,
+        );
+        super::set_type_env(env);
+
+        let expr = crate::ast::Expr::SelectorExpr(crate::ast::SelectorExpr {
+            x: Box::new(crate::ast::Expr::Ident(ident("contract"))),
+            sel: ident("StringWriter"),
+        });
+        let ty = super::func_param_type_from_ast_expr(&expr);
+
+        assert_eq!(
+            quote! { #ty }.to_string(),
+            "& mut dyn contract :: StringWriter"
+        );
+    }
+
+    #[test]
     fn it_should_support_binary_operators() {
         test(
             r#"

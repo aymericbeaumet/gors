@@ -4,7 +4,6 @@ mod flatten_block;
 mod hoist_use;
 mod index_cast;
 mod inject_channel;
-mod interface_param;
 mod map_type;
 mod nil_check;
 mod simplify_return;
@@ -23,7 +22,6 @@ pub fn pass(file: &mut syn::File) {
     simplify_return::pass(file);
     flatten_block::pass(file);
     index_cast::pass(file);
-    interface_param::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }

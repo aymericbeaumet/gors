@@ -1279,16 +1279,15 @@ Main package (`pass()`):
 1. `map_type` — Go types → Rust types (int→isize, string→String, etc.)
 2. `type_conversion` — type calls to casts (`int(x)` → `x as isize`)
 3. `inject_channel` — channel send/receive
-4. `inline_errors` — error value handling
-5. `nil_check` — nil comparisons → Default::default() / is_empty()
-6. `string_lit` — string literal `.to_string()` in assignments/returns/method args
-7. `trait_param` — generic trait parameter handling
-8. `hoist_use` — extract multi-segment paths to `use` declarations
-9. `simplify_return` — remove trailing `return` (Rust style)
-10. `flatten_block` — flatten single-expression nested blocks
-11. `index_cast` — array/slice index expressions cast to usize
-12. `interface_param` — (placeholder) interface type parameter handling
-13. `coerce_types` — len()/cap() → isize cast, float-to-int typed locals
+4. `nil_check` — nil comparisons → Default::default() / is_empty()
+5. `string_lit` — string literal `.to_string()` in assignments/returns/method args
+6. `trait_param` — local trait parameter handling
+7. `hoist_use` — extract multi-segment paths to `use` declarations
+8. `simplify_return` — remove trailing `return` (Rust style)
+9. `flatten_block` — flatten single-expression nested blocks
+10. `index_cast` — array/slice index expressions cast to usize
+11. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+12. `avoid_item_shadowing` — rename generated locals that shadow item names
 
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
@@ -1300,8 +1299,8 @@ generated fmt flush insertion through its `fmt_flush` submodule and self-value
 reflection fallback pruning through its `reflection_fallback` submodule after
 helpers such as `__gors_flush_fmt` have been injected.
 
-Imported packages (`pass_for_imported_package()`): only map_type, type_conversion,
-simplify_return, flatten_block.
+Imported packages (`pass_for_imported_package()`): map_type, type_conversion,
+simplify_return, flatten_block, index_cast, coerce_types, avoid_item_shadowing.
 
 ## Stdlib system — embedded Go source
 
