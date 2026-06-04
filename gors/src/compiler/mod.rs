@@ -33324,7 +33324,7 @@ func main() {
                             if __gors_index >= __gors_index_base.len() {
                                 crate::builtin::panic_value("index out of range");
                             }
-                            (__gors_index_base[(__gors_index) as usize]).clone()
+                            (__gors_index_base[__gors_index]).clone()
                         } {
                             return i
                         }
@@ -33493,8 +33493,8 @@ func main() {
                             let __gors_slice_alias_index =
                                 __gors_slice_base_index - __gors_slice_alias_offset;
                             if __gors_slice_alias_index < t.len() {
-                                t[(__gors_slice_alias_index) as usize] =
-                                    s[(__gors_slice_base_index) as usize].clone();
+                                t[__gors_slice_alias_index] =
+                                    s[__gors_slice_base_index].clone();
                             }
                         }
                     }
@@ -33569,6 +33569,39 @@ func main() {
         assert!(
             !output.contains("__gors_index_base = & b"),
             "expected computed index assignment not to use rvalue index lowering: {output}"
+        );
+    }
+
+    #[test]
+    fn slice_index_casts_in_go_lowering_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    s := []int{1, 2}
+                    i := 1
+                    _ = s[i]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("let__gors_index=(i)asusize;"),
+            "expected index expression lowering to cast the Go index once: {output}"
+        );
+        assert!(
+            compact.contains("__gors_index_base[__gors_index]"),
+            "expected indexing to use the typed usize temporary directly: {output}"
+        );
+        assert!(
+            !compact.contains("__gors_index_base[(__gors_index)asusize]"),
+            "expected no generated-Rust postpass recast around the index temporary: {output}"
         );
     }
 

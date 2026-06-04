@@ -2,7 +2,6 @@ mod avoid_item_shadowing;
 mod coerce_types;
 mod flatten_block;
 mod hoist_use;
-mod index_cast;
 mod inject_channel;
 mod simplify_return;
 
@@ -11,7 +10,6 @@ pub fn pass(file: &mut syn::File) {
     hoist_use::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
-    index_cast::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }
@@ -19,7 +17,6 @@ pub fn pass(file: &mut syn::File) {
 pub fn pass_for_imported_package(file: &mut syn::File) {
     simplify_return::pass(file);
     flatten_block::pass(file);
-    index_cast::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
 }

@@ -1280,9 +1280,12 @@ Main package (`pass()`):
 2. `hoist_use` — extract multi-segment paths to `use` declarations
 3. `simplify_return` — remove trailing `return` (Rust style)
 4. `flatten_block` — flatten single-expression nested blocks
-5. `index_cast` — array/slice index expressions cast to usize
-6. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-7. `avoid_item_shadowing` — rename generated locals that shadow item names
+5. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+6. `avoid_item_shadowing` — rename generated locals that shadow item names
+
+Array, slice, and string index expressions cast index components to `usize`
+at Go index/slice lowering sites; do not reintroduce a global generated-Rust
+index rewrite.
 
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
@@ -1295,7 +1298,7 @@ reflection fallback pruning through its `reflection_fallback` submodule after
 helpers such as `__gors_flush_fmt` have been injected.
 
 Imported packages (`pass_for_imported_package()`): simplify_return,
-flatten_block, index_cast, coerce_types, avoid_item_shadowing.
+flatten_block, coerce_types, avoid_item_shadowing.
 
 ## Stdlib system — embedded Go source
 
