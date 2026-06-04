@@ -124,6 +124,13 @@ pub(super) fn expr_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
             .is_some_and(|segment| segment.ident == *ident)
 }
 
+pub(super) fn is_slice_range_index_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::Index(index) if matches!(&*index.index, syn::Expr::Range(_))
+    )
+}
+
 pub(super) fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
     loop {
         match expr {
@@ -982,6 +989,8 @@ mod tests {
         let qualified_expr: syn::Expr = parse_quote! { crate::value };
         let other_expr: syn::Expr = parse_quote! { other };
         let value_ident = syn::Ident::new("value", proc_macro2::Span::call_site());
+        let slice_range: syn::Expr = parse_quote! { values[1..] };
+        let slice_index: syn::Expr = parse_quote! { values[1] };
         let vec_ty: syn::Type = parse_quote! { Vec<u8> };
 
         assert_eq!(expr_path_ident(&ident_expr).as_deref(), Some("value"));
@@ -993,6 +1002,8 @@ mod tests {
         assert!(!expr_is_ident(&qualified_expr, &value_ident));
         assert!(!expr_is_ident(&other_expr, &value_ident));
         assert!(!expr_is_ident(&field_expr, &value_ident));
+        assert!(is_slice_range_index_expr(&slice_range));
+        assert!(!is_slice_range_index_expr(&slice_index));
         assert!(!is_path_ident(&qualified_expr, "value"));
         assert_eq!(type_path_ident_name(&vec_ty).as_deref(), Some("Vec"));
     }

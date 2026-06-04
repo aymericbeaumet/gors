@@ -66,10 +66,10 @@ use syn_inspect::{
     expr_path_ident, expr_path_ident_or_clone, impl_trait_targets_match, is_box_dyn_any_expr,
     is_box_dyn_any_type, is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound,
     is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr, is_self_expr,
-    is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
-    pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
-    slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
-    vec_type_inner,
+    is_self_or_ref_self_expr, is_slice_range_index_expr, item_macro_name, item_name,
+    macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
+    self_type_reachability_names, slice_type_inner, syn_expr_matches_target, type_mentions_name,
+    type_param_bound_matches, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -6330,13 +6330,6 @@ fn take_value_arg(arg: &mut syn::Expr) {
     }
     let inner = arg.clone();
     *arg = syn::parse_quote! { std::mem::take(&mut #inner) };
-}
-
-fn is_slice_range_index_expr(expr: &syn::Expr) -> bool {
-    matches!(
-        expr,
-        syn::Expr::Index(index) if matches!(&*index.index, syn::Expr::Range(_))
-    )
 }
 
 fn clone_value_arg(arg: &mut syn::Expr) {
