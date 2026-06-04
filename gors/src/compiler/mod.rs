@@ -43,6 +43,7 @@ mod package_context;
 pub(crate) mod passes;
 mod phantom_type_params;
 mod reachability_cache;
+mod reachability_context;
 mod receiver_method_targets;
 mod receiver_type_facts;
 mod receiver_type_scopes;
@@ -137,7 +138,6 @@ use type_param_context::{ByteSeqTypeParamsGuard, TypeParamKindsGuard, is_byte_se
 
 thread_local! {
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -325,12 +325,7 @@ pub(crate) fn with_active_reachability_roots<T>(
     roots: Option<&std::collections::HashSet<String>>,
     f: impl FnOnce() -> T,
 ) -> T {
-    ACTIVE_REACHABILITY_ROOTS.with(|active| {
-        let previous = active.replace(roots.cloned());
-        let result = f();
-        active.replace(previous);
-        result
-    })
+    reachability_context::with_active_roots(roots, f)
 }
 
 pub(crate) fn has_external_interface_implementors() -> bool {

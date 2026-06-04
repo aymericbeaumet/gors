@@ -156,12 +156,7 @@ fn collect_decl_needed_imports(
         ast::Decl::FuncDecl(func) => {
             let collect_signature = func.recv.is_none()
                 && func.name.name.starts_with("New")
-                && super::ACTIVE_REACHABILITY_ROOTS.with(|roots| {
-                    roots
-                        .borrow()
-                        .as_ref()
-                        .is_none_or(|roots| roots.contains(func.name.name))
-                });
+                && super::reachability_context::active_roots_allow(func.name.name);
             if collect_signature {
                 collect_func_type_needed_imports(&func.type_, env, out);
             }
