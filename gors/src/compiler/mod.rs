@@ -15054,6 +15054,20 @@ fn maybe_clone_binding_init(should_clone: bool, init: syn::Expr) -> syn::Expr {
     }
 }
 
+fn inferred_binding_expected_type<'a>(
+    expr: &ast::Expr,
+    binding_go_type: Option<&'a typeinfer::GoType>,
+) -> Option<&'a typeinfer::GoType> {
+    binding_go_type.filter(|ty| {
+        matches!(resolved_go_type(ty), typeinfer::GoType::Func { .. })
+            || string_literal_needs_owned_value(ty, expr)
+    })
+}
+
+fn string_literal_needs_owned_value(expected: &typeinfer::GoType, expr: &ast::Expr) -> bool {
+    matches!(resolved_go_type(expected), typeinfer::GoType::String) && is_string_literal(expr)
+}
+
 fn compile_borrowed_pointer_view_return_expr(
     expr: &ast::Expr,
     info: &BorrowedPointerViewReturn,
@@ -23488,9 +23502,7 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
                             let should_clone = binding_init_should_clone(&expr);
                             let expected = go_type.as_ref().or_else(|| {
-                                binding_go_type.as_ref().filter(|ty| {
-                                    matches!(resolved_go_type(ty), typeinfer::GoType::Func { .. })
-                                })
+                                inferred_binding_expected_type(&expr, binding_go_type.as_ref())
                             });
                             if let Some(expected) = expected {
                                 let init = compile_expr_with_expected(expr, Some(expected));
@@ -24888,8 +24900,14 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if matches!(lhs, ast::Expr::Ident(ident) if ident.name == "_") {
                     skip_indices.insert(idx);
                 }
+                let lhs_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(lhs, &env.borrow()));
+                let value = if string_literal_needs_owned_value(&lhs_ty, &rhs) {
+                    compile_expr_with_expected(rhs, Some(&lhs_ty))
+                } else {
+                    rhs.into()
+                };
                 idents.push(tmp);
-                values.push(rhs.into());
+                values.push(value);
             }
             out.push(syn::parse_quote! { let (#(#idents),*) = (#(#values),*); });
 
@@ -33551,6 +33569,55 @@ func main() {
         assert!(
             !output.contains("__gors_index_base = & b"),
             "expected computed index assignment not to use rvalue index lowering: {output}"
+        );
+    }
+
+    #[test]
+    fn inferred_local_string_literal_lowers_to_owned_string_without_postpass() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    var s = "go"
+                    _ = s
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut s = "go".to_string();
+                    let _ = s;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn multi_assign_string_literals_lowers_to_owned_strings_without_postpass() {
+        test(
+            r#"
+                package main
+
+                func main() {
+                    var a string
+                    var b string
+                    a, b = "go", "rs"
+                    _ = a
+                    _ = b
+                }
+            "#,
+            rust! {
+                pub fn main() {
+                    let mut a: String = Default::default();
+                    let mut b: String = Default::default();
+                    let (__gors_assign_0, __gors_assign_1) =
+                        ("go".to_string(), "rs".to_string());
+                    a = __gors_assign_0;
+                    b = __gors_assign_1;
+                    let _ = a;
+                    let _ = b;
+                }
+            },
         );
     }
 

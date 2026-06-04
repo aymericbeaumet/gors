@@ -5,11 +5,9 @@ mod hoist_use;
 mod index_cast;
 mod inject_channel;
 mod simplify_return;
-mod string_lit;
 
 pub fn pass(file: &mut syn::File) {
     inject_channel::pass(file);
-    string_lit::pass(file);
     hoist_use::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
