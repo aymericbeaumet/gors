@@ -43,6 +43,23 @@ pub(super) fn call_expr_path_last_ident(expr: &syn::Expr, name: &str) -> bool {
         .is_some_and(|segment| segment.ident == name)
 }
 
+pub(super) fn call_target_key(func: &syn::Expr, current_module: &str) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    let segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [name] => Some(format!("{current_module}::{name}")),
+        [.., module, name] => Some(format!("{module}::{name}")),
+        [] => None,
+    }
+}
+
 pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
@@ -1005,6 +1022,28 @@ mod tests {
 
         let method_call: syn::Expr = parse_quote! { value.take() };
         assert!(!call_expr_path_last_ident(&method_call, "take"));
+    }
+
+    #[test]
+    fn call_target_key_normalizes_generated_function_paths() {
+        let local: syn::Expr = parse_quote! { sort };
+        let module: syn::Expr = parse_quote! { helper::sort };
+        let crate_module: syn::Expr = parse_quote! { crate::helper::sort };
+        let call: syn::Expr = parse_quote! { sort(values) };
+
+        assert_eq!(
+            call_target_key(&local, "main").as_deref(),
+            Some("main::sort")
+        );
+        assert_eq!(
+            call_target_key(&module, "main").as_deref(),
+            Some("helper::sort")
+        );
+        assert_eq!(
+            call_target_key(&crate_module, "main").as_deref(),
+            Some("helper::sort")
+        );
+        assert_eq!(call_target_key(&call, "main"), None);
     }
 
     #[test]

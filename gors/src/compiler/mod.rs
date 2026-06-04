@@ -65,7 +65,7 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, box_new_call_arg,
-    call_expr_path_last_ident, clone_call_receiver_expr, dedupe_syn_types,
+    call_expr_path_last_ident, call_target_key, clone_call_receiver_expr, dedupe_syn_types,
     direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
     fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr, is_box_dyn_any_type,
     is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
@@ -5918,23 +5918,6 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
                 borrow_mut_slice_call_arg(arg);
             }
         }
-    }
-}
-
-fn call_target_key(func: &syn::Expr, current_module: &str) -> Option<String> {
-    let syn::Expr::Path(path) = func else {
-        return None;
-    };
-    let segments: Vec<_> = path
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect();
-    match segments.as_slice() {
-        [name] => Some(format!("{current_module}::{name}")),
-        [.., module, name] => Some(format!("{module}::{name}")),
-        [] => None,
     }
 }
 
