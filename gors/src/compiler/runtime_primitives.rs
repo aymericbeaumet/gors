@@ -1,4 +1,5 @@
 use super::CompiledModule;
+use crate::compiler::syn_inspect::{item_name, type_mentions_name};
 use std::collections::{BTreeMap, HashSet};
 
 mod os;
@@ -42,6 +43,22 @@ fn module_has_static(module: &CompiledModule, name: &str) -> bool {
         .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == name))
 }
 
+fn prune_replaced_items(
+    module: &mut CompiledModule,
+    item_names: &HashSet<String>,
+    impl_self_type_names: &HashSet<String>,
+) {
+    module.file.items.retain(|item| match item {
+        syn::Item::Impl(item_impl) => !type_mentions_name(&item_impl.self_ty, impl_self_type_names),
+        _ => item_name(item)
+            .as_deref()
+            .is_none_or(|name| !item_names.contains(name)),
+    });
+    for item in &mut module.file.items {
+        crate::compiler::generated_attrs::allow_dead_code_on_item(item);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +95,7 @@ mod tests {
         assert!(source.contains("pub const PathSeparator"), "{source}");
         assert!(source.contains("pub struct File"), "{source}");
         assert!(source.contains("pub static Stdout"), "{source}");
+        assert!(source.contains("#[allow(dead_code)]"), "{source}");
         assert!(
             source.contains("impl crate::io::Writer for File"),
             "{source}"

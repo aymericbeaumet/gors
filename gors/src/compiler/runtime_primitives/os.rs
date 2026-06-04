@@ -1,5 +1,4 @@
-use super::{CompiledModule, module_has_static};
-use crate::compiler::syn_inspect::{item_name, type_mentions_name};
+use super::{CompiledModule, module_has_static, prune_replaced_items};
 use std::collections::HashSet;
 
 pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
@@ -7,13 +6,11 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
         return false;
     }
 
-    let file_names = HashSet::from(["File".to_string()]);
-    module.file.items.retain(|item| match item {
-        syn::Item::Impl(item_impl) => !type_mentions_name(&item_impl.self_ty, &file_names),
-        _ => item_name(item)
-            .as_deref()
-            .is_none_or(|name| !matches!(name, "File" | "Stdout")),
-    });
+    prune_replaced_items(
+        module,
+        &HashSet::from(["File".to_string(), "Stdout".to_string()]),
+        &HashSet::from(["File".to_string()]),
+    );
     module.file.items.extend([
         syn::parse_quote! {
             #[derive(Clone, Copy, Default)]

@@ -1,5 +1,4 @@
-use super::{CompiledModule, module_has_struct};
-use crate::compiler::syn_inspect::{item_name, type_mentions_name};
+use super::{CompiledModule, module_has_struct, prune_replaced_items};
 use std::collections::HashSet;
 
 pub(super) fn replace_pool_module(module: &mut CompiledModule) -> bool {
@@ -8,13 +7,7 @@ pub(super) fn replace_pool_module(module: &mut CompiledModule) -> bool {
     }
 
     let pool_names = HashSet::from(["Pool".to_string()]);
-    module.file.items.retain(|item| match item {
-        syn::Item::Impl(item_impl) => !type_mentions_name(&item_impl.self_ty, &pool_names),
-        _ => item_name(item).as_deref() != Some("Pool"),
-    });
-    for item in &mut module.file.items {
-        crate::compiler::generated_attrs::allow_dead_code_on_item(item);
-    }
+    prune_replaced_items(module, &pool_names, &pool_names);
 
     module.file.items.extend([
         syn::parse_quote! {
