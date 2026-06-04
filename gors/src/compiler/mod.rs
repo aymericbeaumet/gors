@@ -64,10 +64,11 @@ use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr, dedupe_syn_types,
     direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
     impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
-    is_box_type_with_any_bound, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
-    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
-    receiver_expr_needs_scoped_temp, self_type_reachability_names, slice_type_inner,
-    syn_expr_matches_target, type_mentions_name, type_param_bound_matches, vec_type_inner,
+    is_box_type_with_any_bound, is_direct_self_field_expr, is_path_call_expr, is_self_expr,
+    is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
+    pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
+    slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
+    vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -7047,20 +7048,6 @@ fn debug_assert_semantic_external_refs(
 fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
     use syn::visit_mut::VisitMut;
 
-    fn is_self_field_expr(expr: &syn::Expr) -> bool {
-        matches!(
-            expr,
-            syn::Expr::Field(field)
-                if matches!(
-                    &*field.base,
-                    syn::Expr::Path(path)
-                        if path.path.leading_colon.is_none()
-                            && path.path.segments.len() == 1
-                            && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
-                )
-        )
-    }
-
     struct Visitor;
 
     impl VisitMut for Visitor {
@@ -7070,9 +7057,9 @@ fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
                 return;
             }
 
-            if is_self_expr(&binary.left) && is_self_field_expr(&binary.right) {
+            if is_self_expr(&binary.left) && is_direct_self_field_expr(&binary.right) {
                 *binary.left = syn::parse_quote! { self as *mut Self };
-            } else if is_self_expr(&binary.right) && is_self_field_expr(&binary.left) {
+            } else if is_self_expr(&binary.right) && is_direct_self_field_expr(&binary.left) {
                 *binary.right = syn::parse_quote! { self as *mut Self };
             }
         }
@@ -25829,21 +25816,6 @@ var X int
             output.contains("ch . lock () . unwrap () . Dir"),
             "expected selector on converted pointer to lock the pointer cell: {output}"
         );
-    }
-
-    #[test]
-    fn self_or_ref_self_expr_matches_only_self_ast_shapes() {
-        let direct: syn::Expr = syn::parse_quote! { self };
-        let referenced: syn::Expr = syn::parse_quote! { &self };
-        let parenthesized: syn::Expr = syn::parse_quote! { ((self)) };
-        let field: syn::Expr = syn::parse_quote! { self.value };
-        let other_ident: syn::Expr = syn::parse_quote! { self_ };
-
-        assert!(super::is_self_or_ref_self_expr(&direct));
-        assert!(super::is_self_or_ref_self_expr(&referenced));
-        assert!(super::is_self_or_ref_self_expr(&parenthesized));
-        assert!(!super::is_self_or_ref_self_expr(&field));
-        assert!(!super::is_self_or_ref_self_expr(&other_ident));
     }
 
     #[test]

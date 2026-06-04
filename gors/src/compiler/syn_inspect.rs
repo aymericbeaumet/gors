@@ -96,6 +96,13 @@ pub(super) fn is_self_or_deref_self_expr(expr: &syn::Expr) -> bool {
     is_self_expr(expr) || is_deref_self_expr(expr)
 }
 
+pub(super) fn is_direct_self_field_expr(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::Field(field) if is_self_expr(strip_paren_or_group(&field.base))
+    )
+}
+
 pub(super) fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
     matches!(expr, syn::Expr::Path(path)
         if path.path.leading_colon.is_none()
@@ -962,6 +969,21 @@ mod tests {
         assert!(!is_self_or_deref_self_expr(&referenced));
         assert!(!is_deref_self_expr(&field));
         assert!(!is_self_or_ref_self_expr(&other_ident));
+    }
+
+    #[test]
+    fn direct_self_field_helper_matches_only_exact_self_base_fields() {
+        let field: syn::Expr = parse_quote! { self.value };
+        let parenthesized_base: syn::Expr = parse_quote! { (self).value };
+        let nested_field: syn::Expr = parse_quote! { self.inner.value };
+        let other_base: syn::Expr = parse_quote! { other.value };
+        let borrowed_field: syn::Expr = parse_quote! { &self.value };
+
+        assert!(is_direct_self_field_expr(&field));
+        assert!(is_direct_self_field_expr(&parenthesized_base));
+        assert!(!is_direct_self_field_expr(&nested_field));
+        assert!(!is_direct_self_field_expr(&other_base));
+        assert!(!is_direct_self_field_expr(&borrowed_field));
     }
 
     #[test]
