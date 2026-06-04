@@ -1278,7 +1278,7 @@ needs fuller interface method-set modeling.
 Main package (`pass()`):
 1. `inject_channel` — channel send/receive
 2. `hoist_use` — extract multi-segment paths to `use` declarations
-3. `simplify_return` — remove trailing `return` (Rust style)
+3. `simplify_return` — remove trailing `return` (Rust style only)
 4. `flatten_block` — flatten single-expression nested blocks
 5. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
 6. `avoid_item_shadowing` — rename generated locals that shadow item names
