@@ -151,4 +151,38 @@ mod tests {
 
         assert_eq!(modules.len(), 1);
     }
+
+    #[test]
+    fn reflect_value_replacement_preserves_unrelated_items() {
+        let mut module = stdlib_module(
+            "reflect",
+            syn::parse_quote! {
+                pub type Kind = isize;
+                pub const Slice: Kind = 23;
+                pub struct Value;
+                pub struct Type;
+                impl Value {
+                    pub fn old(&self) {}
+                }
+                pub fn ValueOf(value: Box<dyn std::any::Any>) -> Value {
+                    Value
+                }
+                pub fn KeepKind() -> Kind {
+                    Slice
+                }
+            },
+        );
+
+        assert!(reflect::replace_value_module(&mut module));
+        let source = prettyplease::unparse(&module.file);
+
+        assert!(source.contains("pub type Kind"), "{source}");
+        assert!(source.contains("pub const Slice"), "{source}");
+        assert!(source.contains("pub struct Type"), "{source}");
+        assert!(source.contains("pub fn KeepKind"), "{source}");
+        assert!(source.contains("#[allow(dead_code)]"), "{source}");
+        assert!(source.contains("pub struct Value"), "{source}");
+        assert!(!source.contains("pub fn ValueOf"), "{source}");
+        assert!(!source.contains("pub fn old"), "{source}");
+    }
 }
