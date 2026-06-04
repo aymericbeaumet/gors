@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
 
 env:
   CARGO_TERM_COLOR: always
@@ -257,7 +257,7 @@ jobs:
   # Upload GitHub Pages artifact from web-build
   upload-pages:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [web-build]
     steps:
       - uses: actions/checkout@v6
@@ -292,7 +292,7 @@ jobs:
 
   deploy-www:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [upload-pages]
     permissions:
       contents: read

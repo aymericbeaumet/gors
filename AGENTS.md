@@ -476,7 +476,7 @@ integration fixtures remain under `gors/tests/fixtures/`.
 commands as CI. GitHub-only artifact upload and Pages deploy steps are
 intentionally not represented locally.
 
-CI runs on `pull_request` for PR branches and on `push` only for `master`.
+CI runs on `pull_request` for PR branches and on `push` only for `main`.
 Do not re-enable feature-branch push CI unless the duplicate PR/push checks are
 actually needed.
 
