@@ -240,6 +240,34 @@ pub(super) fn expr_contains_method_call(expr: &syn::Expr, method: &str) -> bool 
     finder.found
 }
 
+pub(super) fn receiver_expr_needs_scoped_temp(expr: &syn::Expr) -> bool {
+    struct LockUnwrapFinder {
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for LockUnwrapFinder {
+        fn visit_expr_method_call(&mut self, method_call: &syn::ExprMethodCall) {
+            if self.found {
+                return;
+            }
+            if method_call.method == "unwrap"
+                && method_call.args.is_empty()
+                && let syn::Expr::MethodCall(lock_call) = method_call.receiver.as_ref()
+                && lock_call.method == "lock"
+                && lock_call.args.is_empty()
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, method_call);
+        }
+    }
+
+    let mut finder = LockUnwrapFinder { found: false };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
 pub(super) fn syn_expr_matches_target(expr: &syn::Expr, target: &syn::Expr) -> bool {
     match (strip_paren_or_group(expr), strip_paren_or_group(target)) {
         (syn::Expr::Path(left), syn::Expr::Path(right)) => {
@@ -1029,6 +1057,19 @@ mod tests {
         assert!(!expr_contains_path_ident(&expr, "crate"));
         assert!(expr_contains_method_call(&expr, "wrap"));
         assert!(!expr_contains_method_call(&expr, "missing"));
+    }
+
+    #[test]
+    fn receiver_scoped_temp_detection_uses_lock_unwrap_ast_shape() {
+        let direct: syn::Expr = parse_quote! { p.lock().unwrap() };
+        let nested: syn::Expr = parse_quote! { (p.lock().unwrap()).field };
+        let unrelated_name: syn::Expr = parse_quote! { p.locked().unwrap() };
+        let different_unwrap: syn::Expr = parse_quote! { p.lock().unwrap_or_else(recover) };
+
+        assert!(receiver_expr_needs_scoped_temp(&direct));
+        assert!(receiver_expr_needs_scoped_temp(&nested));
+        assert!(!receiver_expr_needs_scoped_temp(&unrelated_name));
+        assert!(!receiver_expr_needs_scoped_temp(&different_unwrap));
     }
 
     #[test]
