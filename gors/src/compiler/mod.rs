@@ -3821,6 +3821,33 @@ fn compile_breakable_if_stmt(
         vec![]
     };
 
+    if let Some(cond_value) = const_bool_expr_value(&if_stmt.cond) {
+        let branch_stmts = if cond_value {
+            vec![block_expr_stmt(compile_breakable_stmt_list(
+                if_stmt.body.list,
+                break_label,
+            )?)]
+        } else if let Some(else_) = *if_stmt.else_ {
+            match else_ {
+                ast::Stmt::IfStmt(nested) => compile_breakable_if_stmt(nested, break_label)?,
+                ast::Stmt::BlockStmt(block) => {
+                    vec![block_expr_stmt(compile_breakable_stmt_list(
+                        block.list,
+                        break_label,
+                    )?)]
+                }
+                _ => {
+                    return Err(CompilerError::UnsupportedConstruct(
+                        "unsupported else branch type".to_string(),
+                    ));
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        return Ok(scoped_if_result_stmts(init_stmts, branch_stmts));
+    }
+
     let then_stmts = compile_breakable_stmt_list(if_stmt.body.list, break_label)?;
     let else_branch = if let Some(else_) = *if_stmt.else_ {
         Some((
@@ -17098,6 +17125,39 @@ fn current_named_return_expr() -> Option<syn::Expr> {
     })
 }
 
+fn const_bool_expr_value(expr: &ast::Expr) -> Option<bool> {
+    match const_eval_expr_in_active_env(expr, 0, &BTreeMap::new())? {
+        ConstValue::Bool(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn block_expr_stmt(stmts: Vec<syn::Stmt>) -> syn::Stmt {
+    syn::Stmt::Expr(
+        syn::Expr::Block(syn::ExprBlock {
+            attrs: vec![],
+            label: None,
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts,
+            },
+        }),
+        None,
+    )
+}
+
+fn scoped_if_result_stmts(
+    init_stmts: Vec<syn::Stmt>,
+    branch_stmts: Vec<syn::Stmt>,
+) -> Vec<syn::Stmt> {
+    if init_stmts.is_empty() {
+        return branch_stmts;
+    }
+    let mut block_stmts = init_stmts;
+    block_stmts.extend(branch_stmts);
+    vec![block_expr_stmt(block_stmts)]
+}
+
 fn range_function_return_context() -> RangeFunctionReturnContext {
     let id = next_range_function_id();
     RangeFunctionReturnContext {
@@ -22387,6 +22447,17 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     vec![]
                 };
 
+                if let Some(cond_value) = const_bool_expr_value(&s.cond) {
+                    let branch_stmts = if cond_value {
+                        vec![syn::Stmt::Expr(syn::Expr::Block(s.body.try_into()?), None)]
+                    } else if let Some(else_) = *s.else_ {
+                        Vec::<syn::Stmt>::try_from(else_)?
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(scoped_if_result_stmts(init_stmts, branch_stmts));
+                }
+
                 let else_branch = if let Some(else_) = *s.else_ {
                     Some((
                         <Token![else]>::default(),
@@ -23178,6 +23249,46 @@ fn compile_switch_case_if_stmt(
     } else {
         vec![]
     };
+
+    if let Some(cond_value) = const_bool_expr_value(&if_stmt.cond) {
+        let branch_stmts = if cond_value {
+            vec![block_expr_stmt(
+                compile_switch_case_stmt_list_with_goto_exit(
+                    if_stmt.body.list,
+                    switch_label,
+                    fallthrough_ident,
+                    goto_exit_label,
+                )?,
+            )]
+        } else if let Some(else_) = *if_stmt.else_ {
+            match else_ {
+                ast::Stmt::IfStmt(nested) => compile_switch_case_if_stmt(
+                    nested,
+                    switch_label,
+                    fallthrough_ident,
+                    goto_exit_label,
+                )?,
+                ast::Stmt::BlockStmt(block) => {
+                    vec![block_expr_stmt(
+                        compile_switch_case_stmt_list_with_goto_exit(
+                            block.list,
+                            switch_label,
+                            fallthrough_ident,
+                            goto_exit_label,
+                        )?,
+                    )]
+                }
+                _ => {
+                    return Err(CompilerError::UnsupportedConstruct(
+                        "unsupported else branch type".to_string(),
+                    ));
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        return Ok(scoped_if_result_stmts(init_stmts, branch_stmts));
+    }
 
     let then_stmts = compile_switch_case_stmt_list_with_goto_exit(
         if_stmt.body.list,
@@ -26027,13 +26138,46 @@ func main() {
         let compiled = compile(parsed).unwrap();
         let output = quote! { #compiled }.to_string();
 
-        assert!(output.contains("if true { return 1 } 2"), "{output}");
+        assert!(output.contains("{ return 1 } 2"), "{output}");
         assert!(!output.contains("return 2"), "{output}");
         assert!(!output.contains("return x"), "{output}");
         assert!(
             !output.contains("fn get (& self) -> isize { return"),
             "{output}"
         );
+    }
+
+    #[test]
+    fn static_false_pruning_uses_go_constants_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    if false {
+                        println("dead")
+                    } else {
+                        println("live")
+                    }
+
+                    flag := false
+                    flag = true
+                    if flag {
+                        println("kept")
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(!output.contains("dead"), "{output}");
+        assert!(output.contains("live"), "{output}");
+        assert!(output.contains("if flag"), "{output}");
+        assert!(output.contains("kept"), "{output}");
     }
 
     #[test]

@@ -4,7 +4,6 @@ mod call_args;
 mod comparisons;
 mod evaluation_order;
 mod pointer_cells;
-mod static_false;
 mod structural_helpers;
 mod syntax;
 mod tuple_newtypes;
@@ -66,7 +65,6 @@ impl VisitMut for CoerceTypes {
         self.byte_index_scopes.pop();
         self.call_arg_scopes.pop();
 
-        static_false::prune_branches(&mut func.block.stmts);
         structural_helpers::prune_reflection_fallback(&mut func.block.stmts, None);
     }
 
@@ -79,7 +77,6 @@ impl VisitMut for CoerceTypes {
         self.byte_index_scopes.pop();
         self.call_arg_scopes.pop();
 
-        static_false::prune_branches(&mut func.block.stmts);
         let self_reflect_fields = self.impl_self_types.last().and_then(|ty| {
             self.structural_helper_metadata
                 .self_reflect_fields_for_initial_pass(ty, &func.block)
