@@ -46,6 +46,7 @@ mod receiver_type_scopes;
 mod reflect_kind;
 mod reflect_semantics;
 mod reflect_slice_any;
+mod return_context;
 mod runtime_primitives;
 mod shared_captures;
 mod struct_derives;
@@ -98,6 +99,7 @@ use receiver_type_facts::{
     top_level_item_field_types, top_level_item_return_types, top_level_item_tuple_return_types,
     top_level_item_types,
 };
+use return_context::ReturnTypesGuard;
 use sha2::{Digest, Sha256};
 use shared_captures::{
     SharedCaptureNamesGuard, function_literal_shared_capture_clones, is_shared_capture_name,
@@ -127,7 +129,6 @@ thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -6309,6 +6310,7 @@ fn collect_refs_from_item(
         bound_names: std::collections::HashSet<String>,
         bound_types: std::collections::HashMap<String, ReceiverTypeRef>,
         current_self_type: Option<ReceiverTypeRef>,
+        current_self_reachability_names: Vec<String>,
         local_names: std::collections::HashSet<String>,
         external_refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
     }
@@ -6476,6 +6478,15 @@ fn collect_refs_from_item(
                             .insert(impl_method_reachability_name(symbol, assoc));
                     }
                 }
+                (Some("Self"), Some(symbol), _, _) => {
+                    for self_name in &self.current_self_reachability_names {
+                        if is_reachability_name(self_name) {
+                            self.local_names.insert(self_name.clone());
+                        }
+                        self.local_names
+                            .insert(impl_method_reachability_name(self_name, symbol));
+                    }
+                }
                 _ => {}
             }
         }
@@ -6531,10 +6542,14 @@ fn collect_refs_from_item(
                 }
             }
             let previous_self_type = self.current_self_type.clone();
+            let previous_self_reachability_names =
+                std::mem::take(&mut self.current_self_reachability_names);
             self.current_self_type =
                 named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef::new(None, name));
+            self.current_self_reachability_names = self_type_reachability_names(&item_impl.self_ty);
             syn::visit_mut::visit_item_impl_mut(self, item_impl);
             self.current_self_type = previous_self_type;
+            self.current_self_reachability_names = previous_self_reachability_names;
         }
 
         fn visit_type_param_bound_mut(&mut self, bound: &mut syn::TypeParamBound) {
@@ -6640,6 +6655,7 @@ fn collect_refs_from_item(
         bound_names: bound_collector.names,
         bound_types: bound_collector.types,
         current_self_type: None,
+        current_self_reachability_names: Vec::new(),
         local_names: std::collections::HashSet::new(),
         external_refs: std::collections::HashMap::new(),
     };
@@ -9534,8 +9550,7 @@ fn compile_method(
 
     let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
     let return_go_types_is_empty = return_go_types.is_empty();
-    let previous_return_types =
-        RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let return_types = ReturnTypesGuard::set(return_go_types);
     let previous_named_return_idents = named_returns::replace_idents(named_return_idents.clone());
     let body_shared_capture_names =
         func_decl
@@ -9564,9 +9579,7 @@ fn compile_method(
             stmts: vec![],
         })
     };
-    RETURN_TYPES.with(|types| {
-        *types.borrow_mut() = previous_return_types;
-    });
+    drop(return_types);
     named_returns::restore_idents(previous_named_return_idents);
     let mut block = block_result?;
     drop(mutable_slice_view_return_guard);
@@ -11560,8 +11573,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
     let ret = compile_return_type(func_lit.type_.results).unwrap_or(syn::ReturnType::Default);
 
-    let previous_return_types =
-        RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+    let return_types = ReturnTypesGuard::set(return_go_types);
     let previous_named_return_idents = named_returns::take_idents();
     let completion = TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -11570,9 +11582,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     let _panic_returns_through_defer =
         PanicReturnsThroughDeferGuard::set(panic_returns_through_defer);
     let block_result = func_lit.body.try_into();
-    RETURN_TYPES.with(|types| {
-        *types.borrow_mut() = previous_return_types;
-    });
+    drop(return_types);
     named_returns::restore_idents(previous_named_return_idents);
     let mut block: syn::Block = block_result.unwrap_or(syn::Block {
         brace_token: syn::token::Brace::default(),
@@ -14371,17 +14381,6 @@ struct RangeFunctionReturnContext {
     return_ty: Option<syn::Type>,
 }
 
-fn current_return_ty() -> Option<syn::Type> {
-    RETURN_TYPES.with(|types| match types.borrow().as_slice() {
-        [] => None,
-        [ty] => Some(rust_type_from_inferred_go_type(ty)),
-        tys => {
-            let elems = tys.iter().map(rust_type_from_inferred_go_type);
-            Some(syn::parse_quote! { (#(#elems),*) })
-        }
-    })
-}
-
 fn const_bool_expr_value(expr: &ast::Expr) -> Option<bool> {
     match const_eval_expr_in_active_env(expr, 0, &BTreeMap::new())? {
         ConstValue::Bool(value) => Some(value),
@@ -14420,7 +14419,7 @@ fn range_function_return_context() -> RangeFunctionReturnContext {
     RangeFunctionReturnContext {
         slot_ident: quote::format_ident!("__gors_range_return_{id}"),
         slot_for_yield_ident: quote::format_ident!("__gors_range_return_for_yield_{id}"),
-        return_ty: current_return_ty(),
+        return_ty: return_context::current_syn_type(),
     }
 }
 
@@ -17680,12 +17679,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if is_type_method_expression_call(&call_expr) {
                     return compile_type_method_expression_call(call_expr);
                 }
-                if let Some(variadic_start) = is_variadic_call(&call_expr) {
-                    return compile_variadic_call(call_expr, variadic_start);
-                }
                 if is_function_value_call(&call_expr) {
                     return compile_function_field_call(call_expr)
                         .unwrap_or_else(|| compile_error_expr("invalid function field call"));
+                }
+                if let Some(variadic_start) = is_variadic_call(&call_expr) {
+                    return compile_variadic_call(call_expr, variadic_start);
                 }
                 if let ast::Expr::Ident(ident) = call_expr.fun.as_ref()
                     && let Some(func) = dot_import_path_expr(ident.name)
@@ -19395,8 +19394,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
         let byte_seq_type_params = ByteSeqTypeParamsGuard::set(type_param_info.byte_seq_names);
-        let previous_return_types =
-            RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
+        let return_types = ReturnTypesGuard::set(return_go_types);
         let previous_named_return_idents =
             named_returns::replace_idents(named_return_idents.clone());
         let body_shared_capture_names =
@@ -19438,9 +19436,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         drop(borrowed_pointer_param_names);
         drop(borrowed_slice_param_names);
         drop(byte_seq_type_params);
-        RETURN_TYPES.with(|types| {
-            *types.borrow_mut() = previous_return_types;
-        });
+        drop(return_types);
         named_returns::restore_idents(previous_named_return_idents);
         let mut block = Box::new(block_result?);
         if body_has_defer {
@@ -22307,7 +22303,7 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
     fn from(return_stmt: ast::ReturnStmt) -> Self {
         record_mapping(&return_stmt.return_, Some("return"));
 
-        let expected_return_types = RETURN_TYPES.with(|types| types.borrow().clone());
+        let expected_return_types = return_context::expected_types();
         let results = return_stmt.results;
         let expr = match results.len() {
             0 => None,
@@ -23899,6 +23895,40 @@ func main() {
         assert!(
             !output.contains("lock_func (&"),
             "expected ordinary selector calls not to use the function-value path: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_call_variadic_function_values_through_function_cells() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func sum(nums ...int) int {
+                    return len(nums)
+                }
+
+                func main() {
+                    variadic := sum
+                    _ = variadic(1, 2)
+                    values := []int{3, 4}
+                    _ = variadic(values...)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("lock_func (& (variadic))"),
+            "expected variadic function-value calls to lock and clone the function cell: {output}"
+        );
+        assert!(
+            !output.contains("variadic (Vec"),
+            "expected variadic function-value calls not to lower as direct function calls: {output}"
         );
     }
 
@@ -32731,6 +32761,44 @@ func main() {
         let sort_refs = refs.get("sort").expect("sort refs");
         assert!(sort_refs.contains("Float64Slice"));
         assert!(sort_refs.contains("Float64Slice::Less"));
+    }
+
+    #[test]
+    fn it_should_collect_self_associated_calls_from_impl_bodies() {
+        let mut item: syn::Item = rust! {
+            impl<T> PartialEq for GorsPtr<T> {
+                fn eq(&self, other: &Self) -> bool {
+                    Self::ptr_eq(self, other)
+                }
+            }
+        };
+        let module_names = std::collections::HashSet::new();
+        let item_names = std::collections::HashSet::new();
+        let top_level_names = std::collections::HashSet::new();
+        let top_level_types = std::collections::HashMap::new();
+        let top_level_field_types = std::collections::HashMap::new();
+        let top_level_element_types = std::collections::HashMap::new();
+        let top_level_return_types = std::collections::HashMap::new();
+        let top_level_tuple_return_types = std::collections::HashMap::new();
+
+        let context = super::RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let (names, refs) = super::collect_refs_from_item(&mut item, &context);
+
+        assert!(refs.is_empty(), "{refs:?}");
+        assert!(names.contains("GorsPtr"), "{names:?}");
+        assert!(
+            names.contains(&super::impl_method_reachability_name("GorsPtr", "ptr_eq")),
+            "{names:?}"
+        );
     }
 
     #[test]
