@@ -51,6 +51,7 @@ mod shared_captures;
 mod struct_derives;
 mod syn_inspect;
 mod synthetic_names;
+mod type_param_context;
 pub mod typeinfer;
 mod zero_values;
 
@@ -119,13 +120,13 @@ use syn_inspect::{
     receiver_expr_needs_scoped_temp, self_type_reachability_names, syn_expr_matches_target,
     type_param_bound_matches, vec_type_inner,
 };
+use type_param_context::{ByteSeqTypeParamsGuard, TypeParamKindsGuard, is_byte_seq_type_param};
 
 // Thread-local storage for source map tracker during compilation
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -262,27 +263,9 @@ struct LocalTypeEnvScopeGuard {
     previous: typeinfer::TypeEnv,
 }
 
-struct TypeParamKindsGuard {
-    previous: Vec<(String, Option<typeinfer::TypeKind>)>,
-}
-
 fn local_binding_ident_for_ast(ident: &ast::Ident<'_>) -> syn::Ident {
     record_mapping(&ident.name_pos, Some(ident.name));
     local_binding_ident(ident.name)
-}
-
-impl TypeParamKindsGuard {
-    fn set(type_args: &[syn::Ident]) -> Self {
-        Self {
-            previous: seed_type_param_kinds(type_args),
-        }
-    }
-}
-
-impl Drop for TypeParamKindsGuard {
-    fn drop(&mut self) {
-        restore_type_param_kinds(std::mem::take(&mut self.previous));
-    }
 }
 
 impl ExternalInterfaceImplementorsGuard {
@@ -8746,34 +8729,6 @@ fn type_param_idents(type_params: Option<&ast::FieldList>) -> Vec<syn::Ident> {
         .unwrap_or_default()
 }
 
-fn seed_type_param_kinds(type_args: &[syn::Ident]) -> Vec<(String, Option<typeinfer::TypeKind>)> {
-    TYPE_ENV.with(|env| {
-        let mut env = env.borrow_mut();
-        type_args
-            .iter()
-            .map(|ident| {
-                let name = ident.to_string();
-                let previous = env.get_type_kind(&name).cloned();
-                env.set_type_kind(&name, typeinfer::TypeKind::TypeParam);
-                (name, previous)
-            })
-            .collect()
-    })
-}
-
-fn restore_type_param_kinds(previous: Vec<(String, Option<typeinfer::TypeKind>)>) {
-    TYPE_ENV.with(|env| {
-        let mut env = env.borrow_mut();
-        for (name, kind) in previous {
-            if let Some(kind) = kind {
-                env.set_type_kind(&name, kind);
-            } else {
-                env.remove_type_kind(&name);
-            }
-        }
-    });
-}
-
 fn rewrite_receiver(block: &mut syn::Block, recv_name: &str, borrowed_receiver: bool) {
     use syn::visit_mut::VisitMut;
 
@@ -12438,10 +12393,6 @@ fn is_owning_pointer_cell_expr_ref(expr: &ast::Expr) -> bool {
             typeinfer::GoType::Pointer(_)
         )
     })
-}
-
-fn is_byte_seq_type_param(go_type: &typeinfer::GoType) -> bool {
-    matches!(go_type, typeinfer::GoType::Named(name) if BYTE_SEQ_TYPE_PARAMS.with(|params| params.borrow().contains(name)))
 }
 
 fn resolved_go_type(ty: &typeinfer::GoType) -> typeinfer::GoType {
@@ -19443,12 +19394,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             compile_return_type_with_type_params(func_decl.type_.results, Some(&type_param_info))?;
         add_elided_lifetime_to_borrowed_interface_return(&mut output, &inputs);
 
-        let previous_byte_seq_type_params = BYTE_SEQ_TYPE_PARAMS.with(|params| {
-            std::mem::replace(
-                &mut *params.borrow_mut(),
-                type_param_info.byte_seq_names.clone(),
-            )
-        });
+        let byte_seq_type_params = ByteSeqTypeParamsGuard::set(type_param_info.byte_seq_names);
         let previous_return_types =
             RETURN_TYPES.with(|types| std::mem::replace(&mut *types.borrow_mut(), return_go_types));
         let previous_named_return_idents =
@@ -19491,9 +19437,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         drop(borrowed_pointer_view_names);
         drop(borrowed_pointer_param_names);
         drop(borrowed_slice_param_names);
-        BYTE_SEQ_TYPE_PARAMS.with(|params| {
-            *params.borrow_mut() = previous_byte_seq_type_params;
-        });
+        drop(byte_seq_type_params);
         RETURN_TYPES.with(|types| {
             *types.borrow_mut() = previous_return_types;
         });
