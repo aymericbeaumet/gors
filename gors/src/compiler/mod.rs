@@ -64,9 +64,9 @@ use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr, dedupe_syn_types,
     direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
     impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
-    is_box_type_with_any_bound, is_direct_self_field_expr, is_path_call_expr, is_self_expr,
-    is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
-    pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
+    is_box_type_with_any_bound, is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr,
+    is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names,
+    named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
     slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
     vec_type_inner,
 };
@@ -13281,15 +13281,6 @@ fn append_value_arg_should_clone(arg: &ast::Expr, expected: Option<&typeinfer::G
     !matches!(expected, typeinfer::GoType::Unknown)
         && !go_type_is_copy(expected)
         && is_ir_addressable_expr(arg)
-}
-
-fn is_clone_call_expr(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::MethodCall(call) => call.method == "clone" && call.args.is_empty(),
-        syn::Expr::Paren(paren) => is_clone_call_expr(&paren.expr),
-        syn::Expr::Group(group) => is_clone_call_expr(&group.expr),
-        _ => false,
-    }
 }
 
 fn compile_append_value_arg(arg: ast::Expr, expected: Option<&typeinfer::GoType>) -> syn::Expr {

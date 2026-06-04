@@ -157,6 +157,10 @@ pub(super) fn stripped_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn:
     direct_clone_call_receiver_expr(strip_paren_or_group(expr))
 }
 
+pub(super) fn is_clone_call_expr(expr: &syn::Expr) -> bool {
+    stripped_clone_call_receiver_expr(expr).is_some()
+}
+
 pub(super) fn expr_path_ident_or_clone(expr: &syn::Expr) -> Option<String> {
     if let Some(receiver) = direct_clone_call_receiver_expr(expr) {
         return expr_path_ident_or_clone(&receiver);
@@ -1045,7 +1049,10 @@ mod tests {
             stripped_clone_call_receiver_expr(&grouped_clone).map(expr_tokens),
             Some("value".to_string())
         );
+        assert!(is_clone_call_expr(&grouped_clone));
+        assert!(is_clone_call_expr(&parened_clone));
         assert!(stripped_clone_call_receiver_expr(&clone_with_arg).is_none());
+        assert!(!is_clone_call_expr(&clone_with_arg));
     }
 
     #[test]
