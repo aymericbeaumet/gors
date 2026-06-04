@@ -5484,6 +5484,77 @@ type ReceiverTraitSupertraits = receiver_method_targets::Supertraits;
 type ReceiverMethodCloneValueTargets =
     receiver_method_targets::Targets<BTreeMap<usize, CloneValueParamKind>>;
 
+trait ReceiverScopedCallArgRewrite {
+    fn rewrite_expr_call(
+        &mut self,
+        _receiver_types: &receiver_type_scopes::Tracker<'_>,
+        _call: &mut syn::ExprCall,
+    ) {
+    }
+
+    fn rewrite_expr_method_call(
+        &mut self,
+        _receiver_types: &receiver_type_scopes::Tracker<'_>,
+        _call: &mut syn::ExprMethodCall,
+    ) {
+    }
+}
+
+struct ReceiverScopedCallArgVisitor<'a, R> {
+    receiver_types: receiver_type_scopes::Tracker<'a>,
+    rewrite: R,
+}
+
+impl<R> syn::visit_mut::VisitMut for ReceiverScopedCallArgVisitor<'_, R>
+where
+    R: ReceiverScopedCallArgRewrite,
+{
+    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        self.receiver_types.push_scope();
+        syn::visit_mut::visit_item_fn_mut(self, func);
+        self.receiver_types.pop_scope();
+    }
+
+    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+        let previous_self_type = self.receiver_types.enter_impl(item_impl);
+        syn::visit_mut::visit_item_impl_mut(self, item_impl);
+        self.receiver_types.restore_impl(previous_self_type);
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+        self.receiver_types.push_scope();
+        syn::visit_mut::visit_impl_item_fn_mut(self, func);
+        self.receiver_types.pop_scope();
+    }
+
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        self.receiver_types.push_scope();
+        syn::visit_mut::visit_block_mut(self, block);
+        self.receiver_types.pop_scope();
+    }
+
+    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
+        self.receiver_types.record_fn_arg(arg);
+        syn::visit_mut::visit_fn_arg_mut(self, arg);
+    }
+
+    fn visit_local_mut(&mut self, local: &mut syn::Local) {
+        syn::visit_mut::visit_local_mut(self, local);
+        self.receiver_types.record_local(local);
+    }
+
+    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
+        syn::visit_mut::visit_expr_call_mut(self, call);
+        self.rewrite.rewrite_expr_call(&self.receiver_types, call);
+    }
+
+    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
+        syn::visit_mut::visit_expr_method_call_mut(self, call);
+        self.rewrite
+            .rewrite_expr_method_call(&self.receiver_types, call);
+    }
+}
+
 fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
     let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
     let mut targets = collect_mut_ref_vec_targets(modules);
@@ -5493,10 +5564,12 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
         if !targets.is_empty() || !method_targets.is_empty() {
             for module in modules.values_mut() {
                 syn::visit_mut::VisitMut::visit_file_mut(
-                    &mut BorrowMutatedVecCallArgs {
+                    &mut ReceiverScopedCallArgVisitor {
                         receiver_types: receiver_facts.tracker(module.mod_name.clone()),
-                        targets: &targets,
-                        method_targets: &method_targets,
+                        rewrite: BorrowMutatedVecCallArgs {
+                            targets: &targets,
+                            method_targets: &method_targets,
+                        },
                     },
                     &mut module.file,
                 );
@@ -5848,49 +5921,17 @@ fn reborrow_mutated_vec_params(block: &mut syn::Block, params: &[(usize, syn::Id
 }
 
 struct BorrowMutatedVecCallArgs<'a> {
-    receiver_types: receiver_type_scopes::Tracker<'a>,
     targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
     method_targets: &'a ReceiverMethodArgTargets,
 }
 
-impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
-    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        let previous_self_type = self.receiver_types.enter_impl(item_impl);
-        syn::visit_mut::visit_item_impl_mut(self, item_impl);
-        self.receiver_types.restore_impl(previous_self_type);
-    }
-
-    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_impl_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_block_mut(&mut self, block: &mut syn::Block) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_block_mut(self, block);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
-        self.receiver_types.record_fn_arg(arg);
-        syn::visit_mut::visit_fn_arg_mut(self, arg);
-    }
-
-    fn visit_local_mut(&mut self, local: &mut syn::Local) {
-        syn::visit_mut::visit_local_mut(self, local);
-        self.receiver_types.record_local(local);
-    }
-
-    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
-        syn::visit_mut::visit_expr_call_mut(self, call);
-        let Some(key) = call_target_key(&call.func, self.receiver_types.module_name()) else {
+impl ReceiverScopedCallArgRewrite for BorrowMutatedVecCallArgs<'_> {
+    fn rewrite_expr_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprCall,
+    ) {
+        let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
         let Some(indices) = self.targets.get(&key) else {
@@ -5903,11 +5944,14 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
         }
     }
 
-    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
-        syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let receiver_type = self.receiver_types.receiver_type_for_expr(&call.receiver);
+    fn rewrite_expr_method_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprMethodCall,
+    ) {
+        let receiver_type = receiver_types.receiver_type_for_expr(&call.receiver);
         let Some(indices) = self.method_targets.target_for_call(
-            self.receiver_types.module_name(),
+            receiver_types.module_name(),
             &call.method.to_string(),
             receiver_type.as_ref(),
         ) else {
@@ -6074,11 +6118,13 @@ fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
 
     for module in modules.values_mut() {
         syn::visit_mut::VisitMut::visit_file_mut(
-            &mut CloneVecValueCallArgs {
+            &mut ReceiverScopedCallArgVisitor {
                 receiver_types: receiver_facts.tracker(module.mod_name.clone()),
-                targets: &targets,
-                method_targets: &method_targets,
-                vec_newtypes: &vec_newtypes,
+                rewrite: CloneVecValueCallArgs {
+                    targets: &targets,
+                    method_targets: &method_targets,
+                    vec_newtypes: &vec_newtypes,
+                },
             },
             &mut module.file,
         );
@@ -6388,52 +6434,18 @@ fn cloneable_value_param_kind(
 }
 
 struct CloneVecValueCallArgs<'a> {
-    receiver_types: receiver_type_scopes::Tracker<'a>,
     targets: &'a CloneValueParamTargets,
     method_targets: &'a ReceiverMethodCloneValueTargets,
     vec_newtypes: &'a std::collections::HashSet<String>,
 }
 
-impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
-    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        let previous_self_type = self.receiver_types.enter_impl(item_impl);
-        syn::visit_mut::visit_item_impl_mut(self, item_impl);
-        self.receiver_types.restore_impl(previous_self_type);
-    }
-
-    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_impl_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_block_mut(&mut self, block: &mut syn::Block) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_block_mut(self, block);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
-        self.receiver_types.record_fn_arg(arg);
-        syn::visit_mut::visit_fn_arg_mut(self, arg);
-    }
-
-    fn visit_local_mut(&mut self, local: &mut syn::Local) {
-        syn::visit_mut::visit_local_mut(self, local);
-        self.receiver_types.record_local(local);
-    }
-
-    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
-        syn::visit_mut::visit_expr_call_mut(self, call);
-
-        if let Some(type_key) =
-            from_call_vec_newtype_key(&call.func, self.receiver_types.module_name())
+impl ReceiverScopedCallArgRewrite for CloneVecValueCallArgs<'_> {
+    fn rewrite_expr_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprCall,
+    ) {
+        if let Some(type_key) = from_call_vec_newtype_key(&call.func, receiver_types.module_name())
             && self.vec_newtypes.contains(&type_key)
             && call.args.len() == 1
             && let Some(arg) = call.args.first_mut()
@@ -6441,7 +6453,7 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
             clone_value_arg(arg);
         }
 
-        let Some(key) = call_target_key(&call.func, self.receiver_types.module_name()) else {
+        let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
         let Some(kinds) = self.targets.get(&key) else {
@@ -6454,11 +6466,14 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
         }
     }
 
-    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
-        syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let receiver_type = self.receiver_types.receiver_type_for_expr(&call.receiver);
+    fn rewrite_expr_method_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprMethodCall,
+    ) {
+        let receiver_type = receiver_types.receiver_type_for_expr(&call.receiver);
         let Some(kinds) = self.method_targets.target_for_call(
-            self.receiver_types.module_name(),
+            receiver_types.module_name(),
             &call.method.to_string(),
             receiver_type.as_ref(),
         ) else {
@@ -6560,12 +6575,14 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     }
     for module in modules.values_mut() {
         syn::visit_mut::VisitMut::visit_file_mut(
-            &mut BorrowMutRefCallArgs {
+            &mut ReceiverScopedCallArgVisitor {
                 receiver_types: receiver_facts.tracker(module.mod_name.clone()),
-                targets: &targets,
-                method_targets: &method_targets,
-                direct_trait_impls: &direct_trait_impls,
-                mut_ref_trait_impls: &mut_ref_trait_impls,
+                rewrite: BorrowMutRefCallArgs {
+                    targets: &targets,
+                    method_targets: &method_targets,
+                    direct_trait_impls: &direct_trait_impls,
+                    mut_ref_trait_impls: &mut_ref_trait_impls,
+                },
             },
             &mut module.file,
         );
@@ -6795,51 +6812,19 @@ fn should_reborrow_self_for_mut_trait_object(
 }
 
 struct BorrowMutRefCallArgs<'a> {
-    receiver_types: receiver_type_scopes::Tracker<'a>,
     targets: &'a MutRefParamTargets,
     method_targets: &'a ReceiverMethodMutRefTargets,
     direct_trait_impls: &'a TraitImplSet,
     mut_ref_trait_impls: &'a TraitImplSet,
 }
 
-impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
-    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        let previous_self_type = self.receiver_types.enter_impl(item_impl);
-        syn::visit_mut::visit_item_impl_mut(self, item_impl);
-        self.receiver_types.restore_impl(previous_self_type);
-    }
-
-    fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_impl_item_fn_mut(self, func);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_block_mut(&mut self, block: &mut syn::Block) {
-        self.receiver_types.push_scope();
-        syn::visit_mut::visit_block_mut(self, block);
-        self.receiver_types.pop_scope();
-    }
-
-    fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
-        self.receiver_types.record_fn_arg(arg);
-        syn::visit_mut::visit_fn_arg_mut(self, arg);
-    }
-
-    fn visit_local_mut(&mut self, local: &mut syn::Local) {
-        syn::visit_mut::visit_local_mut(self, local);
-        self.receiver_types.record_local(local);
-    }
-
-    fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
-        syn::visit_mut::visit_expr_call_mut(self, call);
-        let Some(key) = call_target_key(&call.func, self.receiver_types.module_name()) else {
+impl ReceiverScopedCallArgRewrite for BorrowMutRefCallArgs<'_> {
+    fn rewrite_expr_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprCall,
+    ) {
+        let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
         let Some(param_kinds) = self.targets.get(&key) else {
@@ -6850,7 +6835,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
                 borrow_mut_ref_call_arg(
                     arg,
                     kind,
-                    &self.receiver_types,
+                    receiver_types,
                     self.direct_trait_impls,
                     self.mut_ref_trait_impls,
                 );
@@ -6858,11 +6843,14 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
         }
     }
 
-    fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
-        syn::visit_mut::visit_expr_method_call_mut(self, call);
-        let receiver_type = self.receiver_types.receiver_type_for_expr(&call.receiver);
+    fn rewrite_expr_method_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprMethodCall,
+    ) {
+        let receiver_type = receiver_types.receiver_type_for_expr(&call.receiver);
         let Some(param_kinds) = self.method_targets.target_for_call(
-            self.receiver_types.module_name(),
+            receiver_types.module_name(),
             &call.method.to_string(),
             receiver_type.as_ref(),
         ) else {
@@ -6873,7 +6861,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
                 borrow_mut_ref_call_arg(
                     arg,
                     kind,
-                    &self.receiver_types,
+                    receiver_types,
                     self.direct_trait_impls,
                     self.mut_ref_trait_impls,
                 );
@@ -27933,6 +27921,59 @@ func main() {
         assert!(
             !output.contains("plain . fill (& mut other)"),
             "expected same-named value method not to inherit NeedsMut::fill coercion: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_keeps_receiver_facts_block_scoped() {
+        let main_file: syn::File = rust! {
+            pub struct NeedsMut;
+            impl NeedsMut {
+                pub fn fill(&self, mut values: &mut [String]) {}
+            }
+
+            pub struct TakesValue;
+            impl TakesValue {
+                pub fn fill(&self, mut values: Vec<String>) {}
+            }
+
+            pub fn call(mut values: Vec<String>, mut other: Vec<String>) {
+                let target: TakesValue = TakesValue;
+                {
+                    let target: NeedsMut = NeedsMut;
+                    target.fill(values);
+                }
+                target.fill(other);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("target . fill (& mut values)"),
+            "expected inner receiver fact to borrow the matching argument: {output}"
+        );
+        assert!(
+            output.contains("target . fill (other)"),
+            "expected outer receiver fact to be restored after the nested block: {output}"
+        );
+        assert!(
+            !output.contains("target . fill (& mut other)"),
+            "expected nested receiver fact not to leak after the block: {output}"
         );
     }
 
