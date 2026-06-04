@@ -34,6 +34,7 @@ mod loop_control;
 pub mod manifest;
 mod named_returns;
 mod noop_interfaces;
+mod package_context;
 pub(crate) mod passes;
 mod phantom_type_params;
 mod receiver_method_targets;
@@ -75,6 +76,7 @@ use item_reachability::{
     impl_method_reachability_name, reachable_item_for_names,
     trait_impl_can_follow_self_reachability,
 };
+use package_context::{CurrentGoPackageNameGuard, MainPackageVarModeGuard};
 use phantom_type_params::add_fields_for_unused_type_params;
 use proc_macro2::Span;
 use quote::ToTokens;
@@ -111,7 +113,6 @@ thread_local! {
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
@@ -125,7 +126,6 @@ thread_local! {
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
-    static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
     static LOCAL_CONST_VALUES: RefCell<Vec<BTreeMap<String, ConstValue>>> = const { RefCell::new(Vec::new()) };
 }
@@ -201,16 +201,8 @@ fn finish_reachability_fingerprint(hasher: Sha256) -> String {
         .collect()
 }
 
-struct MainPackageVarModeGuard {
-    previous: bool,
-}
-
 struct SharedCaptureNamesGuard {
     previous: std::collections::HashSet<String>,
-}
-
-struct CurrentGoPackageNameGuard {
-    previous: Option<String>,
 }
 
 struct ExternalInterfaceImplementorsGuard {
@@ -286,17 +278,6 @@ struct TypeParamKindsGuard {
     previous: Vec<(String, Option<typeinfer::TypeKind>)>,
 }
 
-impl MainPackageVarModeGuard {
-    fn set(current: bool) -> Self {
-        let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
-            let previous = *value.borrow();
-            *value.borrow_mut() = current;
-            previous
-        });
-        Self { previous }
-    }
-}
-
 fn local_binding_ident_for_ast(ident: &ast::Ident<'_>) -> syn::Ident {
     record_mapping(&ident.name_pos, Some(ident.name));
     local_binding_ident(ident.name)
@@ -316,14 +297,6 @@ impl Drop for TypeParamKindsGuard {
     }
 }
 
-impl Drop for MainPackageVarModeGuard {
-    fn drop(&mut self) {
-        MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
-            *value.borrow_mut() = self.previous;
-        });
-    }
-}
-
 impl SharedCaptureNamesGuard {
     fn extend(names: impl IntoIterator<Item = String>) -> Self {
         let previous = SHARED_CAPTURE_NAMES.with(|shared| {
@@ -339,25 +312,6 @@ impl Drop for SharedCaptureNamesGuard {
     fn drop(&mut self) {
         SHARED_CAPTURE_NAMES.with(|shared| {
             *shared.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl CurrentGoPackageNameGuard {
-    fn set(current: String) -> Self {
-        let previous = CURRENT_GO_PACKAGE_NAME.with(|name| {
-            let previous = name.borrow().clone();
-            *name.borrow_mut() = Some(current);
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for CurrentGoPackageNameGuard {
-    fn drop(&mut self) {
-        CURRENT_GO_PACKAGE_NAME.with(|name| {
-            *name.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -18181,7 +18135,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 }
                 let is_top_level_var = TYPE_ENV.with(|env| {
                     let env = env.borrow();
-                    !MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| *value.borrow())
+                    !package_context::main_package_vars_are_locals()
                         && env.is_top_level_var(ident_name)
                         && !env.is_const(ident_name)
                         && env
@@ -21349,16 +21303,7 @@ fn comma_ok_type_assert_concrete_expr(
 }
 
 fn current_package_qualified_interface_name(interface_name: &str) -> String {
-    if interface_name == "error" || interface_name.contains('.') {
-        return interface_name.to_string();
-    }
-    CURRENT_GO_PACKAGE_NAME.with(|package| {
-        package
-            .borrow()
-            .as_ref()
-            .map(|package| format!("{package}.{interface_name}"))
-            .unwrap_or_else(|| interface_name.to_string())
-    })
+    package_context::qualify_interface_name(interface_name)
 }
 
 fn external_interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
