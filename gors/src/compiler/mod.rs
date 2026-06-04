@@ -20371,96 +20371,8 @@ fn pointer_cell_inner_type(ty: &syn::Type) -> Option<syn::Type> {
 impl From<ast::Expr<'_>> for syn::Type {
     fn from(expr: ast::Expr) -> Self {
         match expr {
-            ast::Expr::Ident(ident) if ident.name == "any" => {
-                syn::parse_quote! { Box<dyn std::any::Any> }
-            }
-            ast::Expr::Ident(ident) if ident.name == "complex64" => {
-                syn::parse_quote! { crate::builtin::Complex64 }
-            }
-            ast::Expr::Ident(ident) if ident.name == "complex128" => {
-                syn::parse_quote! { crate::builtin::Complex128 }
-            }
-            ast::Expr::Ident(ident) if ident.name == "error" => {
-                syn::parse_quote! { Box<dyn crate::builtin::error> }
-            }
-            ast::Expr::Ident(ident) => {
-                let mut segments = syn::punctuated::Punctuated::new();
-                segments.push(syn::PathSegment {
-                    ident: ident.into(),
-                    arguments: syn::PathArguments::None,
-                });
-                Self::Path(syn::TypePath {
-                    qself: None,
-                    path: syn::Path {
-                        leading_colon: None,
-                        segments,
-                    },
-                })
-            }
-            ast::Expr::StarExpr(star_expr) => {
-                let inner: syn::Type = (*star_expr.x).into();
-                syn::parse_quote! { crate::builtin::GorsPtr<#inner> }
-            }
-            ast::Expr::ArrayType(array_type) => {
-                let elem: syn::Type = (*array_type.elt).into();
-                if let Some(len) = array_type.len {
-                    let len_expr = array_len_expr(&len);
-                    syn::parse_quote! { [#elem; #len_expr] }
-                } else {
-                    // Slice: []T → Vec<T>
-                    syn::parse_quote! { Vec<#elem> }
-                }
-            }
-            ast::Expr::SelectorExpr(selector_expr) => {
-                if matches!(&*selector_expr.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-                    && selector_expr.sel.name == "Pointer"
-                {
-                    return syn::parse_quote! { usize };
-                }
-                let path: syn::ExprPath = selector_expr.into();
-                Self::Path(syn::TypePath {
-                    qself: None,
-                    path: path.path,
-                })
-            }
-            ast::Expr::InterfaceType(_) => {
-                syn::parse_quote! { Box<dyn std::any::Any> }
-            }
-            ast::Expr::MapType(map_type) => {
-                let key: syn::Type = (*map_type.key).into();
-                let value: syn::Type = (*map_type.value).into();
-                syn::parse_quote! { std::collections::HashMap<#key, #value> }
-            }
-            ast::Expr::IndexExpr(index_expr) => {
-                let base: syn::Type = (*index_expr.x).into();
-                let arg: syn::Type = (*index_expr.index).into();
-                type_with_generic_args(base, vec![arg])
-            }
-            ast::Expr::IndexListExpr(index_list_expr) => {
-                let base: syn::Type = (*index_list_expr.x).into();
-                let args = index_list_expr
-                    .indices
-                    .into_iter()
-                    .map(syn::Type::from)
-                    .collect();
-                type_with_generic_args(base, args)
-            }
             ast::Expr::StructType(struct_type) => anonymous_struct_type(struct_type),
-            ast::Expr::FuncType(func_type) => shared_func_type_from_ast(&func_type),
-            ast::Expr::ChanType(chan_type) => {
-                // chan T → crate::builtin::Chan<T>
-                let inner: syn::Type = (*chan_type.value).into();
-                syn::parse_quote! { crate::builtin::Chan<#inner> }
-            }
-            ast::Expr::Ellipsis(ellipsis) => {
-                if let Some(elt) = ellipsis.elt {
-                    let inner: syn::Type = (*elt).into();
-                    syn::parse_quote! { Vec<#inner> }
-                } else {
-                    syn::parse_quote! { Vec<Box<dyn std::any::Any>> }
-                }
-            }
-            _ => syn::parse_quote! { () },
+            other => type_from_expr_ref(&other),
         }
     }
 }
@@ -25468,6 +25380,40 @@ var X int
             "crate :: builtin :: Complex64"
         );
         assert_eq!(quote! { #named_crate_ty }.to_string(), "crate_");
+    }
+
+    #[test]
+    fn syn_type_from_ast_expr_maps_go_primitives_without_postpass() {
+        fn ident(name: &'static str) -> crate::ast::Ident<'static> {
+            crate::ast::Ident {
+                name_pos: crate::token::Position::default(),
+                name,
+                obj: None,
+            }
+        }
+
+        let int_ty: syn::Type = crate::ast::Expr::Ident(ident("int")).into();
+        let string_ty: syn::Type = crate::ast::Expr::Ident(ident("string")).into();
+        let byte_slice_ty: syn::Type = crate::ast::Expr::ArrayType(crate::ast::ArrayType {
+            lbrack: crate::token::Position::default(),
+            len: None,
+            elt: Box::new(crate::ast::Expr::Ident(ident("byte"))),
+        })
+        .into();
+        let map_ty: syn::Type = crate::ast::Expr::MapType(crate::ast::MapType {
+            map: crate::token::Position::default(),
+            key: Box::new(crate::ast::Expr::Ident(ident("string"))),
+            value: Box::new(crate::ast::Expr::Ident(ident("uint64"))),
+        })
+        .into();
+
+        assert_eq!(quote! { #int_ty }.to_string(), "isize");
+        assert_eq!(quote! { #string_ty }.to_string(), "String");
+        assert_eq!(quote! { #byte_slice_ty }.to_string(), "Vec < u8 >");
+        assert_eq!(
+            quote! { #map_ty }.to_string(),
+            "std :: collections :: HashMap < String , u64 >"
+        );
     }
 
     #[test]

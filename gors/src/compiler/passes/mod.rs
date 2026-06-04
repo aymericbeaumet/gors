@@ -4,14 +4,12 @@ mod flatten_block;
 mod hoist_use;
 mod index_cast;
 mod inject_channel;
-mod map_type;
 mod nil_check;
 mod simplify_return;
 mod string_lit;
 mod type_conversion;
 
 pub fn pass(file: &mut syn::File) {
-    map_type::pass(file);
     type_conversion::pass(file);
     inject_channel::pass(file);
     nil_check::pass(file);
@@ -25,7 +23,6 @@ pub fn pass(file: &mut syn::File) {
 }
 
 pub fn pass_for_imported_package(file: &mut syn::File) {
-    map_type::pass(file);
     type_conversion::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);
