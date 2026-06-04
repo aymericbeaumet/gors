@@ -12,8 +12,6 @@ type pair struct {
 
 type byKey []pair
 
-var _ sort.Interface = sort.IntSlice([]int{1, 2, 3})
-
 func (p byKey) Len() int {
 	return len(p)
 }
@@ -300,6 +298,7 @@ func case_sort_sort() {
 	fmt.Println(values)
 
 	records := byKey{{Key: 3, Name: "gamma"}, {Key: 1, Name: "alpha"}, {Key: 2, Name: "beta"}}
+	// gors:stdlib-cover sort::Interface
 	sort.Sort(records)
 	fmt.Println(records[0].Name, records[2].Name)
 }

@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 2,
     "caseCount": 12418,
-    "passingCaseCount": 226,
-    "unsupportedCaseCount": 12192,
+    "passingCaseCount": 227,
+    "unsupportedCaseCount": 12191,
     "fixtureCount": 81
   },
   "groups": [
@@ -106348,8 +106348,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 37,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 34,
+        "passingCaseCount": 4,
+        "unsupportedCaseCount": 33,
         "fixtureCount": 0
       },
       "cases": [
@@ -106493,8 +106493,10 @@
           "title": "Interface",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
+          "status": "passing",
+          "fixtures": [
+            "sort"
+          ],
           "reason": ""
         },
         {

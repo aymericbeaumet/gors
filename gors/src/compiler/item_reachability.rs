@@ -66,6 +66,9 @@ pub(super) fn reachable_item_for_names(
     let syn::Item::Impl(item_impl) = item else {
         return None;
     };
+    if super::generated_attrs::attrs_preserve_for_dce(&item_impl.attrs) {
+        return Some(item.clone());
+    }
 
     let trait_reachable = item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
         path.segments.last().is_some_and(|seg| {

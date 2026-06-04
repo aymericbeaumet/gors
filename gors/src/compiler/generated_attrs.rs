@@ -1,7 +1,16 @@
+const DCE_PRESERVE_DOC: &str = "gors:preserve-imported-interface-impl";
+
 pub(super) fn allow_dead_code(attrs: &mut Vec<syn::Attribute>) {
     let has_attr = attrs.iter().any(attribute_allows_dead_code);
     if !has_attr {
         attrs.push(syn::parse_quote!(#[allow(dead_code)]));
+    }
+}
+
+pub(super) fn preserve_for_dce(attrs: &mut Vec<syn::Attribute>) {
+    allow_dead_code(attrs);
+    if !attrs.iter().any(attribute_preserves_for_dce) {
+        attrs.push(syn::parse_quote!(#[doc = #DCE_PRESERVE_DOC]));
     }
 }
 
@@ -42,4 +51,24 @@ pub(super) fn attribute_allows_dead_code(attr: &syn::Attribute) -> bool {
         Ok(())
     });
     allows_dead_code
+}
+
+pub(super) fn attribute_preserves_for_dce(attr: &syn::Attribute) -> bool {
+    let syn::Meta::NameValue(meta) = &attr.meta else {
+        return false;
+    };
+    if !meta.path.is_ident("doc") {
+        return false;
+    }
+    let syn::Expr::Lit(expr_lit) = &meta.value else {
+        return false;
+    };
+    let syn::Lit::Str(doc) = &expr_lit.lit else {
+        return false;
+    };
+    doc.value() == DCE_PRESERVE_DOC
+}
+
+pub(super) fn attrs_preserve_for_dce(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(attribute_preserves_for_dce)
 }

@@ -550,7 +550,7 @@ fn qualify_import_interface_name(package_name: &str, embedded_name: &str) -> Str
     }
 }
 
-fn value_method_list_satisfies(
+pub(super) fn value_method_list_satisfies(
     struct_method_list: &[String],
     pointer_methods: Option<&BTreeSet<String>>,
     required_methods: &[String],

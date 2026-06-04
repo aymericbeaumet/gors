@@ -4194,6 +4194,7 @@ struct SemanticReachabilityNode {
 struct SemanticReachabilityGraph {
     nodes: BTreeMap<SemanticItemId, SemanticReachabilityNode>,
     roots: std::collections::BTreeSet<SemanticItemId>,
+    preserved: std::collections::BTreeSet<SemanticItemId>,
 }
 
 impl SemanticReachabilityGraph {
@@ -4209,7 +4210,11 @@ impl SemanticReachabilityGraph {
             let item_names = item_reachability_names(&module.file.items);
             let top_level_types = top_level_item_types(&module.file.items, &module_names);
             for item in &module.file.items {
-                for id in semantic_item_ids_for_item(&module.mod_name, item) {
+                let ids = semantic_item_ids_for_item(&module.mod_name, item);
+                if item_has_preserve_attr(item) {
+                    graph.preserved.extend(ids.iter().cloned());
+                }
+                for id in ids {
                     graph.nodes.entry(id).or_default();
                 }
             }
@@ -4252,6 +4257,13 @@ impl SemanticReachabilityGraph {
                 top_level_item_tuple_return_types(&module.file.items, &module_names);
             let trait_supertraits = trait_supertrait_names(&module.file.items);
             let trait_methods = trait_method_names(&module.file.items);
+            let trait_impl_ids =
+                semantic_trait_impl_ids_by_trait(&module.mod_name, &module.file.items);
+            let external_trait_impl_ids = semantic_external_trait_impl_ids_by_module(
+                &module.mod_name,
+                &module.file.items,
+                &module_names,
+            );
             let context = RefCollectionContext {
                 module_names: &module_names,
                 item_names: &item_names,
@@ -4283,11 +4295,16 @@ impl SemanticReachabilityGraph {
                 }
                 let mut item_clone = item.clone();
                 let (local_refs, external_refs) = collect_refs_from_item(&mut item_clone, &context);
-                let local_ref_ids = local_refs
+                let mut local_ref_ids = local_refs
                     .iter()
                     .filter_map(|name| name_index.get(name))
                     .flat_map(|ids| ids.iter().cloned())
                     .collect::<std::collections::BTreeSet<_>>();
+                for module in external_refs.keys() {
+                    if let Some(impl_ids) = external_trait_impl_ids.get(module) {
+                        local_ref_ids.extend(impl_ids.iter().cloned());
+                    }
+                }
                 let external_refs = external_refs
                     .into_iter()
                     .map(|(module, refs)| {
@@ -4307,8 +4324,14 @@ impl SemanticReachabilityGraph {
                         &item_names,
                         &top_level_types,
                     );
+                    let trait_impl_ref_ids = (source_id.kind == SemanticItemKind::Trait)
+                        .then(|| trait_impl_ids.get(&source_id.name))
+                        .flatten();
                     let node = graph.nodes.entry(source_id).or_default();
                     node.local_refs.extend(expansion_ref_ids);
+                    if let Some(impl_ids) = trait_impl_ref_ids {
+                        node.local_refs.extend(impl_ids.iter().cloned());
+                    }
                     node.local_refs.extend(local_ref_ids.iter().cloned());
                     for (module, refs) in &external_refs {
                         node.external_refs
@@ -4386,6 +4409,12 @@ impl SemanticReachabilityGraph {
             .keys()
             .filter(|id| id.module == module && roots.contains(&id.name))
             .cloned()
+            .chain(
+                self.preserved
+                    .iter()
+                    .filter(|id| id.module == module)
+                    .cloned(),
+            )
             .collect()
     }
 
@@ -4480,6 +4509,75 @@ fn semantic_item_name_index(
         }
     }
     index
+}
+
+fn item_has_preserve_attr(item: &syn::Item) -> bool {
+    match item {
+        syn::Item::Impl(item_impl) => generated_attrs::attrs_preserve_for_dce(&item_impl.attrs),
+        _ => false,
+    }
+}
+
+fn semantic_trait_impl_ids_by_trait(
+    module: &str,
+    items: &[syn::Item],
+) -> BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> {
+    let mut ids_by_trait = BTreeMap::new();
+    for item in items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some((_, trait_path, _)) = &item_impl.trait_ else {
+            continue;
+        };
+        let Some(trait_name) = trait_path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+        else {
+            continue;
+        };
+        ids_by_trait
+            .entry(trait_name)
+            .or_insert_with(std::collections::BTreeSet::new)
+            .extend(semantic_item_ids_for_item(module, item));
+    }
+    ids_by_trait
+}
+
+fn semantic_external_trait_impl_ids_by_module(
+    module: &str,
+    items: &[syn::Item],
+    module_names: &std::collections::HashSet<String>,
+) -> BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> {
+    let mut ids_by_module = BTreeMap::new();
+    for item in items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some((_, trait_path, _)) = &item_impl.trait_ else {
+            continue;
+        };
+        let trait_modules = trait_path
+            .segments
+            .iter()
+            .filter_map(|segment| {
+                let module_name = segment.ident.to_string();
+                module_names.contains(&module_name).then_some(module_name)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if trait_modules.is_empty() {
+            continue;
+        }
+        let impl_ids = semantic_item_ids_for_item(module, item);
+        for trait_module in trait_modules {
+            ids_by_module
+                .entry(trait_module)
+                .or_insert_with(std::collections::BTreeSet::new)
+                .extend(impl_ids.iter().cloned());
+        }
+    }
+    ids_by_module
 }
 
 fn semantic_item_ids_for_item(module: &str, item: &syn::Item) -> Vec<SemanticItemId> {
@@ -7513,7 +7611,8 @@ fn debug_assert_semantic_external_refs(
     };
     debug_assert_eq!(
         refs_to_btree(refs),
-        semantic_graph.reachable_external_roots_for_module_roots(module, roots)
+        semantic_graph.reachable_external_roots_for_module_roots(module, roots),
+        "semantic reachability external refs mismatch for module {module} roots {roots:?}"
     );
 }
 
@@ -22288,8 +22387,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             &methods,
                             exposes_any,
                         );
+                        let mut attrs = vec![];
+                        if is_main_package && trait_name.contains('.') {
+                            generated_attrs::preserve_for_dce(&mut attrs);
+                        }
                         items.push(syn::Item::Impl(syn::ItemImpl {
-                            attrs: vec![],
+                            attrs,
                             defaultness: None,
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
@@ -22347,8 +22450,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             &methods,
                             exposes_any,
                         );
+                        let mut attrs = vec![];
+                        if is_main_package && embedded_name.contains('.') {
+                            generated_attrs::preserve_for_dce(&mut attrs);
+                        }
                         items.push(syn::Item::Impl(syn::ItemImpl {
-                            attrs: vec![],
+                            attrs,
                             defaultness: None,
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
@@ -22479,11 +22586,12 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 }
             }
         }
-        items.extend(imported_interface_impls::pointer_impls_for_local_structs(
+        items.extend(imported_interface_impls::impls_for_local_structs(
             &struct_methods,
             &struct_pointer_methods,
             &methods,
             &method_generics,
+            is_main_package,
             &mut emitted_interface_impls,
             &mut emitted_borrowed_pointer_interface_impls,
         ));
@@ -30301,6 +30409,70 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
     }
 
     #[test]
+    fn compile_program_multi_emits_imported_value_interface_impls_for_local_named_slices() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/sortish"
+
+type pair struct {
+	Key int
+}
+
+type byKey []pair
+
+func (p byKey) Len() int {
+	return len(p)
+}
+
+func (p byKey) Less(i int, j int) bool {
+	return p[i].Key < p[j].Key
+}
+
+func (p byKey) Swap(i int, j int) {
+	p[i], p[j] = p[j], p[i]
+}
+
+func main() {
+	records := byKey{{Key: 2}, {Key: 1}}
+	sortish.Sort(records)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("sortish/sortish.go").as_path(),
+            r#"
+package sortish
+
+type Interface interface {
+	Len() int
+	Less(i int, j int) bool
+	Swap(i int, j int)
+}
+
+func Sort(data Interface) {
+	data.Swap(0, 1)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("impl sortish::Interface for byKey")
+                || main_rs.contains("impl sortish :: Interface for byKey")
+                || main_rs.contains("impl crate::sortish::Interface for byKey")
+                || main_rs.contains("impl crate :: sortish :: Interface for byKey"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_skips_transitive_imported_interface_impls_for_local_structs() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -30546,6 +30718,9 @@ func main() {
                 .get(2)
                 .is_some_and(super::generated_attrs::attribute_allows_dead_code)
         );
+
+        super::generated_attrs::preserve_for_dce(&mut missing);
+        assert!(super::generated_attrs::attrs_preserve_for_dce(&missing));
     }
 
     #[test]
@@ -32347,6 +32522,190 @@ func B() {}
             "{external_roots:?}"
         );
         assert!(!external_roots.contains_key("unused"), "{external_roots:?}");
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_external_trait_impls_from_module_refs() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub struct byKey;
+
+                    impl crate::sortish::Interface for byKey {
+                        fn Swap(&mut self) {
+                            builtin::len();
+                        }
+                    }
+
+                    pub fn main() {
+                        sortish::Sort();
+                    }
+                },
+                true,
+            ),
+        );
+        modules.insert(
+            "sortish".to_string(),
+            semantic_test_module(
+                "sortish",
+                rust! {
+                    pub trait Interface {
+                        fn Swap(&mut self);
+                    }
+
+                    pub fn Sort() {}
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub fn len() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "__main__",
+            &std::collections::HashSet::from(["main".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("sortish")
+                .is_some_and(|refs| refs.contains("Sort") && refs.contains("Interface")),
+            "{external_roots:?}"
+        );
+        assert!(
+            external_roots
+                .get("builtin")
+                .is_some_and(|refs| refs.contains("len")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_trait_root_impl_bodies() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "sortish".to_string(),
+            semantic_test_module(
+                "sortish",
+                rust! {
+                    pub trait Interface {
+                        fn Swap(&mut self);
+                    }
+
+                    pub struct __GorsNoopInterface;
+
+                    impl Interface for __GorsNoopInterface {
+                        fn Swap(&mut self) {
+                            builtin::panic_value();
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub fn panic_value() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "sortish",
+            &std::collections::HashSet::from(["Interface".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("builtin")
+                .is_some_and(|refs| refs.contains("panic_value")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_preserved_trait_impls() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            semantic_test_module(
+                "__main__",
+                rust! {
+                    pub struct byKey;
+
+                    #[allow(dead_code)]
+                    #[doc = "gors:preserve-imported-interface-impl"]
+                    impl crate::sortish::Interface for byKey {
+                        fn Swap(&mut self) {
+                            builtin::len();
+                        }
+                    }
+
+                    pub fn main() {
+                        let _unused = 0;
+                    }
+                },
+                true,
+            ),
+        );
+        modules.insert(
+            "sortish".to_string(),
+            semantic_test_module(
+                "sortish",
+                rust! {
+                    pub trait Interface {
+                        fn Swap(&mut self);
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub fn len() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, true);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "__main__",
+            &std::collections::HashSet::from(["main".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("sortish")
+                .is_some_and(|refs| refs.contains("Interface")),
+            "{external_roots:?}"
+        );
+        assert!(
+            external_roots
+                .get("builtin")
+                .is_some_and(|refs| refs.contains("len")),
+            "{external_roots:?}"
+        );
     }
 
     #[test]
