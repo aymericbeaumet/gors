@@ -61,14 +61,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr,
+    arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr, dedupe_syn_types,
     direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
     impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
     is_box_type_with_any_bound, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
     item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
     receiver_expr_needs_scoped_temp, self_type_reachability_names, slice_type_inner,
-    syn_expr_matches_target, syn_type_matches, type_mentions_name, type_param_bound_matches,
-    vec_type_inner,
+    syn_expr_matches_target, type_mentions_name, type_param_bound_matches, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -4932,19 +4931,6 @@ fn external_interface_implementors_for_program(
         }
     }
     implementors
-}
-
-fn dedupe_syn_types(types: &mut Vec<syn::Type>) {
-    let mut deduped = Vec::new();
-    for ty in std::mem::take(types) {
-        if !deduped
-            .iter()
-            .any(|existing| syn_type_matches(existing, &ty))
-        {
-            deduped.push(ty);
-        }
-    }
-    *types = deduped;
 }
 
 pub fn import_path_to_filename(import_path: &str) -> String {
@@ -29024,30 +29010,6 @@ func main() {
         assert!(!output.contains("impl ReadWriter for Source"), "{output}");
         assert!(!output.contains("impl Reader for Source"), "{output}");
         assert!(!output.contains("impl Writer for Source"), "{output}");
-    }
-
-    #[test]
-    fn dedupe_syn_types_matches_parameterized_types_structurally() {
-        let mut types: Vec<syn::Type> = vec![
-            rust! { crate::pkg::Thing },
-            rust! { crate::pkg::Thing },
-            rust! { crate::builtin::GorsPtr<crate::pkg::Thing> },
-            rust! { crate::builtin::GorsPtr<crate::pkg::Thing> },
-            rust! { crate::pkg::Other },
-        ];
-
-        super::dedupe_syn_types(&mut types);
-
-        assert_eq!(types.len(), 3);
-        let [thing, pointer, other] = types.as_slice() else {
-            return;
-        };
-        assert!(super::syn_type_matches(thing, &rust! { crate::pkg::Thing }));
-        assert!(super::syn_type_matches(
-            pointer,
-            &rust! { crate::builtin::GorsPtr<crate::pkg::Thing> }
-        ));
-        assert!(super::syn_type_matches(other, &rust! { crate::pkg::Other }));
     }
 
     #[test]

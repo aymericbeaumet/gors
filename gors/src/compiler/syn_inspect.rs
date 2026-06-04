@@ -432,6 +432,19 @@ pub(super) fn syn_type_matches(left: &syn::Type, right: &syn::Type) -> bool {
     }
 }
 
+pub(super) fn dedupe_syn_types(types: &mut Vec<syn::Type>) {
+    let mut deduped = Vec::new();
+    for ty in std::mem::take(types) {
+        if !deduped
+            .iter()
+            .any(|existing| syn_type_matches(existing, &ty))
+        {
+            deduped.push(ty);
+        }
+    }
+    *types = deduped;
+}
+
 pub(super) fn impl_trait_targets_match(left: &syn::Item, right: &syn::Item) -> bool {
     let (syn::Item::Impl(left), syn::Item::Impl(right)) = (left, right) else {
         return false;
@@ -1088,6 +1101,30 @@ mod tests {
         assert!(!syn_type_matches(&shared_ref, &mut_ref));
         assert!(syn_type_matches(&tuple, &same_tuple));
         assert!(!syn_type_matches(&tuple, &short_tuple));
+    }
+
+    #[test]
+    fn dedupe_syn_types_matches_parameterized_types_structurally() {
+        let mut types: Vec<syn::Type> = vec![
+            parse_quote! { crate::pkg::Thing },
+            parse_quote! { crate::pkg::Thing },
+            parse_quote! { crate::builtin::GorsPtr<crate::pkg::Thing> },
+            parse_quote! { crate::builtin::GorsPtr<crate::pkg::Thing> },
+            parse_quote! { crate::pkg::Other },
+        ];
+
+        dedupe_syn_types(&mut types);
+
+        assert_eq!(types.len(), 3);
+        let [thing, pointer, other] = types.as_slice() else {
+            return;
+        };
+        assert!(syn_type_matches(thing, &parse_quote! { crate::pkg::Thing }));
+        assert!(syn_type_matches(
+            pointer,
+            &parse_quote! { crate::builtin::GorsPtr<crate::pkg::Thing> }
+        ));
+        assert!(syn_type_matches(other, &parse_quote! { crate::pkg::Other }));
     }
 
     #[test]
