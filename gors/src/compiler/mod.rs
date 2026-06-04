@@ -19,6 +19,7 @@ mod call_arg_rewrites;
 mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
+mod go_strings;
 mod imported_interface_impls;
 mod interface_hooks;
 mod interface_impls;
@@ -48,6 +49,11 @@ use crate::{ast, token};
 use call_arg_rewrites::{
     borrow_mut_ref_call_args, borrow_mutated_vec_params, clone_vec_value_call_args,
     restore_vec_newtype_method_receivers,
+};
+use go_strings::{
+    byte_slice_conversion_bytes_vec_expr, byte_vec_expr, const_eval_string_bytes,
+    interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
+    string_bytes_vec_expr_for_expr, string_const_bytes_fn_ident,
 };
 use item_reachability::{
     impl_method_reachability_name, reachable_item_for_names,
@@ -97,7 +103,6 @@ thread_local! {
     static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static STRING_CONST_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
@@ -884,9 +889,7 @@ fn get_func_returns(name: &str) -> Vec<typeinfer::GoType> {
 }
 
 fn set_type_env(type_env: typeinfer::TypeEnv) {
-    STRING_CONST_NAMES.with(|names| {
-        *names.borrow_mut() = type_env.string_const_names();
-    });
+    go_strings::set_string_const_names(type_env.string_const_names());
     TYPE_ENV.with(|env| {
         *env.borrow_mut() = type_env;
     });
@@ -1070,27 +1073,6 @@ fn is_rust_keyword(name: &str) -> bool {
     )
 }
 
-fn is_string_const_fn(name: &str) -> bool {
-    STRING_CONST_NAMES.with(|names| names.borrow().contains(name))
-}
-
-fn is_active_string_const_fn(name: &str) -> bool {
-    is_string_const_fn(name) && TYPE_ENV.with(|env| env.borrow().is_const(name))
-}
-
-fn selector_string_const_key(selector_expr: &ast::SelectorExpr) -> Option<String> {
-    let ast::Expr::Ident(package) = &*selector_expr.x else {
-        return None;
-    };
-    Some(format!("{}.{}", package.name, selector_expr.sel.name))
-}
-
-fn is_active_selector_string_const_fn(selector_expr: &ast::SelectorExpr) -> bool {
-    selector_string_const_key(selector_expr)
-        .as_deref()
-        .is_some_and(is_active_string_const_fn)
-}
-
 /// Record a mapping if tracking is enabled.
 fn record_mapping(pos: &token::Position, name: Option<&str>) {
     let source = if pos.file.is_empty() {
@@ -1104,273 +1086,6 @@ fn record_mapping(pos: &token::Position, name: Option<&str>) {
         t.borrow_mut()
             .record_for_source(source, pos.line as u32, pos.column as u32, name);
     });
-}
-
-fn interpret_go_string_escapes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            result.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => result.push('\n'),
-            Some('t') => result.push('\t'),
-            Some('r') => result.push('\r'),
-            Some('\\') => result.push('\\'),
-            Some('"') => result.push('"'),
-            Some('\'') => result.push('\''),
-            Some('a') => result.push('\x07'),
-            Some('b') => result.push('\x08'),
-            Some('f') => result.push('\x0C'),
-            Some('v') => result.push('\x0B'),
-            Some('0') => result.push('\0'),
-            Some('x') => {
-                let hex: String = chars.by_ref().take(2).collect();
-                if let Ok(val) = u8::from_str_radix(&hex, 16) {
-                    result.push(val as char);
-                } else {
-                    result.push('\\');
-                    result.push('x');
-                    result.push_str(&hex);
-                }
-            }
-            Some('u') => {
-                let hex: String = chars.by_ref().take(4).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                    result.push(ch);
-                } else {
-                    result.push('\\');
-                    result.push('u');
-                    result.push_str(&hex);
-                }
-            }
-            Some('U') => {
-                let hex: String = chars.by_ref().take(8).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                    result.push(ch);
-                } else {
-                    result.push('\\');
-                    result.push('U');
-                    result.push_str(&hex);
-                }
-            }
-            Some(other) => {
-                // Octal escapes (e.g., \377)
-                if other.is_ascii_digit() {
-                    let mut oct = String::new();
-                    oct.push(other);
-                    for _ in 0..2 {
-                        if let Some(&next) = chars.as_str().chars().next().as_ref() {
-                            if next.is_ascii_digit() {
-                                oct.push(chars.next().unwrap_or('0'));
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    if let Ok(val) = u8::from_str_radix(&oct, 8) {
-                        result.push(val as char);
-                    } else {
-                        result.push('\\');
-                        result.push_str(&oct);
-                    }
-                } else {
-                    result.push('\\');
-                    result.push(other);
-                }
-            }
-            None => result.push('\\'),
-        }
-    }
-    result
-}
-
-fn interpreted_go_string_bytes(s: &str) -> Vec<u8> {
-    let mut result = Vec::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            let mut buf = [0u8; 4];
-            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-            continue;
-        }
-
-        match chars.next() {
-            Some('n') => result.push(b'\n'),
-            Some('t') => result.push(b'\t'),
-            Some('r') => result.push(b'\r'),
-            Some('\\') => result.push(b'\\'),
-            Some('"') => result.push(b'"'),
-            Some('\'') => result.push(b'\''),
-            Some('a') => result.push(0x07),
-            Some('b') => result.push(0x08),
-            Some('f') => result.push(0x0c),
-            Some('v') => result.push(0x0b),
-            Some('x') => {
-                let hex: String = chars.by_ref().take(2).collect();
-                if let Ok(val) = u8::from_str_radix(&hex, 16) {
-                    result.push(val);
-                } else {
-                    result.extend_from_slice(b"\\x");
-                    result.extend_from_slice(hex.as_bytes());
-                }
-            }
-            Some('u') => {
-                let hex: String = chars.by_ref().take(4).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                    let mut buf = [0u8; 4];
-                    result.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                } else {
-                    result.extend_from_slice(b"\\u");
-                    result.extend_from_slice(hex.as_bytes());
-                }
-            }
-            Some('U') => {
-                let hex: String = chars.by_ref().take(8).collect();
-                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                    let mut buf = [0u8; 4];
-                    result.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                } else {
-                    result.extend_from_slice(b"\\U");
-                    result.extend_from_slice(hex.as_bytes());
-                }
-            }
-            Some(other) if other.is_ascii_digit() => {
-                let mut oct = String::new();
-                oct.push(other);
-                for _ in 0..2 {
-                    if let Some(next) = chars.as_str().chars().next() {
-                        if next.is_ascii_digit() {
-                            oct.push(chars.next().unwrap_or('0'));
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                if let Ok(val) = u8::from_str_radix(&oct, 8) {
-                    result.push(val);
-                } else {
-                    result.push(b'\\');
-                    result.extend_from_slice(oct.as_bytes());
-                }
-            }
-            Some(other) => {
-                result.push(b'\\');
-                let mut buf = [0u8; 4];
-                result.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
-            }
-            None => result.push(b'\\'),
-        }
-    }
-    result
-}
-
-fn go_string_literal_bytes(lit: &ast::BasicLit) -> Option<Vec<u8>> {
-    if lit.kind != token::Token::STRING {
-        return None;
-    }
-    let raw = lit.value;
-    let inner = raw.get(1..raw.len().checked_sub(1)?)?;
-    if raw.starts_with('`') {
-        Some(
-            inner
-                .as_bytes()
-                .iter()
-                .copied()
-                .filter(|byte| *byte != b'\r')
-                .collect(),
-        )
-    } else {
-        Some(interpreted_go_string_bytes(inner))
-    }
-}
-
-fn byte_vec_expr(bytes: &[u8]) -> syn::Expr {
-    let elems: Vec<syn::Expr> = bytes
-        .iter()
-        .map(|byte| {
-            let lit = syn::LitInt::new(&format!("{byte}u8"), Span::mixed_site());
-            syn::parse_quote! { #lit }
-        })
-        .collect();
-    syn::parse_quote! { Vec::<u8>::from([#(#elems),*]) }
-}
-
-fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
-    syn::Ident::new(
-        &format!("__gors_string_const_bytes_{}", import_rust_name(name)),
-        Span::mixed_site(),
-    )
-}
-
-fn selector_string_const_bytes_path(selector_expr: &ast::SelectorExpr) -> Option<syn::Path> {
-    let mut path = selector_path_from_ref(selector_expr);
-    let last = path.segments.last_mut()?;
-    last.ident = string_const_bytes_fn_ident(selector_expr.sel.name);
-    Some(path)
-}
-
-fn const_eval_string_bytes(
-    expr: &ast::Expr,
-    values: &BTreeMap<String, Vec<u8>>,
-) -> Option<Vec<u8>> {
-    match expr {
-        ast::Expr::BasicLit(lit) => go_string_literal_bytes(lit),
-        ast::Expr::Ident(ident) => values.get(ident.name).cloned(),
-        ast::Expr::ParenExpr(paren) => const_eval_string_bytes(&paren.x, values),
-        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
-            let mut lhs = const_eval_string_bytes(&binary.x, values)?;
-            let rhs = const_eval_string_bytes(&binary.y, values)?;
-            lhs.extend(rhs);
-            Some(lhs)
-        }
-        _ => None,
-    }
-}
-
-fn string_bytes_vec_expr_for_expr(expr: &ast::Expr) -> Option<syn::Expr> {
-    match expr {
-        ast::Expr::BasicLit(lit) => go_string_literal_bytes(lit).map(|bytes| byte_vec_expr(&bytes)),
-        ast::Expr::Ident(ident) if is_active_string_const_fn(ident.name) => {
-            let ident = string_const_bytes_fn_ident(ident.name);
-            Some(syn::parse_quote! { #ident() })
-        }
-        ast::Expr::SelectorExpr(selector) if is_active_selector_string_const_fn(selector) => {
-            let path = selector_string_const_bytes_path(selector)?;
-            Some(syn::parse_quote! { #path() })
-        }
-        ast::Expr::ParenExpr(paren) => string_bytes_vec_expr_for_expr(&paren.x),
-        ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
-            let lhs = string_bytes_vec_expr_for_expr(&binary.x)?;
-            let rhs = string_bytes_vec_expr_for_expr(&binary.y)?;
-            Some(syn::parse_quote! {{
-                let mut __gors_string_bytes = #lhs;
-                __gors_string_bytes.extend_from_slice(&#rhs);
-                __gors_string_bytes
-            }})
-        }
-        _ => None,
-    }
-}
-
-fn byte_slice_conversion_bytes_vec_expr(expr: &ast::Expr) -> Option<syn::Expr> {
-    match expr {
-        ast::Expr::ParenExpr(paren) => byte_slice_conversion_bytes_vec_expr(&paren.x),
-        ast::Expr::CallExpr(call) => {
-            if special_type_conversion_kind(call) != Some(ir::SpecialTypeConversionKind::ByteSlice)
-            {
-                return None;
-            }
-            let args = call.args.as_deref()?;
-            let [arg] = args else {
-                return None;
-            };
-            string_bytes_vec_expr_for_expr(arg)
-        }
-        _ => None,
-    }
 }
 
 /// Convert a Go type constraint expression to Rust trait bounds.
@@ -3209,9 +2924,7 @@ fn compile_const_decl(gen_decl: ast::GenDecl) -> Result<Vec<syn::Item>, Compiler
             let is_str_type = matches!(&rust_type, syn::Type::Reference(r)
                 if matches!(&*r.elem, syn::Type::Path(tp) if tp.path.is_ident("str")));
             if is_str_type {
-                STRING_CONST_NAMES.with(|names| {
-                    names.borrow_mut().insert(ident.to_string());
-                });
+                go_strings::mark_string_const_fn(&ident);
                 let bytes_ident = string_const_bytes_fn_ident(name.name);
                 let bytes = evaluated_string_bytes.as_ref().map_or_else(
                     || {
