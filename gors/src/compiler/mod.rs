@@ -18412,6 +18412,86 @@ fn expr_is_current_receiver_self_pointer_field(
     .then(|| syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site()))
 }
 
+fn pointer_conversion_targets_receiver_type(expr: &ast::Expr, receiver_type_name: &str) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => {
+            pointer_conversion_targets_receiver_type(&paren.x, receiver_type_name)
+        }
+        ast::Expr::StarExpr(star) => {
+            type_env_name_from_type_expr(&star.x).is_some_and(|target| target == receiver_type_name)
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_unsafe_pointer_conversion_of_current_receiver(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::CallExpr(call) => {
+            if matches!(
+                call.fun.as_ref(),
+                ast::Expr::SelectorExpr(sel)
+                    if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
+                        && sel.sel.name == "Pointer"
+            ) && call
+                .args
+                .as_ref()
+                .and_then(|args| args.first())
+                .is_some_and(expr_is_current_receiver_name)
+            {
+                return true;
+            }
+            expr_contains_unsafe_pointer_conversion_of_current_receiver(&call.fun)
+                || call.args.as_ref().is_some_and(|args| {
+                    args.iter()
+                        .any(expr_contains_unsafe_pointer_conversion_of_current_receiver)
+                })
+        }
+        ast::Expr::ParenExpr(paren) => {
+            expr_contains_unsafe_pointer_conversion_of_current_receiver(&paren.x)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            expr_contains_unsafe_pointer_conversion_of_current_receiver(&selector.x)
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            expr_contains_unsafe_pointer_conversion_of_current_receiver(&unary.x)
+        }
+        _ => false,
+    }
+}
+
+fn expr_is_current_receiver_pointer_value(expr: &ast::Expr, receiver_type_name: &str) -> bool {
+    match expr {
+        ast::Expr::ParenExpr(paren) => {
+            expr_is_current_receiver_pointer_value(&paren.x, receiver_type_name)
+        }
+        expr if expr_is_current_receiver_name(expr) => true,
+        ast::Expr::CallExpr(call)
+            if pointer_conversion_targets_receiver_type(&call.fun, receiver_type_name) =>
+        {
+            let Some(args) = call.args.as_ref() else {
+                return false;
+            };
+            let [arg] = args.as_slice() else {
+                return false;
+            };
+            expr_is_current_receiver_pointer_value(arg, receiver_type_name)
+                || expr_contains_unsafe_pointer_conversion_of_current_receiver(arg)
+        }
+        _ => false,
+    }
+}
+
+fn compile_current_receiver_raw_pointer_field_assignment_rhs(
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Expr> {
+    let receiver_type_name = current_pointer_receiver_type_name()?;
+    expr_is_current_receiver_self_pointer_field(lhs, &receiver_type_name, env)?;
+    expr_is_current_receiver_pointer_value(rhs, &receiver_type_name)
+        .then(|| syn::parse_quote! { self as *mut Self })
+}
+
 fn compile_current_receiver_raw_pointer_comparison(
     binary_expr: &ast::BinaryExpr,
     env: &typeinfer::TypeEnv,
@@ -18482,6 +18562,23 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         };
         let other_ty = typeinfer::GoType::infer_expr(other, &TYPE_ENV.with(|e| e.borrow().clone()));
         let is_eq = op == token::Token::EQL;
+
+        if let Some(receiver_type_name) = current_pointer_receiver_type_name()
+            && let Some(field) = TYPE_ENV.with(|env| {
+                expr_is_current_receiver_self_pointer_field(
+                    other,
+                    &receiver_type_name,
+                    &env.borrow(),
+                )
+            })
+        {
+            let other_expr: syn::Expr = syn::parse_quote! { self.#field };
+            return if is_eq {
+                syn::parse_quote! { (#other_expr).is_null() }
+            } else {
+                syn::parse_quote! { !(#other_expr).is_null() }
+            };
+        }
 
         if matches!(other_ty, typeinfer::GoType::Error)
             || go_type_interface_name(&other_ty).is_some()
@@ -25475,7 +25572,15 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     other => other,
                 };
                 let (lhs_ty, rhs_ty) = infer_assignment_types(&lhs_ast, &rhs_ast);
-                let (self_slice_assignment, right_raw) =
+                let (self_slice_assignment, right_raw) = if let Some(right) = TYPE_ENV.with(|env| {
+                    compile_current_receiver_raw_pointer_field_assignment_rhs(
+                        &lhs_ast,
+                        &rhs_ast,
+                        &env.borrow(),
+                    )
+                }) {
+                    (false, right)
+                } else {
                     match compile_self_slice_assignment_rhs(&lhs_ast, rhs_ast) {
                         SelfSliceAssignmentRhs::Compiled(right) => (true, right),
                         SelfSliceAssignmentRhs::Original(rhs_ast) => {
@@ -25488,7 +25593,8 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             };
                             (false, right)
                         }
-                    };
+                    }
+                };
                 let mut right = coerce_assignment_expr(&lhs_ty, &rhs_ty, right_raw);
                 if !self_slice_assignment && !go_type_is_copy(&lhs_ty) {
                     take_rhs_lvalue_reads(&lhs_ast, &lhs_ty, &mut right);
@@ -26239,6 +26345,46 @@ func main() {
         assert!(
             !output.contains("self . next != self }"),
             "expected pointer receiver comparison not to need a generated-Rust cleanup: {output}"
+        );
+    }
+
+    #[test]
+    fn self_pointer_field_nil_and_unsafe_assignment_use_raw_receiver_pointer() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                type node struct {
+                    next *node
+                }
+
+                func (n *node) init() bool {
+                    if n.next == nil {
+                        n.next = (*node)(unsafe.Pointer(n))
+                    }
+                    return n.next == n
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("self . next) . is_null"),
+            "expected nil check on raw self-pointer field to use raw pointer null check: {output}"
+        );
+        assert!(
+            output.contains("self . next = self as * mut Self"),
+            "expected unsafe receiver assignment to preserve the raw self pointer: {output}"
+        );
+        assert!(
+            !output.contains("self . next = (< crate :: builtin :: GorsPtr"),
+            "expected raw self-pointer assignment not to materialize a GorsPtr default: {output}"
         );
     }
 
