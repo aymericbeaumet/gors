@@ -51,10 +51,8 @@ impl<'a> Tracker<'a> {
 
     pub(super) fn enter_impl(&mut self, item_impl: &syn::ItemImpl) -> Option<ReceiverTypeRef> {
         let previous = self.current_self_type.clone();
-        self.current_self_type = named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef {
-            module: Some(self.module_name.clone()),
-            name,
-        });
+        self.current_self_type = named_self_type(&item_impl.self_ty)
+            .map(|name| ReceiverTypeRef::new(Some(self.module_name.clone()), name));
         previous
     }
 

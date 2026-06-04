@@ -217,7 +217,7 @@ fn qualified_external_trait_path(
         && (path.leading_colon.is_some() || path.segments.len() > 1)
 }
 
-fn trait_impl_can_follow_self_reachability(
+pub(super) fn trait_impl_can_follow_self_reachability(
     path: &syn::Path,
     trait_name: &str,
     self_ty: &syn::Type,

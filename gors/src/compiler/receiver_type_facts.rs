@@ -13,6 +13,22 @@ use super::{
 pub(super) struct ReceiverTypeRef {
     pub(super) module: Option<String>,
     pub(super) name: String,
+    pub(super) type_arg: Option<Box<ReceiverTypeRef>>,
+}
+
+impl ReceiverTypeRef {
+    pub(super) fn new(module: Option<String>, name: String) -> Self {
+        Self {
+            module,
+            name,
+            type_arg: None,
+        }
+    }
+
+    fn with_type_arg(mut self, type_arg: Option<ReceiverTypeRef>) -> Self {
+        self.type_arg = type_arg.map(Box::new);
+        self
+    }
 }
 
 pub(super) type ReceiverTypeMap = std::collections::HashMap<String, ReceiverTypeRef>;
@@ -336,17 +352,14 @@ fn receiver_type_ref_from_go_type_with_default_module(
     match resolved_go_type(&go_type) {
         typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
             if let Some((package, ty)) = name.rsplit_once('.') {
-                Some(ReceiverTypeRef {
-                    module: Some(go_package_rust_module_name(package)),
-                    name: ty.to_string(),
-                })
+                Some(ReceiverTypeRef::new(
+                    Some(go_package_rust_module_name(package)),
+                    ty.to_string(),
+                ))
             } else if let Some(module) = default_module {
-                Some(ReceiverTypeRef {
-                    module: Some(module.to_string()),
-                    name,
-                })
+                Some(ReceiverTypeRef::new(Some(module.to_string()), name))
             } else {
-                Some(ReceiverTypeRef { module: None, name })
+                Some(ReceiverTypeRef::new(None, name))
             }
         }
         typeinfer::GoType::Pointer(inner) => {
@@ -374,6 +387,7 @@ pub(super) fn external_receiver_method_return_type(
                     None
                 } else {
                     receiver_type_ref_from_go_type(ret)
+                        .map(|ret| specialize_receiver_return_type(receiver_type, ret))
                 }
             })
         })
@@ -385,8 +399,22 @@ pub(super) fn external_receiver_method_return_type(
                 None
             } else {
                 receiver_type_ref_from_go_type_with_default_module(ret, Some(module))
+                    .map(|ret| specialize_receiver_return_type(receiver_type, ret))
             }
         })
+}
+
+fn specialize_receiver_return_type(
+    receiver_type: &ReceiverTypeRef,
+    return_type: ReceiverTypeRef,
+) -> ReceiverTypeRef {
+    if return_type.module == receiver_type.module
+        && return_type.name == "T"
+        && let Some(type_arg) = &receiver_type.type_arg
+    {
+        return (**type_arg).clone();
+    }
+    return_type
 }
 
 fn external_function_return_type(module: &str, function: &str) -> Option<ReceiverTypeRef> {
@@ -460,6 +488,9 @@ pub(super) fn receiver_type_from_init_expr(
                 {
                     return Some(receiver_type);
                 }
+                if is_external_module_value_call_path(&path.path, module_names) {
+                    return None;
+                }
                 if let Some(receiver_type) =
                     receiver_type_from_associated_call_path(&path.path, module_names, item_names)
                 {
@@ -470,7 +501,7 @@ pub(super) fn receiver_type_from_init_expr(
                     return Some(return_type.clone());
                 }
                 if item_names.contains(&name) {
-                    return Some(ReceiverTypeRef { module: None, name });
+                    return Some(ReceiverTypeRef::new(None, name));
                 }
             }
             receiver_type_from_init_expr(
@@ -546,6 +577,22 @@ fn external_function_return_type_from_path(
     }
 }
 
+fn is_external_module_value_call_path(
+    path: &syn::Path,
+    module_names: &std::collections::HashSet<String>,
+) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [krate, module, _] if krate == "crate" => module_names.contains(module),
+        [module, _] => module_names.contains(module),
+        _ => false,
+    }
+}
+
 pub(super) fn receiver_type_from_associated_call_path(
     path: &syn::Path,
     module_names: &std::collections::HashSet<String>,
@@ -558,19 +605,14 @@ pub(super) fn receiver_type_from_associated_call_path(
         .collect::<Vec<_>>();
     match segments.as_slice() {
         [krate, module, name, ..] if krate == "crate" && module_names.contains(module) => {
-            Some(ReceiverTypeRef {
-                module: Some(module.clone()),
-                name: name.clone(),
-            })
+            Some(ReceiverTypeRef::new(Some(module.clone()), name.clone()))
         }
-        [module, name, ..] if module_names.contains(module) => Some(ReceiverTypeRef {
-            module: Some(module.clone()),
-            name: name.clone(),
-        }),
-        [name, ..] if item_names.contains(name) && segments.len() > 1 => Some(ReceiverTypeRef {
-            module: None,
-            name: name.clone(),
-        }),
+        [module, name, ..] if module_names.contains(module) => {
+            Some(ReceiverTypeRef::new(Some(module.clone()), name.clone()))
+        }
+        [name, ..] if item_names.contains(name) && segments.len() > 1 => {
+            Some(ReceiverTypeRef::new(None, name.clone()))
+        }
         _ => None,
     }
 }
@@ -589,22 +631,22 @@ pub(super) fn receiver_type_from_path(
     let third = segments.next();
     match (first.as_deref(), second.as_deref(), third.as_deref()) {
         (Some("crate"), Some(module), Some(name)) if module_names.contains(module) => {
-            return Some(ReceiverTypeRef {
-                module: Some(module.to_string()),
-                name: name.to_string(),
-            });
+            return Some(
+                ReceiverTypeRef::new(Some(module.to_string()), name.to_string())
+                    .with_type_arg(first_receiver_type_arg(path, module_names)),
+            );
         }
         (Some(module), Some(name), _) if module_names.contains(module) => {
-            return Some(ReceiverTypeRef {
-                module: Some(module.to_string()),
-                name: name.to_string(),
-            });
+            return Some(
+                ReceiverTypeRef::new(Some(module.to_string()), name.to_string())
+                    .with_type_arg(first_receiver_type_arg(path, module_names)),
+            );
         }
         (Some(name), None, None) => {
-            return Some(ReceiverTypeRef {
-                module: None,
-                name: name.to_string(),
-            });
+            return Some(
+                ReceiverTypeRef::new(None, name.to_string())
+                    .with_type_arg(first_receiver_type_arg(path, module_names)),
+            );
         }
         _ => {}
     }
@@ -643,4 +685,42 @@ fn transparent_receiver_type_from_path(
 ) -> Option<ReceiverTypeRef> {
     let inner = first_type_arg_for_path_last_ident_any(path, &["Arc", "Box", "GorsPtr", "Mutex"])?;
     receiver_type_from_type(inner, module_names)
+}
+
+fn first_receiver_type_arg(
+    path: &syn::Path,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    let segment = path.segments.last()?;
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => receiver_type_from_type(ty, module_names),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn receiver_type_from_path_preserves_first_external_type_arg() {
+        let module_names = std::collections::HashSet::from(["sync__atomic".to_string()]);
+        let ty: syn::Type = syn::parse_quote! {
+            crate::sync__atomic::Pointer<poolChainElt>
+        };
+
+        let receiver = super::receiver_type_from_type(&ty, &module_names);
+        assert!(receiver.is_some(), "expected external receiver type");
+        let receiver = receiver.unwrap_or_else(|| super::ReceiverTypeRef::new(None, String::new()));
+
+        assert_eq!(receiver.module.as_deref(), Some("sync__atomic"));
+        assert_eq!(receiver.name, "Pointer");
+        let type_arg = receiver.type_arg.as_deref();
+        assert!(type_arg.is_some(), "expected concrete receiver type arg");
+        let fallback = super::ReceiverTypeRef::new(None, String::new());
+        let type_arg = type_arg.unwrap_or(&fallback);
+        assert_eq!(type_arg.module, None);
+        assert_eq!(type_arg.name, "poolChainElt");
+    }
 }

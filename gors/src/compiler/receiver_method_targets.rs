@@ -129,14 +129,8 @@ mod tests {
         targets.insert_receiver("main", "TakesValue", "fill", HashSet::new());
         targets.finalize_unambiguous_names();
 
-        let needs_mut = ReceiverTypeRef {
-            module: Some("main".to_string()),
-            name: "NeedsMut".to_string(),
-        };
-        let takes_value = ReceiverTypeRef {
-            module: Some("main".to_string()),
-            name: "TakesValue".to_string(),
-        };
+        let needs_mut = ReceiverTypeRef::new(Some("main".to_string()), "NeedsMut".to_string());
+        let takes_value = ReceiverTypeRef::new(Some("main".to_string()), "TakesValue".to_string());
 
         assert_eq!(
             targets.target_for_call("main", "fill", Some(&needs_mut)),

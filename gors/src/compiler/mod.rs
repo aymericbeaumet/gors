@@ -43,7 +43,10 @@ mod zero_values;
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident, noop_interface_ident};
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
-use item_reachability::{impl_method_reachability_name, reachable_item_for_names};
+use item_reachability::{
+    impl_method_reachability_name, reachable_item_for_names,
+    trait_impl_can_follow_self_reachability,
+};
 use proc_macro2::Span;
 use quote::ToTokens;
 use receiver_type_facts::{
@@ -4165,12 +4168,12 @@ impl SemanticReachabilityGraph {
                 top_level_item_tuple_return_types(&module.file.items, &module_names);
             let trait_supertraits = trait_supertrait_names(&module.file.items);
             let trait_methods = trait_method_names(&module.file.items);
-            let trait_impl_ids =
-                semantic_trait_impl_ids_by_trait(&module.mod_name, &module.file.items);
-            let external_trait_impl_ids = semantic_external_trait_impl_ids_by_module(
+            let noop_trait_impl_ids =
+                semantic_noop_trait_impl_ids_by_trait(&module.mod_name, &module.file.items);
+            let self_reachable_trait_impl_ids = semantic_self_reachable_trait_impl_ids_by_self(
                 &module.mod_name,
                 &module.file.items,
-                &module_names,
+                &top_level_names,
             );
             let context = RefCollectionContext {
                 module_names: &module_names,
@@ -4201,29 +4204,34 @@ impl SemanticReachabilityGraph {
                 if source_ids.is_empty() {
                     continue;
                 }
-                let mut item_clone = item.clone();
-                let (local_refs, external_refs) = collect_refs_from_item(&mut item_clone, &context);
-                let mut local_ref_ids = local_refs
-                    .iter()
-                    .filter_map(|name| name_index.get(name))
-                    .flat_map(|ids| ids.iter().cloned())
-                    .collect::<std::collections::BTreeSet<_>>();
-                for module in external_refs.keys() {
-                    if let Some(impl_ids) = external_trait_impl_ids.get(module) {
-                        local_ref_ids.extend(impl_ids.iter().cloned());
-                    }
-                }
-                let external_refs = external_refs
-                    .into_iter()
-                    .map(|(module, refs)| {
-                        (
-                            module,
-                            refs.into_iter().collect::<std::collections::BTreeSet<_>>(),
-                        )
-                    })
-                    .collect::<BTreeMap<_, _>>();
 
                 for source_id in source_ids {
+                    let source_roots = std::collections::HashSet::from([source_id.name.clone()]);
+                    let source_names = semantic_source_reachability_names(item, &source_id);
+                    let (local_ref_ids, external_refs) = reachable_item_for_names(
+                        item,
+                        &source_names,
+                        &item_names,
+                        &top_level_names,
+                        &source_roots,
+                    )
+                    .map(|mut source_item| {
+                        let (local_refs, external_refs) =
+                            collect_refs_from_item(&mut source_item, &context);
+                        let local_ref_ids =
+                            semantic_local_ref_ids_for_names(&local_refs, &name_index);
+                        let external_refs = external_refs
+                            .into_iter()
+                            .map(|(module, refs)| {
+                                (
+                                    module,
+                                    refs.into_iter().collect::<std::collections::BTreeSet<_>>(),
+                                )
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                        (local_ref_ids, external_refs)
+                    })
+                    .unwrap_or_default();
                     let expansion_ref_ids = semantic_expansion_ref_ids_for_name(
                         &source_id.name,
                         &name_index,
@@ -4232,12 +4240,19 @@ impl SemanticReachabilityGraph {
                         &item_names,
                         &top_level_types,
                     );
-                    let trait_impl_ref_ids = (source_id.kind == SemanticItemKind::Trait)
-                        .then(|| trait_impl_ids.get(&source_id.name))
+                    let self_trait_impl_ref_ids = (source_id.kind == SemanticItemKind::Type
+                        && !interface_hooks::is_noop_type_name(&source_id.name))
+                    .then(|| self_reachable_trait_impl_ids.get(&source_id.name))
+                    .flatten();
+                    let noop_trait_impl_ref_ids = (source_id.kind == SemanticItemKind::Trait)
+                        .then(|| noop_trait_impl_ids.get(&source_id.name))
                         .flatten();
                     let node = graph.nodes.entry(source_id).or_default();
                     node.local_refs.extend(expansion_ref_ids);
-                    if let Some(impl_ids) = trait_impl_ref_ids {
+                    if let Some(impl_ids) = self_trait_impl_ref_ids {
+                        node.local_refs.extend(impl_ids.iter().cloned());
+                    }
+                    if let Some(impl_ids) = noop_trait_impl_ref_ids {
                         node.local_refs.extend(impl_ids.iter().cloned());
                     }
                     node.local_refs.extend(local_ref_ids.iter().cloned());
@@ -4403,7 +4418,7 @@ fn semantic_synthetic_receiver_method_ids_for_module(
 }
 
 fn semantic_reachability_graph_enabled() -> bool {
-    cfg!(debug_assertions) || std::env::var_os("GORS_SEMANTIC_REACHABILITY_AUDIT").is_some()
+    std::env::var_os("GORS_SEMANTIC_REACHABILITY_AUDIT").is_some()
 }
 
 fn semantic_item_name_index(
@@ -4419,6 +4434,34 @@ fn semantic_item_name_index(
     index
 }
 
+fn semantic_local_ref_ids_for_names(
+    names: &std::collections::HashSet<String>,
+    name_index: &BTreeMap<String, std::collections::BTreeSet<SemanticItemId>>,
+) -> std::collections::BTreeSet<SemanticItemId> {
+    names
+        .iter()
+        .filter_map(|name| name_index.get(name).map(|ids| (name, ids)))
+        .flat_map(|(name, ids)| {
+            let has_precise_name = name.contains("::")
+                || ids.iter().any(|id| {
+                    !matches!(
+                        id.kind,
+                        SemanticItemKind::ImplItem | SemanticItemKind::TraitItem
+                    )
+                });
+            ids.iter()
+                .filter(move |id| {
+                    has_precise_name
+                        || !matches!(
+                            id.kind,
+                            SemanticItemKind::ImplItem | SemanticItemKind::TraitItem
+                        )
+                })
+                .cloned()
+        })
+        .collect()
+}
+
 fn item_has_preserve_attr(item: &syn::Item) -> bool {
     match item {
         syn::Item::Impl(item_impl) => generated_attrs::attrs_preserve_for_dce(&item_impl.attrs),
@@ -4426,11 +4469,12 @@ fn item_has_preserve_attr(item: &syn::Item) -> bool {
     }
 }
 
-fn semantic_trait_impl_ids_by_trait(
+fn semantic_self_reachable_trait_impl_ids_by_self(
     module: &str,
     items: &[syn::Item],
+    top_level_names: &std::collections::HashSet<String>,
 ) -> BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> {
-    let mut ids_by_trait = BTreeMap::new();
+    let mut ids_by_self = BTreeMap::new();
     for item in items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -4445,47 +4489,108 @@ fn semantic_trait_impl_ids_by_trait(
         else {
             continue;
         };
-        ids_by_trait
-            .entry(trait_name)
-            .or_insert_with(std::collections::BTreeSet::new)
-            .extend(semantic_item_ids_for_item(module, item));
+        let impl_ids = semantic_item_ids_for_item(module, item);
+        for self_name in self_type_reachability_names(&item_impl.self_ty) {
+            let names = std::collections::HashSet::from([self_name.clone()]);
+            if trait_impl_can_follow_self_reachability(
+                trait_path,
+                &trait_name,
+                &item_impl.self_ty,
+                &names,
+                top_level_names,
+            ) {
+                ids_by_self
+                    .entry(self_name)
+                    .or_insert_with(std::collections::BTreeSet::new)
+                    .extend(impl_ids.iter().cloned());
+            }
+        }
     }
-    ids_by_trait
+    ids_by_self
 }
 
-fn semantic_external_trait_impl_ids_by_module(
+fn semantic_noop_trait_impl_ids_by_trait(
     module: &str,
     items: &[syn::Item],
-    module_names: &std::collections::HashSet<String>,
 ) -> BTreeMap<String, std::collections::BTreeSet<SemanticItemId>> {
-    let mut ids_by_module = BTreeMap::new();
+    let mut ids_by_trait = BTreeMap::new();
     for item in items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
+        let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+            continue;
+        };
+        if !interface_hooks::is_noop_type_name(&self_name) {
+            continue;
+        }
         let Some((_, trait_path, _)) = &item_impl.trait_ else {
             continue;
         };
-        let trait_modules = trait_path
+        let Some(trait_name) = trait_path
             .segments
-            .iter()
-            .filter_map(|segment| {
-                let module_name = segment.ident.to_string();
-                module_names.contains(&module_name).then_some(module_name)
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        if trait_modules.is_empty() {
+            .last()
+            .map(|segment| segment.ident.to_string())
+        else {
             continue;
-        }
-        let impl_ids = semantic_item_ids_for_item(module, item);
-        for trait_module in trait_modules {
-            ids_by_module
-                .entry(trait_module)
-                .or_insert_with(std::collections::BTreeSet::new)
-                .extend(impl_ids.iter().cloned());
-        }
+        };
+        let self_prefix = format!("{self_name}::");
+        let impl_ids = semantic_item_ids_for_item(module, item)
+            .into_iter()
+            .filter(|id| {
+                id.name
+                    .strip_prefix(&self_prefix)
+                    .is_some_and(|member| !interface_hooks::is_runtime_hook(member))
+            });
+        ids_by_trait
+            .entry(trait_name)
+            .or_insert_with(std::collections::BTreeSet::new)
+            .extend(impl_ids);
     }
-    ids_by_module
+    ids_by_trait
+}
+
+fn semantic_source_reachability_names(
+    item: &syn::Item,
+    source_id: &SemanticItemId,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::from([source_id.name.clone()]);
+    match (item, source_id.kind) {
+        (syn::Item::Trait(item_trait), SemanticItemKind::TraitItem) => {
+            let trait_name = item_trait.ident.to_string();
+            let member_name = source_id
+                .name
+                .rsplit_once("::")
+                .map(|(_, member)| member)
+                .unwrap_or(&source_id.name);
+            names.insert(trait_name.clone());
+            names.insert(member_name.to_string());
+            names.insert(impl_method_reachability_name(&trait_name, member_name));
+        }
+        (syn::Item::Impl(item_impl), SemanticItemKind::ImplItem) => {
+            let member_name = source_id
+                .name
+                .rsplit_once("::")
+                .map(|(_, member)| member)
+                .unwrap_or(&source_id.name);
+            names.insert(member_name.to_string());
+            for self_name in self_type_reachability_names(&item_impl.self_ty) {
+                names.insert(self_name.clone());
+                names.insert(impl_method_reachability_name(&self_name, member_name));
+            }
+            if let Some((_, trait_path, _)) = &item_impl.trait_
+                && let Some(trait_name) = trait_path
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident.to_string())
+            {
+                names.insert(trait_name.clone());
+                names.insert(impl_method_reachability_name(&trait_name, member_name));
+            }
+        }
+        _ => {}
+    }
+    names
 }
 
 fn semantic_item_ids_for_item(module: &str, item: &syn::Item) -> Vec<SemanticItemId> {
@@ -7014,9 +7119,10 @@ fn debug_assert_semantic_external_refs(
     let Some(semantic_graph) = semantic_graph else {
         return;
     };
+    let semantic_refs = semantic_graph.reachable_external_roots_for_module_roots(module, roots);
+    let token_refs = refs_to_btree(refs);
     debug_assert_eq!(
-        refs_to_btree(refs),
-        semantic_graph.reachable_external_roots_for_module_roots(module, roots),
+        token_refs, semantic_refs,
         "semantic reachability external refs mismatch for module {module} roots {roots:?}"
     );
 }
@@ -8508,8 +8614,8 @@ fn collect_refs_from_item(
 
         fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
             let previous_self_type = self.current_self_type.clone();
-            self.current_self_type = named_self_type(&item_impl.self_ty)
-                .map(|name| ReceiverTypeRef { module: None, name });
+            self.current_self_type =
+                named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef::new(None, name));
             syn::visit_mut::visit_item_impl_mut(self, item_impl);
             self.current_self_type = previous_self_type;
         }
@@ -8553,7 +8659,7 @@ fn collect_refs_from_item(
         module_names: &std::collections::HashSet<String>,
     ) -> Option<String> {
         match expr {
-            syn::Expr::Call(call) => external_module_from_expr(&call.func, module_names),
+            syn::Expr::Call(_) => None,
             syn::Expr::Cast(cast) => external_module_from_expr(&cast.expr, module_names),
             syn::Expr::Field(field) => external_module_from_expr(&field.base, module_names),
             syn::Expr::Group(group) => external_module_from_expr(&group.expr, module_names),
@@ -8593,7 +8699,7 @@ fn collect_refs_from_item(
         module_names: &std::collections::HashSet<String>,
     ) -> Option<(String, String)> {
         match expr {
-            syn::Expr::Call(call) => external_path_symbol_from_expr(&call.func, module_names),
+            syn::Expr::Call(_) => None,
             syn::Expr::Cast(cast) => external_path_symbol_from_expr(&cast.expr, module_names),
             syn::Expr::Group(group) => external_path_symbol_from_expr(&group.expr, module_names),
             syn::Expr::Paren(paren) => external_path_symbol_from_expr(&paren.expr, module_names),
@@ -8872,8 +8978,8 @@ fn collect_refs_from_item(
                 }
             }
             let previous_self_type = self.current_self_type.clone();
-            self.current_self_type = named_self_type(&item_impl.self_ty)
-                .map(|name| ReceiverTypeRef { module: None, name });
+            self.current_self_type =
+                named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef::new(None, name));
             syn::visit_mut::visit_item_impl_mut(self, item_impl);
             self.current_self_type = previous_self_type;
         }
@@ -30922,7 +31028,7 @@ func B() {}
     }
 
     #[test]
-    fn semantic_reachability_graph_follows_external_trait_impls_from_module_refs() {
+    fn semantic_reachability_graph_does_not_root_external_trait_impls_from_module_refs() {
         let mut modules = BTreeMap::new();
         modules.insert(
             "__main__".to_string(),
@@ -30978,11 +31084,11 @@ func B() {}
         assert!(
             external_roots
                 .get("sortish")
-                .is_some_and(|refs| refs.contains("Sort") && refs.contains("Interface")),
+                .is_some_and(|refs| refs.contains("Sort") && !refs.contains("Interface")),
             "{external_roots:?}"
         );
         assert!(
-            external_roots
+            !external_roots
                 .get("builtin")
                 .is_some_and(|refs| refs.contains("len")),
             "{external_roots:?}"
@@ -30990,7 +31096,324 @@ func B() {}
     }
 
     #[test]
-    fn semantic_reachability_graph_follows_trait_root_impl_bodies() {
+    fn semantic_reachability_graph_follows_self_reachable_runtime_trait_impls() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "pkg".to_string(),
+            semantic_test_module(
+                "pkg",
+                rust! {
+                    pub struct buffer;
+
+                    impl crate::builtin::Len for buffer {
+                        fn Len(&self) -> isize {
+                            builtin::len()
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub trait Len {
+                        fn Len(&self) -> isize;
+                    }
+
+                    pub fn len() -> isize {
+                        0
+                    }
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "pkg",
+            &std::collections::HashSet::from(["buffer".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("builtin")
+                .is_some_and(|refs| refs.contains("Len") && refs.contains("len")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_external_method_calls_from_reachable_impl_methods() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "fmt".to_string(),
+            semantic_test_module(
+                "fmt",
+                rust! {
+                    pub struct formatter {
+                        dst: strconv::Buffer,
+                    }
+
+                    impl formatter {
+                        fn fmtFloat(&mut self) {
+                            self.dst.WriteString();
+                        }
+                    }
+
+                    pub fn Println() {
+                        let mut f = formatter {
+                            dst: strconv::Buffer,
+                        };
+                        f.fmtFloat();
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "strconv".to_string(),
+            semantic_test_module(
+                "strconv",
+                rust! {
+                    pub struct Buffer;
+
+                    impl Buffer {
+                        pub fn WriteString(&mut self) {
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "fmt",
+            &std::collections::HashSet::from(["Println".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("strconv")
+                .is_some_and(|refs| refs.contains("Buffer::WriteString")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_field_receiver_impl_methods() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "fmt".to_string(),
+            semantic_test_module(
+                "fmt",
+                rust! {
+                    pub struct fmtState {
+                        dst: strconv::Buffer,
+                    }
+
+                    pub struct printer {
+                        fmt: fmtState,
+                    }
+
+                    impl fmtState {
+                        fn fmtFloat(&mut self) {
+                            self.dst.WriteString();
+                        }
+                    }
+
+                    impl printer {
+                        fn printArg(&mut self) {
+                            self.fmt.fmtFloat();
+                        }
+                    }
+
+                    pub fn Println() {
+                        let mut p = printer {
+                            fmt: fmtState {
+                                dst: strconv::Buffer,
+                            },
+                        };
+                        p.printArg();
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "strconv".to_string(),
+            semantic_test_module(
+                "strconv",
+                rust! {
+                    pub struct Buffer;
+
+                    impl Buffer {
+                        pub fn WriteString(&mut self) {
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "fmt",
+            &std::collections::HashSet::from(["Println".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("strconv")
+                .is_some_and(|refs| refs.contains("Buffer::WriteString")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_field_receiver_named_like_module() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "fmt".to_string(),
+            semantic_test_module(
+                "fmt",
+                rust! {
+                    pub struct fmt {
+                        dst: strconv::Buffer,
+                    }
+
+                    pub struct printer {
+                        fmt: fmt,
+                    }
+
+                    impl fmt {
+                        fn fmtFloat(&mut self) {
+                            self.dst.WriteString();
+                        }
+                    }
+
+                    impl printer {
+                        fn printArg(&mut self) {
+                            self.fmt.fmtFloat();
+                        }
+                    }
+
+                    pub fn Println() {
+                        let mut p = printer {
+                            fmt: fmt {
+                                dst: strconv::Buffer,
+                            },
+                        };
+                        p.printArg();
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "strconv".to_string(),
+            semantic_test_module(
+                "strconv",
+                rust! {
+                    pub struct Buffer;
+
+                    impl Buffer {
+                        pub fn WriteString(&mut self) {
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "fmt",
+            &std::collections::HashSet::from(["Println".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("strconv")
+                .is_some_and(|refs| refs.contains("Buffer::WriteString")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_locked_field_receiver_impl_methods() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "fmt".to_string(),
+            semantic_test_module(
+                "fmt",
+                rust! {
+                    pub struct fmtState {
+                        dst: strconv::Buffer,
+                    }
+
+                    pub struct printer {
+                        fmt: fmtState,
+                    }
+
+                    impl fmtState {
+                        fn fmtFloat(&mut self) {
+                            self.dst.WriteString();
+                        }
+                    }
+
+                    pub fn Println(mut p: crate::builtin::GorsPtr<printer>) {
+                        (p.lock().unwrap().fmt).fmtFloat();
+                    }
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub struct GorsPtr<T>(T);
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "strconv".to_string(),
+            semantic_test_module(
+                "strconv",
+                rust! {
+                    pub struct Buffer;
+
+                    impl Buffer {
+                        pub fn WriteString(&mut self) {
+                        }
+                    }
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "fmt",
+            &std::collections::HashSet::from(["Println".to_string()]),
+        );
+
+        assert!(
+            external_roots
+                .get("strconv")
+                .is_some_and(|refs| refs.contains("Buffer::WriteString")),
+            "{external_roots:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_follows_noop_trait_impl_bodies_from_trait_names() {
         let mut modules = BTreeMap::new();
         modules.insert(
             "sortish".to_string(),
@@ -31035,6 +31458,68 @@ func B() {}
                 .is_some_and(|refs| refs.contains("panic_value")),
             "{external_roots:?}"
         );
+    }
+
+    #[test]
+    fn semantic_reachability_graph_does_not_expand_unqualified_noop_member_names() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "ioish".to_string(),
+            semantic_test_module(
+                "ioish",
+                rust! {
+                    pub trait Writer {
+                        fn Write(&mut self);
+                    }
+
+                    pub trait Reader {
+                        fn Read(&mut self);
+                    }
+
+                    pub trait ReadWriter: Reader + Writer {}
+
+                    pub struct __GorsNoopReadWriter;
+
+                    impl Writer for __GorsNoopReadWriter {
+                        fn Write(&mut self) {
+                            builtin::panic_value();
+                        }
+                    }
+
+                    impl Reader for __GorsNoopReadWriter {
+                        fn Read(&mut self) {
+                            builtin::len();
+                        }
+                    }
+
+                    impl ReadWriter for __GorsNoopReadWriter {}
+                },
+                false,
+            ),
+        );
+        modules.insert(
+            "builtin".to_string(),
+            semantic_test_module(
+                "builtin",
+                rust! {
+                    pub fn panic_value() {}
+                    pub fn len() {}
+                },
+                false,
+            ),
+        );
+
+        let graph = super::SemanticReachabilityGraph::from_modules(&modules, false);
+        let external_roots = graph.reachable_external_roots_for_module_roots(
+            "ioish",
+            &std::collections::HashSet::from(["Writer".to_string()]),
+        );
+        let builtin_roots = external_roots
+            .get("builtin")
+            .expect("expected noop writer body to reach builtin");
+
+        assert!(builtin_roots.contains("panic_value"), "{external_roots:?}");
+        assert!(!builtin_roots.contains("len"), "{external_roots:?}");
     }
 
     #[test]
@@ -31812,6 +32297,23 @@ func main() {
         assert!(base64_refs.contains("StdEncoding"), "{refs:?}");
         assert!(base64_refs.contains("StdEncoding::EncodedLen"), "{refs:?}");
         assert!(!base64_refs.contains("EncodedLen"), "{refs:?}");
+    }
+
+    #[test]
+    fn collect_external_refs_does_not_invent_method_roots_for_external_function_results() {
+        let file: syn::File = rust! {
+            pub fn main() {
+                let _ = strconv::AppendFloat(Vec::<u8>::new(), 1.0, 103, -1, 64).as_bytes();
+            }
+        };
+        let module_names = std::collections::HashSet::from(["strconv".to_string()]);
+
+        let refs = super::collect_external_refs(&file.items, &module_names);
+        let strconv_refs = refs.get("strconv").expect("strconv refs");
+
+        assert!(strconv_refs.contains("AppendFloat"), "{refs:?}");
+        assert!(!strconv_refs.contains("AppendFloat::as_bytes"), "{refs:?}");
+        assert!(!strconv_refs.contains("as_bytes"), "{refs:?}");
     }
 
     #[test]
@@ -35696,10 +36198,7 @@ func main() {
         ]);
         let top_level_types = std::collections::HashMap::from([(
             "LittleEndian".to_string(),
-            super::ReceiverTypeRef {
-                module: None,
-                name: "littleEndian".to_string(),
-            },
+            super::ReceiverTypeRef::new(None, "littleEndian".to_string()),
         )]);
         let item_names = std::collections::HashSet::from(["littleEndian::PutUint32".to_string()]);
 

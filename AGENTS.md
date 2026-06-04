@@ -94,9 +94,10 @@ gors-builtin/
 
 ### Cross-module references
 
-- `prefix_sibling_paths` rewrites references to sibling packages as `crate::pkg::Symbol`
-- `hoist_use` lifts multi-segment paths to `use` statements (only for main package)
-- `hoist_use` detects name collisions and keeps paths qualified when ambiguous
+- `prefix_sibling_paths` rewrites references to sibling packages as `crate::pkg::Symbol`;
+  generated cross-module and standard-library paths remain qualified at their
+  lowering sites instead of being rewritten into synthetic top-level `use`
+  declarations by a postpass.
 - Local package names that collide with any known stdlib module use an
   import-path-derived Rust module name (`example/math` → `example__math`) and
   import rewrites preserve the original Go selector name in source lowering.
@@ -400,10 +401,11 @@ scaffold records item-level local/external refs, supports traversal from
 explicit module root names, and mirrors DCE expansion for supertraits plus
 top-level receiver-method roots through `SyntheticRoot` nodes such as
 `LittleEndian::Uint32` pointing at concrete receiver methods such as
-`littleEndian::Uint32`. The DCE audit path compares semantic external-root
-traversal against the current token-derived collector for both main-package
-roots and transitive non-main module roots. Broaden that graph toward the
-remaining existing DCE semantics before replacing token-derived pruning paths.
+`littleEndian::Uint32`. With `GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE
+audit path compares semantic external-root traversal against the current
+token-derived collector for both main-package roots and transitive non-main
+module roots. Broaden that graph toward the remaining existing DCE semantics
+before replacing token-derived pruning paths.
 Per-iteration DCE state belongs in `DceIterationContext`, and cross-module
 external-root discovery should go through `ExternalRootCollector`. Keep semantic
 reachability auditing attached to that collector boundary instead of scattering
@@ -1276,10 +1278,9 @@ needs fuller interface method-set modeling.
 ## Compiler passes (in order)
 
 Main package (`pass()`):
-1. `hoist_use` — extract multi-segment paths to `use` declarations
-2. `simplify_return` — remove trailing `return` (Rust style only)
-3. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-4. `avoid_item_shadowing` — rename generated locals that shadow item names
+1. `simplify_return` — remove trailing `return` (Rust style only)
+2. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+3. `avoid_item_shadowing` — rename generated locals that shadow item names
 
 Channel lowering uses the shared `crate::builtin::Chan` runtime copied from
 `gors-builtin/src/lib.rs`; do not inject a generated `gors_channel` module from

@@ -1,10 +1,8 @@
 mod avoid_item_shadowing;
 mod coerce_types;
-mod hoist_use;
 mod simplify_return;
 
 pub fn pass(file: &mut syn::File) {
-    hoist_use::pass(file);
     simplify_return::pass(file);
     coerce_types::pass(file);
     avoid_item_shadowing::pass(file);
@@ -49,26 +47,6 @@ mod tests {
         test(
             rust! { fn a() { if true { return 0; } return 2; } },
             rust! { fn a() { if true { return 0; } 2 } },
-        );
-    }
-
-    #[test]
-    fn it_should_hoist_use_declarations() {
-        test(
-            rust! { fn a() { ::std::println!("hello"); } },
-            rust! { use ::std::println; fn a() { println!("hello"); } },
-        );
-        test(
-            rust! { pub fn main() { ::std::println!("test"); } },
-            rust! { use ::std::println; pub fn main() { println!("test"); } },
-        );
-    }
-
-    #[test]
-    fn it_should_only_hoist_duplicates_once() {
-        test(
-            rust! { fn a() { ::std::println!("hello"); ::std::println!("world"); } },
-            rust! { use ::std::println; fn a() { println!("hello"); println!("world"); } },
         );
     }
 }
