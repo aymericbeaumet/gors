@@ -22,6 +22,7 @@ mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
 mod go_strings;
+mod goto_context;
 mod import_context;
 mod imported_interface_impls;
 mod interface_hooks;
@@ -68,6 +69,7 @@ use go_strings::{
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
     string_bytes_vec_expr_for_expr, string_const_bytes_fn_ident,
 };
+use goto_context::{GotoContinueLabelsGuard, GotoStateContext, GotoStateContextGuard};
 use import_context::{
     dot_import_path_expr, file_import_package_names, import_local_name_matches_path,
     import_rust_name, is_import_local_name, selector_base_is_import, set_current_file_imports,
@@ -120,8 +122,6 @@ thread_local! {
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static BORROWED_POINTER_VIEW_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static BORROWED_POINTER_VIEW_METHODS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -211,19 +211,6 @@ struct ExternalInterfaceImplementorsGuard {
     previous: BTreeMap<String, Vec<syn::Type>>,
 }
 
-struct GotoContinueLabelsGuard {
-    previous: std::collections::HashSet<String>,
-}
-
-#[derive(Clone)]
-struct GotoStateContext {
-    state_ident: syn::Ident,
-    loop_label: syn::Lifetime,
-    labels: BTreeMap<String, usize>,
-}
-
-struct GotoStateContextGuard;
-
 struct BorrowedPointerParamNamesGuard {
     previous: std::collections::HashSet<String>,
 }
@@ -311,42 +298,6 @@ impl Drop for ExternalInterfaceImplementorsGuard {
     fn drop(&mut self) {
         EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
             *implementors.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl GotoContinueLabelsGuard {
-    fn extend(names: impl IntoIterator<Item = String>) -> Self {
-        let previous = GOTO_CONTINUE_LABELS.with(|labels| {
-            let previous = labels.borrow().clone();
-            labels.borrow_mut().extend(names);
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for GotoContinueLabelsGuard {
-    fn drop(&mut self) {
-        GOTO_CONTINUE_LABELS.with(|labels| {
-            *labels.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl GotoStateContextGuard {
-    fn push(context: GotoStateContext) -> Self {
-        GOTO_STATE_CONTEXTS.with(|contexts| {
-            contexts.borrow_mut().push(context);
-        });
-        Self
-    }
-}
-
-impl Drop for GotoStateContextGuard {
-    fn drop(&mut self) {
-        GOTO_STATE_CONTEXTS.with(|contexts| {
-            contexts.borrow_mut().pop();
         });
     }
 }
@@ -3228,7 +3179,7 @@ fn reset_lowering_thread_state() {
     synthetic_names::reset_lowering_counters();
     loop_control::reset_counter();
     named_returns::reset_counter();
-    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    goto_context::clear_state_contexts();
     active_names::clear();
     import_context::clear();
 }
@@ -6925,7 +6876,7 @@ pub fn compile_with_source_map(
     synthetic_names::reset_lowering_counters();
     loop_control::reset_counter();
     named_returns::reset_counter();
-    GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    goto_context::clear_state_contexts();
     import_context::clear();
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
@@ -12575,41 +12526,6 @@ fn clone_expr_for_non_copy_go_type(
     }
 }
 
-fn is_goto_continue_label(name: &str) -> bool {
-    GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
-}
-
-fn compile_goto_state_jump(name: &str) -> Option<Vec<syn::Stmt>> {
-    let target = rust_safe_ident_name(name);
-    GOTO_STATE_CONTEXTS.with(|contexts| {
-        contexts.borrow().iter().rev().find_map(|context| {
-            context.labels.get(&target).map(|target_index| {
-                let state_ident = &context.state_ident;
-                let loop_label = &context.loop_label;
-                let target_lit =
-                    syn::LitInt::new(&format!("{target_index}usize"), Span::mixed_site());
-                vec![
-                    syn::parse_quote! {
-                        #state_ident = #target_lit;
-                    },
-                    syn::parse_quote! {
-                        continue #loop_label;
-                    },
-                ]
-            })
-        })
-    })
-}
-
-fn current_goto_state_loop_label() -> Option<syn::Lifetime> {
-    GOTO_STATE_CONTEXTS.with(|contexts| {
-        contexts
-            .borrow()
-            .last()
-            .map(|context| context.loop_label.clone())
-    })
-}
-
 fn is_borrowed_pointer_param_name(name: &str) -> bool {
     BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
 }
@@ -17820,11 +17736,7 @@ where
     let segments = split_goto_state_segments(list);
     let labels = goto_state_label_map(&segments);
     let (state_ident, loop_label) = synthetic_names::next_goto_state_names();
-    let context = GotoStateContext {
-        state_ident: state_ident.clone(),
-        loop_label: loop_label.clone(),
-        labels,
-    };
+    let context = GotoStateContext::new(state_ident.clone(), loop_label.clone(), labels);
     let _goto_state = GotoStateContextGuard::push(context);
     let segment_count = segments.len();
     let mut arms: Vec<syn::Arm> = Vec::new();
@@ -20127,10 +20039,10 @@ impl From<ast::BranchStmt<'_>> for Vec<syn::Stmt> {
             }
             GOTO => {
                 if let Some(label) = branch_stmt.label {
-                    if let Some(stmts) = compile_goto_state_jump(label.name) {
+                    if let Some(stmts) = goto_context::compile_state_jump(label.name) {
                         return stmts;
                     }
-                    if is_goto_continue_label(label.name) {
+                    if goto_context::is_continue_label(label.name) {
                         let label_ident: syn::Ident = label.into();
                         let lifetime = syn::Lifetime {
                             apostrophe: Span::call_site(),
@@ -20583,7 +20495,7 @@ fn compile_switch_case_state_stmt(
     switch_label: &syn::Lifetime,
     fallthrough_ident: &syn::Ident,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
-    let goto_exit_label = current_goto_state_loop_label();
+    let goto_exit_label = goto_context::current_state_loop_label();
     let (stmts, _) = compile_switch_case_stmt(
         stmt,
         switch_label,
