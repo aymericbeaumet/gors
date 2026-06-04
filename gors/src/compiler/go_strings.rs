@@ -5,7 +5,10 @@ use proc_macro2::Span;
 
 use crate::{ast, token};
 
-use super::{TYPE_ENV, import_rust_name, ir, selector_path_from_ref, special_type_conversion_kind};
+use super::{
+    TYPE_ENV, import_context::import_rust_name, ir, selector_path_from_ref,
+    special_type_conversion_kind,
+};
 
 thread_local! {
     static STRING_CONST_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());

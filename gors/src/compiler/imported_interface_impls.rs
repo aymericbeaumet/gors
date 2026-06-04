@@ -314,5 +314,5 @@ fn has_direct_import_qualifier(interface_name: &str) -> bool {
     let Some((qualifier, _)) = interface_name.split_once('.') else {
         return false;
     };
-    super::IMPORT_NAMES.with(|names| names.borrow().contains(qualifier))
+    super::import_context::is_import_local_name(qualifier)
 }

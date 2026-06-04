@@ -1,9 +1,9 @@
+use super::import_context::selector_base_is_import;
 use super::{
     TYPE_ENV, ast, borrow_pointer_arg_expr, borrow_pointer_call_arg_indices,
     borrowed_address_of_ident_arg_expr, call_signature_param_types, compile_call_arg_with_expected,
     compile_call_function_expr, is_nil_expr, lvalue_expr_from_ref, nil_borrowed_pointer_arg_expr,
-    record_mapping, resolved_go_type, selector_base_is_import, should_borrow_pointer_arg_by_shape,
-    typeinfer,
+    record_mapping, resolved_go_type, should_borrow_pointer_arg_by_shape, typeinfer,
 };
 use proc_macro2::Span;
 use std::collections::HashMap;

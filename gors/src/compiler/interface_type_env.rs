@@ -1,17 +1,15 @@
-use super::{noop_interfaces, typeinfer};
+use super::{import_context, noop_interfaces, typeinfer};
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
 use syn::Token;
 
 pub(super) fn rust_path_name_candidates(name: &str) -> Vec<String> {
     let mut candidates = vec![name.to_string()];
     if let Some((module, symbol)) = name.rsplit_once('.') {
-        super::IMPORT_RENAMES.with(|renames| {
-            for (local_name, rust_name) in renames.borrow().iter() {
-                if rust_name == module {
-                    candidates.push(format!("{local_name}.{symbol}"));
-                }
-            }
-        });
+        candidates.extend(
+            import_context::local_names_for_rust_module(module)
+                .into_iter()
+                .map(|local_name| format!("{local_name}.{symbol}")),
+        );
         if let Some(package_name) = module.rsplit("__").next() {
             candidates.push(format!("{package_name}.{symbol}"));
         }

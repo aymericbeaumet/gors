@@ -22,6 +22,7 @@ mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
 mod go_strings;
+mod import_context;
 mod imported_interface_impls;
 mod interface_hooks;
 mod interface_impls;
@@ -65,6 +66,11 @@ use go_strings::{
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
     string_bytes_vec_expr_for_expr, string_const_bytes_fn_ident,
 };
+use import_context::{
+    dot_import_path_expr, file_import_package_names, import_local_name_matches_path,
+    import_rust_name, is_import_local_name, selector_base_is_import, set_current_file_imports,
+    set_dot_import_renames, set_import_package_names, set_import_renames,
+};
 use item_reachability::{
     impl_method_reachability_name, reachable_item_for_names,
     trait_impl_can_follow_self_reachability,
@@ -100,11 +106,6 @@ use syn_inspect::{
 // Thread-local storage for source map tracker during compilation
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
-    static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static IMPORT_PATHS_BY_LOCAL_NAME: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
-    static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
-    static DOT_IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
-    static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
@@ -744,100 +745,6 @@ pub(crate) fn with_active_reachability_roots<T>(
 
 pub(crate) fn has_external_interface_implementors() -> bool {
     EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| !implementors.borrow().is_empty())
-}
-
-fn set_import_renames(import_renames: BTreeMap<String, String>) {
-    IMPORT_RENAMES.with(|renames| {
-        *renames.borrow_mut() = import_renames;
-    });
-}
-
-fn set_dot_import_renames(dot_import_renames: BTreeMap<String, String>) {
-    DOT_IMPORT_RENAMES.with(|renames| {
-        *renames.borrow_mut() = dot_import_renames;
-    });
-}
-
-fn set_import_package_names(import_package_names: BTreeMap<String, String>) {
-    IMPORT_PACKAGE_NAMES.with(|names| {
-        *names.borrow_mut() = import_package_names;
-    });
-}
-
-fn import_local_name(import: &ast::ImportSpec<'_>) -> Option<String> {
-    let path = import.path.value.trim_matches('"');
-    if let Some(name) = &import.name {
-        return (!matches!(name.name, "." | "_")).then(|| name.name.to_string());
-    }
-    IMPORT_PACKAGE_NAMES
-        .with(|names| names.borrow().get(path).cloned())
-        .or_else(|| crate::resolve::scan_type_env(path).map(|(package_name, _)| package_name))
-        .or_else(|| path.rsplit('/').next().map(str::to_string))
-}
-
-fn set_current_file_imports(file: &ast::File<'_>) {
-    let imports = file
-        .imports()
-        .into_iter()
-        .filter_map(|import| {
-            let local_name = import_local_name(import)?;
-            let import_path = import.path.value.trim_matches('"').to_string();
-            Some((local_name, import_path))
-        })
-        .collect::<Vec<_>>();
-
-    IMPORT_NAMES.with(|names| {
-        let mut names = names.borrow_mut();
-        names.clear();
-        names.extend(imports.iter().map(|(local_name, _)| local_name.clone()));
-    });
-    IMPORT_PATHS_BY_LOCAL_NAME.with(|paths| {
-        let mut paths = paths.borrow_mut();
-        paths.clear();
-        paths.extend(imports);
-    });
-}
-
-fn import_local_name_matches_path(local_name: &str, import_path: &str) -> bool {
-    IMPORT_PATHS_BY_LOCAL_NAME.with(|paths| {
-        paths
-            .borrow()
-            .get(local_name)
-            .is_some_and(|path| path == import_path)
-    })
-}
-
-fn file_import_package_names(file: &ast::File<'_>) -> BTreeMap<String, String> {
-    file.imports()
-        .into_iter()
-        .filter(|import| import.name.is_none())
-        .filter_map(|import| {
-            let path = import.path.value.trim_matches('"');
-            crate::resolve::scan_type_env(path)
-                .map(|(package_name, _)| (path.to_string(), package_name))
-        })
-        .collect()
-}
-
-fn import_rust_name(name: &str) -> String {
-    let renamed = IMPORT_RENAMES.with(|renames| {
-        renames
-            .borrow()
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| name.to_string())
-    });
-    rust_safe_ident_name(&renamed)
-}
-
-fn dot_import_path_expr(name: &str) -> Option<syn::Expr> {
-    DOT_IMPORT_RENAMES.with(|renames| {
-        renames.borrow().get(name).map(|module| {
-            let module = syn::Ident::new(&rust_safe_ident_name(module), Span::mixed_site());
-            let name = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
-            syn::parse_quote! { #module::#name }
-        })
-    })
 }
 
 fn rust_safe_ident_name(name: &str) -> String {
@@ -3419,14 +3326,12 @@ fn reset_lowering_thread_state() {
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     active_names::clear();
+    import_context::clear();
 }
 
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
     clear_borrow_pointer_arg_indices();
-    set_import_renames(BTreeMap::new());
-    set_dot_import_renames(BTreeMap::new());
-    set_import_package_names(BTreeMap::new());
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
@@ -3458,8 +3363,6 @@ pub fn compile_with_type_env_and_import_renames(
     reset_lowering_thread_state();
     clear_borrow_pointer_arg_indices();
     set_import_renames(import_renames);
-    set_dot_import_renames(BTreeMap::new());
-    set_import_package_names(BTreeMap::new());
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -7155,9 +7058,7 @@ pub fn compile_with_source_map(
     loop_control::reset_counter();
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
-    set_import_renames(BTreeMap::new());
-    set_dot_import_renames(BTreeMap::new());
-    set_import_package_names(BTreeMap::new());
+    import_context::clear();
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
     let import_package_names = file_import_package_names(&file);
@@ -10836,13 +10737,6 @@ impl VariadicCallTarget {
     }
 }
 
-fn selector_base_is_import(selector: &ast::SelectorExpr) -> bool {
-    matches!(
-        selector.x.as_ref(),
-        ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
-    )
-}
-
 fn compile_variadic_call_target(fun: ast::Expr) -> VariadicCallTarget {
     match fun {
         ast::Expr::Ident(ident) => VariadicCallTarget::Function(syn::Expr::Path(ident.into())),
@@ -12509,7 +12403,7 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
         }
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(pkg) = &*selector.x
-                && IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name))
+                && is_import_local_name(pkg.name)
             {
                 let module = syn::Ident::new(&import_rust_name(pkg.name), Span::mixed_site());
                 let sel =
@@ -15606,8 +15500,7 @@ fn is_nil_expr(expr: &ast::Expr) -> bool {
 
 fn import_selector_assignment_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     match expr {
-        ast::Expr::SelectorExpr(selector) if matches!(&*selector.x, ast::Expr::Ident(id) if IMPORT_NAMES.with(|names| names.borrow().contains(id.name))) =>
-        {
+        ast::Expr::SelectorExpr(selector) if selector_base_is_import(selector) => {
             let ast::Expr::Ident(pkg) = &*selector.x else {
                 return None;
             };
@@ -16663,14 +16556,12 @@ fn is_type_name_expr(expr: &ast::Expr) -> bool {
         ast::Expr::ParenExpr(paren) => is_type_name_expr(&paren.x),
         ast::Expr::Ident(ident) => TYPE_ENV.with(|env| {
             let env = env.borrow();
-            !IMPORT_NAMES.with(|names| names.borrow().contains(ident.name))
+            !is_import_local_name(ident.name)
                 && !env.is_const(ident.name)
                 && env.get_var(ident.name).is_none()
                 && env.get_top_level_var(ident.name).is_none()
         }),
-        ast::Expr::SelectorExpr(selector) => {
-            matches!(&*selector.x, ast::Expr::Ident(pkg) if IMPORT_NAMES.with(|names| names.borrow().contains(pkg.name)))
-        }
+        ast::Expr::SelectorExpr(selector) => selector_base_is_import(selector),
         ast::Expr::ArrayType(_)
         | ast::Expr::ChanType(_)
         | ast::Expr::FuncType(_)
@@ -18302,7 +18193,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 // Detect method call vs package function call
                 let is_method_call = matches!(&*call_expr.fun, ast::Expr::SelectorExpr(sel) if {
                     match &*sel.x {
-                        ast::Expr::Ident(id) => !IMPORT_NAMES.with(|names| names.borrow().contains(id.name)),
+                        ast::Expr::Ident(id) => !is_import_local_name(id.name),
                         _ => true,
                     }
                 });
@@ -18404,13 +18295,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     let base_ty = typeinfer::GoType::infer_expr(&selector_expr.x, &env);
                     promoted_field_info(&base_ty, selector_expr.sel.name, &env)
                 });
-                let is_package = match &*selector_expr.x {
-                    ast::Expr::Ident(id) => {
-                        IMPORT_NAMES.with(|names| names.borrow().contains(id.name))
-                    }
-                    _ => false,
-                };
-                if is_package {
+                if selector_base_is_import(&selector_expr) {
                     let top_level_var_type = selector_top_level_var_type(&selector_expr);
                     if is_active_selector_string_const_fn(&selector_expr) {
                         let path = selector_path_from_ref(&selector_expr);
