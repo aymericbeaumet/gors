@@ -15,6 +15,7 @@
 //! - Some complex type expressions
 
 mod active_names;
+mod borrowed_views;
 mod builtin_roots;
 mod call_arg_rewrites;
 mod const_context;
@@ -62,6 +63,11 @@ use crate::{ast, token};
 use active_names::{
     ActiveItemNamesGuard, ActiveLocalNamesGuard, active_local_shadows_unqualified_name,
     add_active_local_names, local_binding_ident, local_binding_rust_name, value_ident,
+};
+use borrowed_views::{
+    BorrowedPointerParamNamesGuard, BorrowedPointerViewNamesGuard, BorrowedPointerViewReturn,
+    BorrowedPointerViewReturnGuard, BorrowedSliceParamNamesGuard, MutableSliceViewReturn,
+    MutableSliceViewReturnGuard, SliceAliasTarget, SliceAliasTargetsGuard,
 };
 use call_arg_rewrites::{
     borrow_mut_ref_call_args, borrow_mutated_vec_params, clone_vec_value_call_args,
@@ -131,14 +137,6 @@ thread_local! {
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static BORROWED_POINTER_VIEW_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static BORROWED_POINTER_VIEW_METHODS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static MUTABLE_SLICE_VIEW_METHODS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static BORROWED_POINTER_VIEW_RETURN: RefCell<Option<BorrowedPointerViewReturn>> = const { RefCell::new(None) };
-    static MUTABLE_SLICE_VIEW_RETURN: RefCell<Option<MutableSliceViewReturn>> = const { RefCell::new(None) };
-    static BORROWED_SLICE_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -218,48 +216,6 @@ struct ExternalInterfaceImplementorsGuard {
     previous: BTreeMap<String, Vec<syn::Type>>,
 }
 
-struct BorrowedPointerParamNamesGuard {
-    previous: std::collections::HashSet<String>,
-}
-
-struct BorrowedPointerViewNamesGuard {
-    previous: std::collections::HashSet<String>,
-}
-
-struct BorrowedPointerViewReturnGuard {
-    previous: Option<BorrowedPointerViewReturn>,
-}
-
-struct MutableSliceViewReturnGuard {
-    previous: Option<MutableSliceViewReturn>,
-}
-
-struct BorrowedSliceParamNamesGuard {
-    previous: std::collections::HashSet<String>,
-}
-
-#[derive(Clone)]
-struct BorrowedPointerViewReturn {
-    target_name: String,
-    target_ty: syn::Type,
-}
-
-#[derive(Clone)]
-struct MutableSliceViewReturn {
-    elem_ty: syn::Type,
-}
-
-#[derive(Clone)]
-struct SliceAliasTarget {
-    base_name: String,
-    base_expr: syn::Expr,
-    offset: syn::Expr,
-}
-
-struct SliceAliasTargetsGuard {
-    previous: BTreeMap<String, SliceAliasTarget>,
-}
-
 struct LocalTypeEnvScopeGuard {
     previous: typeinfer::TypeEnv,
 }
@@ -281,108 +237,6 @@ impl Drop for ExternalInterfaceImplementorsGuard {
     fn drop(&mut self) {
         EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
             *implementors.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl BorrowedPointerParamNamesGuard {
-    fn set(names: std::collections::HashSet<String>) -> Self {
-        let previous = BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
-            let previous = borrowed.borrow().clone();
-            *borrowed.borrow_mut() = names;
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for BorrowedPointerParamNamesGuard {
-    fn drop(&mut self) {
-        BORROWED_POINTER_PARAM_NAMES.with(|borrowed| {
-            *borrowed.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl BorrowedPointerViewNamesGuard {
-    fn clear() -> Self {
-        let previous = BORROWED_POINTER_VIEW_NAMES
-            .with(|borrowed| std::mem::take(&mut *borrowed.borrow_mut()));
-        Self { previous }
-    }
-}
-
-impl Drop for BorrowedPointerViewNamesGuard {
-    fn drop(&mut self) {
-        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
-            *borrowed.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl BorrowedPointerViewReturnGuard {
-    fn set(current: Option<BorrowedPointerViewReturn>) -> Self {
-        let previous = BORROWED_POINTER_VIEW_RETURN
-            .with(|info| std::mem::replace(&mut *info.borrow_mut(), current));
-        Self { previous }
-    }
-}
-
-impl Drop for BorrowedPointerViewReturnGuard {
-    fn drop(&mut self) {
-        BORROWED_POINTER_VIEW_RETURN.with(|info| {
-            *info.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl MutableSliceViewReturnGuard {
-    fn set(current: Option<MutableSliceViewReturn>) -> Self {
-        let previous = MUTABLE_SLICE_VIEW_RETURN
-            .with(|info| std::mem::replace(&mut *info.borrow_mut(), current));
-        Self { previous }
-    }
-}
-
-impl Drop for MutableSliceViewReturnGuard {
-    fn drop(&mut self) {
-        MUTABLE_SLICE_VIEW_RETURN.with(|info| {
-            *info.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl BorrowedSliceParamNamesGuard {
-    fn set(names: std::collections::HashSet<String>) -> Self {
-        let previous = BORROWED_SLICE_PARAM_NAMES.with(|borrowed| {
-            let previous = borrowed.borrow().clone();
-            *borrowed.borrow_mut() = names;
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for BorrowedSliceParamNamesGuard {
-    fn drop(&mut self) {
-        BORROWED_SLICE_PARAM_NAMES.with(|borrowed| {
-            *borrowed.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl SliceAliasTargetsGuard {
-    fn clear() -> Self {
-        let previous =
-            SLICE_ALIAS_TARGETS.with(|aliases| std::mem::take(&mut *aliases.borrow_mut()));
-        Self { previous }
-    }
-}
-
-impl Drop for SliceAliasTargetsGuard {
-    fn drop(&mut self) {
-        SLICE_ALIAS_TARGETS.with(|aliases| {
-            *aliases.borrow_mut() = self.previous.clone();
         });
     }
 }
@@ -9297,7 +9151,7 @@ fn call_returns_borrowed_pointer_view(call: &ast::CallExpr) -> bool {
     let Some(key) = call_view_method_key(call) else {
         return false;
     };
-    if BORROWED_POINTER_VIEW_METHODS.with(|methods| methods.borrow().contains(&key)) {
+    if borrowed_views::has_borrowed_pointer_view_method(&key) {
         return true;
     }
     call_returns_borrowed_pointer_view_by_type(call)
@@ -9307,7 +9161,7 @@ fn call_returns_mutable_slice_view(call: &ast::CallExpr) -> bool {
     let Some(key) = call_view_method_key(call) else {
         return false;
     };
-    if MUTABLE_SLICE_VIEW_METHODS.with(|methods| methods.borrow().contains(&key)) {
+    if borrowed_views::has_mutable_slice_view_method(&key) {
         return true;
     }
     call_returns_mutable_slice_view_by_type(call)
@@ -9377,12 +9231,7 @@ fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
             mutable_slice_methods.insert(key);
         }
     }
-    BORROWED_POINTER_VIEW_METHODS.with(|methods| {
-        *methods.borrow_mut() = borrowed_pointer_methods;
-    });
-    MUTABLE_SLICE_VIEW_METHODS.with(|methods| {
-        *methods.borrow_mut() = mutable_slice_methods;
-    });
+    borrowed_views::set_view_methods(borrowed_pointer_methods, mutable_slice_methods);
 }
 
 fn compile_method(
@@ -12373,11 +12222,11 @@ fn clone_expr_for_non_copy_go_type(
 }
 
 fn is_borrowed_pointer_param_name(name: &str) -> bool {
-    BORROWED_POINTER_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
+    borrowed_views::is_borrowed_pointer_param_name(name)
 }
 
 fn is_borrowed_slice_param_name(name: &str) -> bool {
-    BORROWED_SLICE_PARAM_NAMES.with(|borrowed| borrowed.borrow().contains(name))
+    borrowed_views::is_borrowed_slice_param_name(name)
 }
 
 fn is_borrowed_pointer_expr_ref(expr: &ast::Expr) -> bool {
@@ -12385,7 +12234,7 @@ fn is_borrowed_pointer_expr_ref(expr: &ast::Expr) -> bool {
         ast::Expr::Ident(ident) => {
             let name = rust_safe_ident_name(ident.name);
             is_borrowed_pointer_param_name(&name)
-                || BORROWED_POINTER_VIEW_NAMES.with(|borrowed| borrowed.borrow().contains(&name))
+                || borrowed_views::is_borrowed_pointer_view_name(&name)
         }
         ast::Expr::CallExpr(call) => call_returns_borrowed_pointer_view(call),
         ast::Expr::ParenExpr(paren) => is_borrowed_pointer_expr_ref(&paren.x),
@@ -12637,12 +12486,12 @@ fn compile_return_expr_with_expected(
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
         return compile_expr_with_expected(expr, expected);
     }
-    if let Some(info) = BORROWED_POINTER_VIEW_RETURN.with(|info| info.borrow().clone())
+    if let Some(info) = borrowed_views::current_borrowed_pointer_view_return()
         && let Some(expr) = compile_borrowed_pointer_view_return_expr(&expr, &info)
     {
         return expr;
     }
-    if MUTABLE_SLICE_VIEW_RETURN.with(|info| info.borrow().is_some())
+    if borrowed_views::has_mutable_slice_view_return()
         && let Some(expr) = compile_mutable_slice_view_return_expr(&expr)
     {
         return expr;
@@ -21464,12 +21313,7 @@ fn update_borrowed_pointer_view_names_for_assignment(assign_stmt: &ast::AssignSt
         .collect::<Vec<_>>();
 
     if !assigned_names.is_empty() {
-        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
-            let mut borrowed = borrowed.borrow_mut();
-            for name in &assigned_names {
-                borrowed.remove(name);
-            }
-        });
+        borrowed_views::remove_borrowed_pointer_view_names(&assigned_names);
     }
 
     if assign_stmt.lhs.len() != 1 || assign_stmt.rhs.len() != 1 {
@@ -21488,9 +21332,7 @@ fn update_borrowed_pointer_view_names_for_assignment(assign_stmt: &ast::AssignSt
         .first()
         .is_some_and(expr_returns_borrowed_pointer_view)
     {
-        BORROWED_POINTER_VIEW_NAMES.with(|borrowed| {
-            borrowed.borrow_mut().insert(lhs_name);
-        });
+        borrowed_views::insert_borrowed_pointer_view_name(lhs_name);
     }
 }
 
@@ -21503,13 +21345,7 @@ fn update_slice_alias_targets_for_assignment(assign_stmt: &ast::AssignStmt) {
         .collect::<Vec<_>>();
 
     if !assigned_names.is_empty() {
-        SLICE_ALIAS_TARGETS.with(|aliases| {
-            let mut aliases = aliases.borrow_mut();
-            for name in &assigned_names {
-                aliases.remove(name);
-                aliases.retain(|_, target| target.base_name != *name);
-            }
-        });
+        borrowed_views::retain_slice_aliases_after_assignment(&assigned_names);
     }
 
     if assign_stmt.lhs.len() != 1 || assign_stmt.rhs.len() != 1 {
@@ -21533,9 +21369,7 @@ fn update_slice_alias_targets_for_assignment(assign_stmt: &ast::AssignStmt) {
     if target.base_name == lhs_name {
         return;
     }
-    SLICE_ALIAS_TARGETS.with(|aliases| {
-        aliases.borrow_mut().insert(lhs_name.to_string(), target);
-    });
+    borrowed_views::insert_slice_alias_target(lhs_name.to_string(), target);
 }
 
 fn slice_alias_index_lvalues(lhs: &ast::Expr) -> Option<(syn::Expr, syn::Expr)> {
@@ -21545,8 +21379,7 @@ fn slice_alias_index_lvalues(lhs: &ast::Expr) -> Option<(syn::Expr, syn::Expr)> 
     let ast::Expr::Ident(alias_ident) = index.x.as_ref() else {
         return None;
     };
-    let target =
-        SLICE_ALIAS_TARGETS.with(|aliases| aliases.borrow().get(alias_ident.name).cloned())?;
+    let target = borrowed_views::slice_alias_target(alias_ident.name)?;
     let alias_left = lvalue_expr_from_ref(lhs)?;
     let index_expr = syn_expr_from_type_expr_like(&index.index)?;
     let base = target.base_expr;
@@ -21565,14 +21398,7 @@ fn slice_base_alias_sync_stmts(lhs: &ast::Expr) -> Vec<syn::Stmt> {
     let Some(index_expr) = syn_expr_from_type_expr_like(&index.index) else {
         return vec![];
     };
-    let targets = SLICE_ALIAS_TARGETS.with(|aliases| {
-        aliases
-            .borrow()
-            .iter()
-            .filter(|(_, target)| target.base_name == base_ident.name)
-            .map(|(alias_name, target)| (alias_name.clone(), target.clone()))
-            .collect::<Vec<_>>()
-    });
+    let targets = borrowed_views::slice_alias_targets_for_base(base_ident.name);
     targets
         .into_iter()
         .map(|(alias_name, target)| {
