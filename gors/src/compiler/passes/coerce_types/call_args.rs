@@ -1,4 +1,7 @@
-use super::super::super::syn_inspect::{is_zero_arg_method_call, pat_ident_name};
+use super::super::super::syn_inspect::{
+    is_path_ident, is_zero_arg_method_call, pat_ident_name, path_ident_name, strip_paren_or_group,
+    type_path_ident_name,
+};
 
 pub(super) type MutableRefCallArgs =
     std::collections::HashMap<String, std::collections::HashSet<usize>>;
@@ -64,7 +67,7 @@ pub(super) fn collect_mutable_ref_call_args(file: &syn::File) -> MutableRefCallA
                 }
             }
             syn::Item::Impl(item_impl) => {
-                let Some(self_ty) = super::syntax::type_path_ident_name(&item_impl.self_ty) else {
+                let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
                     continue;
                 };
                 for item in &item_impl.items {
@@ -95,7 +98,7 @@ pub(super) fn coerce_scoped_call_args(
             clone_expr(arg);
             continue;
         }
-        let Some(name) = super::syntax::path_ident_name(arg) else {
+        let Some(name) = path_ident_name(arg) else {
             continue;
         };
         if scope.is_some_and(|scope| scope.mutable_refs.contains(&name)) {
@@ -202,20 +205,20 @@ fn remove_owned_string_reference(expr: &mut syn::Expr) {
 }
 
 fn is_owned_to_string_expr(expr: &syn::Expr) -> bool {
-    is_zero_arg_method_call(super::syntax::strip_paren_or_group(expr), "to_string")
+    is_zero_arg_method_call(strip_paren_or_group(expr), "to_string")
 }
 
 fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections::HashSet<String>) {
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
-    if super::syntax::is_path_ident(expr, "self") {
+    if is_path_ident(expr, "self") {
         return;
     }
     if super::pointer_cells::borrow_static_expr(expr, pointer_cell_statics) {
         return;
     }
-    if let Some(name) = super::syntax::path_ident_name(expr) {
+    if let Some(name) = path_ident_name(expr) {
         let ident = syn::Ident::new(&name, proc_macro2::Span::mixed_site());
         *expr = syn::parse_quote! { &mut #ident };
         return;

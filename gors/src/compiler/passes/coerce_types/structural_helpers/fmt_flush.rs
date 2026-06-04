@@ -1,6 +1,7 @@
 type NameSet = std::collections::HashSet<String>;
 type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
+use crate::compiler::syn_inspect::{is_path_call_expr, is_self_expr, type_path_ident_name};
 use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
 
 #[derive(Default)]
@@ -66,7 +67,7 @@ fn collect_source_fields_by_receiver(file: &syn::File) -> ReceiverNameMap {
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
-        let Some(self_ty) = super::super::syntax::type_path_ident_name(&item_impl.self_ty) else {
+        let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
             continue;
         };
         for func in item_impl.items.iter().filter_map(|item| {
@@ -96,9 +97,7 @@ fn collect_receiver_methods(file: &syn::File, self_ty: &str, source_fields: &Nam
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
-        if super::super::syntax::type_path_ident_name(&item_impl.self_ty).as_deref()
-            != Some(self_ty)
-        {
+        if type_path_ident_name(&item_impl.self_ty).as_deref() != Some(self_ty) {
             continue;
         }
         for func in item_impl.items.iter().filter_map(|item| {
@@ -148,7 +147,7 @@ fn flush_source_fields(func: &syn::ImplItemFn) -> NameSet {
 
     impl syn::visit::Visit<'_> for Finder {
         fn visit_expr_call(&mut self, call: &syn::ExprCall) {
-            if super::super::syntax::is_path_call(call.func.as_ref(), &["std", "mem", "take"]) {
+            if is_path_call_expr(call.func.as_ref(), &["std", "mem", "take"]) {
                 for arg in &call.args {
                     super::self_fields::collect_direct_self_fields(arg, &mut self.fields);
                 }
@@ -172,7 +171,7 @@ fn self_method_calls(func: &syn::ImplItemFn) -> NameSet {
 
     impl syn::visit::Visit<'_> for Finder {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if super::super::syntax::is_self_expr(&call.receiver) {
+            if is_self_expr(&call.receiver) {
                 self.calls.insert(call.method.to_string());
             }
             syn::visit::visit_expr_method_call(self, call);
@@ -226,9 +225,7 @@ struct FlushCallFinder<'a> {
 
 impl syn::visit::Visit<'_> for FlushCallFinder<'_> {
     fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-        if self.methods.contains(&call.method.to_string())
-            && super::super::syntax::is_self_expr(&call.receiver)
-        {
+        if self.methods.contains(&call.method.to_string()) && is_self_expr(&call.receiver) {
             self.found = true;
             return;
         }

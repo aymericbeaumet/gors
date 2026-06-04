@@ -111,7 +111,7 @@ fn stmt_calls_method_with_reflect_source(
 
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if super::super::syntax::is_self_expr(&call.receiver)
+            if syn_inspect::is_self_expr(&call.receiver)
                 && self.methods.contains(&call.method.to_string())
                 && call
                     .args
@@ -362,7 +362,7 @@ fn collect_reflect_value_methods(file: &syn::File) -> ReceiverMethodMap {
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
-        let Some(self_ty) = super::super::syntax::type_path_ident_name(&item_impl.self_ty) else {
+        let Some(self_ty) = syn_inspect::type_path_ident_name(&item_impl.self_ty) else {
             continue;
         };
         for func in item_impl.items.iter().filter_map(|item| {

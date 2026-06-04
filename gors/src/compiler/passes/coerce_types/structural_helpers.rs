@@ -1,5 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
+use super::super::super::syn_inspect::type_path_ident_name;
+
 mod fmt_flush;
 mod local_names;
 mod reflection_fallback;
@@ -71,7 +73,7 @@ struct CoerceStructuralHelpers {
 
 impl VisitMut for CoerceStructuralHelpers {
     fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        if let Some(self_ty) = super::syntax::type_path_ident_name(&item_impl.self_ty) {
+        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
             self.impl_self_types.push(self_ty);
             visit_mut::visit_item_impl_mut(self, item_impl);
             self.impl_self_types.pop();

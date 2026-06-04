@@ -1,10 +1,11 @@
 use syn::visit_mut::{self, VisitMut};
 
+use super::super::syn_inspect::type_path_ident_name;
+
 mod call_args;
 mod evaluation_order;
 mod pointer_cells;
 mod structural_helpers;
-mod syntax;
 
 pub fn pass(file: &mut syn::File) {
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
@@ -38,7 +39,7 @@ struct CoerceTypes {
 
 impl VisitMut for CoerceTypes {
     fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        if let Some(self_ty) = syntax::type_path_ident_name(&item_impl.self_ty) {
+        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
             self.impl_self_types.push(self_ty);
             visit_mut::visit_item_impl_mut(self, item_impl);
             self.impl_self_types.pop();

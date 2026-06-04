@@ -1,5 +1,7 @@
 type FieldSet = std::collections::HashSet<String>;
 
+use crate::compiler::syn_inspect::is_self_expr;
+
 pub(super) fn expr_mentions(expr: &syn::Expr, fields: &FieldSet) -> bool {
     let mut finder = Finder {
         fields,
@@ -16,7 +18,7 @@ pub(super) fn collect_direct_self_fields(expr: &syn::Expr, fields: &mut FieldSet
 
     impl syn::visit::Visit<'_> for Collector<'_> {
         fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if super::super::syntax::is_self_expr(&field.base)
+            if is_self_expr(&field.base)
                 && let Some(ident) = member_ident_name(&field.member)
             {
                 self.fields.insert(ident.to_string());
@@ -31,7 +33,7 @@ pub(super) fn collect_direct_self_fields(expr: &syn::Expr, fields: &mut FieldSet
 }
 
 pub(super) fn is_self_field_in(field: &syn::ExprField, fields: &FieldSet) -> bool {
-    super::super::syntax::is_self_expr(&field.base)
+    is_self_expr(&field.base)
         && member_ident_name(&field.member)
             .is_some_and(|member| fields.contains(&member.to_string()))
 }
