@@ -55,6 +55,7 @@ mod source_map_context;
 mod struct_derives;
 mod syn_inspect;
 mod synthetic_names;
+mod type_decl_facts;
 mod type_param_context;
 pub mod typeinfer;
 mod zero_values;
@@ -131,20 +132,12 @@ use syn_inspect::{
     receiver_expr_needs_scoped_temp, self_type_reachability_names, syn_expr_matches_target,
     type_param_bound_matches, vec_type_inner,
 };
+use type_decl_facts::EmbeddedInterfaceField;
 use type_param_context::{ByteSeqTypeParamsGuard, TypeParamKindsGuard, is_byte_seq_type_param};
 
 thread_local! {
-    static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
-    static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
-}
-
-#[derive(Clone)]
-struct EmbeddedInterfaceField {
-    field_ident: syn::Ident,
-    trait_path: syn::Path,
 }
 
 #[derive(Clone)]
@@ -274,9 +267,6 @@ fn go_type_interface_name(go_type: &typeinfer::GoType) -> Option<String> {
         typeinfer::GoType::Error => Some("error".to_string()),
         typeinfer::GoType::Interface(name) => Some(name.clone()),
         typeinfer::GoType::Named(name) if is_type_interface(name) => Some(name.clone()),
-        typeinfer::GoType::Named(name) if TYPE_ENV.with(|env| env.borrow().is_interface(name)) => {
-            Some(name.clone())
-        }
         _ => None,
     }
 }
@@ -359,11 +349,8 @@ fn interface_trait_path_from_expr(expr: &ast::Expr) -> Option<syn::Path> {
         ast::Expr::Ident(ident) if ident.name == "error" || is_type_interface(ident.name) => {
             Some(interface_trait_path_from_name(ident.name))
         }
-        ast::Expr::Ident(ident) if TYPE_ENV.with(|env| env.borrow().is_interface(ident.name)) => {
-            Some(interface_trait_path_from_name(ident.name))
-        }
         ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
-            .filter(|name| TYPE_ENV.with(|env| env.borrow().is_interface(name)))
+            .filter(|name| is_type_interface(name))
             .map(|_| {
                 let mut segments = syn::punctuated::Punctuated::new();
                 if let ast::Expr::Ident(pkg) = &*selector.x {
@@ -6659,9 +6646,10 @@ fn contains_interface_type(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::ParenExpr(paren) => contains_interface_type(&paren.x),
         ast::Expr::Ident(ident) if ident.name == "error" || is_type_interface(ident.name) => true,
-        ast::Expr::Ident(ident) => TYPE_ENV.with(|env| env.borrow().is_interface(ident.name)),
-        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
-            .is_some_and(|name| TYPE_ENV.with(|env| env.borrow().is_interface(&name))),
+        ast::Expr::Ident(_) => false,
+        ast::Expr::SelectorExpr(selector) => {
+            selector_type_env_name(selector).is_some_and(|name| is_type_interface(&name))
+        }
         ast::Expr::InterfaceType(_) => true,
         ast::Expr::ArrayType(array_type) => contains_interface_type(&array_type.elt),
         ast::Expr::StarExpr(star) => contains_interface_type(&star.x),
@@ -7619,11 +7607,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 params.push(lifetime);
                 params.extend(generics.params.clone());
                 generics.params = params;
-                BORROWED_INTERFACE_STRUCTS.with(|structs| {
-                    structs
-                        .borrow_mut()
-                        .insert(ident.to_string(), embedded_interface_fields.clone());
-                });
+                type_decl_facts::record_borrowed_interface_struct(
+                    ident.to_string(),
+                    embedded_interface_fields.clone(),
+                );
             }
 
             if !fields.empty_or_trailing() {
@@ -7649,16 +7636,9 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
             };
-            NON_CLONE_STRUCTS.with(|structs| {
-                let mut structs = structs.borrow_mut();
-                if derive_state.cannot_derive_clone
-                    && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone)
-                {
-                    structs.insert(ident.to_string());
-                } else {
-                    structs.remove(&ident.to_string());
-                }
-            });
+            let can_clone = !(derive_state.cannot_derive_clone
+                && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone));
+            type_decl_facts::record_struct_clone_derivability(ident.to_string(), can_clone);
             attrs.push(syn::parse_quote! { #[repr(C)] });
             let struct_item = syn::Item::Struct(syn::ItemStruct {
                 attrs,
@@ -7783,9 +7763,6 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             Ok(out)
         }
         ast::Expr::InterfaceType(iface) => {
-            INTERFACE_NAMES.with(|names| {
-                names.borrow_mut().insert(ident.to_string());
-            });
             // Generate trait with method signatures
             let mut trait_items: Vec<syn::TraitItem> = vec![];
             let mut supertraits = syn::punctuated::Punctuated::new();
@@ -8373,9 +8350,10 @@ fn return_type_from_expr_with_type_params(
 fn is_interface_expr(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::ParenExpr(paren) => is_interface_expr(&paren.x),
-        ast::Expr::Ident(id) => TYPE_ENV.with(|env| env.borrow().is_interface(id.name)),
-        ast::Expr::SelectorExpr(sel) => selector_type_env_name(sel)
-            .is_some_and(|name| TYPE_ENV.with(|env| env.borrow().is_interface(&name))),
+        ast::Expr::Ident(id) => is_type_interface(id.name),
+        ast::Expr::SelectorExpr(sel) => {
+            selector_type_env_name(sel).is_some_and(|name| is_type_interface(&name))
+        }
         _ => false,
     }
 }
@@ -9230,8 +9208,7 @@ fn compile_method(
             typeinfer::GoType::Slice(_)
         )
     });
-    let has_borrowed_interface_field =
-        BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(&type_name));
+    let has_borrowed_interface_field = type_decl_facts::has_borrowed_interface_struct(&type_name);
     let type_args = receiver_type_args(recv_type);
     let mutable_slice_view_return = (!recv_source_name.is_empty())
         .then(|| mutable_slice_view_return_info(&func_decl, recv_source_name))
@@ -10845,12 +10822,8 @@ fn struct_field_is_borrowed_interface(type_name: Option<&str>, field_name: &str)
         return false;
     };
     let field_name = rust_safe_ident_name(field_name);
-    BORROWED_INTERFACE_STRUCTS.with(|structs| {
-        structs
-            .borrow()
-            .get(type_name)
-            .is_some_and(|fields| fields.iter().any(|field| field.field_ident == field_name))
-    })
+    type_decl_facts::borrowed_interface_fields(type_name)
+        .is_some_and(|fields| fields.iter().any(|field| field.field_ident == field_name))
 }
 
 fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -> syn::Expr {
@@ -18021,8 +17994,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
         // Track import names for selector expr disambiguation.
         set_current_file_imports(&file);
-        BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
-        NON_CLONE_STRUCTS.with(|structs| structs.borrow_mut().clear());
+        type_decl_facts::clear_borrowed_interface_structs();
+        type_decl_facts::clear_struct_clone_derivability();
 
         preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
@@ -18268,7 +18241,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             let type_ident = syn::Ident::new(type_name, Span::mixed_site());
             let type_args = method_generics.get(type_name).cloned().unwrap_or_default();
             let has_borrowed_interface_field =
-                BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().contains_key(type_name));
+                type_decl_facts::has_borrowed_interface_struct(type_name);
             let mut generics = method_impl_generics(&type_args, type_decl_generics.get(type_name));
             if has_borrowed_interface_field {
                 let mut params = syn::punctuated::Punctuated::new();
@@ -18325,6 +18298,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
             let method_set = interface_method_sets::for_impl(trait_name, required_methods);
             for (struct_name, struct_method_list) in &struct_methods {
                 let pointer_methods = struct_pointer_methods.get(struct_name);
+                let has_borrowed_interface_field =
+                    type_decl_facts::has_borrowed_interface_struct(struct_name);
                 let pointer_satisfies = interface_method_sets::pointer_satisfies(
                     struct_method_list,
                     &method_set.required_methods,
@@ -18344,8 +18319,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                     let trait_path = interface_trait_path_from_name(trait_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
 
-                    let exposes_any = !BORROWED_INTERFACE_STRUCTS
-                        .with(|structs| structs.borrow().contains_key(struct_name))
+                    let exposes_any = !has_borrowed_interface_field
                         && method_generics
                             .get(struct_name)
                             .is_none_or(std::vec::Vec::is_empty);
@@ -18371,23 +18345,17 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             defaultness: None,
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
-                            generics: if BORROWED_INTERFACE_STRUCTS
-                                .with(|structs| structs.borrow().contains_key(struct_name))
-                            {
+                            generics: if has_borrowed_interface_field {
                                 syn::parse_quote! { <'__gors> }
                             } else {
                                 syn::Generics::default()
                             },
                             trait_: Some((None, trait_path, <Token![for]>::default())),
-                            self_ty: Box::new(
-                                if BORROWED_INTERFACE_STRUCTS
-                                    .with(|structs| structs.borrow().contains_key(struct_name))
-                                {
-                                    syn::parse_quote! { #struct_ident<'__gors> }
-                                } else {
-                                    syn::parse_quote! { #struct_ident }
-                                },
-                            ),
+                            self_ty: Box::new(if has_borrowed_interface_field {
+                                syn::parse_quote! { #struct_ident<'__gors> }
+                            } else {
+                                syn::parse_quote! { #struct_ident }
+                            }),
                             brace_token: syn::token::Brace::default(),
                             items: impl_items,
                         }));
@@ -18434,31 +18402,24 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             defaultness: None,
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
-                            generics: if BORROWED_INTERFACE_STRUCTS
-                                .with(|structs| structs.borrow().contains_key(struct_name))
-                            {
+                            generics: if has_borrowed_interface_field {
                                 syn::parse_quote! { <'__gors> }
                             } else {
                                 syn::Generics::default()
                             },
                             trait_: Some((None, trait_path, <Token![for]>::default())),
-                            self_ty: Box::new(
-                                if BORROWED_INTERFACE_STRUCTS
-                                    .with(|structs| structs.borrow().contains_key(struct_name))
-                                {
-                                    syn::parse_quote! { #struct_ident<'__gors> }
-                                } else {
-                                    syn::parse_quote! { #struct_ident }
-                                },
-                            ),
+                            self_ty: Box::new(if has_borrowed_interface_field {
+                                syn::parse_quote! { #struct_ident<'__gors> }
+                            } else {
+                                syn::parse_quote! { #struct_ident }
+                            }),
                             brace_token: syn::token::Brace::default(),
                             items: impl_items,
                         }));
                     }
                 }
                 if pointer_satisfies
-                    && !BORROWED_INTERFACE_STRUCTS
-                        .with(|structs| structs.borrow().contains_key(struct_name))
+                    && !has_borrowed_interface_field
                     && method_generics
                         .get(struct_name)
                         .is_none_or(std::vec::Vec::is_empty)
@@ -18575,8 +18536,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             &items,
             interface_type_env::noop_impl_items_for_interface_name,
         ));
-        let embedded_interface_structs =
-            BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow().clone());
+        let embedded_interface_structs = type_decl_facts::all_borrowed_interface_structs();
         items.extend(embedded_interfaces::impls(
             &items,
             &methods,
@@ -18908,7 +18868,7 @@ fn compile_field_to_fn_args_with_type_params(
 
         // Use &mut dyn Trait for interface parameters
         if let typeinfer::GoType::Named(ref name) = go_type {
-            if is_type_interface(name) || TYPE_ENV.with(|env| env.borrow().is_interface(name)) {
+            if is_type_interface(name) {
                 rust_type = syn::parse_quote! { &mut dyn #rust_type };
             }
         }
@@ -21018,11 +20978,9 @@ fn interface_name_from_type_expr(type_expr: &ast::Expr) -> Option<String> {
         ast::Expr::ParenExpr(paren) => interface_name_from_type_expr(&paren.x),
         ast::Expr::Ident(id) if id.name == "error" => Some(id.name.to_string()),
         ast::Expr::Ident(id) if is_type_interface(id.name) => Some(id.name.to_string()),
-        ast::Expr::Ident(id) if TYPE_ENV.with(|env| env.borrow().is_interface(id.name)) => {
-            Some(id.name.to_string())
+        ast::Expr::SelectorExpr(selector) => {
+            selector_type_env_name(selector).filter(|name| is_type_interface(name))
         }
-        ast::Expr::SelectorExpr(selector) => selector_type_env_name(selector)
-            .filter(|name| TYPE_ENV.with(|env| env.borrow().is_interface(name))),
         _ => None,
     }
 }

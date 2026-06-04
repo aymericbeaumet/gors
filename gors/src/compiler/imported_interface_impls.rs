@@ -83,8 +83,7 @@ pub(super) fn impls_for_local_structs(
                         );
                     }
                 }
-                if super::BORROWED_INTERFACE_STRUCTS
-                    .with(|structs| structs.borrow().contains_key(struct_name))
+                if super::type_decl_facts::has_borrowed_interface_struct(struct_name)
                     || method_generics
                         .get(struct_name)
                         .is_some_and(|type_args| !type_args.is_empty())
@@ -183,8 +182,9 @@ fn push_concrete_impl(
     }
     let trait_path = super::interface_trait_path_from_name(interface_name);
     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-    let exposes_any = !super::BORROWED_INTERFACE_STRUCTS
-        .with(|structs| structs.borrow().contains_key(struct_name))
+    let has_borrowed_interface_field =
+        super::type_decl_facts::has_borrowed_interface_struct(struct_name);
+    let exposes_any = !has_borrowed_interface_field
         && state
             .method_generics
             .get(struct_name)
@@ -197,16 +197,12 @@ fn push_concrete_impl(
         state.methods,
         exposes_any,
     );
-    let generics = if super::BORROWED_INTERFACE_STRUCTS
-        .with(|structs| structs.borrow().contains_key(struct_name))
-    {
+    let generics = if has_borrowed_interface_field {
         syn::parse_quote! { <'__gors> }
     } else {
         syn::Generics::default()
     };
-    let self_ty = if super::BORROWED_INTERFACE_STRUCTS
-        .with(|structs| structs.borrow().contains_key(struct_name))
-    {
+    let self_ty = if has_borrowed_interface_field {
         syn::parse_quote! { #struct_ident<'__gors> }
     } else {
         syn::parse_quote! { #struct_ident }

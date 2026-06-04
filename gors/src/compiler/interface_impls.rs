@@ -114,8 +114,7 @@ pub(super) fn concrete_items(
 ) -> Vec<syn::ImplItem> {
     let mut impl_items: Vec<syn::ImplItem> = vec![concrete_as_any_item(exposes_any)];
     if trait_name != "error" {
-        let can_clone_self =
-            super::NON_CLONE_STRUCTS.with(|structs| !structs.borrow().contains(struct_name));
+        let can_clone_self = super::type_decl_facts::struct_can_clone(struct_name);
         impl_items.push(interface_hooks::clone_box_impl_item(
             trait_path,
             can_clone_self,

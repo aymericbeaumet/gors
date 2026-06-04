@@ -205,6 +205,11 @@ gors-builtin/
   pointer-cell impl should delegate to an inherent method when the struct
   overrides an embedded method, and otherwise delegate through the embedded
   interface field.
+- Type-declaration facts that drive later interface impl generation live in
+  `gors/src/compiler/type_decl_facts.rs`. Type lowering records borrowed
+  interface fields and struct clone derivability there; interface impl emitters
+  should query the named helpers instead of reaching into compiler-root
+  thread-local maps.
 - The predeclared `error` interface lowers to the shared
   `crate::builtin::error` trait object, not to `String`. Its nil value is the
   noop-interface sentinel `crate::builtin::__GorsNooperror`, and ordinary Go
