@@ -5484,49 +5484,8 @@ type ReceiverTraitSupertraits = receiver_method_targets::Supertraits;
 type ReceiverMethodCloneValueTargets =
     receiver_method_targets::Targets<BTreeMap<usize, CloneValueParamKind>>;
 
-fn module_name_set(
-    modules: &BTreeMap<String, CompiledModule>,
-) -> std::collections::HashSet<String> {
-    modules
-        .values()
-        .map(|module| module.mod_name.clone())
-        .collect()
-}
-
-fn module_item_name_set(
-    modules: &BTreeMap<String, CompiledModule>,
-) -> std::collections::HashSet<String> {
-    modules
-        .values()
-        .flat_map(|module| module.file.items.iter().filter_map(item_name))
-        .collect()
-}
-
-fn merged_top_level_return_types(
-    modules: &BTreeMap<String, CompiledModule>,
-    module_names: &std::collections::HashSet<String>,
-) -> ReceiverTypeMap {
-    modules
-        .values()
-        .flat_map(|module| top_level_item_return_types(&module.file.items, module_names))
-        .collect()
-}
-
-fn merged_top_level_field_types(
-    modules: &BTreeMap<String, CompiledModule>,
-    module_names: &std::collections::HashSet<String>,
-) -> ReceiverFieldTypeMap {
-    modules
-        .values()
-        .flat_map(|module| top_level_item_field_types(&module.file.items, module_names))
-        .collect()
-}
-
 fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
-    let module_names = module_name_set(modules);
-    let item_names = module_item_name_set(modules);
-    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
-    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
+    let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
     let mut targets = collect_mut_ref_vec_targets(modules);
     let mut method_targets = collect_mut_ref_vec_method_targets(modules);
 
@@ -5535,13 +5494,7 @@ fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
             for module in modules.values_mut() {
                 syn::visit_mut::VisitMut::visit_file_mut(
                     &mut BorrowMutatedVecCallArgs {
-                        receiver_types: receiver_type_scopes::Tracker::new(
-                            module.mod_name.clone(),
-                            &module_names,
-                            &item_names,
-                            &top_level_return_types,
-                            &top_level_field_types,
-                        ),
+                        receiver_types: receiver_facts.tracker(module.mod_name.clone()),
                         targets: &targets,
                         method_targets: &method_targets,
                     },
@@ -6128,12 +6081,9 @@ fn strip_cloned_lvalue_slice_source(expr: syn::Expr) -> syn::Expr {
 }
 
 fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
-    let module_names = module_name_set(modules);
-    let item_names = module_item_name_set(modules);
-    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
-    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
+    let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
     let targets = collect_vec_value_param_targets(modules);
-    let method_targets = collect_vec_value_method_targets(modules);
+    let method_targets = collect_vec_value_method_targets(modules, receiver_facts.module_names());
     let vec_newtypes = collect_vec_newtypes(modules);
     if targets.is_empty() && method_targets.is_empty() && vec_newtypes.is_empty() {
         return;
@@ -6142,13 +6092,7 @@ fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     for module in modules.values_mut() {
         syn::visit_mut::VisitMut::visit_file_mut(
             &mut CloneVecValueCallArgs {
-                receiver_types: receiver_type_scopes::Tracker::new(
-                    module.mod_name.clone(),
-                    &module_names,
-                    &item_names,
-                    &top_level_return_types,
-                    &top_level_field_types,
-                ),
+                receiver_types: receiver_facts.tracker(module.mod_name.clone()),
                 targets: &targets,
                 method_targets: &method_targets,
                 vec_newtypes: &vec_newtypes,
@@ -6289,8 +6233,8 @@ fn collect_vec_value_param_targets(
 
 fn collect_vec_value_method_targets(
     modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
 ) -> ReceiverMethodCloneValueTargets {
-    let module_names = module_name_set(modules);
     let mut targets = ReceiverMethodCloneValueTargets::default();
     let mut supertraits: ReceiverTraitSupertraits = BTreeMap::new();
     for module in modules.values() {
@@ -6342,7 +6286,7 @@ fn collect_vec_value_method_targets(
                                 return None;
                             };
                             let mut receiver_type =
-                                receiver_type_from_path(&trait_bound.path, &module_names)?;
+                                receiver_type_from_path(&trait_bound.path, module_names)?;
                             if receiver_type.module.is_none() {
                                 receiver_type.module = Some(module.mod_name.clone());
                             }
@@ -6609,10 +6553,7 @@ fn clone_value_arg(arg: &mut syn::Expr) {
 }
 
 fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
-    let module_names = module_name_set(modules);
-    let item_names = module_item_name_set(modules);
-    let top_level_return_types = merged_top_level_return_types(modules, &module_names);
-    let top_level_field_types = merged_top_level_field_types(modules, &module_names);
+    let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
     let (targets, method_targets) = collect_mut_ref_targets(modules);
     let (direct_trait_impls, mut_ref_trait_impls) = collect_trait_impl_self_kinds(modules);
     if targets.is_empty() && method_targets.is_empty() {
@@ -6621,13 +6562,7 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     for module in modules.values_mut() {
         syn::visit_mut::VisitMut::visit_file_mut(
             &mut BorrowMutRefCallArgs {
-                receiver_types: receiver_type_scopes::Tracker::new(
-                    module.mod_name.clone(),
-                    &module_names,
-                    &item_names,
-                    &top_level_return_types,
-                    &top_level_field_types,
-                ),
+                receiver_types: receiver_facts.tracker(module.mod_name.clone()),
                 targets: &targets,
                 method_targets: &method_targets,
                 direct_trait_impls: &direct_trait_impls,

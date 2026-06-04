@@ -4,9 +4,63 @@ use super::{
     receiver_type_facts::{
         ReceiverFieldTypeMap, ReceiverTypeContext, ReceiverTypeMap, ReceiverTypeRef,
         method_receiver_type_from_expr, receiver_type_from_init_expr, receiver_type_from_type,
+        top_level_item_field_types, top_level_item_return_types,
     },
-    syn_inspect::{named_self_type, pat_ident_name},
+    syn_inspect::{item_name, named_self_type, pat_ident_name},
 };
+
+pub(super) struct ProgramFacts {
+    module_names: HashSet<String>,
+    item_names: HashSet<String>,
+    top_level_return_types: ReceiverTypeMap,
+    top_level_field_types: ReceiverFieldTypeMap,
+}
+
+impl ProgramFacts {
+    pub(super) fn collect(modules: &BTreeMap<String, super::CompiledModule>) -> Self {
+        let module_items = modules
+            .values()
+            .map(|module| (module.mod_name.clone(), module.file.items.as_slice()))
+            .collect::<Vec<_>>();
+        let module_names = module_items
+            .iter()
+            .map(|(module_name, _)| module_name.clone())
+            .collect::<HashSet<_>>();
+        let item_names = module_items
+            .iter()
+            .flat_map(|(_, items)| items.iter().filter_map(item_name))
+            .collect::<HashSet<_>>();
+        let top_level_return_types = module_items
+            .iter()
+            .flat_map(|(_, items)| top_level_item_return_types(items, &module_names))
+            .collect();
+        let top_level_field_types = module_items
+            .iter()
+            .flat_map(|(_, items)| top_level_item_field_types(items, &module_names))
+            .collect();
+
+        Self {
+            module_names,
+            item_names,
+            top_level_return_types,
+            top_level_field_types,
+        }
+    }
+
+    pub(super) fn module_names(&self) -> &HashSet<String> {
+        &self.module_names
+    }
+
+    pub(super) fn tracker(&self, module_name: String) -> Tracker<'_> {
+        Tracker::new(
+            module_name,
+            &self.module_names,
+            &self.item_names,
+            &self.top_level_return_types,
+            &self.top_level_field_types,
+        )
+    }
+}
 
 pub(super) struct Tracker<'a> {
     module_name: String,
