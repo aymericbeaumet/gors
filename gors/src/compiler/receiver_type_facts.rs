@@ -2,7 +2,10 @@ use super::{
     TYPE_ENV, go_package_rust_module_name, interface_type_env,
     item_reachability::impl_method_reachability_name,
     resolved_go_type,
-    syn_inspect::{is_path_call_expr, is_receiver_type_wrapper_method, named_self_type},
+    syn_inspect::{
+        first_type_arg_for_path_last_ident_any, is_path_call_expr, is_receiver_type_wrapper_method,
+        named_self_type,
+    },
     typeinfer,
 };
 
@@ -638,18 +641,6 @@ fn transparent_receiver_type_from_path(
     path: &syn::Path,
     module_names: &std::collections::HashSet<String>,
 ) -> Option<ReceiverTypeRef> {
-    let last = path.segments.last()?;
-    if !matches!(
-        last.ident.to_string().as_str(),
-        "Arc" | "Box" | "GorsPtr" | "Mutex"
-    ) {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| match arg {
-        syn::GenericArgument::Type(ty) => receiver_type_from_type(ty, module_names),
-        _ => None,
-    })
+    let inner = first_type_arg_for_path_last_ident_any(path, &["Arc", "Box", "GorsPtr", "Mutex"])?;
+    receiver_type_from_type(inner, module_names)
 }

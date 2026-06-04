@@ -749,8 +749,15 @@ pub(super) fn first_type_arg_if_path_last_ident<'a>(
     let syn::Type::Path(path) = ty else {
         return None;
     };
-    let segment = path.path.segments.last()?;
-    if segment.ident != ident {
+    first_type_arg_for_path_last_ident_any(&path.path, &[ident])
+}
+
+pub(super) fn first_type_arg_for_path_last_ident_any<'a>(
+    path: &'a syn::Path,
+    names: &[&str],
+) -> Option<&'a syn::Type> {
+    let segment = path.segments.last()?;
+    if !ident_matches_any(&segment.ident, names) {
         return None;
     }
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
@@ -823,12 +830,8 @@ pub(super) fn named_self_type(ty: &syn::Type) -> Option<String> {
 
 fn named_self_type_from_path(path: &syn::Path) -> Option<String> {
     let last = path.segments.last()?;
-    if matches!(last.ident.to_string().as_str(), "Arc" | "Mutex" | "GorsPtr")
-        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
-        && let Some(name) = args.args.iter().find_map(|arg| match arg {
-            syn::GenericArgument::Type(ty) => named_self_type(ty),
-            _ => None,
-        })
+    if let Some(inner) = first_type_arg_for_path_last_ident_any(path, &["Arc", "Mutex", "GorsPtr"])
+        && let Some(name) = named_self_type(inner)
     {
         return Some(name);
     }
@@ -1490,6 +1493,17 @@ mod tests {
                 .map(|ty| ty.to_token_stream().to_string())
                 .as_deref(),
             Some("Arc < Mutex < i32 > >")
+        );
+
+        let wrapper_path: syn::TypePath = parse_quote! { std::sync::Arc<std::sync::Mutex<Item>> };
+        assert_eq!(
+            first_type_arg_for_path_last_ident_any(
+                &wrapper_path.path,
+                &["Arc", "Mutex", "GorsPtr"],
+            )
+            .map(|ty| ty.to_token_stream().to_string())
+            .as_deref(),
+            Some("std :: sync :: Mutex < Item >")
         );
     }
 
