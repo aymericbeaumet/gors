@@ -5287,10 +5287,10 @@ fn inject_post_prune_stdlib_helpers(
 }
 
 #[derive(Default)]
-struct ReceiverMethodArgTargets {
-    by_receiver: BTreeMap<String, std::collections::HashSet<usize>>,
+struct ReceiverMethodTargets<T> {
+    by_receiver: BTreeMap<String, T>,
     receiver_keys_by_method: BTreeMap<String, std::collections::HashSet<String>>,
-    by_unambiguous_method: BTreeMap<String, std::collections::HashSet<usize>>,
+    by_unambiguous_method: BTreeMap<String, T>,
 }
 
 #[derive(Clone, Copy)]
@@ -5300,106 +5300,12 @@ enum CloneValueParamKind {
     Vec,
 }
 
+type ReceiverMethodArgTargets = ReceiverMethodTargets<std::collections::HashSet<usize>>;
 type CloneValueParamTargets = BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>;
 type ReceiverTraitSupertraits = BTreeMap<(String, String), Vec<ReceiverTypeRef>>;
+type ReceiverMethodCloneValueTargets = ReceiverMethodTargets<BTreeMap<usize, CloneValueParamKind>>;
 
-#[derive(Default)]
-struct ReceiverMethodCloneValueTargets {
-    by_receiver: BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>,
-    receiver_keys_by_method: BTreeMap<String, std::collections::HashSet<String>>,
-    by_unambiguous_method: BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>,
-}
-
-impl ReceiverMethodCloneValueTargets {
-    fn is_empty(&self) -> bool {
-        self.by_receiver.is_empty()
-    }
-
-    fn record_method_seen(&mut self, module: &str, self_name: &str, method: &str) {
-        self.receiver_keys_by_method
-            .entry(method.to_string())
-            .or_default()
-            .insert(receiver_method_target_key(module, self_name, method));
-    }
-
-    fn insert_receiver(
-        &mut self,
-        module: &str,
-        self_name: &str,
-        method: &str,
-        kinds: BTreeMap<usize, CloneValueParamKind>,
-    ) {
-        let key = receiver_method_target_key(module, self_name, method);
-        self.record_method_seen(module, self_name, method);
-        self.by_receiver.insert(key, kinds);
-    }
-
-    fn inherit_supertrait_methods(&mut self, supertraits: &ReceiverTraitSupertraits) {
-        loop {
-            let snapshot = self.by_receiver.clone();
-            let methods = self
-                .receiver_keys_by_method
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut changed = false;
-
-            for ((module, self_name), direct_supertraits) in supertraits {
-                for supertrait in direct_supertraits {
-                    let super_module = supertrait.module.as_deref().unwrap_or(module);
-                    for method in &methods {
-                        let super_key =
-                            receiver_method_target_key(super_module, &supertrait.name, method);
-                        let Some(kinds) = snapshot.get(&super_key) else {
-                            continue;
-                        };
-                        let key = receiver_method_target_key(module, self_name, method);
-                        if self.by_receiver.contains_key(&key) {
-                            continue;
-                        }
-                        self.insert_receiver(module, self_name, method, kinds.clone());
-                        changed = true;
-                    }
-                }
-            }
-
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    fn finalize_unambiguous_names(&mut self) {
-        self.by_unambiguous_method.clear();
-        for (method, receiver_keys) in &self.receiver_keys_by_method {
-            let Some(receiver_key) = receiver_keys.iter().next() else {
-                continue;
-            };
-            if receiver_keys.len() == 1
-                && let Some(kinds) = self.by_receiver.get(receiver_key)
-            {
-                self.by_unambiguous_method
-                    .insert(method.clone(), kinds.clone());
-            }
-        }
-    }
-
-    fn kinds_for_call(
-        &self,
-        current_module: &str,
-        method: &str,
-        receiver_type: Option<&ReceiverTypeRef>,
-    ) -> Option<&BTreeMap<usize, CloneValueParamKind>> {
-        if let Some(receiver_type) = receiver_type {
-            let module = receiver_type.module.as_deref().unwrap_or(current_module);
-            let key = receiver_method_target_key(module, &receiver_type.name, method);
-            return self.by_receiver.get(&key);
-        }
-        self.by_unambiguous_method.get(method)
-    }
-}
-
-impl ReceiverMethodArgTargets {
+impl<T> ReceiverMethodTargets<T> {
     fn is_empty(&self) -> bool {
         self.by_receiver.is_empty()
     }
@@ -5428,11 +5334,48 @@ impl ReceiverMethodArgTargets {
         module: &str,
         self_name: &str,
         method: &str,
-        indices: std::collections::HashSet<usize>,
-    ) -> Option<std::collections::HashSet<usize>> {
+        target: T,
+    ) -> Option<T> {
         let key = receiver_method_target_key(module, self_name, method);
         self.record_method_seen(module, self_name, method);
-        self.by_receiver.insert(key, indices)
+        self.by_receiver.insert(key, target)
+    }
+}
+
+impl<T: Clone> ReceiverMethodTargets<T> {
+    fn inherit_supertrait_methods(&mut self, supertraits: &ReceiverTraitSupertraits) {
+        loop {
+            let snapshot = self.by_receiver.clone();
+            let methods = self
+                .receiver_keys_by_method
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut changed = false;
+
+            for ((module, self_name), direct_supertraits) in supertraits {
+                for supertrait in direct_supertraits {
+                    let super_module = supertrait.module.as_deref().unwrap_or(module);
+                    for method in &methods {
+                        let super_key =
+                            receiver_method_target_key(super_module, &supertrait.name, method);
+                        let Some(target) = snapshot.get(&super_key) else {
+                            continue;
+                        };
+                        let key = receiver_method_target_key(module, self_name, method);
+                        if self.by_receiver.contains_key(&key) {
+                            continue;
+                        }
+                        self.insert_receiver(module, self_name, method, target.clone());
+                        changed = true;
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
     }
 
     fn finalize_unambiguous_names(&mut self) {
@@ -5442,20 +5385,20 @@ impl ReceiverMethodArgTargets {
                 continue;
             };
             if receiver_keys.len() == 1
-                && let Some(indices) = self.by_receiver.get(receiver_key)
+                && let Some(target) = self.by_receiver.get(receiver_key)
             {
                 self.by_unambiguous_method
-                    .insert(method.clone(), indices.clone());
+                    .insert(method.clone(), target.clone());
             }
         }
     }
 
-    fn indices_for_call(
+    fn target_for_call(
         &self,
         current_module: &str,
         method: &str,
         receiver_type: Option<&ReceiverTypeRef>,
-    ) -> Option<&std::collections::HashSet<usize>> {
+    ) -> Option<&T> {
         if let Some(receiver_type) = receiver_type {
             let module = receiver_type.module.as_deref().unwrap_or(current_module);
             let key = receiver_method_target_key(module, &receiver_type.name, method);
@@ -6129,7 +6072,7 @@ impl syn::visit_mut::VisitMut for BorrowMutatedVecCallArgs<'_> {
             scopes: &self.local_types,
             current_self_type: self.current_self_type.as_ref(),
         };
-        let Some(indices) = self.method_targets.indices_for_call(
+        let Some(indices) = self.method_targets.target_for_call(
             &self.module_name,
             &call.method.to_string(),
             method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
@@ -6768,7 +6711,7 @@ impl syn::visit_mut::VisitMut for CloneVecValueCallArgs<'_> {
             scopes: &self.local_types,
             current_self_type: self.current_self_type.as_ref(),
         };
-        let Some(kinds) = self.method_targets.kinds_for_call(
+        let Some(kinds) = self.method_targets.target_for_call(
             &self.module_name,
             &call.method.to_string(),
             method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
@@ -7059,7 +7002,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
             scopes: &self.local_types,
             current_self_type: self.current_self_type.as_ref(),
         };
-        let Some(indices) = self.method_targets.indices_for_call(
+        let Some(indices) = self.method_targets.target_for_call(
             &self.module_name,
             &call.method.to_string(),
             method_receiver_type_from_expr(&call.receiver, &context).as_ref(),
