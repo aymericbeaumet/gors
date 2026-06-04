@@ -63,9 +63,9 @@ use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr,
     direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone, is_box_new_call,
-    is_path_call_expr, is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
-    slice_type_inner, type_mentions_name, vec_type_inner,
+    is_box_new_unit_expr, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
+    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -24091,45 +24091,6 @@ fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
         syn::Expr::Cast(cast) => is_any_type(&cast.ty) && is_box_new_unit_expr(&cast.expr),
         syn::Expr::Paren(paren) => is_box_dyn_any_expr(&paren.expr),
         syn::Expr::Group(group) => is_box_dyn_any_expr(&group.expr),
-        _ => false,
-    }
-}
-
-fn is_box_new_unit_expr(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Call(call) => {
-            call.args.len() == 1
-                && expr_path_is_box_new(&call.func)
-                && call.args.first().is_some_and(expr_is_unit)
-        }
-        syn::Expr::Paren(paren) => is_box_new_unit_expr(&paren.expr),
-        syn::Expr::Group(group) => is_box_new_unit_expr(&group.expr),
-        _ => false,
-    }
-}
-
-fn expr_path_is_box_new(expr: &syn::Expr) -> bool {
-    let syn::Expr::Path(path) = expr else {
-        return false;
-    };
-    if path.qself.is_some() || path.path.segments.len() < 2 {
-        return false;
-    }
-    let mut segments = path.path.segments.iter().rev();
-    let Some(method) = segments.next() else {
-        return false;
-    };
-    let Some(receiver) = segments.next() else {
-        return false;
-    };
-    method.ident == "new" && receiver.ident == "Box"
-}
-
-fn expr_is_unit(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Tuple(tuple) => tuple.elems.is_empty(),
-        syn::Expr::Paren(paren) => expr_is_unit(&paren.expr),
-        syn::Expr::Group(group) => expr_is_unit(&group.expr),
         _ => false,
     }
 }

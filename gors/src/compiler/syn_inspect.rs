@@ -8,6 +8,17 @@ pub(super) fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
         .all(|(segment, expected)| segment.ident == *expected)
 }
 
+pub(super) fn path_ends_with(path: &syn::Path, expected: &[&str]) -> bool {
+    if path.segments.len() < expected.len() {
+        return false;
+    }
+    path.segments
+        .iter()
+        .rev()
+        .zip(expected.iter().rev())
+        .all(|(segment, expected)| segment.ident == *expected)
+}
+
 pub(super) fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
     let syn::Expr::Path(path) = func else {
         return false;
@@ -239,6 +250,14 @@ pub(super) fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
     single_call_arg_for_path(expr, &["Box", "new"]).cloned()
 }
 
+pub(super) fn is_box_new_unit_expr(expr: &syn::Expr) -> bool {
+    let expr = strip_paren_or_group(expr);
+    let Some(arg) = single_call_arg_for_suffix_path(expr, &["Box", "new"]) else {
+        return false;
+    };
+    expr_is_unit(arg)
+}
+
 pub(super) fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
     let mutex_call = single_call_arg_for_path(expr, &["std", "sync", "Arc", "new"])?;
     single_call_arg_for_path(mutex_call, &["std", "sync", "Mutex", "new"]).cloned()
@@ -252,6 +271,29 @@ fn single_call_arg_for_path<'a>(expr: &'a syn::Expr, segments: &[&str]) -> Optio
         return None;
     }
     call.args.first()
+}
+
+fn single_call_arg_for_suffix_path<'a>(
+    expr: &'a syn::Expr,
+    segments: &[&str],
+) -> Option<&'a syn::Expr> {
+    let syn::Expr::Call(call) = expr else {
+        return None;
+    };
+    let syn::Expr::Path(path) = &*call.func else {
+        return None;
+    };
+    if path.qself.is_some() || !path_ends_with(&path.path, segments) || call.args.len() != 1 {
+        return None;
+    }
+    call.args.first()
+}
+
+fn expr_is_unit(expr: &syn::Expr) -> bool {
+    match strip_paren_or_group(expr) {
+        syn::Expr::Tuple(tuple) => tuple.elems.is_empty(),
+        _ => false,
+    }
 }
 
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
@@ -507,6 +549,10 @@ mod tests {
 
     #[test]
     fn is_path_call_expr_matches_exact_path_segments() {
+        let path: syn::Path = parse_quote! { crate::std::mem::take };
+        assert!(path_ends_with(&path, &["std", "mem", "take"]));
+        assert!(!path_ends_with(&path, &["other", "take"]));
+
         let expr: syn::Expr = parse_quote! { std::mem::take };
         assert!(is_path_call_expr(&expr, &["std", "mem", "take"]));
         assert!(!is_path_call_expr(&expr, &["mem", "take"]));
@@ -668,6 +714,7 @@ mod tests {
     fn call_shape_helpers_read_box_and_arc_mutex_wrappers() {
         let boxed: syn::Expr = parse_quote! { Box::new(value) };
         let qualified_boxed: syn::Expr = parse_quote! { crate::Box::new(value) };
+        let boxed_unit: syn::Expr = parse_quote! { crate::Box::new((())) };
         let arc_mutex: syn::Expr =
             parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(value)) };
         let arc_other: syn::Expr = parse_quote! { std::sync::Arc::new(value) };
@@ -681,6 +728,8 @@ mod tests {
         );
         assert!(!is_box_new_call(&qualified_boxed));
         assert!(box_new_call_arg(&qualified_boxed).is_none());
+        assert!(is_box_new_unit_expr(&boxed_unit));
+        assert!(!is_box_new_unit_expr(&boxed));
         assert_eq!(
             arc_mutex_new_inner_expr(&arc_mutex)
                 .map(|expr| expr.to_token_stream().to_string())
