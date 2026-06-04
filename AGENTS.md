@@ -400,13 +400,15 @@ tuples or unpack positional reachability slots in callers. Cache lookup/storage
 belongs behind the reachable-items cache helpers so the reachability function
 stays focused on computation rather than lock mechanics.
 Compiler-side root propagation should go through the private
-`RequiredModuleRoots` helper rather than open-coded
-`HashMap<String, HashSet<String>>` loops. The `SemanticReachabilityGraph`
-scaffold records item-level local/external refs, supports traversal from
-explicit module root names, and mirrors DCE expansion for supertraits plus
-top-level receiver-method roots through `SyntheticRoot` nodes such as
-`LittleEndian::Uint32` pointing at concrete receiver methods such as
-`littleEndian::Uint32`. With `GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE
+`RequiredModuleRoots` helper in
+`gors/src/compiler/required_module_roots.rs` rather than open-coded
+`HashMap<String, HashSet<String>>` loops. The same module owns the shared
+module-root merge primitive used by DCE and external-reference collection. The
+`SemanticReachabilityGraph` scaffold records item-level local/external refs,
+supports traversal from explicit module root names, and mirrors DCE expansion
+for supertraits plus top-level receiver-method roots through `SyntheticRoot`
+nodes such as `LittleEndian::Uint32` pointing at concrete receiver methods such
+as `littleEndian::Uint32`. With `GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE
 audit path compares semantic external-root traversal against the current
 token-derived collector for both main-package roots and transitive non-main
 module roots. Broaden that graph toward the remaining existing DCE semantics

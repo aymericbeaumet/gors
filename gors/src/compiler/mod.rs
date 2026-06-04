@@ -50,6 +50,7 @@ mod receiver_type_scopes;
 mod reflect_kind;
 mod reflect_semantics;
 mod reflect_slice_any;
+mod required_module_roots;
 mod return_context;
 mod runtime_primitives;
 mod shared_captures;
@@ -110,6 +111,7 @@ use receiver_type_facts::{
     top_level_item_field_types, top_level_item_return_types, top_level_item_tuple_return_types,
     top_level_item_types,
 };
+use required_module_roots::RequiredModuleRoots;
 use return_context::ReturnTypesGuard;
 use sha2::{Digest, Sha256};
 use shared_captures::{
@@ -5335,66 +5337,6 @@ fn prune_unreferenced_stdlib_modules(
     }
 }
 
-#[derive(Debug, Default)]
-struct RequiredModuleRoots {
-    by_module: std::collections::HashMap<String, std::collections::HashSet<String>>,
-}
-
-impl RequiredModuleRoots {
-    fn insert_module(&mut self, module: String) {
-        self.by_module.entry(module).or_default();
-    }
-
-    fn merge(
-        &mut self,
-        refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    ) -> bool {
-        merge_required_refs(&mut self.by_module, refs)
-    }
-
-    fn get(&self, module: &str) -> Option<&std::collections::HashSet<String>> {
-        self.by_module.get(module)
-    }
-
-    fn get_or_empty<'a>(
-        &'a self,
-        module: &str,
-        empty: &'a std::collections::HashSet<String>,
-    ) -> &'a std::collections::HashSet<String> {
-        self.get(module).unwrap_or(empty)
-    }
-
-    fn is_missing_or_empty(&self, module: &str) -> bool {
-        self.get(module).is_none_or(|roots| roots.is_empty())
-    }
-
-    fn cloned_or_default(&self, module: &str) -> std::collections::HashSet<String> {
-        self.get(module).cloned().unwrap_or_default()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&String, &std::collections::HashSet<String>)> {
-        self.by_module.iter()
-    }
-
-    fn keys(&self) -> impl Iterator<Item = &String> {
-        self.by_module.keys()
-    }
-}
-
-fn merge_required_refs(
-    required: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
-    refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
-) -> bool {
-    let mut changed = false;
-    for (module, symbols) in refs {
-        let entry = required.entry(module).or_default();
-        for symbol in symbols {
-            changed |= entry.insert(symbol);
-        }
-    }
-    changed
-}
-
 fn reachable_stdlib_items(
     items: &[syn::Item],
     roots: &std::collections::HashSet<String>,
@@ -5446,7 +5388,7 @@ fn reachable_stdlib_items(
             for name in local_names {
                 changed |= names.insert(name);
             }
-            changed |= merge_required_refs(&mut external_refs, refs);
+            changed |= required_module_roots::merge_refs(&mut external_refs, refs);
         }
         if !changed {
             break;
@@ -5668,7 +5610,7 @@ fn collect_external_refs(
             top_level_tuple_return_types: &empty_tuple_return_types,
         };
         let (_, refs) = collect_refs_from_item(&mut item_clone, &context);
-        merge_required_refs(&mut external_refs, refs);
+        required_module_roots::merge_refs(&mut external_refs, refs);
     }
     external_refs
 }
