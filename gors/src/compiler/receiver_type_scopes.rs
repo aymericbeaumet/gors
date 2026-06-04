@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::{
-    ReceiverFieldTypeMap, ReceiverTypeContext, ReceiverTypeMap, ReceiverTypeRef,
-    method_receiver_type_from_expr, receiver_type_from_init_expr, receiver_type_from_type,
+    receiver_type_facts::{
+        ReceiverFieldTypeMap, ReceiverTypeContext, ReceiverTypeMap, ReceiverTypeRef,
+        method_receiver_type_from_expr, receiver_type_from_init_expr, receiver_type_from_type,
+    },
     syn_inspect::{named_self_type, pat_ident_name},
 };
 
