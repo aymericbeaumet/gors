@@ -6650,6 +6650,11 @@ fn collect_mut_ref_targets(
                         let syn::TraitItem::Fn(item_fn) = item else {
                             continue;
                         };
+                        method_targets.record_method_seen(
+                            &module.mod_name,
+                            &self_name,
+                            &item_fn.sig.ident.to_string(),
+                        );
                         let param_kinds = mut_ref_param_kinds(&item_fn.sig)
                             .into_iter()
                             .filter_map(|(index, kind)| {
@@ -28118,6 +28123,48 @@ func main() {
         assert!(
             output.contains("rw . write (& mut values)"),
             "expected mutable borrow to follow inherited Writer::write signature: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_avoids_ambiguous_trait_method_name_fallback() {
+        let main_file: syn::File = rust! {
+            pub trait NeedsMut {
+                fn fill(&mut self, values: &mut [String]);
+            }
+
+            pub trait TakesValue {
+                fn fill(&mut self, values: Vec<String>);
+            }
+
+            pub fn call(mut values: Vec<String>) {
+                source().fill(values);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("source () . fill (values)"),
+            "expected ambiguous trait method name not to borrow unknown receiver args: {output}"
+        );
+        assert!(
+            !output.contains("source () . fill (& mut values)"),
+            "expected non-mut-ref same-named trait method to suppress untyped fallback: {output}"
         );
     }
 
