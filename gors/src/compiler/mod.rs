@@ -29,6 +29,7 @@ mod item_reachability;
 pub mod manifest;
 mod noop_interfaces;
 pub(crate) mod passes;
+mod phantom_type_params;
 mod receiver_method_targets;
 mod receiver_type_facts;
 mod receiver_type_scopes;
@@ -52,6 +53,7 @@ use item_reachability::{
     impl_method_reachability_name, reachable_item_for_names,
     trait_impl_can_follow_self_reachability,
 };
+use phantom_type_params::add_fields_for_unused_type_params;
 use proc_macro2::Span;
 use quote::ToTokens;
 use receiver_type_facts::{
@@ -75,8 +77,8 @@ use syn_inspect::{
     is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr, is_path_call_expr,
     is_receiver_type_wrapper_method, is_self_or_ref_self_expr, item_macro_name, item_name,
     macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
-    self_type_reachability_names, syn_expr_matches_target, type_mentions_name,
-    type_param_bound_matches, vec_type_inner,
+    self_type_reachability_names, syn_expr_matches_target, type_param_bound_matches,
+    vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -5409,7 +5411,7 @@ fn compile_program_impl(
     borrow_mut_ref_call_args(&mut modules);
     restore_vec_newtype_method_receivers(&mut modules);
     clone_vec_value_call_args(&mut modules);
-    add_phantom_fields_for_unused_type_params(&mut modules);
+    add_fields_for_unused_type_params(&mut modules);
     drop(dce_timer);
 
     prefix_final_module_paths(&mut modules);
@@ -5462,116 +5464,6 @@ fn inject_post_prune_stdlib_helpers(
     }
     runtime_primitives::inject_missing_preserved_modules(modules, &preserved);
     prune_unreferenced_stdlib_modules(modules, &preserved);
-}
-
-fn add_phantom_fields_for_unused_type_params(modules: &mut BTreeMap<String, CompiledModule>) {
-    for module in modules.values_mut() {
-        add_phantom_fields_for_file(&mut module.file);
-    }
-}
-
-fn add_phantom_fields_for_file(file: &mut syn::File) {
-    use syn::visit_mut::VisitMut;
-
-    let mut phantom_fields = BTreeMap::new();
-    for item in &mut file.items {
-        let syn::Item::Struct(item_struct) = item else {
-            continue;
-        };
-        let type_params = item_struct
-            .generics
-            .type_params()
-            .map(|param| param.ident.to_string())
-            .collect::<Vec<_>>();
-        if type_params.is_empty() {
-            continue;
-        }
-        let syn::Fields::Named(fields) = &mut item_struct.fields else {
-            continue;
-        };
-        if fields.named.iter().any(|field| {
-            field
-                .ident
-                .as_ref()
-                .is_some_and(|ident| ident == "_gors_phantom")
-        }) {
-            continue;
-        }
-        let used = fields
-            .named
-            .iter()
-            .filter_map(|field| field.ident.as_ref().map(|ident| (ident, &field.ty)))
-            .filter(|(ident, _)| *ident != "_gors_phantom")
-            .flat_map(|(_, ty)| {
-                type_params
-                    .iter()
-                    .filter(|param| {
-                        let names = std::collections::HashSet::from([(*param).clone()]);
-                        type_mentions_name(ty, &names)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .collect::<std::collections::HashSet<_>>();
-        let unused = type_params
-            .into_iter()
-            .filter(|param| !used.contains(param))
-            .collect::<Vec<_>>();
-        if unused.is_empty() {
-            continue;
-        }
-        let unused_idents = unused
-            .iter()
-            .map(|name| syn::Ident::new(name, Span::mixed_site()))
-            .collect::<Vec<_>>();
-        let phantom_ty: syn::Type = if let [ident] = unused_idents.as_slice() {
-            syn::parse_quote! { std::marker::PhantomData<fn() -> #ident> }
-        } else {
-            syn::parse_quote! { std::marker::PhantomData<fn() -> (#(#unused_idents),*)> }
-        };
-        fields.named.push(syn::parse_quote! {
-            #[doc(hidden)]
-            pub _gors_phantom: #phantom_ty
-        });
-        phantom_fields.insert(item_struct.ident.to_string(), ());
-    }
-
-    if phantom_fields.is_empty() {
-        return;
-    }
-
-    struct PhantomLiteralUpdater<'a> {
-        structs: &'a BTreeMap<String, ()>,
-    }
-
-    impl VisitMut for PhantomLiteralUpdater<'_> {
-        fn visit_expr_struct_mut(&mut self, expr_struct: &mut syn::ExprStruct) {
-            syn::visit_mut::visit_expr_struct_mut(self, expr_struct);
-            let Some(name) = expr_struct
-                .path
-                .segments
-                .last()
-                .map(|segment| segment.ident.to_string())
-            else {
-                return;
-            };
-            if !self.structs.contains_key(&name)
-                || expr_struct.fields.iter().any(|field| {
-                    matches!(&field.member, syn::Member::Named(ident) if ident == "_gors_phantom")
-                })
-            {
-                return;
-            }
-            expr_struct.fields.push(syn::parse_quote! {
-                _gors_phantom: std::marker::PhantomData
-            });
-        }
-    }
-
-    PhantomLiteralUpdater {
-        structs: &phantom_fields,
-    }
-    .visit_file_mut(file);
 }
 
 fn prefix_final_module_paths(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -9781,6 +9673,10 @@ fn register_type_spec_in_env(ts: &ast::TypeSpec) {
             TYPE_ENV.with(|env| {
                 let mut env = env.borrow_mut();
                 env.set_type_kind(name.name, typeinfer::TypeKind::Struct);
+                env.set_type_param_names(
+                    name.name,
+                    typeinfer::type_parameter_names(ts.type_params.as_ref()),
+                );
                 if let Some(fields) = &st.fields {
                     let mut field_types = vec![];
                     for field in &fields.list {
@@ -12320,10 +12216,11 @@ fn named_func_newtype(go_type: &typeinfer::GoType) -> Option<syn::Type> {
     })
 }
 
-fn raw_elts_to_field_values(type_name: Option<&str>, elts: Vec<ast::Expr>) -> Vec<syn::FieldValue> {
-    let struct_fields = type_name
-        .map(|name| TYPE_ENV.with(|env| env.borrow().get_struct_fields(name)))
-        .unwrap_or_default();
+fn raw_elts_to_field_values(
+    type_name: Option<&str>,
+    struct_fields: &[(String, typeinfer::GoType)],
+    elts: Vec<ast::Expr>,
+) -> Vec<syn::FieldValue> {
     let mut positional_index = 0usize;
 
     elts.into_iter()
@@ -12409,53 +12306,72 @@ fn struct_literal_path_from_type_expr(type_expr: &ast::Expr) -> Option<(syn::Pat
     Some((type_path.path, type_name))
 }
 
+fn type_args_from_type_expr(type_expr: &ast::Expr) -> Vec<typeinfer::GoType> {
+    match type_expr {
+        ast::Expr::ParenExpr(paren) => type_args_from_type_expr(&paren.x),
+        ast::Expr::IndexExpr(index) => vec![typeinfer::GoType::from_expr(&index.index)],
+        ast::Expr::IndexListExpr(index_list) => index_list
+            .indices
+            .iter()
+            .map(typeinfer::GoType::from_expr)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn struct_literal_fields(
+    type_name: Option<&str>,
+    type_args: &[typeinfer::GoType],
+) -> Vec<(String, typeinfer::GoType)> {
+    type_name
+        .map(|name| {
+            TYPE_ENV.with(|env| {
+                env.borrow()
+                    .get_struct_fields_with_type_args(name, type_args)
+            })
+        })
+        .unwrap_or_default()
+}
+
 fn compile_struct_composite_lit(
     path: syn::Path,
     type_name: Option<&str>,
+    type_args: &[typeinfer::GoType],
     raw_elts: Vec<ast::Expr>,
 ) -> syn::Expr {
-    let mut field_values = raw_elts_to_field_values(type_name, raw_elts);
+    let struct_fields = struct_literal_fields(type_name, type_args);
+    let mut field_values = raw_elts_to_field_values(type_name, &struct_fields, raw_elts);
     if field_values.is_empty() || has_unnamed_field_values(&field_values) {
         syn::parse_quote! { #path::default() }
     } else {
-        let all_struct_fields_set = if let Some(type_name) = type_name {
-            TYPE_ENV.with(|env| {
-                let env = env.borrow();
-                let struct_fields = env.get_struct_fields(type_name);
-                let mut present = field_values
-                    .iter()
-                    .filter_map(|field| match &field.member {
-                        syn::Member::Named(ident) => Some(ident.to_string()),
-                        syn::Member::Unnamed(_) => None,
-                    })
-                    .collect::<std::collections::HashSet<_>>();
-                let missing_defaults = struct_fields
-                    .iter()
-                    .filter(|(field_name, _)| !present.contains(&rust_safe_ident_name(field_name)))
-                    .map(|(field_name, field_type)| {
-                        zero_values::expr_for_go_type(field_type).map(|expr| (field_name, expr))
-                    })
-                    .collect::<Option<Vec<_>>>();
-                if let Some(missing_defaults) = missing_defaults {
-                    for (field_name, expr) in missing_defaults {
-                        let field_name = rust_safe_ident_name(field_name);
-                        present.insert(field_name.clone());
-                        field_values.push(syn::FieldValue {
-                            attrs: vec![],
-                            member: syn::Member::Named(syn::Ident::new(
-                                &field_name,
-                                Span::mixed_site(),
-                            )),
-                            colon_token: Some(<Token![:]>::default()),
-                            expr,
-                        });
-                    }
-                }
-                !struct_fields.is_empty() && field_values.len() == struct_fields.len()
+        let mut present = field_values
+            .iter()
+            .filter_map(|field| match &field.member {
+                syn::Member::Named(ident) => Some(ident.to_string()),
+                syn::Member::Unnamed(_) => None,
             })
-        } else {
-            false
-        };
+            .collect::<std::collections::HashSet<_>>();
+        let missing_defaults = struct_fields
+            .iter()
+            .filter(|(field_name, _)| !present.contains(&rust_safe_ident_name(field_name)))
+            .map(|(field_name, field_type)| {
+                zero_values::expr_for_go_type(field_type).map(|expr| (field_name, expr))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(missing_defaults) = missing_defaults {
+            for (field_name, expr) in missing_defaults {
+                let field_name = rust_safe_ident_name(field_name);
+                present.insert(field_name.clone());
+                field_values.push(syn::FieldValue {
+                    attrs: vec![],
+                    member: syn::Member::Named(syn::Ident::new(&field_name, Span::mixed_site())),
+                    colon_token: Some(<Token![:]>::default()),
+                    expr,
+                });
+            }
+        }
+        let all_struct_fields_set =
+            !struct_fields.is_empty() && field_values.len() == struct_fields.len();
         let mut fields = syn::punctuated::Punctuated::new();
         for fv in field_values {
             fields.push(fv);
@@ -12648,18 +12564,20 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
                 compile_struct_composite_lit(
                     syn::parse_quote! { #type_ident },
                     Some(&type_name),
+                    &[],
                     raw_elts,
                 )
             }
             ast::Expr::SelectorExpr(sel) => {
                 let type_name = selector_type_env_name(&sel);
                 let path: syn::ExprPath = sel.into();
-                compile_struct_composite_lit(path.path, type_name.as_deref(), raw_elts)
+                compile_struct_composite_lit(path.path, type_name.as_deref(), &[], raw_elts)
             }
             ast::Expr::IndexExpr(index) => {
                 let type_expr = ast::Expr::IndexExpr(index);
                 if let Some((path, type_name)) = struct_literal_path_from_type_expr(&type_expr) {
-                    compile_struct_composite_lit(path, Some(&type_name), raw_elts)
+                    let type_args = type_args_from_type_expr(&type_expr);
+                    compile_struct_composite_lit(path, Some(&type_name), &type_args, raw_elts)
                 } else {
                     let elts = compile_raw_elts(raw_elts);
                     if elts.is_empty() {
@@ -12672,7 +12590,8 @@ fn compile_composite_lit(comp_lit: ast::CompositeLit) -> syn::Expr {
             ast::Expr::IndexListExpr(index_list) => {
                 let type_expr = ast::Expr::IndexListExpr(index_list);
                 if let Some((path, type_name)) = struct_literal_path_from_type_expr(&type_expr) {
-                    compile_struct_composite_lit(path, Some(&type_name), raw_elts)
+                    let type_args = type_args_from_type_expr(&type_expr);
+                    compile_struct_composite_lit(path, Some(&type_name), &type_args, raw_elts)
                 } else {
                     let elts = compile_raw_elts(raw_elts);
                     if elts.is_empty() {
@@ -32264,6 +32183,33 @@ func main() {
     }
 
     #[test]
+    fn it_should_compile_instantiated_generic_struct_literal_field_types() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Holder[T any] struct {
+                    Value T
+                }
+
+                func use() Holder[string] {
+                    return Holder[string]{Value: "value"}
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("Value : \"value\" . to_string ()"),
+            "{output}"
+        );
+        assert!(!output.contains("Value : \"value\" ,"), "{output}");
+    }
+
+    #[test]
     fn it_should_compile_slice_literal() {
         test(
             r#"
@@ -34983,27 +34929,6 @@ func main() {
             .iter()
             .filter(|item| super::impl_trait_targets_match(item, expected))
             .count()
-    }
-
-    #[test]
-    fn it_should_add_phantom_fields_for_unused_generic_struct_params() {
-        let mut file: syn::File = rust! {
-            pub struct node<K: Clone, V> {
-                isEntry: bool,
-            }
-
-            pub fn new<K: Clone, V>() -> node<K, V> {
-                node::<K, V> {
-                    isEntry: true,
-                }
-            }
-        };
-
-        super::add_phantom_fields_for_file(&mut file);
-        let tokens = quote::quote!(#file).to_string();
-
-        assert!(tokens.contains("PhantomData < fn () -> (K , V) >"));
-        assert!(tokens.contains("_gors_phantom : std :: marker :: PhantomData"));
     }
 
     #[test]

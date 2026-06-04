@@ -885,6 +885,8 @@ pub struct TypeEnv {
     type_kinds: HashMap<std::string::String, TypeKind>,
     /// Type name → declared type parameter count
     type_param_counts: HashMap<std::string::String, usize>,
+    /// Type name → declared type parameter names in source order.
+    type_param_names: HashMap<std::string::String, Vec<std::string::String>>,
     /// Type names declared with alias syntax.
     type_aliases: HashSet<std::string::String>,
     /// Alias declarations whose right side is an instantiated generic type.
@@ -1327,16 +1329,19 @@ fn interface_constraint_terms(expr: &ast::Expr) -> Vec<GoType> {
         .unwrap_or_default()
 }
 
-fn type_parameter_count(type_params: Option<&ast::FieldList<'_>>) -> usize {
+pub(crate) fn type_parameter_names(
+    type_params: Option<&ast::FieldList<'_>>,
+) -> Vec<std::string::String> {
     type_params
         .map(|fields| {
             fields
                 .list
                 .iter()
-                .map(|field| field.names.as_ref().map_or(1, Vec::len))
-                .sum()
+                .filter_map(|field| field.names.as_ref())
+                .flat_map(|names| names.iter().map(|name| name.name.to_string()))
+                .collect()
         })
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 fn type_param_constraints(
@@ -1401,6 +1406,51 @@ fn erase_type_param_mentions(ty: GoType, names: &HashSet<std::string::String>) -
             results: results
                 .into_iter()
                 .map(|ty| erase_type_param_mentions(ty, names))
+                .collect(),
+            variadic_start,
+        },
+        other => other,
+    }
+}
+
+fn substitute_type_params(
+    ty: GoType,
+    substitutions: &HashMap<std::string::String, GoType>,
+) -> GoType {
+    match ty {
+        GoType::Named(name) => substitutions
+            .get(&name)
+            .cloned()
+            .unwrap_or(GoType::Named(name)),
+        GoType::Slice(elem) => {
+            GoType::Slice(Box::new(substitute_type_params(*elem, substitutions)))
+        }
+        GoType::Pointer(elem) => {
+            GoType::Pointer(Box::new(substitute_type_params(*elem, substitutions)))
+        }
+        GoType::Array(elem) => {
+            GoType::Array(Box::new(substitute_type_params(*elem, substitutions)))
+        }
+        GoType::Map(key, value) => GoType::Map(
+            Box::new(substitute_type_params(*key, substitutions)),
+            Box::new(substitute_type_params(*value, substitutions)),
+        ),
+        GoType::Chan { elem, direction } => GoType::Chan {
+            elem: Box::new(substitute_type_params(*elem, substitutions)),
+            direction,
+        },
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        } => GoType::Func {
+            params: params
+                .into_iter()
+                .map(|ty| substitute_type_params(ty, substitutions))
+                .collect(),
+            results: results
+                .into_iter()
+                .map(|ty| substitute_type_params(ty, substitutions))
                 .collect(),
             variadic_start,
         },
@@ -1782,6 +1832,14 @@ impl TypeEnv {
 
     pub fn get_type_param_count(&self, name: &str) -> Option<usize> {
         self.type_param_counts.get(name).copied()
+    }
+
+    pub fn set_type_param_names(&mut self, name: &str, names: Vec<std::string::String>) {
+        self.type_param_names.insert(name.to_string(), names);
+    }
+
+    pub fn get_type_param_names(&self, name: &str) -> Vec<std::string::String> {
+        self.type_param_names.get(name).cloned().unwrap_or_default()
     }
 
     pub fn set_type_alias(
@@ -2231,6 +2289,29 @@ impl TypeEnv {
             .unwrap_or_default()
     }
 
+    pub fn get_struct_fields_with_type_args(
+        &self,
+        struct_name: &str,
+        type_args: &[GoType],
+    ) -> Vec<(std::string::String, GoType)> {
+        let fields = self.get_struct_fields(struct_name);
+        if type_args.is_empty() {
+            return fields;
+        }
+        let type_params = self.get_type_param_names(struct_name);
+        if type_params.len() != type_args.len() {
+            return fields;
+        }
+        let substitutions = type_params
+            .into_iter()
+            .zip(type_args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        fields
+            .into_iter()
+            .map(|(name, ty)| (name, substitute_type_params(ty, &substitutions)))
+            .collect()
+    }
+
     pub fn get_field_array_len(&self, struct_name: &str, field_name: &str) -> Option<i128> {
         self.struct_field_array_lengths
             .get(struct_name)
@@ -2334,6 +2415,18 @@ impl TypeEnv {
             self.set_type_kind(
                 &qualified_name,
                 qualify_package_type_kind(package_name, kind, package_env),
+            );
+        }
+        for (name, count) in &package_env.type_param_counts {
+            self.set_type_param_count(
+                &qualify_package_member_name(package_name, name, package_env),
+                *count,
+            );
+        }
+        for (name, type_params) in &package_env.type_param_names {
+            self.set_type_param_names(
+                &qualify_package_member_name(package_name, name, package_env),
+                type_params.clone(),
             );
         }
         for (name, methods) in &package_env.interface_methods {
@@ -2510,7 +2603,9 @@ impl TypeEnv {
 
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
-        self.set_type_param_count(name.name, type_parameter_count(ts.type_params.as_ref()));
+        let type_param_names = type_parameter_names(ts.type_params.as_ref());
+        self.set_type_param_count(name.name, type_param_names.len());
+        self.set_type_param_names(name.name, type_param_names);
         if ts.assign.is_some() {
             self.set_type_alias(
                 name.name,
