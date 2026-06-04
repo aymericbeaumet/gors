@@ -34794,6 +34794,35 @@ func main() {
     }
 
     #[test]
+    fn string_call_arguments_lower_owned_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func keep(s string) {}
+
+                func main() {
+                    keep("go")
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("keep (\"go\" . to_string ())"),
+            "expected string argument to be owned at source lowering: {output}"
+        );
+        assert!(
+            !output.contains("& \"go\" . to_string"),
+            "expected no generated borrowed to_string cleanup: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_compile_slice_reassignment_without_moving_bounds() {
         test(
             r#"

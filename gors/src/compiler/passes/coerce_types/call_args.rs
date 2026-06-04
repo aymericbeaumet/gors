@@ -1,6 +1,5 @@
 use super::super::super::syn_inspect::{
-    is_path_ident, is_zero_arg_method_call, pat_ident_name, path_ident_name, strip_paren_or_group,
-    type_path_ident_name,
+    is_path_ident, pat_ident_name, path_ident_name, type_path_ident_name,
 };
 
 pub(super) type MutableRefCallArgs =
@@ -90,7 +89,6 @@ pub(super) fn coerce_scoped_call_args(
     scope: Option<&FnArgScope>,
 ) {
     for arg in args {
-        remove_owned_string_reference(arg);
         if matches!(arg, syn::Expr::Reference(_)) {
             continue;
         }
@@ -195,19 +193,6 @@ pub(super) fn call_func_name(func: &syn::Expr) -> Option<String> {
     }
 }
 
-fn remove_owned_string_reference(expr: &mut syn::Expr) {
-    let syn::Expr::Reference(reference) = expr else {
-        return;
-    };
-    if is_owned_to_string_expr(&reference.expr) {
-        *expr = (*reference.expr).clone();
-    }
-}
-
-fn is_owned_to_string_expr(expr: &syn::Expr) -> bool {
-    is_zero_arg_method_call(strip_paren_or_group(expr), "to_string")
-}
-
 fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections::HashSet<String>) {
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
@@ -230,41 +215,4 @@ fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections
 fn clone_expr(expr: &mut syn::Expr) {
     let inner = expr.clone();
     *expr = syn::parse_quote! { (#inner).clone() };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use syn::parse_quote;
-
-    #[test]
-    fn owned_to_string_detection_uses_shared_wrapper_stripping() {
-        let plain: syn::Expr = parse_quote! { value.to_string() };
-        let parened: syn::Expr = parse_quote! { ((value.to_string())) };
-        let grouped = syn::Expr::Group(syn::ExprGroup {
-            attrs: Vec::new(),
-            group_token: Default::default(),
-            expr: Box::new(parse_quote! { value.to_string() }),
-        });
-        let with_arg: syn::Expr = parse_quote! { value.to_string(extra) };
-        let clone: syn::Expr = parse_quote! { value.clone() };
-
-        assert!(is_owned_to_string_expr(&plain));
-        assert!(is_owned_to_string_expr(&parened));
-        assert!(is_owned_to_string_expr(&grouped));
-        assert!(!is_owned_to_string_expr(&with_arg));
-        assert!(!is_owned_to_string_expr(&clone));
-    }
-
-    #[test]
-    fn owned_to_string_reference_cleanup_removes_generated_borrow_only() {
-        let mut generated_borrow: syn::Expr = parse_quote! { &((value.to_string())) };
-        let mut method_with_arg: syn::Expr = parse_quote! { &(value.to_string(extra)) };
-
-        remove_owned_string_reference(&mut generated_borrow);
-        remove_owned_string_reference(&mut method_with_arg);
-
-        assert!(matches!(generated_borrow, syn::Expr::Paren(_)));
-        assert!(matches!(method_with_arg, syn::Expr::Reference(_)));
-    }
 }

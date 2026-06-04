@@ -154,10 +154,6 @@ pub(super) fn zero_arg_method_call_receiver_expr<'a>(
     Some(&method.receiver)
 }
 
-pub(super) fn is_zero_arg_method_call(expr: &syn::Expr, method_name: &str) -> bool {
-    zero_arg_method_call_receiver_expr(expr, method_name).is_some()
-}
-
 pub(super) fn ident_matches_any(ident: &syn::Ident, names: &[&str]) -> bool {
     names.iter().any(|name| ident == *name)
 }
@@ -1135,10 +1131,9 @@ mod tests {
                 .as_deref(),
             Some("value")
         );
-        assert!(is_zero_arg_method_call(&plain, "clone"));
         assert!(zero_arg_method_call_receiver_expr(&with_arg, "clone").is_none());
-        assert!(!is_zero_arg_method_call(&other, "clone"));
-        assert!(!is_zero_arg_method_call(&path, "clone"));
+        assert!(zero_arg_method_call_receiver_expr(&other, "clone").is_none());
+        assert!(zero_arg_method_call_receiver_expr(&path, "clone").is_none());
     }
 
     #[test]
