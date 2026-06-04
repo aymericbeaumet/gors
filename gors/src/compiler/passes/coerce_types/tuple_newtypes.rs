@@ -22,7 +22,7 @@ pub(super) fn coerce_assignment(
 ) {
     if let Some(self_ty) = impl_self_types.last()
         && tuple_newtypes.contains(self_ty)
-        && is_deref_self_expr(&assign.left)
+        && super::syntax::is_deref_self_expr(&assign.left)
         && rhs_takes_self_underlying(&assign.right)
     {
         let ident = syn::Ident::new(self_ty, proc_macro2::Span::mixed_site());
@@ -38,7 +38,7 @@ pub(super) fn coerce_cast(
 ) {
     if let Some(self_ty) = impl_self_types.last()
         && tuple_newtypes.contains(self_ty)
-        && is_self_or_deref_self_expr(&cast.expr)
+        && super::syntax::is_self_or_deref_self_expr(&cast.expr)
     {
         *cast.expr = syn::parse_quote! { self.0 };
     }
@@ -57,23 +57,6 @@ pub(super) fn coerce_numeric_from_call(
     {
         *first = syn::parse_quote! { *self };
     }
-}
-
-fn is_deref_self_expr(expr: &syn::Expr) -> bool {
-    if let syn::Expr::Paren(paren) = expr {
-        return is_deref_self_expr(&paren.expr);
-    }
-    let syn::Expr::Unary(unary) = expr else {
-        return false;
-    };
-    matches!(unary.op, syn::UnOp::Deref(_)) && super::syntax::is_self_expr(&unary.expr)
-}
-
-fn is_self_or_deref_self_expr(expr: &syn::Expr) -> bool {
-    if let syn::Expr::Paren(paren) = expr {
-        return is_self_or_deref_self_expr(&paren.expr);
-    }
-    super::syntax::is_self_expr(expr) || is_deref_self_expr(expr)
 }
 
 fn rhs_takes_self_underlying(expr: &syn::Expr) -> bool {

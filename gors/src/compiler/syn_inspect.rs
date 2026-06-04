@@ -65,6 +65,28 @@ pub(super) fn is_self_expr(expr: &syn::Expr) -> bool {
     is_path_ident(expr, "self")
 }
 
+pub(super) fn is_self_or_ref_self_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Paren(paren) => is_self_or_ref_self_expr(&paren.expr),
+        syn::Expr::Group(group) => is_self_or_ref_self_expr(&group.expr),
+        syn::Expr::Reference(reference) => is_self_or_ref_self_expr(&reference.expr),
+        _ => is_self_expr(expr),
+    }
+}
+
+pub(super) fn is_deref_self_expr(expr: &syn::Expr) -> bool {
+    let expr = strip_paren_or_group(expr);
+    let syn::Expr::Unary(unary) = expr else {
+        return false;
+    };
+    matches!(unary.op, syn::UnOp::Deref(_)) && is_self_expr(strip_paren_or_group(&unary.expr))
+}
+
+pub(super) fn is_self_or_deref_self_expr(expr: &syn::Expr) -> bool {
+    let expr = strip_paren_or_group(expr);
+    is_self_expr(expr) || is_deref_self_expr(expr)
+}
+
 pub(super) fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
     matches!(expr, syn::Expr::Path(path)
         if path.path.leading_colon.is_none()
@@ -394,6 +416,28 @@ mod tests {
         assert!(!is_self_expr(&field_expr));
         assert!(!is_path_ident(&qualified_expr, "value"));
         assert_eq!(type_path_ident_name(&vec_ty).as_deref(), Some("Vec"));
+    }
+
+    #[test]
+    fn self_shape_helpers_distinguish_exact_ref_and_deref_self() {
+        let direct: syn::Expr = parse_quote! { self };
+        let referenced: syn::Expr = parse_quote! { &self };
+        let parenthesized_ref: syn::Expr = parse_quote! { ((&self)) };
+        let deref: syn::Expr = parse_quote! { *(self) };
+        let field: syn::Expr = parse_quote! { self.0 };
+        let other_ident: syn::Expr = parse_quote! { value };
+
+        assert!(is_self_expr(&direct));
+        assert!(!is_self_expr(&referenced));
+        assert!(is_self_or_ref_self_expr(&referenced));
+        assert!(is_self_or_ref_self_expr(&parenthesized_ref));
+        assert!(!is_self_or_ref_self_expr(&field));
+        assert!(is_deref_self_expr(&deref));
+        assert!(is_self_or_deref_self_expr(&direct));
+        assert!(is_self_or_deref_self_expr(&deref));
+        assert!(!is_self_or_deref_self_expr(&referenced));
+        assert!(!is_deref_self_expr(&field));
+        assert!(!is_self_or_ref_self_expr(&other_ident));
     }
 
     #[test]

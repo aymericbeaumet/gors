@@ -62,9 +62,9 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     clone_call_receiver_expr, direct_clone_call_receiver_expr, expr_path_ident,
-    expr_path_ident_or_clone, is_path_call_expr, is_self_expr, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
-    slice_type_inner, type_mentions_name, vec_type_inner,
+    expr_path_ident_or_clone, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
+    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -12337,7 +12337,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
         && let Some(inner) = named_numeric_newtype_inner(&arg_go_type, &env)
         && let Some(inner_ty) = rust_type_from_go_type(&inner)
     {
-        if syn_expr_is_self(&arg) {
+        if is_self_or_ref_self_expr(&arg) {
             return syn::parse_quote! { ((self.0) as #target_ty) };
         }
         return syn::parse_quote! { ((#inner_ty::from(#arg)) as #target_ty) };
@@ -12401,24 +12401,6 @@ fn fixed_array_pointer_conversion_target(
         return None;
     }
     Some(type_from_expr_ref(target_inner))
-}
-
-fn syn_expr_is_self(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Path(path) => {
-            path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1
-                && path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|segment| segment.ident == "self")
-        }
-        syn::Expr::Paren(paren) => syn_expr_is_self(&paren.expr),
-        syn::Expr::Group(group) => syn_expr_is_self(&group.expr),
-        syn::Expr::Reference(reference) => syn_expr_is_self(&reference.expr),
-        _ => false,
-    }
 }
 
 fn named_numeric_newtype_inner(
@@ -26303,18 +26285,18 @@ var X int
     }
 
     #[test]
-    fn syn_expr_is_self_matches_only_self_ast_shapes() {
+    fn self_or_ref_self_expr_matches_only_self_ast_shapes() {
         let direct: syn::Expr = syn::parse_quote! { self };
         let referenced: syn::Expr = syn::parse_quote! { &self };
         let parenthesized: syn::Expr = syn::parse_quote! { ((self)) };
         let field: syn::Expr = syn::parse_quote! { self.value };
         let other_ident: syn::Expr = syn::parse_quote! { self_ };
 
-        assert!(super::syn_expr_is_self(&direct));
-        assert!(super::syn_expr_is_self(&referenced));
-        assert!(super::syn_expr_is_self(&parenthesized));
-        assert!(!super::syn_expr_is_self(&field));
-        assert!(!super::syn_expr_is_self(&other_ident));
+        assert!(super::is_self_or_ref_self_expr(&direct));
+        assert!(super::is_self_or_ref_self_expr(&referenced));
+        assert!(super::is_self_or_ref_self_expr(&parenthesized));
+        assert!(!super::is_self_or_ref_self_expr(&field));
+        assert!(!super::is_self_or_ref_self_expr(&other_ident));
     }
 
     #[test]
