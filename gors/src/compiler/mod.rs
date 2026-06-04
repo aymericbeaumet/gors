@@ -6261,10 +6261,7 @@ fn collect_vec_value_method_targets(
                         let syn::ImplItem::Fn(method) = impl_item else {
                             continue;
                         };
-                        let kinds = clone_value_param_kinds(&method.sig)
-                            .into_iter()
-                            .filter_map(|(index, kind)| index.checked_sub(1).map(|i| (i, kind)))
-                            .collect::<BTreeMap<_, _>>();
+                        let kinds = method_arg_targets(clone_value_param_kinds(&method.sig));
                         if kinds.is_empty() {
                             continue;
                         }
@@ -6294,10 +6291,7 @@ fn collect_vec_value_method_targets(
                             &self_name,
                             &method.sig.ident.to_string(),
                         );
-                        let kinds = clone_value_param_kinds(&method.sig)
-                            .into_iter()
-                            .filter_map(|(index, kind)| index.checked_sub(1).map(|i| (i, kind)))
-                            .collect::<BTreeMap<_, _>>();
+                        let kinds = method_arg_targets(clone_value_param_kinds(&method.sig));
                         if kinds.is_empty() {
                             continue;
                         }
@@ -6345,6 +6339,13 @@ fn record_direct_supertraits(
             direct_supertraits,
         );
     }
+}
+
+fn method_arg_targets<T>(param_targets: BTreeMap<usize, T>) -> BTreeMap<usize, T> {
+    param_targets
+        .into_iter()
+        .filter_map(|(index, target)| index.checked_sub(1).map(|arg_index| (arg_index, target)))
+        .collect()
 }
 
 fn clone_value_param_kinds(sig: &syn::Signature) -> BTreeMap<usize, CloneValueParamKind> {
@@ -6620,12 +6621,7 @@ fn collect_mut_ref_targets(
                         let syn::ImplItem::Fn(item_fn) = item else {
                             continue;
                         };
-                        let param_kinds = mut_ref_param_kinds(&item_fn.sig)
-                            .into_iter()
-                            .filter_map(|(index, kind)| {
-                                index.checked_sub(1).map(|arg_index| (arg_index, kind))
-                            })
-                            .collect::<BTreeMap<_, _>>();
+                        let param_kinds = method_arg_targets(mut_ref_param_kinds(&item_fn.sig));
                         if param_kinds.is_empty() {
                             continue;
                         }
@@ -6655,12 +6651,7 @@ fn collect_mut_ref_targets(
                             &self_name,
                             &item_fn.sig.ident.to_string(),
                         );
-                        let param_kinds = mut_ref_param_kinds(&item_fn.sig)
-                            .into_iter()
-                            .filter_map(|(index, kind)| {
-                                index.checked_sub(1).map(|arg_index| (arg_index, kind))
-                            })
-                            .collect::<BTreeMap<_, _>>();
+                        let param_kinds = method_arg_targets(mut_ref_param_kinds(&item_fn.sig));
                         if param_kinds.is_empty() {
                             continue;
                         }
