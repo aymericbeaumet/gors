@@ -62,14 +62,15 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, box_new_call_arg,
-    clone_call_receiver_expr, dedupe_syn_types, direct_clone_call_receiver_expr, expr_is_ident,
-    expr_path_ident, expr_path_ident_or_clone, fn_arg_ident, impl_trait_targets_match,
-    is_box_dyn_any_expr, is_box_dyn_any_type, is_box_leak_expr, is_box_new_call,
-    is_box_type_with_any_bound, is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr,
-    is_self_expr, is_self_or_ref_self_expr, is_slice_range_index_expr, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
-    self_type_reachability_names, slice_type_inner, syn_expr_matches_target, type_mentions_name,
-    type_param_bound_matches, vec_type_inner,
+    call_expr_path_last_ident, clone_call_receiver_expr, dedupe_syn_types,
+    direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
+    fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr, is_box_dyn_any_type,
+    is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
+    is_direct_self_field_expr, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    is_slice_range_index_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
+    pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
+    slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
+    vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -14972,16 +14973,7 @@ fn coerce_numeric_expr(
 }
 
 fn is_named_constructor_expr(expr: &syn::Expr, name: &str) -> bool {
-    let syn::Expr::Call(call) = expr else {
-        return false;
-    };
-    let syn::Expr::Path(path) = call.func.as_ref() else {
-        return false;
-    };
-    let Some(last) = path.path.segments.last() else {
-        return false;
-    };
-    last.ident == rust_safe_ident_name(name)
+    call_expr_path_last_ident(expr, &rust_safe_ident_name(name))
 }
 
 fn is_complex_go_type(ty: &typeinfer::GoType) -> bool {

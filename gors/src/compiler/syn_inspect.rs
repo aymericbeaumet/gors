@@ -30,6 +30,19 @@ pub(super) fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
     path_is(&path.path, segments)
 }
 
+pub(super) fn call_expr_path_last_ident(expr: &syn::Expr, name: &str) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
+}
+
 pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
@@ -988,6 +1001,11 @@ mod tests {
 
         let call: syn::Expr = parse_quote! { std::mem::take(value) };
         assert!(!is_path_call_expr(&call, &["std", "mem", "take"]));
+        assert!(call_expr_path_last_ident(&call, "take"));
+        assert!(!call_expr_path_last_ident(&call, "mem"));
+
+        let method_call: syn::Expr = parse_quote! { value.take() };
+        assert!(!call_expr_path_last_ident(&method_call, "take"));
     }
 
     #[test]
