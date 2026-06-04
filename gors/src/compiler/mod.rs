@@ -27,6 +27,7 @@ mod interface_method_sets;
 mod interface_type_env;
 pub mod ir;
 mod item_reachability;
+mod loop_control;
 pub mod manifest;
 mod named_returns;
 mod noop_interfaces;
@@ -94,7 +95,6 @@ thread_local! {
     static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-    static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_PATHS_BY_LOCAL_NAME: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
@@ -3581,7 +3581,7 @@ fn reset_lowering_thread_state() {
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
-    LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    loop_control::reset_counter();
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
@@ -7323,7 +7323,7 @@ pub fn compile_with_source_map(
     DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
     SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
     SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
-    LOOP_BODY_COUNTER.with(|c| *c.borrow_mut() = 0);
+    loop_control::reset_counter();
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
@@ -14601,31 +14601,6 @@ fn is_string_literal(expr: &ast::Expr) -> bool {
     matches!(expr, ast::Expr::BasicLit(lit) if lit.kind == token::Token::STRING)
 }
 
-fn make_for_loop(pat: syn::Pat, iter_expr: syn::Expr, mut body: syn::Block) -> Vec<syn::Stmt> {
-    let label = if has_continue_for_post(&body.stmts, None, true) {
-        let label = next_loop_body_label();
-        rewrite_unlabeled_continue_to_label(&mut body.stmts, &label);
-        Some(syn::Label {
-            name: label,
-            colon_token: <Token![:]>::default(),
-        })
-    } else {
-        None
-    };
-    vec![syn::Stmt::Expr(
-        syn::Expr::ForLoop(syn::ExprForLoop {
-            attrs: vec![],
-            label,
-            for_token: <Token![for]>::default(),
-            pat: Box::new(pat),
-            in_token: <Token![in]>::default(),
-            expr: Box::new(iter_expr),
-            body,
-        }),
-        None,
-    )]
-}
-
 fn set_range_binding(expr: Option<&ast::Expr>, ty: typeinfer::GoType) {
     let Some(ast::Expr::Ident(ident)) = expr else {
         return;
@@ -14829,20 +14804,20 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             let (pat, body) = range_pat_and_body(vec![key_expr, val_expr], range_tok, body)?;
             if is_string {
                 // range over string: iterate (byte_index, rune)
-                Ok(make_for_loop(
+                Ok(loop_control::range_for_loop(
                     pat,
                     syn::parse_quote! { (#x).char_indices().map(|(i, ch)| (i as isize, ch as i32)) },
                     body,
                 ))
             } else if is_pointer_array {
                 if is_borrowed_pointer_array {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         pat,
                         syn::parse_quote! { (#x).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) },
                         body,
                     ))
                 } else {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         pat,
                         syn::parse_quote! {{
                             let __gors_range_values = (#x).lock().unwrap().iter().cloned().collect::<Vec<_>>();
@@ -14852,25 +14827,25 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     ))
                 }
             } else if is_any_slice_range_type(&inferred_range_type) {
-                Ok(make_for_loop(
+                Ok(loop_control::range_for_loop(
                     pat,
                     syn::parse_quote! { (#x).into_iter().enumerate().map(|(i, v)| (i as isize, v)) },
                     body,
                 ))
             } else if is_indexed_range_type(&inferred_range_type) {
-                Ok(make_for_loop(
+                Ok(loop_control::range_for_loop(
                     pat,
                     syn::parse_quote! { (#x).iter().cloned().enumerate().map(|(i, v)| (i as isize, v)) },
                     body,
                 ))
             } else if matches!(range_kind, ir::RangeKind::Map) {
-                Ok(make_for_loop(
+                Ok(loop_control::range_for_loop(
                     pat,
                     syn::parse_quote! { (#x).iter().map(|(k, v)| (k.clone(), v.clone())) },
                     body,
                 ))
             } else {
-                Ok(make_for_loop(
+                Ok(loop_control::range_for_loop(
                     pat,
                     syn::parse_quote! { (#x).into_iter().enumerate().map(|(i, v)| (i as isize, v)) },
                     body,
@@ -14889,26 +14864,26 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     .as_ref()
                     .unwrap_or(&typeinfer::GoType::Int);
                 let iter_expr = range_integer_iter_expr(&x, iter_go_type);
-                Ok(make_for_loop(key_pat, iter_expr, body))
+                Ok(loop_control::range_for_loop(key_pat, iter_expr, body))
             } else {
                 // Use into_iter() which works for channels (via IntoIterator) and
                 // for slices/vecs (gives values). For index-only iteration over
                 // slices, use `for i, _ := range s` instead.
                 if is_string {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         key_pat,
                         syn::parse_quote! { (#x).char_indices().map(|(i, _)| i as isize) },
                         body,
                     ))
                 } else if is_pointer_array {
                     if is_borrowed_pointer_array {
-                        Ok(make_for_loop(
+                        Ok(loop_control::range_for_loop(
                             key_pat,
                             syn::parse_quote! { 0..(crate::builtin::len(&*(#x)) as isize) },
                             body,
                         ))
                     } else {
-                        Ok(make_for_loop(
+                        Ok(loop_control::range_for_loop(
                             key_pat,
                             syn::parse_quote! {
                                 0..{
@@ -14920,19 +14895,19 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                         ))
                     }
                 } else if is_indexed_range_type(&inferred_range_type) {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         key_pat,
                         syn::parse_quote! { 0..(crate::builtin::len(&#x) as isize) },
                         body,
                     ))
                 } else if matches!(range_kind, ir::RangeKind::Map) {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         key_pat,
                         syn::parse_quote! { (#x).keys().cloned() },
                         body,
                     ))
                 } else {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         key_pat,
                         syn::parse_quote! { (#x).into_iter() },
                         body,
@@ -14948,18 +14923,22 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     .as_ref()
                     .unwrap_or(&typeinfer::GoType::Int);
                 let iter_expr = range_integer_iter_expr(&x, iter_go_type);
-                Ok(make_for_loop(pat, iter_expr, body))
+                Ok(loop_control::range_for_loop(pat, iter_expr, body))
             } else if is_string {
-                Ok(make_for_loop(pat, syn::parse_quote! { (#x).chars() }, body))
+                Ok(loop_control::range_for_loop(
+                    pat,
+                    syn::parse_quote! { (#x).chars() },
+                    body,
+                ))
             } else if is_pointer_array {
                 if is_borrowed_pointer_array {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         pat,
                         syn::parse_quote! { 0..(crate::builtin::len(&*(#x)) as isize) },
                         body,
                     ))
                 } else {
-                    Ok(make_for_loop(
+                    Ok(loop_control::range_for_loop(
                         pat,
                         syn::parse_quote! {
                             0..{
@@ -14971,9 +14950,13 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
                     ))
                 }
             } else if matches!(range_kind, ir::RangeKind::Map) {
-                Ok(make_for_loop(pat, syn::parse_quote! { (#x).iter() }, body))
+                Ok(loop_control::range_for_loop(
+                    pat,
+                    syn::parse_quote! { (#x).iter() },
+                    body,
+                ))
             } else {
-                Ok(make_for_loop(pat, x, body))
+                Ok(loop_control::range_for_loop(pat, x, body))
             }
         }
         _ => Err(CompilerError::UnsupportedConstruct(
@@ -21089,80 +21072,17 @@ fn compile_for_stmt(
 
     let per_iteration_stmts = for_clause_per_iteration_capture_stmts(&per_iteration_capture_names);
 
-    if let Some(post) = for_stmt.post {
-        let post_stmts = Vec::<syn::Stmt>::try_from(*post)?;
-
-        if has_continue_for_post(&body.stmts, loop_label_name.as_deref(), true) {
-            // Go runs the post statement before the next iteration, including
-            // `continue label` targeting this loop. Rust `continue` jumps
-            // straight to the condition, so route matching continues through a
-            // body block and then emit per-iteration rebinding and post
-            // statements after that block.
-            let body_label = next_loop_body_label();
-            rewrite_continue_for_post(
-                &mut body.stmts,
-                loop_label_name.as_deref(),
-                true,
-                &body_label,
-            );
-
-            let labeled_body = syn::Stmt::Expr(
-                syn::Expr::Block(syn::ExprBlock {
-                    attrs: vec![],
-                    label: Some(syn::Label {
-                        name: body_label,
-                        colon_token: <Token![:]>::default(),
-                    }),
-                    block: body,
-                }),
-                Some(<Token![;]>::default()),
-            );
-
-            let mut loop_stmts = vec![labeled_body];
-            loop_stmts.extend(per_iteration_stmts);
-            loop_stmts.extend(post_stmts);
-
-            body = syn::Block {
-                brace_token: syn::token::Brace::default(),
-                stmts: loop_stmts,
-            };
-        } else {
-            body.stmts.extend(per_iteration_stmts);
-            body.stmts.extend(post_stmts);
-        }
-    } else if !per_iteration_stmts.is_empty() {
-        if has_continue_for_post(&body.stmts, loop_label_name.as_deref(), true) {
-            let body_label = next_loop_body_label();
-            rewrite_continue_for_post(
-                &mut body.stmts,
-                loop_label_name.as_deref(),
-                true,
-                &body_label,
-            );
-
-            let labeled_body = syn::Stmt::Expr(
-                syn::Expr::Block(syn::ExprBlock {
-                    attrs: vec![],
-                    label: Some(syn::Label {
-                        name: body_label,
-                        colon_token: <Token![:]>::default(),
-                    }),
-                    block: body,
-                }),
-                Some(<Token![;]>::default()),
-            );
-
-            let mut loop_stmts = vec![labeled_body];
-            loop_stmts.extend(per_iteration_stmts);
-
-            body = syn::Block {
-                brace_token: syn::token::Brace::default(),
-                stmts: loop_stmts,
-            };
-        } else {
-            body.stmts.extend(per_iteration_stmts);
-        }
-    }
+    let post_stmts = for_stmt
+        .post
+        .map(|post| Vec::<syn::Stmt>::try_from(*post))
+        .transpose()?
+        .unwrap_or_default();
+    body = loop_control::with_iteration_tail(
+        body,
+        loop_label_name.as_deref(),
+        per_iteration_stmts,
+        post_stmts,
+    );
 
     let loop_label = label_ident.map(|ident| syn::Label {
         name: syn::Lifetime {
@@ -21745,16 +21665,6 @@ fn next_select_recv_idents() -> (syn::Ident, syn::Ident) {
     )
 }
 
-fn next_loop_body_label() -> syn::Lifetime {
-    let n = LOOP_BODY_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
-}
-
 fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
     let n = GOTO_STATE_COUNTER.with(|c| {
         let mut val = c.borrow_mut();
@@ -21826,214 +21736,6 @@ fn true_expr() -> syn::Expr {
         attrs: vec![],
         lit: syn::Lit::Bool(syn::LitBool::new(true, Span::mixed_site())),
     })
-}
-
-fn has_continue_for_post(
-    stmts: &[syn::Stmt],
-    loop_label: Option<&str>,
-    allow_unlabeled: bool,
-) -> bool {
-    stmts.iter().any(|stmt| match stmt {
-        syn::Stmt::Expr(syn::Expr::Continue(cont), _) => {
-            continue_targets_current_loop(cont, loop_label, allow_unlabeled)
-        }
-        syn::Stmt::Expr(expr, _) => {
-            has_continue_for_post_in_expr(expr, loop_label, allow_unlabeled)
-        }
-        _ => false,
-    })
-}
-
-fn has_continue_for_post_in_expr(
-    expr: &syn::Expr,
-    loop_label: Option<&str>,
-    allow_unlabeled: bool,
-) -> bool {
-    match expr {
-        syn::Expr::If(if_expr) => {
-            has_continue_for_post(&if_expr.then_branch.stmts, loop_label, allow_unlabeled)
-                || if_expr.else_branch.as_ref().is_some_and(|(_, e)| {
-                    has_continue_for_post_in_expr(e, loop_label, allow_unlabeled)
-                })
-        }
-        syn::Expr::Block(block) => {
-            has_continue_for_post(&block.block.stmts, loop_label, allow_unlabeled)
-        }
-        syn::Expr::While(while_expr) => has_continue_for_post_in_nested_loop(
-            while_expr.label.as_ref(),
-            &while_expr.body.stmts,
-            loop_label,
-        ),
-        syn::Expr::Loop(loop_expr) => has_continue_for_post_in_nested_loop(
-            loop_expr.label.as_ref(),
-            &loop_expr.body.stmts,
-            loop_label,
-        ),
-        syn::Expr::ForLoop(for_loop) => has_continue_for_post_in_nested_loop(
-            for_loop.label.as_ref(),
-            &for_loop.body.stmts,
-            loop_label,
-        ),
-        _ => false,
-    }
-}
-
-fn has_continue_for_post_in_nested_loop(
-    nested_label: Option<&syn::Label>,
-    stmts: &[syn::Stmt],
-    loop_label: Option<&str>,
-) -> bool {
-    let Some(loop_label) = loop_label else {
-        return false;
-    };
-    if nested_label.is_some_and(|label| label.name.ident == loop_label) {
-        return false;
-    }
-    has_continue_for_post(stmts, Some(loop_label), false)
-}
-
-fn rewrite_continue_for_post(
-    stmts: &mut [syn::Stmt],
-    loop_label: Option<&str>,
-    allow_unlabeled: bool,
-    body_label: &syn::Lifetime,
-) {
-    for stmt in stmts.iter_mut() {
-        match stmt {
-            syn::Stmt::Expr(syn::Expr::Continue(cont), semi)
-                if continue_targets_current_loop(cont, loop_label, allow_unlabeled) =>
-            {
-                *stmt = syn::Stmt::Expr(
-                    syn::Expr::Break(syn::ExprBreak {
-                        attrs: vec![],
-                        break_token: <Token![break]>::default(),
-                        label: Some(body_label.clone()),
-                        expr: None,
-                    }),
-                    *semi,
-                );
-            }
-            syn::Stmt::Expr(expr, _) => {
-                rewrite_continue_for_post_in_expr(expr, loop_label, allow_unlabeled, body_label);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn rewrite_continue_for_post_in_expr(
-    expr: &mut syn::Expr,
-    loop_label: Option<&str>,
-    allow_unlabeled: bool,
-    body_label: &syn::Lifetime,
-) {
-    match expr {
-        syn::Expr::If(if_expr) => {
-            rewrite_continue_for_post(
-                &mut if_expr.then_branch.stmts,
-                loop_label,
-                allow_unlabeled,
-                body_label,
-            );
-            if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                rewrite_continue_for_post_in_expr(
-                    else_expr,
-                    loop_label,
-                    allow_unlabeled,
-                    body_label,
-                );
-            }
-        }
-        syn::Expr::Block(block) => {
-            rewrite_continue_for_post(
-                &mut block.block.stmts,
-                loop_label,
-                allow_unlabeled,
-                body_label,
-            );
-        }
-        syn::Expr::While(while_expr) => {
-            rewrite_continue_for_post_in_nested_loop(
-                while_expr.label.as_ref(),
-                &mut while_expr.body.stmts,
-                loop_label,
-                body_label,
-            );
-        }
-        syn::Expr::Loop(loop_expr) => {
-            rewrite_continue_for_post_in_nested_loop(
-                loop_expr.label.as_ref(),
-                &mut loop_expr.body.stmts,
-                loop_label,
-                body_label,
-            );
-        }
-        syn::Expr::ForLoop(for_loop) => {
-            rewrite_continue_for_post_in_nested_loop(
-                for_loop.label.as_ref(),
-                &mut for_loop.body.stmts,
-                loop_label,
-                body_label,
-            );
-        }
-        _ => {}
-    }
-}
-
-fn rewrite_continue_for_post_in_nested_loop(
-    nested_label: Option<&syn::Label>,
-    stmts: &mut [syn::Stmt],
-    loop_label: Option<&str>,
-    body_label: &syn::Lifetime,
-) {
-    let Some(loop_label) = loop_label else {
-        return;
-    };
-    if nested_label.is_some_and(|label| label.name.ident == loop_label) {
-        return;
-    }
-    rewrite_continue_for_post(stmts, Some(loop_label), false, body_label);
-}
-
-fn rewrite_unlabeled_continue_to_label(stmts: &mut [syn::Stmt], loop_label: &syn::Lifetime) {
-    for stmt in stmts.iter_mut() {
-        match stmt {
-            syn::Stmt::Expr(syn::Expr::Continue(cont), _) if cont.label.is_none() => {
-                cont.label = Some(loop_label.clone());
-            }
-            syn::Stmt::Expr(expr, _) => {
-                rewrite_unlabeled_continue_to_label_in_expr(expr, loop_label);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn rewrite_unlabeled_continue_to_label_in_expr(expr: &mut syn::Expr, loop_label: &syn::Lifetime) {
-    match expr {
-        syn::Expr::If(if_expr) => {
-            rewrite_unlabeled_continue_to_label(&mut if_expr.then_branch.stmts, loop_label);
-            if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                rewrite_unlabeled_continue_to_label_in_expr(else_expr, loop_label);
-            }
-        }
-        syn::Expr::Block(block) => {
-            rewrite_unlabeled_continue_to_label(&mut block.block.stmts, loop_label);
-        }
-        syn::Expr::While(_) | syn::Expr::Loop(_) | syn::Expr::ForLoop(_) => {}
-        _ => {}
-    }
-}
-
-fn continue_targets_current_loop(
-    cont: &syn::ExprContinue,
-    loop_label: Option<&str>,
-    allow_unlabeled: bool,
-) -> bool {
-    if allow_unlabeled && cont.label.is_none() {
-        return true;
-    }
-    loop_label.is_some_and(|label| cont.label.as_ref().is_some_and(|cont| cont.ident == label))
 }
 
 fn inferred_function_type_for_name(name: &str) -> Option<typeinfer::GoType> {
