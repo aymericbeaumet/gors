@@ -1280,7 +1280,11 @@ needs fuller interface method-set modeling.
 Main package (`pass()`):
 1. `simplify_return` — remove trailing `return` (Rust style only)
 2. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-3. `avoid_item_shadowing` — rename generated locals that shadow item names
+
+Local variables, parameters, range bindings, and other value bindings that would
+shadow generated item names are disambiguated during Go-to-Rust lowering. Do not
+reintroduce a whole-file Rust AST renaming pass for that; it is scope-blind and
+can rewrite item references that appear before a local declaration.
 
 Channel lowering uses the shared `crate::builtin::Chan` runtime copied from
 `gors-builtin/src/lib.rs`; do not inject a generated `gors_channel` module from
@@ -1301,7 +1305,7 @@ reflection fallback pruning through its `reflection_fallback` submodule after
 helpers such as `__gors_flush_fmt` have been injected.
 
 Imported packages (`pass_for_imported_package()`): simplify_return,
-coerce_types, avoid_item_shadowing.
+coerce_types.
 
 ## Stdlib system — embedded Go source
 

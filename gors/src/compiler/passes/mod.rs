@@ -1,22 +1,18 @@
-mod avoid_item_shadowing;
 mod coerce_types;
 mod simplify_return;
 
 pub fn pass(file: &mut syn::File) {
     simplify_return::pass(file);
     coerce_types::pass(file);
-    avoid_item_shadowing::pass(file);
 }
 
 pub fn pass_for_imported_package(file: &mut syn::File) {
     simplify_return::pass(file);
     coerce_types::pass(file);
-    avoid_item_shadowing::pass(file);
 }
 
 pub fn pass_after_package_merge(file: &mut syn::File) {
     coerce_types::pass_after_package_merge(file);
-    avoid_item_shadowing::pass(file);
 }
 
 pub fn pass_after_structural_helpers(file: &mut syn::File) {

@@ -120,7 +120,9 @@ thread_local! {
     static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
     static LOCAL_CONST_VALUES: RefCell<Vec<BTreeMap<String, ConstValue>>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_ITEM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static ACTIVE_LOCAL_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    static ACTIVE_LOCAL_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 #[derive(Clone)]
@@ -277,6 +279,11 @@ struct LocalTypeEnvScopeGuard {
 
 struct ActiveLocalNamesGuard {
     previous: std::collections::HashSet<String>,
+    previous_renames: BTreeMap<String, String>,
+}
+
+struct ActiveItemNamesGuard {
+    previous: std::collections::HashSet<String>,
 }
 
 struct TypeParamKindsGuard {
@@ -298,7 +305,15 @@ impl ActiveLocalNamesGuard {
     fn set(current: std::collections::HashSet<String>) -> Self {
         let previous =
             ACTIVE_LOCAL_NAMES.with(|names| std::mem::replace(&mut *names.borrow_mut(), current));
-        Self { previous }
+        let current_renames = local_renames_for_names(
+            &ACTIVE_LOCAL_NAMES.with(|names| names.borrow().iter().cloned().collect::<Vec<_>>()),
+        );
+        let previous_renames = ACTIVE_LOCAL_RENAMES
+            .with(|renames| std::mem::replace(&mut *renames.borrow_mut(), current_renames));
+        Self {
+            previous,
+            previous_renames,
+        }
     }
 
     fn push_scope() -> Self {
@@ -312,6 +327,25 @@ impl Drop for ActiveLocalNamesGuard {
         ACTIVE_LOCAL_NAMES.with(|names| {
             *names.borrow_mut() = std::mem::take(&mut self.previous);
         });
+        ACTIVE_LOCAL_RENAMES.with(|renames| {
+            *renames.borrow_mut() = std::mem::take(&mut self.previous_renames);
+        });
+    }
+}
+
+impl ActiveItemNamesGuard {
+    fn set(current: std::collections::HashSet<String>) -> Self {
+        let previous =
+            ACTIVE_ITEM_NAMES.with(|names| std::mem::replace(&mut *names.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+impl Drop for ActiveItemNamesGuard {
+    fn drop(&mut self) {
+        ACTIVE_ITEM_NAMES.with(|names| {
+            *names.borrow_mut() = std::mem::take(&mut self.previous);
+        });
     }
 }
 
@@ -319,18 +353,79 @@ fn is_active_local_name(name: &str) -> bool {
     ACTIVE_LOCAL_NAMES.with(|names| names.borrow().contains(name))
 }
 
+fn local_renames_for_names(names: &[String]) -> BTreeMap<String, String> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let renamed = local_binding_rust_name_from_safe_base(name);
+            (renamed != *name).then(|| (name.clone(), renamed))
+        })
+        .collect()
+}
+
 fn add_active_local_names(names: impl IntoIterator<Item = String>) {
     ACTIVE_LOCAL_NAMES.with(|active| {
-        active.borrow_mut().extend(
-            names
-                .into_iter()
-                .filter(|name| !name.is_empty() && name != "_"),
-        );
+        let names = names
+            .into_iter()
+            .filter(|name| !name.is_empty() && name != "_")
+            .collect::<Vec<_>>();
+        active.borrow_mut().extend(names.iter().cloned());
+        ACTIVE_LOCAL_RENAMES.with(|renames| {
+            let mut renames = renames.borrow_mut();
+            for name in names {
+                let renamed = local_binding_rust_name_from_safe_base(&name);
+                if renamed == name {
+                    renames.remove(&name);
+                } else {
+                    renames.insert(name, renamed);
+                }
+            }
+        });
     });
 }
 
 fn active_local_shadows_unqualified_name(name: &str) -> bool {
     !name.contains('.') && is_active_local_name(&rust_safe_ident_name(name))
+}
+
+fn local_binding_rust_name_from_safe_base(base: &str) -> String {
+    ACTIVE_ITEM_NAMES.with(|names| {
+        let names = names.borrow();
+        if !names.contains(base) {
+            return base.to_string();
+        }
+        let mut candidate = format!("{base}__local");
+        let mut i = 0usize;
+        while names.contains(&candidate) {
+            i += 1;
+            candidate = format!("{base}__local_{i}");
+        }
+        candidate
+    })
+}
+
+fn local_binding_rust_name(name: &str) -> String {
+    local_binding_rust_name_from_safe_base(&rust_safe_ident_name(name))
+}
+
+fn local_binding_ident(name: &str) -> syn::Ident {
+    syn::Ident::new(&local_binding_rust_name(name), Span::mixed_site())
+}
+
+fn local_binding_ident_for_ast(ident: &ast::Ident<'_>) -> syn::Ident {
+    record_mapping(&ident.name_pos, Some(ident.name));
+    local_binding_ident(ident.name)
+}
+
+fn value_ident_rust_name(name: &str) -> String {
+    let base = rust_safe_ident_name(name);
+    ACTIVE_LOCAL_RENAMES
+        .with(|renames| renames.borrow().get(&base).cloned())
+        .unwrap_or(base)
+}
+
+fn value_ident(name: &str) -> syn::Ident {
+    syn::Ident::new(&value_ident_rust_name(name), Span::mixed_site())
 }
 
 impl TypeParamKindsGuard {
@@ -3283,7 +3378,7 @@ fn named_return_ident_expr(ident: &syn::Ident, clone_unshared: bool) -> syn::Exp
 }
 
 fn is_named_return_name(name: &str) -> bool {
-    let rust_name = rust_safe_ident_name(name);
+    let rust_name = local_binding_rust_name(name);
     NAMED_RETURN_IDENTS.with(|idents| idents.borrow().iter().any(|ident| *ident == rust_name))
 }
 
@@ -3900,6 +3995,9 @@ fn reset_lowering_thread_state() {
     GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|c| *c.borrow_mut() = 0);
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    ACTIVE_ITEM_NAMES.with(|names| names.borrow_mut().clear());
+    ACTIVE_LOCAL_NAMES.with(|names| names.borrow_mut().clear());
+    ACTIVE_LOCAL_RENAMES.with(|renames| renames.borrow_mut().clear());
 }
 
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
@@ -12010,8 +12108,7 @@ fn compile_method(
                                 env.borrow_mut().set_var(name.name, go_type);
                             });
                         }
-                        let ident =
-                            syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
+                        let ident = local_binding_ident_for_ast(name);
                         named_return_info.push((ident.clone(), rust_type, zero));
                         named_return_idents.push(ident);
                     }
@@ -13346,7 +13443,7 @@ fn compile_append_slice_arg(slice_arg: ast::Expr, slice_go_type: &typeinfer::GoT
     if let ast::Expr::Ident(ident) = &slice_arg {
         let name = rust_safe_ident_name(ident.name);
         if is_borrowed_slice_param_name(&name) && !go_type_is_copy(slice_go_type) {
-            let ident = syn::Ident::new(&name, Span::mixed_site());
+            let ident = value_ident(ident.name);
             return syn::parse_quote! { (*#ident).clone() };
         }
     }
@@ -14450,7 +14547,7 @@ fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
     if let ast::Expr::Ident(ident) = inner {
         let name = rust_safe_ident_name(ident.name);
         if is_borrowed_pointer_param_name(&name) {
-            let ident = syn::Ident::new(&name, Span::mixed_site());
+            let ident = value_ident(ident.name);
             return Some(syn::parse_quote! { *#ident });
         }
     }
@@ -14517,7 +14614,7 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             if let Some(expr) = shared_capture_lvalue_expr(ident.name) {
                 return Some(expr);
             }
-            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            let ident = value_ident(ident.name);
             Some(syn::parse_quote! { #ident })
         }
         ast::Expr::SelectorExpr(selector) => {
@@ -14841,10 +14938,7 @@ fn shared_capture_ident(expr: &ast::Expr) -> Option<syn::Ident> {
     if !is_shared_capture_name(ident.name) {
         return None;
     }
-    Some(syn::Ident::new(
-        &rust_safe_ident_name(ident.name),
-        Span::mixed_site(),
-    ))
+    Some(value_ident(ident.name))
 }
 
 fn is_goto_continue_label(name: &str) -> bool {
@@ -14935,7 +15029,7 @@ fn shared_capture_lvalue_expr(name: &str) -> Option<syn::Expr> {
     if !is_shared_capture_name(name) {
         return None;
     }
-    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+    let ident = value_ident(name);
     Some(syn::parse_quote! { (*#ident.lock().unwrap()) })
 }
 
@@ -14943,7 +15037,7 @@ fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
     if !is_shared_capture_name(name) {
         return None;
     }
-    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+    let ident = value_ident(name);
     let go_type = TYPE_ENV.with(|env| {
         env.borrow()
             .get_var(name)
@@ -15339,8 +15433,9 @@ fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Exp
     let ast::Expr::Ident(ident) = &*unary.x else {
         return None;
     };
-    let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-    if is_shared_capture_name(ident.to_string().as_str()) {
+    let source_name = ident.name;
+    let ident = value_ident(source_name);
+    if is_shared_capture_name(source_name) {
         Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
     } else {
         Some(syn::parse_quote! { &mut #ident })
@@ -15387,7 +15482,7 @@ fn compile_expr_with_expected(
         && let ast::Expr::Ident(ident) = &expr
         && is_borrowed_pointer_param_name(&rust_safe_ident_name(ident.name))
     {
-        let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+        let ident = value_ident(ident.name);
         return syn::parse_quote! { crate::builtin::GorsPtr::new((#ident).clone()) };
     }
 
@@ -15414,7 +15509,7 @@ fn compile_expr_with_expected(
                 )
             });
             if is_func_var {
-                let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                let ident = value_ident(ident.name);
                 let value = syn::parse_quote! { #ident.clone() };
                 if let Some(expected) = expected {
                     return wrap_named_func_cell_expr(expected, value);
@@ -16554,6 +16649,26 @@ fn set_range_function_bindings(
     }
 }
 
+fn range_declared_active_local_names(
+    key: Option<&ast::Expr>,
+    value: Option<&ast::Expr>,
+    tok: Option<token::Token>,
+) -> Vec<String> {
+    if tok == Some(token::Token::ASSIGN) {
+        return Vec::new();
+    }
+    [key, value]
+        .into_iter()
+        .flatten()
+        .filter_map(|expr| {
+            let ast::Expr::Ident(ident) = expr else {
+                return None;
+            };
+            (ident.name != "_").then(|| rust_safe_ident_name(ident.name))
+        })
+        .collect()
+}
+
 fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let mut inferred_range_type =
         typeinfer::GoType::infer_expr(&range_stmt.x, &TYPE_ENV.with(|e| e.borrow().clone()));
@@ -16591,7 +16706,19 @@ fn compile_range_stmt(range_stmt: ast::RangeStmt) -> Result<Vec<syn::Stmt>, Comp
             is_int,
         );
     }
-    let body = range_stmt.body.try_into();
+    let range_active_local_names = range_declared_active_local_names(
+        range_stmt.key.as_ref(),
+        range_stmt.value.as_ref(),
+        range_stmt.tok,
+    );
+    let body = {
+        let _range_active_local_names = (!range_active_local_names.is_empty()).then(|| {
+            let guard = ActiveLocalNamesGuard::push_scope();
+            add_active_local_names(range_active_local_names);
+            guard
+        });
+        range_stmt.body.try_into()
+    };
     TYPE_ENV.with(|env| {
         *env.borrow_mut() = env_snapshot;
     });
@@ -16865,7 +16992,7 @@ fn range_function_param_pat(
         if ident.name == "_" {
             return syn::parse_quote! { _ };
         }
-        let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+        let ident = local_binding_ident_for_ast(ident);
         return syn::parse_quote! { mut #ident };
     }
     let ident = quote::format_ident!("__gors_range_arg_{}", idx);
@@ -16903,7 +17030,7 @@ fn range_function_shared_capture_clones(
         .iter()
         .filter(|name| is_shared_capture_name(name))
         .map(|name| {
-            let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+            let ident = value_ident(name);
             syn::parse_quote! { let #ident = #ident.clone(); }
         })
         .collect()
@@ -17282,7 +17409,7 @@ fn expr_to_pat(expr: &ast::Expr) -> syn::Pat {
     match expr {
         ast::Expr::Ident(ident) if ident.name == "_" => syn::parse_quote! { _ },
         ast::Expr::Ident(ident) => {
-            let name = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            let name = local_binding_ident_for_ast(ident);
             syn::Pat::Ident(syn::PatIdent {
                 attrs: vec![],
                 by_ref: None,
@@ -20233,8 +20360,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     if let ast::Expr::Ident(ident) = &target
                         && is_shared_capture_name(ident.name)
                     {
-                        let ident =
-                            syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                        let ident = value_ident(ident.name);
                         return syn::parse_quote! { crate::builtin::GorsPtr::from_arc(#ident.clone()) };
                     }
                     let inner: syn::Expr = target.into();
@@ -20497,6 +20623,48 @@ impl From<ast::Expr<'_>> for syn::Type {
     }
 }
 
+fn file_top_level_rust_item_names(
+    decls: &[ast::Decl],
+    is_main_package: bool,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for decl in decls {
+        match decl {
+            ast::Decl::FuncDecl(func_decl)
+                if func_decl.recv.is_none() && func_decl.name.name != "init" =>
+            {
+                names.insert(rust_safe_ident_name(func_decl.name.name));
+            }
+            ast::Decl::FuncDecl(_) => {}
+            ast::Decl::GenDecl(gen_decl) => {
+                for spec in &gen_decl.specs {
+                    match spec {
+                        ast::Spec::TypeSpec(type_spec) => {
+                            if let Some(name) = &type_spec.name {
+                                names.insert(rust_safe_ident_name(name.name));
+                            }
+                        }
+                        ast::Spec::ValueSpec(value_spec)
+                            if gen_decl.tok == token::Token::CONST
+                                || (gen_decl.tok == token::Token::VAR && !is_main_package) =>
+                        {
+                            names.extend(
+                                value_spec
+                                    .names
+                                    .iter()
+                                    .filter(|name| name.name != "_")
+                                    .map(|name| rust_safe_ident_name(name.name)),
+                            );
+                        }
+                        ast::Spec::ValueSpec(_) | ast::Spec::ImportSpec(_) => {}
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 impl TryFrom<ast::File<'_>> for syn::File {
     type Error = CompilerError;
 
@@ -20505,6 +20673,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
         let _current_package_name = CurrentGoPackageNameGuard::set(package_name.clone());
         let is_main_package = package_name == "main";
         let _main_package_var_mode = MainPackageVarModeGuard::set(is_main_package);
+        let _active_item_names =
+            ActiveItemNamesGuard::set(file_top_level_rust_item_names(&file.decls, is_main_package));
 
         // Track import names for selector expr disambiguation.
         set_current_file_imports(&file);
@@ -21296,8 +21466,9 @@ fn borrowed_address_of_ident_arg_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     let ast::Expr::Ident(ident) = &*unary.x else {
         return None;
     };
-    let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-    if is_shared_capture_name(&ident.to_string()) {
+    let source_name = ident.name;
+    let ident = value_ident(source_name);
+    if is_shared_capture_name(source_name) {
         Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
     } else {
         Some(syn::parse_quote! { &mut #ident })
@@ -21650,7 +21821,7 @@ fn compile_field_to_fn_args_with_type_params(
         let ident = if name.name.is_empty() || name.name == "_" {
             next_unnamed_arg_ident()
         } else {
-            name.into()
+            local_binding_ident_for_ast(&name)
         };
         args.push(syn::FnArg::Typed(syn::PatType {
             attrs: vec![],
@@ -21902,10 +22073,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                                     env.borrow_mut().set_var(name.name, go_type);
                                 });
                             }
-                            let ident = syn::Ident::new(
-                                &rust_safe_ident_name(name.name),
-                                Span::mixed_site(),
-                            );
+                            let ident = local_binding_ident_for_ast(name);
                             named_return_info.push((ident.clone(), rust_type, zero));
                             named_return_idents.push(ident);
                         }
@@ -22026,9 +22194,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
 
 impl From<ast::Ident<'_>> for syn::ExprPath {
     fn from(ident: ast::Ident) -> Self {
+        record_mapping(&ident.name_pos, Some(ident.name));
         let mut segments = syn::punctuated::Punctuated::new();
         segments.push(syn::PathSegment {
-            ident: ident.into(),
+            ident: value_ident(ident.name),
             arguments: syn::PathArguments::None,
         });
 
@@ -22163,8 +22332,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     if let ast::Expr::Ident(ident) = call_expr.fun.as_ref()
                         && function_value_call_info(&call_expr.fun).is_some()
                     {
-                        let name =
-                            syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+                        let name = value_ident(ident.name);
                         clone_stmts.push(syn::parse_quote! {
                             let #name = #name.clone();
                         });
@@ -22172,10 +22340,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     if let Some(ref args) = call_expr.args {
                         for arg in args.iter() {
                             if let ast::Expr::Ident(ident) = arg {
-                                let name = syn::Ident::new(
-                                    &rust_safe_ident_name(ident.name),
-                                    Span::mixed_site(),
-                                );
+                                let name = value_ident(ident.name);
                                 clone_stmts.push(syn::parse_quote! {
                                     let #name = #name.clone();
                                 });
@@ -23495,7 +23660,7 @@ fn compile_local_const_decl(gen_decl: ast::GenDecl) -> Vec<syn::Stmt> {
             }
 
             let go_name = name.name;
-            let ident = syn::Ident::new(&rust_safe_ident_name(name.name), Span::mixed_site());
+            let ident = local_binding_ident_for_ast(name);
             let init_ast = source_values.and_then(|values| values.get(name_idx));
             let evaluated = init_ast
                 .and_then(|expr| const_eval_expr_in_active_env(expr, iota as i64, &const_values));
@@ -23586,20 +23751,19 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                     let mut values_iter = value_spec.values.unwrap_or_default().into_iter();
 
                     for name in names {
-                        let ident: syn::Ident = name.into();
+                        let source_name = name.name;
+                        let ident = local_binding_ident_for_ast(&name);
                         let init_ast = values_iter.next();
                         let binding_go_type = if let Some(ref go_type) = go_type {
                             TYPE_ENV.with(|env| {
-                                env.borrow_mut()
-                                    .set_var(&ident.to_string(), go_type.clone());
+                                env.borrow_mut().set_var(source_name, go_type.clone());
                             });
                             Some(go_type.clone())
                         } else if let Some(ref init_ast) = init_ast {
                             let inferred = TYPE_ENV
                                 .with(|env| typeinfer::GoType::infer_expr(init_ast, &env.borrow()));
                             TYPE_ENV.with(|env| {
-                                env.borrow_mut()
-                                    .set_var(&ident.to_string(), inferred.clone());
+                                env.borrow_mut().set_var(source_name, inferred.clone());
                             });
                             Some(inferred)
                         } else {
@@ -23627,10 +23791,9 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                                     zero_values::expr_for_syn_type(rust_type.as_ref())
                                 })
                         });
-                        let name = ident.to_string();
-                        let init = shared_capture_init_expr(&name, init);
+                        let init = shared_capture_init_expr(source_name, init);
                         if let Some(ref ty) = rust_type {
-                            let ty = shared_capture_type(&name, ty.clone());
+                            let ty = shared_capture_type(source_name, ty.clone());
                             stmts.push(syn::parse_quote! {
                                 let mut #ident: #ty = #init;
                             });
@@ -23925,14 +24088,11 @@ fn compile_comma_ok(
     kind: CommaOkKind,
     is_define: bool,
 ) -> Result<Vec<syn::Stmt>, CompilerError> {
-    let lhs_idents: Vec<Option<syn::Ident>> = if is_define {
+    let lhs_idents: Vec<Option<(&str, syn::Ident)>> = if is_define {
         lhs.iter()
             .map(|e| match e {
                 ast::Expr::Ident(id) if id.name == "_" => Ok(None),
-                ast::Expr::Ident(id) => Ok(Some(syn::Ident::new(
-                    &rust_safe_ident_name(id.name),
-                    Span::mixed_site(),
-                ))),
+                ast::Expr::Ident(id) => Ok(Some((id.name, local_binding_ident_for_ast(id)))),
                 _ => Err(CompilerError::InvalidAssignment(
                     "expected identifier in comma-ok lhs".to_string(),
                 )),
@@ -23944,11 +24104,11 @@ fn compile_comma_ok(
 
     let val_pat: syn::Pat = match lhs_idents.first().unwrap_or(&None) {
         None => syn::parse_quote! { _ },
-        Some(id) => syn::parse_quote! { mut #id },
+        Some((_, id)) => syn::parse_quote! { mut #id },
     };
     let ok_pat: syn::Pat = match lhs_idents.get(1).unwrap_or(&None) {
         None => syn::parse_quote! { _ },
-        Some(id) => syn::parse_quote! { mut #id },
+        Some((_, id)) => syn::parse_quote! { mut #id },
     };
 
     if is_define {
@@ -23958,11 +24118,11 @@ fn compile_comma_ok(
             .map(|_| comma_ok_value_go_type(&rhs, kind));
         TYPE_ENV.with(|env| {
             let mut env = env.borrow_mut();
-            if let (Some(Some(id)), Some(value_type)) = (lhs_idents.first(), value_type) {
-                env.set_var(&id.to_string(), value_type);
+            if let (Some(Some((name, _))), Some(value_type)) = (lhs_idents.first(), value_type) {
+                env.set_var(name, value_type);
             }
-            if let Some(Some(id)) = lhs_idents.get(1) {
-                env.set_var(&id.to_string(), typeinfer::GoType::Bool);
+            if let Some(Some((name, _))) = lhs_idents.get(1) {
+                env.set_var(name, typeinfer::GoType::Bool);
             }
         });
     }
@@ -24248,7 +24408,7 @@ fn expr_shape_key(expr: &ast::Expr) -> Option<String> {
 fn syn_expr_from_type_expr_like(expr: &ast::Expr) -> Option<syn::Expr> {
     match expr {
         ast::Expr::Ident(ident) => {
-            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
+            let ident = value_ident(ident.name);
             Some(syn::parse_quote! { #ident })
         }
         ast::Expr::SelectorExpr(selector) => {
@@ -24581,7 +24741,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             continue;
                         }
                         let name = ident.name;
-                        let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                        let ident = local_binding_ident_for_ast(&ident);
                         let value: syn::Expr = syn::parse_quote! { #temp };
                         if is_named_return_name(name) {
                             if let Some(stmt) = named_return_assignment_stmt(&ident, value) {
@@ -24606,7 +24766,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         } else {
                             elems.push(syn::Pat::Ident(syn::PatIdent {
                                 attrs: vec![],
-                                ident: ident.into(),
+                                ident: local_binding_ident_for_ast(&ident),
                                 by_ref: None,
                                 subpat: None,
                                 mutability: Some(<Token![mut]>::default()),
@@ -24722,7 +24882,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         continue;
                     }
                     let name = ident.name;
-                    let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                    let ident = local_binding_ident_for_ast(&ident);
                     let value: syn::Expr = syn::parse_quote! { #temp };
                     if is_named_return_name(name) {
                         if let Some(stmt) = named_return_assignment_stmt(&ident, value) {
@@ -24760,7 +24920,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         out.push(syn::parse_quote! { let _ = #init; });
                     } else {
                         let name = ident.name;
-                        let ident = syn::Ident::new(&rust_safe_ident_name(name), Span::mixed_site());
+                        let ident = local_binding_ident_for_ast(&ident);
                         let init = shared_capture_init_expr(name, init);
                         out.push(syn::parse_quote! { let mut #ident = #init; });
                     }
@@ -24783,7 +24943,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                         } else {
                             syn::Pat::Ident(syn::PatIdent {
                                 attrs: vec![],
-                                ident: ident.into(),
+                                ident: local_binding_ident_for_ast(&ident),
                                 by_ref: None,
                                 subpat: None,
                                 mutability: Some(<Token![mut]>::default()),
@@ -24807,7 +24967,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                             } else {
                                 elems.push(syn::Pat::Ident(syn::PatIdent {
                                     attrs: vec![],
-                                    ident: ident.into(),
+                                    ident: local_binding_ident_for_ast(&ident),
                                     by_ref: None,
                                     subpat: None,
                                     mutability: Some(<Token![mut]>::default()),
@@ -24916,10 +25076,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     {
                         let closure = compile_func_lit_with_capture_mode(func_lit, true);
                         if let ast::Expr::Ident(ident) = &lhs_ast {
-                            let ident = syn::Ident::new(
-                                &rust_safe_ident_name(ident.name),
-                                Span::mixed_site(),
-                            );
+                            let ident = value_ident(ident.name);
                             let func_ty = shared_func_box_type_from_go_type(&lhs_func_ty)
                                 .ok_or_else(|| {
                                     CompilerError::InvalidAssignment(
@@ -25797,6 +25954,33 @@ func main() {
         )
         .unwrap();
         compile(parsed).unwrap();
+    }
+
+    #[test]
+    fn local_item_shadowing_is_lowered_scope_aware_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func helper() int { return 7 }
+
+                func main() {
+                    _ = helper()
+                    helper := 3
+                    _ = helper
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("let _ = helper();"), "{output}");
+        assert!(output.contains("let mut helper__local = 3;"), "{output}");
+        assert!(output.contains("let _ = helper__local;"), "{output}");
+        assert!(!output.contains("helper__local();"), "{output}");
     }
 
     #[test]
