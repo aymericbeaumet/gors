@@ -42,6 +42,7 @@ mod noop_interfaces;
 mod package_context;
 pub(crate) mod passes;
 mod phantom_type_params;
+mod reachability_cache;
 mod receiver_method_targets;
 mod receiver_type_facts;
 mod receiver_type_scopes;
@@ -100,7 +101,7 @@ use item_reachability::{
 use package_context::{CurrentGoPackageNameGuard, MainPackageVarModeGuard};
 use phantom_type_params::add_fields_for_unused_type_params;
 use proc_macro2::Span;
-use quote::ToTokens;
+use reachability_cache::{ReachabilityFingerprint, ReachableItems};
 use receiver_type_facts::{
     ReceiverFieldTypeMap, ReceiverTupleReturnMap, ReceiverTupleTypes, ReceiverTypeMap,
     ReceiverTypeRef, external_receiver_method_return_type, receiver_type_from_associated_call_path,
@@ -120,7 +121,6 @@ use source_map_context::record_mapping;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
@@ -138,71 +138,6 @@ use type_param_context::{ByteSeqTypeParamsGuard, TypeParamKindsGuard, is_byte_se
 thread_local! {
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
-}
-
-#[derive(Clone)]
-struct ReachableItems {
-    keep: std::collections::HashSet<usize>,
-    refs: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    names: std::collections::HashSet<String>,
-}
-
-static REACHABLE_ITEMS_CACHE: OnceLock<Mutex<BTreeMap<String, ReachableItems>>> = OnceLock::new();
-
-fn reachable_items_cache() -> &'static Mutex<BTreeMap<String, ReachableItems>> {
-    REACHABLE_ITEMS_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn cached_reachable_items(cache_key: &str) -> Option<ReachableItems> {
-    reachable_items_cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(cache_key).cloned())
-}
-
-fn store_reachable_items(cache_key: String, entry: &ReachableItems) {
-    if let Ok(mut cache) = reachable_items_cache().lock() {
-        cache.insert(cache_key, entry.clone());
-    }
-}
-
-fn reachability_fingerprint_hasher(label: &str) -> Sha256 {
-    let mut hasher = Sha256::new();
-    reachability_fingerprint_part(&mut hasher, env!("CARGO_PKG_VERSION").as_bytes());
-    reachability_fingerprint_part(&mut hasher, label.as_bytes());
-    hasher
-}
-
-fn reachability_fingerprint_part(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-}
-
-fn reachability_fingerprint_str(hasher: &mut Sha256, value: &str) {
-    reachability_fingerprint_part(hasher, value.as_bytes());
-}
-
-fn reachability_fingerprint_bool(hasher: &mut Sha256, value: bool) {
-    hasher.update([u8::from(value)]);
-}
-
-fn reachability_fingerprint_len(hasher: &mut Sha256, value: usize) {
-    hasher.update((value as u64).to_le_bytes());
-}
-
-fn reachability_fingerprint_items(hasher: &mut Sha256, items: &[syn::Item]) {
-    reachability_fingerprint_len(hasher, items.len());
-    for item in items {
-        reachability_fingerprint_str(hasher, &item.to_token_stream().to_string());
-    }
-}
-
-fn finish_reachability_fingerprint(hasher: Sha256) -> String {
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -4546,18 +4481,18 @@ fn retain_reachable_items(
 }
 
 fn modules_reachability_fingerprint(modules: &BTreeMap<String, CompiledModule>) -> String {
-    let mut hasher = reachability_fingerprint_hasher("modules");
-    reachability_fingerprint_len(&mut hasher, modules.len());
+    let mut fingerprint = ReachabilityFingerprint::new("modules");
+    fingerprint.push_len(modules.len());
     for (key, module) in modules {
-        reachability_fingerprint_str(&mut hasher, key);
-        reachability_fingerprint_str(&mut hasher, &module.mod_name);
-        reachability_fingerprint_str(&mut hasher, &module.import_path);
-        reachability_fingerprint_str(&mut hasher, &module.filename);
-        reachability_fingerprint_bool(&mut hasher, module.is_main);
-        reachability_fingerprint_bool(&mut hasher, module.is_stdlib);
-        reachability_fingerprint_items(&mut hasher, &module.file.items);
+        fingerprint.push_str(key);
+        fingerprint.push_str(&module.mod_name);
+        fingerprint.push_str(&module.import_path);
+        fingerprint.push_str(&module.filename);
+        fingerprint.push_bool(module.is_main);
+        fingerprint.push_bool(module.is_stdlib);
+        fingerprint.push_items(&module.file.items);
     }
-    finish_reachability_fingerprint(hasher)
+    fingerprint.finish()
 }
 
 fn exported_item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<String> {
@@ -5470,8 +5405,8 @@ fn reachable_stdlib_items(
     roots: &std::collections::HashSet<String>,
     module_names: &std::collections::HashSet<String>,
 ) -> ReachableItems {
-    let cache_key = reachable_items_cache_key(items, roots, module_names);
-    if let Some(entry) = cached_reachable_items(&cache_key) {
+    let cache_key = reachability_cache::cache_key(items, roots, module_names);
+    if let Some(entry) = reachability_cache::cached_items(&cache_key) {
         return entry;
     }
 
@@ -5528,30 +5463,8 @@ fn reachable_stdlib_items(
         refs: external_refs,
         names,
     };
-    store_reachable_items(cache_key, &entry);
+    reachability_cache::store_items(cache_key, &entry);
     entry
-}
-
-fn reachable_items_cache_key(
-    items: &[syn::Item],
-    roots: &std::collections::HashSet<String>,
-    module_names: &std::collections::HashSet<String>,
-) -> String {
-    let mut hasher = reachability_fingerprint_hasher("reachable-items");
-    let mut sorted_roots: Vec<_> = roots.iter().map(String::as_str).collect();
-    sorted_roots.sort_unstable();
-    reachability_fingerprint_len(&mut hasher, sorted_roots.len());
-    for root in sorted_roots {
-        reachability_fingerprint_str(&mut hasher, root);
-    }
-    let mut sorted_modules: Vec<_> = module_names.iter().map(String::as_str).collect();
-    sorted_modules.sort_unstable();
-    reachability_fingerprint_len(&mut hasher, sorted_modules.len());
-    for module_name in sorted_modules {
-        reachability_fingerprint_str(&mut hasher, module_name);
-    }
-    reachability_fingerprint_items(&mut hasher, items);
-    finish_reachability_fingerprint(hasher)
 }
 
 fn item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<String> {
@@ -27427,37 +27340,7 @@ func B() {}
     }
 
     #[test]
-    fn reachable_items_cache_key_is_stable_for_set_order() {
-        let items: Vec<syn::Item> = vec![rust! {
-            pub fn Needed() {}
-        }];
-        let roots_a = std::collections::HashSet::from(["Needed".to_string(), "Other".to_string()]);
-        let roots_b = std::collections::HashSet::from(["Other".to_string(), "Needed".to_string()]);
-        let modules_a = std::collections::HashSet::from(["fmt".to_string(), "io".to_string()]);
-        let modules_b = std::collections::HashSet::from(["io".to_string(), "fmt".to_string()]);
-
-        assert_eq!(
-            super::reachable_items_cache_key(&items, &roots_a, &modules_a),
-            super::reachable_items_cache_key(&items, &roots_b, &modules_b)
-        );
-    }
-
-    #[test]
-    fn reachability_fingerprints_change_with_generated_items() {
-        let roots = std::collections::HashSet::from(["Needed".to_string()]);
-        let module_names = std::collections::HashSet::new();
-        let needed_items: Vec<syn::Item> = vec![rust! {
-            pub fn Needed() {}
-        }];
-        let other_items: Vec<syn::Item> = vec![rust! {
-            pub fn Other() {}
-        }];
-
-        assert_ne!(
-            super::reachable_items_cache_key(&needed_items, &roots, &module_names),
-            super::reachable_items_cache_key(&other_items, &roots, &module_names)
-        );
-
+    fn modules_reachability_fingerprint_changes_with_generated_items() {
         let mut needed_modules = BTreeMap::new();
         needed_modules.insert(
             "pkg".to_string(),

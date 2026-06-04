@@ -416,6 +416,10 @@ external-root discovery should go through `ExternalRootCollector`. Keep semantic
 reachability auditing attached to that collector boundary instead of scattering
 ad hoc `collect_external_refs()` calls through stdlib resolution, pruning, or
 post-prune preservation code.
+Reachable-item cache state and length-delimited reachability fingerprinting live
+in `gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
+cache keys, cached entries, and fingerprint builders from that module instead of
+owning lock mechanics or hash serialization in `compiler/mod.rs`.
 
 ## Go toolchain
 
