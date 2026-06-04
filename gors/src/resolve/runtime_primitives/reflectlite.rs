@@ -1,5 +1,15 @@
 use std::collections::HashSet;
 
+pub(super) const IMPORT_PATH: &str = "internal/reflectlite";
+const VALUE_TYPE: &str = "Value";
+const VALUE_OF_FUNC: &str = "ValueOf";
+const SWAPPER_FUNC: &str = "Swapper";
+const VALUE_LEN_ROOT: &str = "Value::Len";
+const VALUE_KIND_ROOT: &str = "Value::Kind";
+const KIND_TYPE: &str = "Kind";
+const SLICE_CONST: &str = "Slice";
+const INVALID_CONST: &str = "Invalid";
+
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let roots = roots?;
     if roots.is_empty() {
@@ -9,13 +19,13 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
     let needs_value = roots.iter().any(|root| {
         matches!(
             root.as_str(),
-            "Value" | "ValueOf" | "Swapper" | "Value::Len" | "Value::Kind"
+            VALUE_TYPE | VALUE_OF_FUNC | SWAPPER_FUNC | VALUE_LEN_ROOT | VALUE_KIND_ROOT
         )
     });
     let needs_kind = roots
         .iter()
-        .any(|root| matches!(root.as_str(), "Kind" | "Slice" | "Invalid"));
-    let needs_swapper = roots.contains("Swapper");
+        .any(|root| matches!(root.as_str(), KIND_TYPE | SLICE_CONST | INVALID_CONST));
+    let needs_swapper = roots.contains(SWAPPER_FUNC);
 
     let mut items = Vec::new();
     if needs_kind || needs_value {

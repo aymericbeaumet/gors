@@ -1,5 +1,10 @@
 use std::collections::HashSet;
 
+pub(super) const IMPORT_PATH: &str = "runtime";
+const GOMAXPROCS_FUNC: &str = "GOMAXPROCS";
+const GOARCH_FUNC: &str = "GOARCH";
+const GOOS_FUNC: &str = "GOOS";
+
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let roots = roots?;
     if roots.is_empty() {
@@ -7,7 +12,7 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
     }
 
     let mut items = Vec::new();
-    if roots.contains("GOMAXPROCS") {
+    if roots.contains(GOMAXPROCS_FUNC) {
         items.push(syn::parse_quote! {
             pub fn GOMAXPROCS(mut n: isize) -> isize {
                 let current = std::thread::available_parallelism()
@@ -21,14 +26,14 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
             }
         });
     }
-    if roots.contains("GOARCH") {
+    if roots.contains(GOARCH_FUNC) {
         items.push(syn::parse_quote! {
             pub fn GOARCH() -> String {
                 std::env::consts::ARCH.to_string()
             }
         });
     }
-    if roots.contains("GOOS") {
+    if roots.contains(GOOS_FUNC) {
         items.push(syn::parse_quote! {
             pub fn GOOS() -> String {
                 std::env::consts::OS.to_string()

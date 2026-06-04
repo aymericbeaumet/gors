@@ -5,8 +5,8 @@ mod runtime;
 
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     match import_path {
-        "internal/reflectlite" => reflectlite::module(import_path, roots),
-        "runtime" => runtime::module(import_path, roots),
+        reflectlite::IMPORT_PATH => reflectlite::module(import_path, roots),
+        runtime::IMPORT_PATH => runtime::module(import_path, roots),
         _ => None,
     }
 }

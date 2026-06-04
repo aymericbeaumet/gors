@@ -2,15 +2,19 @@ use super::{CompiledModule, module_has_static, prune_replaced_items};
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
 use std::collections::HashSet;
 
+pub(super) const MODULE: &str = "os";
+const FILE_TYPE: &str = "File";
+const STDOUT_STATIC: &str = "Stdout";
+
 pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
-    if !module_has_static(module, "Stdout") {
+    if !module_has_static(module, STDOUT_STATIC) {
         return false;
     }
 
     prune_replaced_items(
         module,
-        &HashSet::from(["File".to_string(), "Stdout".to_string()]),
-        &HashSet::from(["File".to_string()]),
+        &HashSet::from([FILE_TYPE.to_string(), STDOUT_STATIC.to_string()]),
+        &HashSet::from([FILE_TYPE.to_string()]),
     );
     let as_any = as_any_method_ident();
     let clone_box = clone_box_method_ident();

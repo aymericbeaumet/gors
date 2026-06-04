@@ -1,12 +1,15 @@
 use super::{CompiledModule, module_has_struct, prune_replaced_items};
+use crate::compiler::reflect_semantics;
 use crate::compiler::syn_inspect::type_mentions_name;
 use std::collections::{BTreeMap, HashSet};
 
+pub(super) const MODULE: &str = reflect_semantics::MODULE;
+
 pub(super) fn replace_value_module(module: &mut CompiledModule) -> bool {
-    if !module_has_struct(module, "Value") {
+    if !module_has_struct(module, reflect_semantics::VALUE_TYPE) {
         return false;
     }
-    let value_names = HashSet::from(["Value".to_string()]);
+    let value_names = HashSet::from([reflect_semantics::VALUE_TYPE.to_string()]);
     prune_replaced_items(module, &value_names, &value_names);
     module
         .file
@@ -20,21 +23,21 @@ pub(super) fn inject_missing_value_module(
     modules: &mut BTreeMap<String, CompiledModule>,
     preserved: &HashSet<String>,
 ) -> bool {
-    if !preserved.contains("reflect")
+    if !preserved.contains(MODULE)
         || modules
             .values()
-            .any(|module| module.is_stdlib && module.mod_name == "reflect")
+            .any(|module| module.is_stdlib && module.mod_name == MODULE)
     {
         return false;
     }
 
     modules.insert(
-        "reflect".to_string(),
+        MODULE.to_string(),
         CompiledModule {
-            mod_name: "reflect".to_string(),
-            import_path: "reflect".to_string(),
+            mod_name: MODULE.to_string(),
+            import_path: MODULE.to_string(),
             file: value_module_file(),
-            filename: "reflect.rs".to_string(),
+            filename: format!("{MODULE}.rs"),
             content_hash: String::new(),
             is_main: false,
             is_stdlib: true,

@@ -1,12 +1,15 @@
 use super::{CompiledModule, module_has_struct, prune_replaced_items};
 use std::collections::HashSet;
 
+pub(super) const MODULE: &str = "sync";
+const POOL_TYPE: &str = "Pool";
+
 pub(super) fn replace_pool_module(module: &mut CompiledModule) -> bool {
-    if !module_has_struct(module, "Pool") {
+    if !module_has_struct(module, POOL_TYPE) {
         return false;
     }
 
-    let pool_names = HashSet::from(["Pool".to_string()]);
+    let pool_names = HashSet::from([POOL_TYPE.to_string()]);
     prune_replaced_items(module, &pool_names, &pool_names);
 
     module.file.items.extend([

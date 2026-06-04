@@ -9,9 +9,9 @@ mod sync;
 pub(super) fn inject_post_prune_helpers(modules: &mut BTreeMap<String, CompiledModule>) {
     for module in modules.values_mut().filter(|module| module.is_stdlib) {
         let changed = match module.mod_name.as_str() {
-            "reflect" => reflect::replace_value_module(module),
-            "os" => os::inject_stdout(module),
-            "sync" => sync::replace_pool_module(module),
+            reflect::MODULE => reflect::replace_value_module(module),
+            os::MODULE => os::inject_stdout(module),
+            sync::MODULE => sync::replace_pool_module(module),
             _ => false,
         };
         if changed {
