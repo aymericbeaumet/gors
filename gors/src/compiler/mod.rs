@@ -21315,14 +21315,7 @@ fn pointer_cell_lock_target_expr(expr: &syn::Expr) -> Option<syn::Expr> {
 }
 
 fn is_borrowed_pointer_path_expr(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::Path(path)
-        if path.path.leading_colon.is_none()
-            && path.path.segments.len() == 1
-            && path
-                .path
-                .segments
-                .first()
-                .is_some_and(|segment| is_borrowed_pointer_param_name(&segment.ident.to_string())))
+    expr_path_ident(expr).is_some_and(|name| is_borrowed_pointer_param_name(&name))
 }
 
 fn type_from_param_expr(
