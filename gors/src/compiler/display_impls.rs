@@ -88,20 +88,11 @@ fn is_display_impl(item_impl: &syn::ItemImpl) -> bool {
     item_impl
         .trait_
         .as_ref()
-        .is_some_and(|(_, path, _)| path_is(path, &["std", "fmt", "Display"]))
+        .is_some_and(|(_, path, _)| super::syn_inspect::path_is(path, &["std", "fmt", "Display"]))
 }
 
 fn is_std_error_trait(path: &syn::Path) -> bool {
-    path_is(path, &["std", "error", "Error"])
-}
-
-fn path_is(path: &syn::Path, segments: &[&str]) -> bool {
-    path.segments.len() == segments.len()
-        && path
-            .segments
-            .iter()
-            .zip(segments)
-            .all(|(segment, expected)| segment.ident == *expected)
+    super::syn_inspect::path_is(path, &["std", "error", "Error"])
 }
 
 #[cfg(test)]

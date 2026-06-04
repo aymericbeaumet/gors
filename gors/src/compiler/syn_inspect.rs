@@ -8,6 +8,10 @@ pub(super) fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
         .all(|(segment, expected)| segment.ident == *expected)
 }
 
+pub(super) fn path_is(path: &syn::Path, expected: &[&str]) -> bool {
+    path.segments.len() == expected.len() && path_starts_with(path, expected)
+}
+
 pub(super) fn path_ends_with(path: &syn::Path, expected: &[&str]) -> bool {
     if path.segments.len() < expected.len() {
         return false;
@@ -23,13 +27,7 @@ pub(super) fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
     let syn::Expr::Path(path) = func else {
         return false;
     };
-    path.path.segments.len() == segments.len()
-        && path
-            .path
-            .segments
-            .iter()
-            .zip(segments)
-            .all(|(segment, expected)| segment.ident == *expected)
+    path_is(&path.path, segments)
 }
 
 pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
@@ -550,6 +548,9 @@ mod tests {
     #[test]
     fn is_path_call_expr_matches_exact_path_segments() {
         let path: syn::Path = parse_quote! { crate::std::mem::take };
+        assert!(path_starts_with(&path, &["crate", "std"]));
+        assert!(path_is(&path, &["crate", "std", "mem", "take"]));
+        assert!(!path_is(&path, &["std", "mem", "take"]));
         assert!(path_ends_with(&path, &["std", "mem", "take"]));
         assert!(!path_ends_with(&path, &["other", "take"]));
 

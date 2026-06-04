@@ -1,6 +1,6 @@
 use super::syn_inspect::{
-    item_macro_name, item_name, macro_token_item_names, named_self_type, path_mentions_name,
-    path_starts_with, self_type_reachability_names, type_mentions_name,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, path_is,
+    path_mentions_name, path_starts_with, self_type_reachability_names, type_mentions_name,
 };
 
 pub(super) fn reachable_item_for_names(
@@ -259,14 +259,12 @@ fn is_generated_pointer_cell_impl(self_ty: &syn::Type) -> bool {
 
 fn is_runtime_error_trait_path(path: &syn::Path, trait_name: &str) -> bool {
     matches!(trait_name, "error" | "Error")
-        && ((path.segments.len() == 3 && path_starts_with(path, &["crate", "builtin", "error"]))
-            || (path.segments.len() == 3 && path_starts_with(path, &["std", "error", "Error"])))
+        && (path_is(path, &["crate", "builtin", "error"])
+            || path_is(path, &["std", "error", "Error"]))
 }
 
 fn is_rust_display_trait_path(path: &syn::Path, trait_name: &str) -> bool {
-    trait_name == "Display"
-        && path.segments.len() == 3
-        && path_starts_with(path, &["std", "fmt", "Display"])
+    trait_name == "Display" && path_is(path, &["std", "fmt", "Display"])
 }
 
 fn is_rust_operator_trait_path(path: &syn::Path) -> bool {
