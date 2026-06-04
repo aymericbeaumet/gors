@@ -25048,6 +25048,36 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     return Ok(out);
                 }
 
+                if assign_stmt
+                    .lhs
+                    .iter()
+                    .any(|expr| matches!(expr, ast::Expr::Ident(ident) if is_shared_capture_name(ident.name)))
+                {
+                    let temps = (0..assign_stmt.lhs.len())
+                        .map(|idx| quote::format_ident!("__gors_multi_{}", idx))
+                        .collect::<Vec<_>>();
+                    let temp_pats = temps.iter();
+                    let mut out: Vec<syn::Stmt> = vec![syn::parse_quote! {
+                        let (#(#temp_pats),*) = #rhs_expr;
+                    }];
+                    for (lhs, temp) in assign_stmt.lhs.into_iter().zip(temps) {
+                        let ast::Expr::Ident(ident) = lhs else {
+                            return Err(CompilerError::InvalidAssignment(
+                                "expected identifier on lhs of :=".to_string(),
+                            ));
+                        };
+                        if ident.name == "_" {
+                            continue;
+                        }
+                        let name = ident.name;
+                        let ident = local_binding_ident_for_ast(&ident);
+                        let init: syn::Expr = syn::parse_quote! { #temp };
+                        let init = shared_capture_init_expr(name, init);
+                        out.push(syn::parse_quote! { let mut #ident = #init; });
+                    }
+                    return Ok(out);
+                }
+
                 let mut elems = syn::punctuated::Punctuated::new();
                 for expr in assign_stmt.lhs {
                     if let ast::Expr::Ident(ident) = expr {
@@ -30139,6 +30169,62 @@ func main() {
             "{main_rs}"
         );
         assert!(!main_rs.contains("&mut {"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_wraps_address_taken_multi_return_bindings() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type state struct {
+	value int
+}
+
+func makeState() (state, bool) {
+	return state{value: 1}, true
+}
+
+func consume(p *state) int {
+	return p.value
+}
+
+func main() {
+	s, ok := makeState()
+	if ok {
+		println(consume(&s))
+	}
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let (__gors_multi_0, __gors_multi_1) = makeState();"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains(
+                "let mut s = std::sync::Arc::new(std::sync::Mutex::new(__gors_multi_0));"
+            ),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("let mut ok = __gors_multi_1;"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("consume((crate::builtin::GorsPtr::from_arc(s.clone())).clone())"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("let (mut s, mut ok) = makeState();"),
+            "{main_rs}"
+        );
     }
 
     #[test]
