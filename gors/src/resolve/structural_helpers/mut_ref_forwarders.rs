@@ -1,4 +1,4 @@
-use super::{ImplSelfType, has_impl, type_path_ident_name};
+use super::syn_helpers::{ImplSelfType, has_impl, type_path_ident_name};
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
     let mut forwarders = Vec::new();

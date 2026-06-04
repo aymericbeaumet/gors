@@ -1,4 +1,4 @@
-use super::{
+use super::syn_helpers::{
     ImplSelfType, has_impl, has_method, type_path_ident_name, type_path_pointer_cell_inner_name,
 };
 

@@ -1,4 +1,4 @@
-use super::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
+use super::syn_helpers::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
 
 const NOOP_INTERFACE: &str = "__GorsNoopInterface";
 const ERROR_EXT: &str = "__GorsErrorExt";
