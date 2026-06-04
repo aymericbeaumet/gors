@@ -1,3 +1,4 @@
+use super::reflect_semantics;
 use crate::{ast, token};
 
 pub(super) struct Compare {
@@ -52,7 +53,7 @@ fn typeof_kind_arg_ref(
     let ast::Expr::SelectorExpr(kind_selector) = &*kind_call.fun else {
         return false;
     };
-    if kind_selector.sel.name != "Kind" {
+    if kind_selector.sel.name != reflect_semantics::KIND_METHOD {
         return false;
     }
     let ast::Expr::CallExpr(type_of_call) = &*kind_selector.x else {
@@ -62,7 +63,7 @@ fn typeof_kind_arg_ref(
         return false;
     };
     matches!(&*type_of_selector.x, ast::Expr::Ident(pkg) if is_reflect_qualifier(pkg.name))
-        && type_of_selector.sel.name == "TypeOf"
+        && type_of_selector.sel.name == reflect_semantics::TYPE_OF_FUNC
         && matches!(type_of_call.args.as_deref(), Some([_]))
 }
 

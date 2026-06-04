@@ -1,4 +1,6 @@
 pub(super) type FieldSet = super::local_names::NameSet;
+use crate::compiler::reflect_semantics;
+
 type ReceiverFieldMap = std::collections::BTreeMap<String, FieldSet>;
 type ReceiverMethodMap = std::collections::BTreeMap<String, FieldSet>;
 
@@ -314,27 +316,16 @@ impl syn::visit::Visit<'_> for Finder<'_> {
 
 fn is_reflect_fallback_expr_path(path: &syn::Path) -> bool {
     matches!(
-        reflect_path_member(path).as_deref(),
-        Some("ValueOf" | "TypeOf")
+        reflect_semantics::syn_path_member(path),
+        Some(member)
+            if member == reflect_semantics::VALUE_OF_FUNC
+                || member == reflect_semantics::TYPE_OF_FUNC
     )
 }
 
 fn is_reflect_value_type_path(path: &syn::Path) -> bool {
-    reflect_path_member(path).as_deref() == Some("Value")
-}
-
-fn reflect_path_member(path: &syn::Path) -> Option<String> {
-    let mut segments = path.segments.iter();
-    let first = segments.next()?.ident.to_string();
-    let member = if first == "crate" {
-        let module = segments.next()?;
-        (module.ident == "reflect").then(|| segments.next())??
-    } else if first == "reflect" {
-        segments.next()?
-    } else {
-        return None;
-    };
-    Some(member.ident.to_string())
+    reflect_semantics::syn_path_member(path)
+        .is_some_and(|member| member == reflect_semantics::VALUE_TYPE)
 }
 
 fn is_reflect_value_type(ty: &syn::Type) -> bool {

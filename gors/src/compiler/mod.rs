@@ -29,6 +29,7 @@ pub mod manifest;
 mod noop_interfaces;
 pub(crate) mod passes;
 mod reflect_kind;
+mod reflect_semantics;
 mod reflect_slice_any;
 mod runtime_primitives;
 mod syn_inspect;
