@@ -414,10 +414,10 @@ token-derived collector for both main-package roots and transitive non-main
 module roots. Broaden that graph toward the remaining existing DCE semantics
 before replacing token-derived pruning paths.
 Per-iteration DCE state belongs in `DceIterationContext`, and cross-module
-external-root discovery should go through `ExternalRootCollector`. Keep semantic
-reachability auditing attached to that collector boundary instead of scattering
-ad hoc `collect_external_refs()` calls through stdlib resolution, pruning, or
-post-prune preservation code.
+external-root discovery lives in `gors/src/compiler/external_roots.rs` through
+`ExternalRootCollector`. Keep semantic reachability auditing attached to that
+collector boundary instead of scattering ad hoc `collect_external_refs()` calls
+through stdlib resolution, pruning, or post-prune preservation code.
 Reachable-item cache state and length-delimited reachability fingerprinting live
 in `gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
 cache keys, cached entries, and fingerprint builders from that module instead of

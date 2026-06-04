@@ -24,6 +24,7 @@ mod defer_context;
 mod display_impls;
 mod embedded_interfaces;
 mod external_interface_implementors;
+mod external_roots;
 mod generated_attrs;
 mod go_strings;
 mod goto_context;
@@ -85,6 +86,7 @@ use const_context::{
 use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
 use defer_context::PanicReturnsThroughDeferGuard;
 use external_interface_implementors::ExternalInterfaceImplementorsGuard;
+use external_roots::ExternalRootCollector;
 use go_strings::{
     byte_slice_conversion_bytes_vec_expr, byte_vec_expr, const_eval_string_bytes,
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
@@ -4351,95 +4353,6 @@ impl DceIterationContext {
     }
 }
 
-fn refs_to_btree(
-    refs: &std::collections::HashMap<String, std::collections::HashSet<String>>,
-) -> BTreeMap<String, std::collections::BTreeSet<String>> {
-    refs.iter()
-        .map(|(module, roots)| {
-            (
-                module.clone(),
-                roots
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>(),
-            )
-        })
-        .collect()
-}
-
-struct ExternalRootCollector<'a> {
-    module_names: &'a std::collections::HashSet<String>,
-    semantic_graph: Option<&'a SemanticReachabilityGraph>,
-}
-
-impl<'a> ExternalRootCollector<'a> {
-    fn new(module_names: &'a std::collections::HashSet<String>) -> Self {
-        Self {
-            module_names,
-            semantic_graph: None,
-        }
-    }
-
-    fn with_semantic_audit(
-        module_names: &'a std::collections::HashSet<String>,
-        semantic_graph: Option<&'a SemanticReachabilityGraph>,
-    ) -> Self {
-        Self {
-            module_names,
-            semantic_graph,
-        }
-    }
-
-    fn refs_from_items(
-        &self,
-        items: &[syn::Item],
-    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        collect_external_refs(items, self.module_names)
-    }
-
-    fn module_refs_from_items(&self, items: &[syn::Item]) -> std::collections::HashSet<String> {
-        self.refs_from_items(items).into_keys().collect()
-    }
-
-    fn refs_from_items_with_roots(
-        &self,
-        module: &str,
-        roots: &std::collections::HashSet<String>,
-        items: &[syn::Item],
-    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        let refs = self.refs_from_items(items);
-        debug_assert_semantic_external_refs(self.semantic_graph, module, roots, &refs);
-        refs
-    }
-
-    fn refs_from_reachable_module_roots(
-        &self,
-        module: &CompiledModule,
-        roots: &std::collections::HashSet<String>,
-    ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-        let refs = reachable_stdlib_items(&module.file.items, roots, self.module_names).refs;
-        debug_assert_semantic_external_refs(self.semantic_graph, &module.mod_name, roots, &refs);
-        refs
-    }
-}
-
-fn debug_assert_semantic_external_refs(
-    semantic_graph: Option<&SemanticReachabilityGraph>,
-    module: &str,
-    roots: &std::collections::HashSet<String>,
-    refs: &std::collections::HashMap<String, std::collections::HashSet<String>>,
-) {
-    let Some(semantic_graph) = semantic_graph else {
-        return;
-    };
-    let semantic_refs = semantic_graph.reachable_external_roots_for_module_roots(module, roots);
-    let token_refs = refs_to_btree(refs);
-    debug_assert_eq!(
-        token_refs, semantic_refs,
-        "semantic reachability external refs mismatch for module {module} roots {roots:?}"
-    );
-}
-
 fn prune_items_to_roots(
     items: &mut Vec<syn::Item>,
     roots: &std::collections::HashSet<String>,
@@ -5583,36 +5496,6 @@ fn expand_top_level_receiver_method_names(
         }
     }
     changed
-}
-
-fn collect_external_refs(
-    items: &[syn::Item],
-    module_names: &std::collections::HashSet<String>,
-) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-    let mut external_refs = std::collections::HashMap::new();
-    let empty_types = std::collections::HashMap::new();
-    let empty_field_types = std::collections::HashMap::new();
-    let empty_element_types = std::collections::HashMap::new();
-    let empty_return_types = std::collections::HashMap::new();
-    let empty_tuple_return_types = std::collections::HashMap::new();
-    for item in items {
-        let mut item_clone = item.clone();
-        let empty_item_names = std::collections::HashSet::new();
-        let empty_top_level_names = std::collections::HashSet::new();
-        let context = RefCollectionContext {
-            module_names,
-            item_names: &empty_item_names,
-            top_level_names: &empty_top_level_names,
-            top_level_types: &empty_types,
-            top_level_field_types: &empty_field_types,
-            top_level_element_types: &empty_element_types,
-            top_level_return_types: &empty_return_types,
-            top_level_tuple_return_types: &empty_tuple_return_types,
-        };
-        let (_, refs) = collect_refs_from_item(&mut item_clone, &context);
-        required_module_roots::merge_refs(&mut external_refs, refs);
-    }
-    external_refs
 }
 
 type ReachabilityNameSet = std::collections::HashSet<String>;
@@ -28640,7 +28523,7 @@ func main() {
         };
         let module_names = std::collections::HashSet::from(["fmt".to_string(), "os".to_string()]);
 
-        let refs = super::collect_external_refs(&file.items, &module_names);
+        let refs = super::external_roots::collect_external_refs(&file.items, &module_names);
 
         assert!(
             refs.get("fmt")
@@ -28666,7 +28549,7 @@ func main() {
         };
         let module_names = std::collections::HashSet::from(["encoding__binary".to_string()]);
 
-        let refs = super::collect_external_refs(&file.items, &module_names);
+        let refs = super::external_roots::collect_external_refs(&file.items, &module_names);
         let binary_refs = refs.get("encoding__binary").expect("encoding/binary refs");
 
         assert!(binary_refs.contains("LittleEndian"), "{refs:?}");
@@ -28683,7 +28566,7 @@ func main() {
         };
         let module_names = std::collections::HashSet::from(["encoding__base64".to_string()]);
 
-        let refs = super::collect_external_refs(&file.items, &module_names);
+        let refs = super::external_roots::collect_external_refs(&file.items, &module_names);
         let base64_refs = refs.get("encoding__base64").expect("encoding/base64 refs");
 
         assert!(base64_refs.contains("StdEncoding"), "{refs:?}");
@@ -28700,7 +28583,7 @@ func main() {
         };
         let module_names = std::collections::HashSet::from(["strconv".to_string()]);
 
-        let refs = super::collect_external_refs(&file.items, &module_names);
+        let refs = super::external_roots::collect_external_refs(&file.items, &module_names);
         let strconv_refs = refs.get("strconv").expect("strconv refs");
 
         assert!(strconv_refs.contains("AppendFloat"), "{refs:?}");
