@@ -1,7 +1,9 @@
 use super::{
-    TYPE_ENV, go_package_rust_module_name, interface_type_env, is_path_call_expr,
-    item_reachability::impl_method_reachability_name, resolved_go_type,
-    syn_inspect::named_self_type, typeinfer,
+    TYPE_ENV, go_package_rust_module_name, interface_type_env,
+    item_reachability::impl_method_reachability_name,
+    resolved_go_type,
+    syn_inspect::{is_path_call_expr, named_self_type},
+    typeinfer,
 };
 
 #[derive(Clone)]

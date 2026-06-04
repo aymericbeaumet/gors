@@ -8,6 +8,19 @@ pub(super) fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
         .all(|(segment, expected)| segment.ident == *expected)
 }
 
+pub(super) fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
+    let syn::Expr::Path(path) = func else {
+        return false;
+    };
+    path.path.segments.len() == segments.len()
+        && path
+            .path
+            .segments
+            .iter()
+            .zip(segments)
+            .all(|(segment, expected)| segment.ident == *expected)
+}
+
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
@@ -258,6 +271,17 @@ mod tests {
     use super::*;
     use quote::ToTokens;
     use syn::parse_quote;
+
+    #[test]
+    fn is_path_call_expr_matches_exact_path_segments() {
+        let expr: syn::Expr = parse_quote! { std::mem::take };
+        assert!(is_path_call_expr(&expr, &["std", "mem", "take"]));
+        assert!(!is_path_call_expr(&expr, &["mem", "take"]));
+        assert!(!is_path_call_expr(&expr, &["std", "mem"]));
+
+        let call: syn::Expr = parse_quote! { std::mem::take(value) };
+        assert!(!is_path_call_expr(&call, &["std", "mem", "take"]));
+    }
 
     #[test]
     fn pat_ident_name_reads_ident_and_typed_patterns() {

@@ -61,8 +61,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
-    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
+    is_path_call_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
+    pat_ident_name, self_type_reachability_names, slice_type_inner, type_mentions_name,
+    vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -21833,19 +21834,6 @@ fn is_borrowed_pointer_path_expr(expr: &syn::Expr) -> bool {
                 .segments
                 .first()
                 .is_some_and(|segment| is_borrowed_pointer_param_name(&segment.ident.to_string())))
-}
-
-fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
-    let syn::Expr::Path(path) = func else {
-        return false;
-    };
-    path.path.segments.len() == segments.len()
-        && path
-            .path
-            .segments
-            .iter()
-            .zip(segments)
-            .all(|(segment, expected)| segment.ident == *expected)
 }
 
 fn type_from_param_expr(
