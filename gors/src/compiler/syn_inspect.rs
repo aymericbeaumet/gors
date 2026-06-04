@@ -82,6 +82,40 @@ pub(super) fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
     }
 }
 
+pub(super) fn direct_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    let syn::Expr::MethodCall(method) = expr else {
+        return None;
+    };
+    if method.method != "clone" || !method.args.is_empty() {
+        return None;
+    }
+    Some((*method.receiver).clone())
+}
+
+pub(super) fn clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    direct_clone_call_receiver_expr(expr).or_else(|| {
+        let syn::Expr::Paren(paren) = expr else {
+            return None;
+        };
+        clone_call_receiver_expr(&paren.expr)
+    })
+}
+
+pub(super) fn stripped_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    direct_clone_call_receiver_expr(strip_paren_or_group(expr))
+}
+
+pub(super) fn expr_path_ident_or_clone(expr: &syn::Expr) -> Option<String> {
+    if let Some(receiver) = direct_clone_call_receiver_expr(expr) {
+        return expr_path_ident_or_clone(&receiver);
+    }
+    match expr {
+        syn::Expr::Group(group) => expr_path_ident_or_clone(&group.expr),
+        syn::Expr::Paren(paren) => expr_path_ident_or_clone(&paren.expr),
+        _ => expr_path_ident(expr),
+    }
+}
+
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
@@ -370,6 +404,60 @@ mod tests {
 
         let field: syn::Expr = parse_quote! { value.field };
         assert!(matches!(strip_paren_or_group(&field), syn::Expr::Field(_)));
+    }
+
+    #[test]
+    fn clone_wrapper_helpers_preserve_wrapper_semantics() {
+        fn expr_tokens(expr: syn::Expr) -> String {
+            expr.to_token_stream().to_string()
+        }
+
+        let clone_call: syn::Expr = parse_quote! { value.clone() };
+        let parened_clone: syn::Expr = parse_quote! { (value.clone()) };
+        let grouped_clone = syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: Default::default(),
+            expr: Box::new(parse_quote! { value.clone() }),
+        });
+        let clone_with_arg: syn::Expr = parse_quote! { value.clone(extra) };
+
+        assert_eq!(
+            direct_clone_call_receiver_expr(&clone_call).map(expr_tokens),
+            Some("value".to_string())
+        );
+        assert!(direct_clone_call_receiver_expr(&parened_clone).is_none());
+        assert_eq!(
+            clone_call_receiver_expr(&parened_clone).map(expr_tokens),
+            Some("value".to_string())
+        );
+        assert!(clone_call_receiver_expr(&grouped_clone).is_none());
+        assert_eq!(
+            stripped_clone_call_receiver_expr(&grouped_clone).map(expr_tokens),
+            Some("value".to_string())
+        );
+        assert!(stripped_clone_call_receiver_expr(&clone_with_arg).is_none());
+    }
+
+    #[test]
+    fn expr_path_ident_or_clone_reads_path_through_clone_wrappers() {
+        let plain: syn::Expr = parse_quote! { value };
+        let cloned: syn::Expr = parse_quote! { ((value.clone())) };
+        let grouped_clone = syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: Default::default(),
+            expr: Box::new(parse_quote! { value.clone() }),
+        });
+        let field_clone: syn::Expr = parse_quote! { value.field.clone() };
+        let clone_with_arg: syn::Expr = parse_quote! { value.clone(extra) };
+
+        assert_eq!(expr_path_ident_or_clone(&plain).as_deref(), Some("value"));
+        assert_eq!(expr_path_ident_or_clone(&cloned).as_deref(), Some("value"));
+        assert_eq!(
+            expr_path_ident_or_clone(&grouped_clone).as_deref(),
+            Some("value")
+        );
+        assert_eq!(expr_path_ident_or_clone(&field_clone), None);
+        assert_eq!(expr_path_ident_or_clone(&clone_with_arg), None);
     }
 
     #[test]

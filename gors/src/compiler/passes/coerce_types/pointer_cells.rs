@@ -1,7 +1,8 @@
 use syn::visit_mut::{self, VisitMut};
 
 use super::super::super::syn_inspect::{
-    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names, strip_paren_or_group,
+    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names, path_ident_name,
+    strip_paren_or_group, stripped_clone_call_receiver_expr,
 };
 
 pub(super) type StaticNames = std::collections::HashSet<String>;
@@ -209,10 +210,8 @@ fn borrow_pointer_cell_expr(
 
 fn pointer_cell_arg_name(expr: &syn::Expr) -> Option<String> {
     mut_reference_path_name(expr)
-        .or_else(|| super::syntax::path_ident_name(expr))
-        .or_else(|| {
-            strip_clone_method_call(expr).and_then(|expr| super::syntax::path_ident_name(&expr))
-        })
+        .or_else(|| path_ident_name(expr))
+        .or_else(|| stripped_clone_call_receiver_expr(expr).and_then(|expr| path_ident_name(&expr)))
 }
 
 fn mut_reference_path_name(expr: &syn::Expr) -> Option<String> {
@@ -221,29 +220,12 @@ fn mut_reference_path_name(expr: &syn::Expr) -> Option<String> {
         return None;
     };
     reference.mutability.as_ref()?;
-    super::syntax::path_ident_name(&reference.expr)
-}
-
-fn strip_clone_method_call(expr: &syn::Expr) -> Option<syn::Expr> {
-    let expr = strip_paren_or_group(expr);
-    let syn::Expr::MethodCall(method) = expr else {
-        return None;
-    };
-    if method.method != "clone" || !method.args.is_empty() {
-        return None;
-    }
-    Some((*method.receiver).clone())
+    path_ident_name(&reference.expr)
 }
 
 fn deref_clone_path_name(expr: &syn::Expr) -> Option<String> {
-    let expr = strip_paren_or_group(expr);
-    let syn::Expr::MethodCall(method) = expr else {
-        return None;
-    };
-    if method.method != "clone" || !method.args.is_empty() {
-        return None;
-    }
-    deref_path_name(&method.receiver)
+    let receiver = stripped_clone_call_receiver_expr(expr)?;
+    deref_path_name(&receiver)
 }
 
 fn deref_path_name(expr: &syn::Expr) -> Option<String> {
@@ -254,7 +236,7 @@ fn deref_path_name(expr: &syn::Expr) -> Option<String> {
     if !matches!(unary.op, syn::UnOp::Deref(_)) {
         return None;
     }
-    super::syntax::path_ident_name(strip_paren_or_group(&unary.expr))
+    path_ident_name(strip_paren_or_group(&unary.expr))
 }
 
 pub(super) fn collect_statics(file: &syn::File) -> StaticNames {

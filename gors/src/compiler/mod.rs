@@ -61,7 +61,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    expr_path_ident, is_path_call_expr, is_self_expr, item_macro_name, item_name,
+    clone_call_receiver_expr, direct_clone_call_receiver_expr, expr_path_ident,
+    expr_path_ident_or_clone, is_path_call_expr, is_self_expr, item_macro_name, item_name,
     macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
     slice_type_inner, type_mentions_name, vec_type_inner,
 };
@@ -5907,16 +5908,6 @@ fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
     expr_can_be_mutably_borrowed(&source).then_some(source)
 }
 
-fn clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
-    match expr {
-        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
-            Some((*method.receiver).clone())
-        }
-        syn::Expr::Paren(paren) => clone_call_receiver_expr(&paren.expr),
-        _ => None,
-    }
-}
-
 fn expr_can_be_mutably_borrowed(expr: &syn::Expr) -> bool {
     match expr {
         syn::Expr::Field(field) => expr_can_be_mutably_borrowed(&field.base),
@@ -6860,17 +6851,6 @@ fn vec_newtype_receiver_call(
             vec_newtype_receiver_call(&paren.expr, current_module, vec_newtypes)
         }
         _ => None,
-    }
-}
-
-fn expr_path_ident_or_clone(expr: &syn::Expr) -> Option<String> {
-    match expr {
-        syn::Expr::Group(group) => expr_path_ident_or_clone(&group.expr),
-        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
-            expr_path_ident_or_clone(&method.receiver)
-        }
-        syn::Expr::Paren(paren) => expr_path_ident_or_clone(&paren.expr),
-        _ => expr_path_ident(expr),
     }
 }
 
@@ -21741,7 +21721,7 @@ fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoTy
         if is_borrowed_pointer_path_expr(&inner) {
             *expr = syn::parse_quote! { &mut *#inner };
         } else {
-            let lock_target = strip_clone_method_call(&inner).unwrap_or(inner);
+            let lock_target = direct_clone_call_receiver_expr(&inner).unwrap_or(inner);
             *expr = syn::parse_quote! { &mut *(#lock_target).lock().unwrap() };
         }
     } else {
@@ -21788,18 +21768,8 @@ fn should_borrow_pointer_arg_by_shape(
     false
 }
 
-fn strip_clone_method_call(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::MethodCall(method) = expr else {
-        return None;
-    };
-    if method.method != "clone" || !method.args.is_empty() {
-        return None;
-    }
-    Some((*method.receiver).clone())
-}
-
 fn pointer_cell_lock_target_expr(expr: &syn::Expr) -> Option<syn::Expr> {
-    if let Some(stripped) = strip_clone_method_call(expr) {
+    if let Some(stripped) = direct_clone_call_receiver_expr(expr) {
         return pointer_cell_lock_target_expr(&stripped).or(Some(stripped));
     }
     match expr {
