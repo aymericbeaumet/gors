@@ -42,6 +42,7 @@ mod reflect_slice_any;
 mod runtime_primitives;
 mod struct_derives;
 mod syn_inspect;
+mod synthetic_names;
 pub mod typeinfer;
 mod zero_values;
 
@@ -92,10 +93,6 @@ use syn_inspect::{
 // Thread-local storage for source map tracker during compilation
 thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
-    static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-    static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-    static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-    static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static IMPORT_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static IMPORT_PATHS_BY_LOCAL_NAME: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static IMPORT_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
@@ -103,7 +100,6 @@ thread_local! {
     static IMPORT_PACKAGE_NAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
     static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -121,7 +117,6 @@ thread_local! {
     static BORROWED_POINTER_VIEW_RETURN: RefCell<Option<BorrowedPointerViewReturn>> = const { RefCell::new(None) };
     static MUTABLE_SLICE_VIEW_RETURN: RefCell<Option<MutableSliceViewReturn>> = const { RefCell::new(None) };
     static BORROWED_SLICE_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
     static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
@@ -3017,7 +3012,7 @@ fn function_literal_shared_capture_clones(expr: &ast::Expr) -> Vec<syn::Stmt> {
 
 /// Compile a Go select statement into Rust.
 fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
-    let select_label = next_select_label();
+    let select_label = synthetic_names::next_select_label();
     let clauses: Vec<ast::CommClause> = select_stmt
         .body
         .list
@@ -3088,7 +3083,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                     }
                 }
                 ast::Stmt::AssignStmt(assign) => {
-                    let (value_ident, ok_ident) = next_select_recv_idents();
+                    let (value_ident, ok_ident) = synthetic_names::next_select_recv_idents();
                     if let Some((ch, binding_stmts)) =
                         select_receive_assignment_parts(assign, &value_ident, &ok_ident)?
                     {
@@ -3151,7 +3146,7 @@ fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, C
                 }
             }
             ast::Stmt::AssignStmt(assign) => {
-                let (value_ident, ok_ident) = next_select_recv_idents();
+                let (value_ident, ok_ident) = synthetic_names::next_select_recv_idents();
                 if let Some((ch, binding_stmts)) =
                     select_receive_assignment_parts(assign, &value_ident, &ok_ident)?
                 {
@@ -3578,11 +3573,8 @@ fn compile_error_expr(message: impl AsRef<str>) -> syn::Expr {
 /// let rust_ast = compiler::compile(go_ast).unwrap();
 /// ```
 fn reset_lowering_thread_state() {
-    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
+    synthetic_names::reset_lowering_counters();
     loop_control::reset_counter();
-    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     ACTIVE_ITEM_NAMES.with(|names| names.borrow_mut().clear());
@@ -7320,11 +7312,8 @@ pub fn compile_with_source_map(
         t.borrow_mut().start(go_file, "output.rs", Some(go_source));
     });
 
-    DEFER_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SWITCH_COUNTER.with(|c| *c.borrow_mut() = 0);
-    SELECT_COUNTER.with(|c| *c.borrow_mut() = 0);
+    synthetic_names::reset_lowering_counters();
     loop_control::reset_counter();
-    GOTO_STATE_COUNTER.with(|c| *c.borrow_mut() = 0);
     named_returns::reset_counter();
     GOTO_STATE_CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     set_import_renames(BTreeMap::new());
@@ -7657,19 +7646,6 @@ fn array_literal_len_expr(len: &ast::Expr, elts: &[ast::Expr]) -> syn::Expr {
 
     let lit = syn::LitInt::new(&max_len.to_string(), Span::mixed_site());
     syn::parse_quote! { #lit }
-}
-
-fn next_unnamed_arg_ident() -> syn::Ident {
-    UNNAMED_ARG_COUNTER.with(|counter| {
-        let mut counter = counter.borrow_mut();
-        let ident = syn::Ident::new(&format!("__gors_arg_{}", *counter), Span::mixed_site());
-        *counter += 1;
-        ident
-    })
-}
-
-fn reset_unnamed_arg_counter() {
-    UNNAMED_ARG_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 fn type_with_generic_args(mut base: syn::Type, args: Vec<syn::Type>) -> syn::Type {
@@ -10002,7 +9978,7 @@ fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
 fn compile_method(
     func_decl: ast::FuncDecl,
 ) -> Result<(String, Vec<syn::Ident>, syn::ImplItemFn), CompilerError> {
-    reset_unnamed_arg_counter();
+    synthetic_names::reset_unnamed_arg_counter();
 
     let recv = func_decl
         .recv
@@ -12182,7 +12158,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         });
         for name in names {
             let ident = if name.name.is_empty() || name.name == "_" {
-                next_unnamed_arg_ident()
+                synthetic_names::next_unnamed_arg_ident()
             } else {
                 name.into()
             };
@@ -14289,7 +14265,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
     let source_is_interface = resolved_go_type(&source_go_type).is_interface();
     let source_is_addressable = is_ir_addressable_expr(&source_expr);
     let source_expr: syn::Expr = source_expr.into();
-    let value_ident = next_type_switch_value_ident();
+    let value_ident = synthetic_names::next_type_switch_value_ident();
     let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
     let value_ref = |value: &syn::Expr| -> syn::Expr {
         match (source_is_interface, source_is_addressable) {
@@ -15129,15 +15105,6 @@ struct RangeFunctionReturnContext {
     return_ty: Option<syn::Type>,
 }
 
-fn next_range_function_id() -> usize {
-    RANGE_FUNCTION_COUNTER.with(|counter| {
-        let mut counter = counter.borrow_mut();
-        let id = *counter;
-        *counter += 1;
-        id
-    })
-}
-
 fn current_return_ty() -> Option<syn::Type> {
     RETURN_TYPES.with(|types| match types.borrow().as_slice() {
         [] => None,
@@ -15183,7 +15150,7 @@ fn scoped_if_result_stmts(
 }
 
 fn range_function_return_context() -> RangeFunctionReturnContext {
-    let id = next_range_function_id();
+    let id = synthetic_names::next_range_function_id();
     RangeFunctionReturnContext {
         slot_ident: quote::format_ident!("__gors_range_return_{id}"),
         slot_for_yield_ident: quote::format_ident!("__gors_range_return_for_yield_{id}"),
@@ -17340,12 +17307,7 @@ fn stmt_has_defer(stmt: &ast::Stmt) -> bool {
 }
 
 fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
-    let n = DEFER_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
+    let n = synthetic_names::next_defer_id();
     let fun_ty = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&call.fun, &env.borrow()));
     let call_abi = call_abi_for_backend(&call);
     let param_types = if call_abi.signature_params.is_empty() {
@@ -18357,7 +18319,7 @@ where
     let typed_hoist_bindings = goto_state_hoisted_binding_types(&list, &hoisted_names);
     let segments = split_goto_state_segments(list);
     let labels = goto_state_label_map(&segments);
-    let (state_ident, loop_label) = next_goto_state_names();
+    let (state_ident, loop_label) = synthetic_names::next_goto_state_names();
     let context = GotoStateContext {
         state_ident: state_ident.clone(),
         loop_label: loop_label.clone(),
@@ -20195,7 +20157,7 @@ fn compile_field_to_fn_args_with_type_params(
         }
 
         let ident = if name.name.is_empty() || name.name == "_" {
-            next_unnamed_arg_ident()
+            synthetic_names::next_unnamed_arg_ident()
         } else {
             local_binding_ident_for_ast(&name)
         };
@@ -20355,7 +20317,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
     type Error = CompilerError;
 
     fn try_from(func_decl: ast::FuncDecl) -> Result<Self, Self::Error> {
-        reset_unnamed_arg_counter();
+        synthetic_names::reset_unnamed_arg_counter();
 
         // Record mapping for the function keyword with Go name
         if let Some(ref func_pos) = func_decl.type_.func {
@@ -21175,7 +21137,7 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             }));
         }
 
-        let switch_label = next_switch_label();
+        let switch_label = synthetic_names::next_switch_label();
         if !clauses.iter().any(case_clause_contains_fallthrough) {
             return compile_non_fallthrough_switch(clauses, switch_stmt.tag, switch_label);
         }
@@ -21620,62 +21582,6 @@ fn compile_switch_case_if_stmt(
     } else {
         Ok(vec![syn::Stmt::Expr(if_expr, None)])
     }
-}
-
-fn next_switch_label() -> syn::Lifetime {
-    let n = SWITCH_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
-}
-
-fn next_type_switch_value_ident() -> syn::Ident {
-    let n = SWITCH_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
-}
-
-fn next_select_label() -> syn::Lifetime {
-    let n = SELECT_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    syn::Lifetime::new(&format!("'__gors_select_{n}"), Span::mixed_site())
-}
-
-fn next_select_recv_idents() -> (syn::Ident, syn::Ident) {
-    let n = SELECT_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    (
-        syn::Ident::new(&format!("__gors_select_value_{n}"), Span::mixed_site()),
-        syn::Ident::new(&format!("__gors_select_ok_{n}"), Span::mixed_site()),
-    )
-}
-
-fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
-    let n = GOTO_STATE_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    (
-        syn::Ident::new(&format!("__gors_goto_state_{n}"), Span::mixed_site()),
-        syn::Lifetime::new(&format!("'__gors_goto_{n}"), Span::mixed_site()),
-    )
 }
 
 fn build_case_condition(
