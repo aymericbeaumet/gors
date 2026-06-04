@@ -17,10 +17,6 @@ impl Metadata {
         self.methods_by_receiver.is_empty()
     }
 
-    pub(super) fn has_receiver(&self, self_ty: &str) -> bool {
-        self.methods_by_receiver.contains_key(self_ty)
-    }
-
     fn should_flush_after_stmt(&self, impl_self_types: &[String], stmt: &syn::Stmt) -> bool {
         let Some(methods) = impl_self_types
             .last()
@@ -255,8 +251,12 @@ mod tests {
         };
 
         let metadata = Metadata::collect(&file);
-        assert!(!metadata.has_receiver("Printer"));
-        assert!(!metadata.has_receiver("Other"));
+        let receiver = ["Printer".to_string()];
+        let stmt: syn::Stmt = syn::parse_quote! {
+            self.printArg();
+        };
+
+        assert!(!metadata.should_flush_after_stmt(&receiver, &stmt));
     }
 
     #[test]

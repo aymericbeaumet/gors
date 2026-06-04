@@ -1,14 +1,5 @@
 type FieldSet = std::collections::HashSet<String>;
 
-pub(super) fn block_mentions(block: &syn::Block, fields: &FieldSet) -> bool {
-    let mut finder = Finder {
-        fields,
-        found: false,
-    };
-    syn::visit::Visit::visit_block(&mut finder, block);
-    finder.found
-}
-
 pub(super) fn expr_mentions(expr: &syn::Expr, fields: &FieldSet) -> bool {
     let mut finder = Finder {
         fields,
@@ -72,16 +63,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_named_self_fields_inside_blocks_and_expressions() {
+    fn detects_named_self_fields_inside_expressions() {
         let fields = FieldSet::from(["value".to_string()]);
-        let block: syn::Block = syn::parse_quote!({
-            let fallback = self.value;
-        });
         let expr: syn::Expr = syn::parse_quote! {
             self.value.Type()
         };
 
-        assert!(block_mentions(&block, &fields));
         assert!(expr_mentions(&expr, &fields));
     }
 

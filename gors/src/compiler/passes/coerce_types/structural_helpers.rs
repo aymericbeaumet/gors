@@ -37,11 +37,8 @@ impl Metadata {
         self_ty: &str,
         block: &syn::Block,
     ) -> Option<&reflection_fallback::FieldSet> {
-        self.reflection_fallback.fields_for_initial_pass(
-            self_ty,
-            block,
-            self.fmt_flush.has_receiver(self_ty),
-        )
+        self.reflection_fallback
+            .fields_for_initial_pass(self_ty, block)
     }
 
     fn self_reflect_fields_after_helpers(

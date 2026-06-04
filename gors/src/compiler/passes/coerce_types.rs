@@ -568,32 +568,15 @@ mod tests {
     }
 
     #[test]
-    fn it_prunes_self_value_reflection_fallback_from_generated_flush_receivers() {
+    fn it_prunes_self_value_reflection_fallback_passed_to_reflect_value_methods() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Printer {
-                pub inner: Inner,
-                pub buf: Buffer,
                 pub value: crate::reflect::Value,
             }
 
-            pub struct Inner {
-                pub buf: Buffer,
-            }
-
-            pub struct Buffer(pub Vec<u8>);
-
-            impl Inner {
-                pub fn write(&mut self, value: isize) {}
-            }
-
             impl Printer {
-                pub fn __gors_flush_fmt(&mut self) {
-                    let bytes = std::mem::take(&mut self.inner.buf.0);
-                    self.buf.0.extend(bytes);
-                }
-
                 pub fn printValue(&mut self, value: crate::reflect::Value) {
-                    self.inner.write(0);
+                    let _ = value;
                 }
 
                 pub fn run(&mut self) {
@@ -608,7 +591,7 @@ mod tests {
         let tokens = quote::quote!(#file).to_string();
         assert!(
             !tokens.contains("fallback") && !tokens.contains("self . value"),
-            "expected generated self.value reflection fallback to be pruned by receiver metadata: {tokens}"
+            "expected generated self.value reflection fallback to be pruned by reflect.Value method metadata: {tokens}"
         );
     }
 

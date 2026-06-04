@@ -1,15 +1,18 @@
 pub(super) type FieldSet = std::collections::HashSet<String>;
 type ReceiverFieldMap = std::collections::BTreeMap<String, FieldSet>;
+type ReceiverMethodMap = std::collections::BTreeMap<String, FieldSet>;
 
 #[derive(Default)]
 pub(super) struct Metadata {
     self_reflect_value_fields: ReceiverFieldMap,
+    reflect_value_methods: ReceiverMethodMap,
 }
 
 impl Metadata {
     pub(super) fn collect(file: &syn::File) -> Self {
         Self {
             self_reflect_value_fields: collect_self_reflect_value_fields(file),
+            reflect_value_methods: collect_reflect_value_methods(file),
         }
     }
 
@@ -21,11 +24,13 @@ impl Metadata {
         &self,
         self_ty: &str,
         block: &syn::Block,
-        receiver_has_fmt_flush: bool,
     ) -> Option<&FieldSet> {
         let fields = self.fields_for_receiver(self_ty)?;
+        let methods = self.reflect_value_methods.get(self_ty);
         (block_has_self_reflect_field_runtime_fallback(block, fields)
-            || (receiver_has_fmt_flush && block_mentions_self_reflect_field(block, fields)))
+            || methods.is_some_and(|methods| {
+                block_passes_self_reflect_field_to_method(block, fields, methods)
+            }))
         .then_some(fields)
     }
 
@@ -41,10 +46,6 @@ impl Metadata {
     fn fields_for_receiver(&self, self_ty: &str) -> Option<&FieldSet> {
         self.self_reflect_value_fields.get(self_ty)
     }
-}
-
-fn block_mentions_self_reflect_field(block: &syn::Block, fields: &FieldSet) -> bool {
-    super::self_fields::block_mentions(block, fields)
 }
 
 fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &FieldSet) -> bool {
@@ -71,6 +72,88 @@ fn block_has_self_reflect_field_runtime_fallback(block: &syn::Block, fields: &Fi
     };
     syn::visit::Visit::visit_block(&mut finder, block);
     finder.found
+}
+
+fn block_passes_self_reflect_field_to_method(
+    block: &syn::Block,
+    fields: &FieldSet,
+    methods: &FieldSet,
+) -> bool {
+    let mut reflect_field_locals = FieldSet::new();
+    for stmt in &block.stmts {
+        if stmt_calls_method_with_reflect_source(stmt, fields, &reflect_field_locals, methods) {
+            return true;
+        }
+        let bound_names = stmt_bound_names(stmt);
+        if !bound_names.is_empty()
+            && stmt_mentions_reflect_source(stmt, fields, &reflect_field_locals)
+        {
+            reflect_field_locals.extend(bound_names);
+        }
+    }
+    false
+}
+
+fn stmt_calls_method_with_reflect_source(
+    stmt: &syn::Stmt,
+    fields: &FieldSet,
+    local_names: &FieldSet,
+    methods: &FieldSet,
+) -> bool {
+    struct Finder<'a> {
+        fields: &'a FieldSet,
+        local_names: &'a FieldSet,
+        methods: &'a FieldSet,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if super::super::syntax::is_self_expr(&call.receiver)
+                && self.methods.contains(&call.method.to_string())
+                && call
+                    .args
+                    .iter()
+                    .any(|arg| expr_mentions_reflect_source(arg, self.fields, self.local_names))
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        fields,
+        local_names,
+        methods,
+        found: false,
+    };
+    syn::visit::Visit::visit_stmt(&mut finder, stmt);
+    finder.found
+}
+
+fn stmt_mentions_reflect_source(
+    stmt: &syn::Stmt,
+    fields: &FieldSet,
+    local_names: &FieldSet,
+) -> bool {
+    match stmt {
+        syn::Stmt::Expr(expr, _) => expr_mentions_reflect_source(expr, fields, local_names),
+        syn::Stmt::Local(local) => local
+            .init
+            .as_ref()
+            .is_some_and(|init| expr_mentions_reflect_source(&init.expr, fields, local_names)),
+        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => false,
+    }
+}
+
+fn expr_mentions_reflect_source(
+    expr: &syn::Expr,
+    fields: &FieldSet,
+    local_names: &FieldSet,
+) -> bool {
+    super::self_fields::expr_mentions(expr, fields) || expr_mentions_any_name(expr, local_names)
 }
 
 pub(super) fn prune(stmts: &mut Vec<syn::Stmt>, self_reflect_fields: Option<&FieldSet>) {
@@ -377,9 +460,54 @@ fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverFieldMap {
         .collect()
 }
 
+fn collect_reflect_value_methods(file: &syn::File) -> ReceiverMethodMap {
+    let mut methods = ReceiverMethodMap::new();
+    for item in &file.items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(self_ty) = super::super::syntax::type_path_ident_name(&item_impl.self_ty) else {
+            continue;
+        };
+        for func in item_impl.items.iter().filter_map(|item| {
+            let syn::ImplItem::Fn(func) = item else {
+                return None;
+            };
+            method_accepts_reflect_value(func).then_some(func)
+        }) {
+            methods
+                .entry(self_ty.clone())
+                .or_default()
+                .insert(func.sig.ident.to_string());
+        }
+    }
+    methods
+}
+
+fn method_accepts_reflect_value(func: &syn::ImplItemFn) -> bool {
+    func.sig.inputs.iter().any(|input| match input {
+        syn::FnArg::Receiver(_) => false,
+        syn::FnArg::Typed(pat_type) => is_reflect_value_type(&pat_type.ty),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn impl_method<'a>(file: &'a syn::File, name: &str) -> Option<&'a syn::ImplItemFn> {
+        file.items.iter().find_map(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return None;
+            };
+            item_impl.items.iter().find_map(|item| {
+                let syn::ImplItem::Fn(func) = item else {
+                    return None;
+                };
+                (func.sig.ident == name).then_some(func)
+            })
+        })
+    }
 
     #[test]
     fn metadata_collects_only_reflect_value_fields() {
@@ -401,6 +529,70 @@ mod tests {
         assert!(fields.contains("value"));
         assert!(!fields.contains("local_value"));
         assert!(!fields.contains("buf"));
+    }
+
+    #[test]
+    fn metadata_uses_reflect_value_method_parameters_to_activate_pruning() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                value: crate::reflect::Value,
+            }
+
+            impl Printer {
+                fn printValue(&mut self, value: crate::reflect::Value) {}
+
+                fn run(&mut self) {
+                    let fallback = self.value;
+                    self.printValue(fallback);
+                }
+            }
+        };
+
+        let metadata = Metadata::collect(&file);
+        let run = impl_method(&file, "run");
+        assert!(run.is_some(), "expected run method");
+        let Some(run) = run else {
+            return;
+        };
+
+        assert!(
+            metadata
+                .fields_for_initial_pass("Printer", &run.block)
+                .is_some(),
+            "expected reflect.Value method argument to activate fallback pruning"
+        );
+    }
+
+    #[test]
+    fn metadata_ignores_similar_method_names_without_reflect_value_params() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                value: crate::reflect::Value,
+            }
+
+            impl Printer {
+                fn printValue(&mut self, value: isize) {}
+
+                fn run(&mut self) {
+                    let fallback = self.value;
+                    self.printValue(1);
+                }
+            }
+        };
+
+        let metadata = Metadata::collect(&file);
+        let run = impl_method(&file, "run");
+        assert!(run.is_some(), "expected run method");
+        let Some(run) = run else {
+            return;
+        };
+
+        assert!(
+            metadata
+                .fields_for_initial_pass("Printer", &run.block)
+                .is_none(),
+            "expected method name alone not to activate fallback pruning"
+        );
     }
 
     #[test]
