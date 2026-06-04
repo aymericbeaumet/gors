@@ -88,15 +88,81 @@ fn is_display_impl(item_impl: &syn::ItemImpl) -> bool {
     item_impl
         .trait_
         .as_ref()
-        .is_some_and(|(_, path, _)| path_ends_with(path, "Display"))
+        .is_some_and(|(_, path, _)| path_is(path, &["std", "fmt", "Display"]))
 }
 
 fn is_std_error_trait(path: &syn::Path) -> bool {
-    path_ends_with(path, "Error") && super::syn_inspect::path_starts_with(path, &["std", "error"])
+    path_is(path, &["std", "error", "Error"])
 }
 
-fn path_ends_with(path: &syn::Path, name: &str) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == name)
+fn path_is(path: &syn::Path, segments: &[&str]) -> bool {
+    path.segments.len() == segments.len()
+        && path
+            .segments
+            .iter()
+            .zip(segments)
+            .all(|(segment, expected)| segment.ident == *expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pruning_targets_only_std_display_impls() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                struct Level;
+            },
+            syn::parse_quote! {
+                impl crate::other::Display for Level {}
+            },
+            syn::parse_quote! {
+                impl std::fmt::Display for Level {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        Ok(())
+                    }
+                }
+            },
+        ];
+
+        prune_without_string_method(&mut items);
+        let output = quote::quote!(#(#items)*).to_string();
+
+        assert!(
+            output.contains("impl crate :: other :: Display for Level"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("impl std :: fmt :: Display for Level"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn exact_std_error_impl_retains_std_display() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                struct NilPointer;
+            },
+            syn::parse_quote! {
+                impl std::fmt::Display for NilPointer {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        Ok(())
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl std::error::Error for NilPointer {}
+            },
+        ];
+
+        prune_without_string_method(&mut items);
+        let output = quote::quote!(#(#items)*).to_string();
+
+        assert!(
+            output.contains("impl std :: fmt :: Display for NilPointer"),
+            "{output}"
+        );
+    }
 }
