@@ -61,9 +61,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    is_path_call_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
-    pat_ident_name, self_type_reachability_names, slice_type_inner, type_mentions_name,
-    vec_type_inner,
+    expr_path_ident, is_path_call_expr, is_self_expr, item_macro_name, item_name,
+    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
+    slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -6493,13 +6493,6 @@ fn clone_value_arg(arg: &mut syn::Expr) {
     *arg = syn::parse_quote! { (#inner).clone() };
 }
 
-fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
-    let syn::Expr::Path(path) = expr else {
-        return None;
-    };
-    path.path.get_ident().map(ToString::to_string)
-}
-
 fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     let module_names = module_name_set(modules);
     let item_names = module_item_name_set(modules);
@@ -7192,16 +7185,6 @@ fn debug_assert_semantic_external_refs(
 
 fn cast_self_in_pointer_comparisons(file: &mut syn::File) {
     use syn::visit_mut::VisitMut;
-
-    fn is_self_expr(expr: &syn::Expr) -> bool {
-        matches!(
-            expr,
-            syn::Expr::Path(path)
-                if path.path.leading_colon.is_none()
-                    && path.path.segments.len() == 1
-                    && path.path.segments.first().is_some_and(|segment| segment.ident == "self")
-        )
-    }
 
     fn is_self_field_expr(expr: &syn::Expr) -> bool {
         matches!(

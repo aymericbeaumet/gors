@@ -1,7 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
 use super::super::super::syn_inspect::{
-    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names,
+    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names, strip_paren_or_group,
 };
 
 pub(super) type StaticNames = std::collections::HashSet<String>;
@@ -255,16 +255,6 @@ fn deref_path_name(expr: &syn::Expr) -> Option<String> {
         return None;
     }
     super::syntax::path_ident_name(strip_paren_or_group(&unary.expr))
-}
-
-fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
-    loop {
-        match expr {
-            syn::Expr::Paren(paren) => expr = &paren.expr,
-            syn::Expr::Group(group) => expr = &group.expr,
-            _ => return expr,
-        }
-    }
 }
 
 pub(super) fn collect_statics(file: &syn::File) -> StaticNames {

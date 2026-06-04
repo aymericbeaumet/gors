@@ -21,6 +21,67 @@ pub(super) fn is_path_call_expr(func: &syn::Expr, segments: &[&str]) -> bool {
             .all(|(segment, expected)| segment.ident == *expected)
 }
 
+pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    path.path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string())
+}
+
+pub(super) fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = expr else {
+        return None;
+    };
+    path.path.get_ident().map(ToString::to_string)
+}
+
+pub(super) fn path_ident_name(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(path) => {
+            if path.qself.is_some() || path.path.segments.len() != 1 {
+                return None;
+            }
+            path.path
+                .segments
+                .first()
+                .map(|segment| segment.ident.to_string())
+        }
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            path_ident_name(&unary.expr)
+        }
+        syn::Expr::Paren(paren) => path_ident_name(&paren.expr),
+        syn::Expr::Group(group) => path_ident_name(&group.expr),
+        _ => None,
+    }
+}
+
+pub(super) fn is_self_expr(expr: &syn::Expr) -> bool {
+    is_path_ident(expr, "self")
+}
+
+pub(super) fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
+    matches!(expr, syn::Expr::Path(path)
+        if path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && path.path.segments.first().is_some_and(|seg| seg.ident == name))
+}
+
+pub(super) fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
+    loop {
+        match expr {
+            syn::Expr::Paren(paren) => expr = &paren.expr,
+            syn::Expr::Group(group) => expr = &group.expr,
+            _ => return expr,
+        }
+    }
+}
+
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
@@ -281,6 +342,34 @@ mod tests {
 
         let call: syn::Expr = parse_quote! { std::mem::take(value) };
         assert!(!is_path_call_expr(&call, &["std", "mem", "take"]));
+    }
+
+    #[test]
+    fn path_ident_helpers_preserve_exact_and_stripped_semantics() {
+        let ident_expr: syn::Expr = parse_quote! { value };
+        let deref_expr: syn::Expr = parse_quote! { *((value)) };
+        let self_expr: syn::Expr = parse_quote! { self };
+        let field_expr: syn::Expr = parse_quote! { self.value };
+        let qualified_expr: syn::Expr = parse_quote! { crate::value };
+        let vec_ty: syn::Type = parse_quote! { Vec<u8> };
+
+        assert_eq!(expr_path_ident(&ident_expr).as_deref(), Some("value"));
+        assert_eq!(expr_path_ident(&deref_expr), None);
+        assert_eq!(path_ident_name(&deref_expr).as_deref(), Some("value"));
+        assert!(is_self_expr(&self_expr));
+        assert!(!is_self_expr(&field_expr));
+        assert!(!is_path_ident(&qualified_expr, "value"));
+        assert_eq!(type_path_ident_name(&vec_ty).as_deref(), Some("Vec"));
+    }
+
+    #[test]
+    fn strip_paren_or_group_keeps_non_grouped_expr() {
+        let grouped: syn::Expr = parse_quote! { (((value))) };
+        let stripped = strip_paren_or_group(&grouped);
+        assert_eq!(expr_path_ident(stripped).as_deref(), Some("value"));
+
+        let field: syn::Expr = parse_quote! { value.field };
+        assert!(matches!(strip_paren_or_group(&field), syn::Expr::Field(_)));
     }
 
     #[test]
