@@ -62,10 +62,11 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr,
-    direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone, is_box_new_call,
-    is_box_new_unit_expr, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
-    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
-    self_type_reachability_names, slice_type_inner, type_mentions_name, vec_type_inner,
+    direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
+    is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr, is_box_type_with_any_bound,
+    is_path_call_expr, is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name,
+    macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
+    slice_type_inner, type_mentions_name, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -6277,41 +6278,6 @@ fn cloneable_value_param_kind(
     (matches!(segment.ident.to_string().as_str(), "String")
         || clone_type_params.contains(&segment.ident.to_string()))
     .then_some(CloneValueParamKind::Clone)
-}
-
-fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
-    let syn::Type::Path(type_path) = ty else {
-        return false;
-    };
-    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
-        return false;
-    }
-    let Some(segment) = type_path.path.segments.first() else {
-        return false;
-    };
-    if segment.ident != "Box" {
-        return false;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return false;
-    };
-    let Some(syn::GenericArgument::Type(syn::Type::TraitObject(trait_object))) = args.args.first()
-    else {
-        return false;
-    };
-    trait_object_has_any_bound(trait_object)
-}
-
-fn trait_object_has_any_bound(trait_object: &syn::TypeTraitObject) -> bool {
-    trait_object.bounds.iter().any(|bound| {
-        matches!(bound, syn::TypeParamBound::Trait(trait_bound) if trait_path_is_any(&trait_bound.path))
-    })
-}
-
-fn trait_path_is_any(path: &syn::Path) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Any")
 }
 
 struct CloneVecValueCallArgs<'a> {
@@ -17758,7 +17724,7 @@ fn compile_top_level_value_spec(
             };
             let mut ty: syn::Type =
                 inferred_type.unwrap_or_else(|| syn::parse_quote! { Box<dyn std::any::Any> });
-            if is_any_type(&ty) {
+            if is_box_type_with_any_bound(&ty) {
                 ty = syn::parse_quote! { Box<dyn std::any::Any + Send + Sync> };
                 if is_box_dyn_any_expr(&value) {
                     value =
@@ -24067,28 +24033,11 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     }
 }
 
-fn is_any_type(ty: &syn::Type) -> bool {
-    let syn::Type::Path(type_path) = ty else {
-        return false;
-    };
-    let first = match type_path.path.segments.first() {
-        Some(s) => s,
-        None => return false,
-    };
-    if first.ident != "Box" {
-        return false;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &first.arguments else {
-        return false;
-    };
-    args.args.iter().any(
-        |arg| matches!(arg, syn::GenericArgument::Type(syn::Type::TraitObject(to)) if trait_object_has_any_bound(to)),
-    )
-}
-
 fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
     match expr {
-        syn::Expr::Cast(cast) => is_any_type(&cast.ty) && is_box_new_unit_expr(&cast.expr),
+        syn::Expr::Cast(cast) => {
+            is_box_type_with_any_bound(&cast.ty) && is_box_new_unit_expr(&cast.expr)
+        }
         syn::Expr::Paren(paren) => is_box_dyn_any_expr(&paren.expr),
         syn::Expr::Group(group) => is_box_dyn_any_expr(&group.expr),
         _ => false,
@@ -24099,7 +24048,7 @@ fn is_box_dyn_any_cast_expr(expr: &syn::Expr) -> bool {
     let syn::Expr::Cast(cast) = expr else {
         return false;
     };
-    is_any_type(&cast.ty)
+    is_box_type_with_any_bound(&cast.ty)
 }
 
 #[derive(Clone, Copy)]

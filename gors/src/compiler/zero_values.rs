@@ -1,3 +1,4 @@
+use super::syn_inspect::is_box_type_with_any_bound;
 use super::{ast, typeinfer};
 
 pub(super) fn expr_for_type(expr: &ast::Expr) -> syn::Expr {
@@ -64,7 +65,7 @@ pub(super) fn expr_for_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr>
 
 pub(super) fn expr_for_syn_type(ty: Option<&syn::Type>) -> syn::Expr {
     if let Some(ty) = ty {
-        if super::is_any_type(ty) {
+        if is_box_type_with_any_bound(ty) {
             return expr_for_type_name(Some("any"));
         }
     }

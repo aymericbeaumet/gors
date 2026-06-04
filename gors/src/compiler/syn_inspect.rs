@@ -353,6 +353,54 @@ pub(super) fn first_type_arg_if_path_last_ident<'a>(
     })
 }
 
+pub(super) fn is_box_dyn_any_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return false;
+    }
+    let Some(segment) = type_path.path.segments.first() else {
+        return false;
+    };
+    if segment.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::TraitObject(trait_object))) = args.args.first()
+    else {
+        return false;
+    };
+    trait_object_has_any_bound(trait_object)
+}
+
+pub(super) fn is_box_type_with_any_bound(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(first) = type_path.path.segments.first() else {
+        return false;
+    };
+    if first.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &first.arguments else {
+        return false;
+    };
+    args.args.iter().any(|arg| {
+        matches!(arg, syn::GenericArgument::Type(syn::Type::TraitObject(to)) if trait_object_has_any_bound(to))
+    })
+}
+
+fn trait_object_has_any_bound(trait_object: &syn::TypeTraitObject) -> bool {
+    trait_object.bounds.iter().any(|bound| {
+        matches!(bound, syn::TypeParamBound::Trait(trait_bound)
+            if path_ends_with(&trait_bound.path, &["Any"]))
+    })
+}
+
 pub(super) fn named_self_type(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(path) => named_self_type_from_path(&path.path),
@@ -783,5 +831,21 @@ mod tests {
                 .as_deref(),
             Some("Arc < Mutex < i32 > >")
         );
+    }
+
+    #[test]
+    fn any_type_helpers_detect_boxed_any_trait_objects() {
+        let std_any: syn::Type = parse_quote! { Box<dyn std::any::Any> };
+        let any_with_bounds: syn::Type = parse_quote! { Box<dyn Any + Send + Sync> };
+        let other_trait: syn::Type = parse_quote! { Box<dyn std::fmt::Display> };
+        let qualified_box: syn::Type = parse_quote! { crate::Box<dyn Any> };
+
+        assert!(is_box_dyn_any_type(&std_any));
+        assert!(is_box_dyn_any_type(&any_with_bounds));
+        assert!(!is_box_dyn_any_type(&other_trait));
+        assert!(is_box_type_with_any_bound(&std_any));
+        assert!(is_box_type_with_any_bound(&any_with_bounds));
+        assert!(!is_box_type_with_any_bound(&other_trait));
+        assert!(!is_box_type_with_any_bound(&qualified_box));
     }
 }
