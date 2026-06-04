@@ -17,6 +17,7 @@
 mod active_names;
 mod builtin_roots;
 mod call_arg_rewrites;
+mod current_receiver;
 mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
@@ -58,6 +59,7 @@ use call_arg_rewrites::{
     borrow_mut_ref_call_args, borrow_mutated_vec_params, clone_vec_value_call_args,
     restore_vec_newtype_method_receivers,
 };
+use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
 use go_strings::{
     byte_slice_conversion_bytes_vec_expr, byte_vec_expr, const_eval_string_bytes,
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
@@ -128,7 +130,6 @@ thread_local! {
     static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
     static LOCAL_CONST_VALUES: RefCell<Vec<BTreeMap<String, ConstValue>>> = const { RefCell::new(Vec::new()) };
-    static CURRENT_RECEIVER: RefCell<Option<CurrentReceiver>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone)]
@@ -287,16 +288,6 @@ struct TypeParamKindsGuard {
     previous: Vec<(String, Option<typeinfer::TypeKind>)>,
 }
 
-#[derive(Clone)]
-struct CurrentReceiver {
-    rust_name: String,
-    go_type: typeinfer::GoType,
-}
-
-struct CurrentReceiverGuard {
-    previous: Option<CurrentReceiver>,
-}
-
 impl MainPackageVarModeGuard {
     fn set(current: bool) -> Self {
         let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
@@ -318,27 +309,6 @@ impl TypeParamKindsGuard {
         Self {
             previous: seed_type_param_kinds(type_args),
         }
-    }
-}
-
-impl CurrentReceiverGuard {
-    fn set(current: CurrentReceiver) -> Self {
-        let previous = CURRENT_RECEIVER.with(|receiver| receiver.borrow_mut().replace(current));
-        Self { previous }
-    }
-
-    fn clear() -> Self {
-        let previous =
-            CURRENT_RECEIVER.with(|receiver| std::mem::take(&mut *receiver.borrow_mut()));
-        Self { previous }
-    }
-}
-
-impl Drop for CurrentReceiverGuard {
-    fn drop(&mut self) {
-        CURRENT_RECEIVER.with(|receiver| {
-            *receiver.borrow_mut() = self.previous.clone();
-        });
     }
 }
 
@@ -10190,11 +10160,7 @@ fn expr_is_current_receiver(expr: &ast::Expr, go_type: &typeinfer::GoType) -> bo
         return false;
     };
     let ident_name = rust_safe_ident_name(ident.name);
-    CURRENT_RECEIVER.with(|receiver| {
-        receiver.borrow().as_ref().is_some_and(|receiver| {
-            receiver.rust_name == ident_name && receiver.go_type == *go_type
-        })
-    })
+    current_receiver::is_current_receiver(&ident_name, go_type)
 }
 
 fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
@@ -16202,17 +16168,7 @@ fn compile_runtime_interface_nil_check(other_expr: syn::Expr, is_eq: bool) -> sy
 }
 
 fn current_pointer_receiver_type_name() -> Option<String> {
-    CURRENT_RECEIVER.with(|receiver| {
-        let receiver = receiver.borrow();
-        let receiver = receiver.as_ref()?;
-        match resolved_go_type(&receiver.go_type) {
-            typeinfer::GoType::Pointer(inner) => match *inner {
-                typeinfer::GoType::Named(name) => Some(name),
-                _ => None,
-            },
-            _ => None,
-        }
-    })
+    current_receiver::pointer_receiver_type_name()
 }
 
 fn expr_is_current_receiver_name(expr: &ast::Expr) -> bool {
@@ -16220,12 +16176,7 @@ fn expr_is_current_receiver_name(expr: &ast::Expr) -> bool {
         return false;
     };
     let ident_name = rust_safe_ident_name(ident.name);
-    CURRENT_RECEIVER.with(|receiver| {
-        receiver
-            .borrow()
-            .as_ref()
-            .is_some_and(|receiver| receiver.rust_name == ident_name)
-    })
+    current_receiver::is_current_receiver_rust_name(&ident_name)
 }
 
 fn expr_is_current_receiver_self_pointer_field(
