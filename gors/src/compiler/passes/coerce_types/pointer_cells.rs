@@ -1,5 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
+use super::super::super::syn_inspect::{pat_ident_name, pat_ident_names};
+
 pub(super) type StaticNames = std::collections::HashSet<String>;
 
 pub(super) fn pass_after_package_merge(file: &mut syn::File) {
@@ -85,7 +87,7 @@ fn pointer_cell_arg_scope(sig: &syn::Signature) -> PointerCellArgScope {
         let syn::FnArg::Typed(pat_type) = input else {
             continue;
         };
-        let Some(name) = super::call_args::pat_ident_name(&pat_type.pat) else {
+        let Some(name) = pat_ident_name(&pat_type.pat) else {
             continue;
         };
         if type_is_pointer_cell(&pat_type.ty) {
@@ -145,17 +147,6 @@ fn pat_value_ident_names(
             .flat_map(pat_ident_names)
             .collect(),
         _ => pat_ident_names(pat).into_iter().collect(),
-    }
-}
-
-fn pat_ident_names(pat: &syn::Pat) -> Vec<String> {
-    match pat {
-        syn::Pat::Ident(ident) => vec![ident.ident.to_string()],
-        syn::Pat::Reference(reference) => pat_ident_names(&reference.pat),
-        syn::Pat::Tuple(tuple) => tuple.elems.iter().flat_map(pat_ident_names).collect(),
-        syn::Pat::TupleStruct(tuple) => tuple.elems.iter().flat_map(pat_ident_names).collect(),
-        syn::Pat::Type(pat_type) => pat_ident_names(&pat_type.pat),
-        _ => Vec::new(),
     }
 }
 

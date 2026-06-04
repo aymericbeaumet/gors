@@ -8,6 +8,25 @@ pub(super) fn path_starts_with(path: &syn::Path, expected: &[&str]) -> bool {
         .all(|(segment, expected)| segment.ident == *expected)
 }
 
+pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
+    match pat {
+        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+        syn::Pat::Type(pat_type) => pat_ident_name(&pat_type.pat),
+        _ => None,
+    }
+}
+
+pub(super) fn pat_ident_names(pat: &syn::Pat) -> Vec<String> {
+    match pat {
+        syn::Pat::Ident(ident) => vec![ident.ident.to_string()],
+        syn::Pat::Reference(reference) => pat_ident_names(&reference.pat),
+        syn::Pat::Tuple(tuple) => tuple.elems.iter().flat_map(pat_ident_names).collect(),
+        syn::Pat::TupleStruct(tuple) => tuple.elems.iter().flat_map(pat_ident_names).collect(),
+        syn::Pat::Type(pat_type) => pat_ident_names(&pat_type.pat),
+        _ => Vec::new(),
+    }
+}
+
 pub(super) fn named_self_type(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(path) => named_self_type_from_path(&path.path),
@@ -192,4 +211,28 @@ pub(super) fn trait_method_fns(
         }
     }
     traits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn pat_ident_name_reads_ident_and_typed_patterns() {
+        let ident: syn::Pat = parse_quote! { value };
+        assert_eq!(pat_ident_name(&ident).as_deref(), Some("value"));
+
+        let typed: syn::Pat = syn::Pat::Type(parse_quote! { value: String });
+        assert_eq!(pat_ident_name(&typed).as_deref(), Some("value"));
+
+        let tuple: syn::Pat = parse_quote! { (left, right) };
+        assert_eq!(pat_ident_name(&tuple), None);
+    }
+
+    #[test]
+    fn pat_ident_names_reads_nested_bindings() {
+        let pat: syn::Pat = parse_quote! { (first, &second, Some(third)) };
+        assert_eq!(pat_ident_names(&pat), ["first", "second", "third"]);
+    }
 }

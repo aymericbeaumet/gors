@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::{
     ReceiverFieldTypeMap, ReceiverTypeContext, ReceiverTypeMap, ReceiverTypeRef,
     method_receiver_type_from_expr, receiver_type_from_init_expr, receiver_type_from_type,
-    rust_pat_ident_name, syn_inspect::named_self_type,
+    syn_inspect::{named_self_type, pat_ident_name},
 };
 
 pub(super) struct Tracker<'a> {
@@ -96,7 +96,7 @@ fn record_fn_arg_receiver_type(
     let syn::FnArg::Typed(pat_type) = arg else {
         return;
     };
-    let Some(name) = rust_pat_ident_name(&pat_type.pat) else {
+    let Some(name) = pat_ident_name(&pat_type.pat) else {
         return;
     };
     let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names) else {
@@ -109,7 +109,7 @@ fn local_receiver_type_binding(
     local: &syn::Local,
     context: &ReceiverTypeContext<'_>,
 ) -> Option<(String, ReceiverTypeRef)> {
-    let name = rust_pat_ident_name(&local.pat)?;
+    let name = pat_ident_name(&local.pat)?;
     if let syn::Pat::Type(pat_type) = &local.pat
         && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, context.module_names)
     {

@@ -1,3 +1,5 @@
+use super::super::super::syn_inspect::pat_ident_name;
+
 pub(super) type MutableRefCallArgs =
     std::collections::HashMap<String, std::collections::HashSet<usize>>;
 
@@ -136,13 +138,6 @@ fn mutable_ref_arg_indices(sig: &syn::Signature) -> std::collections::HashSet<us
                 .then_some(index)
         })
         .collect()
-}
-
-pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
-    let syn::Pat::Ident(ident) = pat else {
-        return None;
-    };
-    Some(ident.ident.to_string())
 }
 
 fn type_is_generic_param(

@@ -53,7 +53,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    item_macro_name, item_name, macro_token_item_names, named_self_type,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
     self_type_reachability_names, type_mentions_name,
 };
 
@@ -5419,14 +5419,6 @@ fn method_receiver_type_from_expr(
     }
 }
 
-fn rust_pat_ident_name(pat: &syn::Pat) -> Option<String> {
-    match pat {
-        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
-        syn::Pat::Type(pat_type) => rust_pat_ident_name(&pat_type.pat),
-        _ => None,
-    }
-}
-
 fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
     let module_names = module_name_set(modules);
     let item_names = module_item_name_set(modules);
@@ -6001,7 +5993,7 @@ fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
     let syn::Stmt::Local(local) = local_stmt else {
         return None;
     };
-    let ident = rust_pat_ident_name(&local.pat)?;
+    let ident = pat_ident_name(&local.pat)?;
     let init = local.init.as_ref()?;
     let source = clone_call_receiver_expr(&init.expr)?;
     let syn::Stmt::Expr(result, None) = result_stmt else {
@@ -9437,14 +9429,6 @@ fn collect_refs_from_item(
             syn::Expr::Unary(unary) => {
                 receiver_tuple_types_from_init_expr(&unary.expr, top_level_tuple_return_types)
             }
-            _ => None,
-        }
-    }
-
-    fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
-        match pat {
-            syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
-            syn::Pat::Type(pat_type) => pat_ident_name(&pat_type.pat),
             _ => None,
         }
     }
