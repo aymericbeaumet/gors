@@ -19,6 +19,7 @@ mod builtin_roots;
 mod call_arg_rewrites;
 mod const_context;
 mod current_receiver;
+mod defer_context;
 mod display_impls;
 mod embedded_interfaces;
 mod generated_attrs;
@@ -69,6 +70,7 @@ use const_context::{
     local_const_go_type_for_expr, set_local_const_value, set_package_const_integer_value,
 };
 use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
+use defer_context::PanicReturnsThroughDeferGuard;
 use go_strings::{
     byte_slice_conversion_bytes_vec_expr, byte_vec_expr, const_eval_string_bytes,
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
@@ -135,7 +137,6 @@ thread_local! {
     static MUTABLE_SLICE_VIEW_RETURN: RefCell<Option<MutableSliceViewReturn>> = const { RefCell::new(None) };
     static BORROWED_SLICE_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static SLICE_ALIAS_TARGETS: RefCell<BTreeMap<String, SliceAliasTarget>> = const { RefCell::new(BTreeMap::new()) };
-    static PANIC_RETURNS_THROUGH_DEFER: RefCell<bool> = const { RefCell::new(false) };
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
     static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -255,10 +256,6 @@ struct SliceAliasTarget {
 
 struct SliceAliasTargetsGuard {
     previous: BTreeMap<String, SliceAliasTarget>,
-}
-
-struct PanicReturnsThroughDeferGuard {
-    previous: bool,
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -402,25 +399,6 @@ impl Drop for SliceAliasTargetsGuard {
     fn drop(&mut self) {
         SLICE_ALIAS_TARGETS.with(|aliases| {
             *aliases.borrow_mut() = self.previous.clone();
-        });
-    }
-}
-
-impl PanicReturnsThroughDeferGuard {
-    fn set(current: bool) -> Self {
-        let previous = PANIC_RETURNS_THROUGH_DEFER.with(|mode| {
-            let previous = *mode.borrow();
-            *mode.borrow_mut() = current;
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for PanicReturnsThroughDeferGuard {
-    fn drop(&mut self) {
-        PANIC_RETURNS_THROUGH_DEFER.with(|mode| {
-            *mode.borrow_mut() = self.previous;
         });
     }
 }
@@ -11036,7 +11014,7 @@ fn compile_panic_builtin(raw_args: Vec<ast::Expr>) -> syn::Expr {
         return syn::parse_quote! { crate::builtin::panic_value(()) };
     };
     let arg = compile_variadic_any_arg(arg, Some(&typeinfer::GoType::Any));
-    if PANIC_RETURNS_THROUGH_DEFER.with(|mode| *mode.borrow()) {
+    if defer_context::panic_returns_through_defer() {
         return syn::parse_quote! {{
             crate::builtin::set_recover_payload(#arg);
             return;
