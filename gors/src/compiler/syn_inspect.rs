@@ -110,6 +110,20 @@ pub(super) fn is_path_ident(expr: &syn::Expr, name: &str) -> bool {
             && path.path.segments.first().is_some_and(|seg| seg.ident == name))
 }
 
+pub(super) fn expr_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
+    let syn::Expr::Path(path) = expr else {
+        return false;
+    };
+    path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == 1
+        && path
+            .path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == *ident)
+}
+
 pub(super) fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
     loop {
         match expr {
@@ -938,6 +952,8 @@ mod tests {
         let self_expr: syn::Expr = parse_quote! { self };
         let field_expr: syn::Expr = parse_quote! { self.value };
         let qualified_expr: syn::Expr = parse_quote! { crate::value };
+        let other_expr: syn::Expr = parse_quote! { other };
+        let value_ident = syn::Ident::new("value", proc_macro2::Span::call_site());
         let vec_ty: syn::Type = parse_quote! { Vec<u8> };
 
         assert_eq!(expr_path_ident(&ident_expr).as_deref(), Some("value"));
@@ -945,6 +961,10 @@ mod tests {
         assert_eq!(path_ident_name(&deref_expr).as_deref(), Some("value"));
         assert!(is_self_expr(&self_expr));
         assert!(!is_self_expr(&field_expr));
+        assert!(expr_is_ident(&ident_expr, &value_ident));
+        assert!(!expr_is_ident(&qualified_expr, &value_ident));
+        assert!(!expr_is_ident(&other_expr, &value_ident));
+        assert!(!expr_is_ident(&field_expr, &value_ident));
         assert!(!is_path_ident(&qualified_expr, "value"));
         assert_eq!(type_path_ident_name(&vec_ty).as_deref(), Some("Vec"));
     }

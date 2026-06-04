@@ -62,7 +62,7 @@ use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr, dedupe_syn_types,
-    direct_clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
+    direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
     impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
     is_box_type_with_any_bound, is_direct_self_field_expr, is_path_call_expr, is_self_expr,
     is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
@@ -3249,20 +3249,6 @@ fn named_return_assignment_stmt(ident: &syn::Ident, value: syn::Expr) -> Option<
     } else {
         syn::parse_quote! { #ident = #value; }
     })
-}
-
-fn expr_is_ident(expr: &syn::Expr, ident: &syn::Ident) -> bool {
-    let syn::Expr::Path(path) = expr else {
-        return false;
-    };
-    path.qself.is_none()
-        && path.path.leading_colon.is_none()
-        && path.path.segments.len() == 1
-        && path
-            .path
-            .segments
-            .first()
-            .is_some_and(|segment| segment.ident == *ident)
 }
 
 fn named_return_expr(idents: &[syn::Ident], clone_unshared: bool) -> syn::Expr {
