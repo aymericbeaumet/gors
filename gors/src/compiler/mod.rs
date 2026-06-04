@@ -19708,14 +19708,6 @@ fn goto_state_hoist_stmts(bindings: &[GotoStateHoistBinding]) -> Vec<syn::Stmt> 
         .collect()
 }
 
-fn local_pat_ident(pat: &syn::Pat) -> Option<syn::Ident> {
-    match pat {
-        syn::Pat::Ident(ident) => Some(ident.ident.clone()),
-        syn::Pat::Type(pat_type) => local_pat_ident(&pat_type.pat),
-        _ => None,
-    }
-}
-
 fn rewrite_goto_state_hoisted_locals(
     stmts: &mut Vec<syn::Stmt>,
     hoisted_names: &std::collections::BTreeSet<String>,
@@ -19726,14 +19718,15 @@ fn rewrite_goto_state_hoisted_locals(
             rewritten.push(stmt);
             continue;
         };
-        let Some(ident) = local_pat_ident(&local.pat) else {
+        let Some(name) = pat_ident_name(&local.pat) else {
             rewritten.push(syn::Stmt::Local(local));
             continue;
         };
-        if !hoisted_names.contains(&ident.to_string()) {
+        if !hoisted_names.contains(&name) {
             rewritten.push(syn::Stmt::Local(local));
             continue;
         }
+        let ident = syn::Ident::new(&name, Span::mixed_site());
         let mut local = local;
         let Some(init) = local.init.take() else {
             continue;
