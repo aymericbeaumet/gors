@@ -1,4 +1,4 @@
-use super::super::super::syn_inspect::pat_ident_name;
+use super::super::super::syn_inspect::{is_zero_arg_method_call, pat_ident_name};
 
 pub(super) type MutableRefCallArgs =
     std::collections::HashMap<String, std::collections::HashSet<usize>>;
@@ -202,10 +202,7 @@ fn remove_owned_string_reference(expr: &mut syn::Expr) {
 }
 
 fn is_owned_to_string_expr(expr: &syn::Expr) -> bool {
-    matches!(
-        super::syntax::strip_paren_or_group(expr),
-        syn::Expr::MethodCall(method) if method.method == "to_string" && method.args.is_empty()
-    )
+    is_zero_arg_method_call(super::syntax::strip_paren_or_group(expr), "to_string")
 }
 
 fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections::HashSet<String>) {

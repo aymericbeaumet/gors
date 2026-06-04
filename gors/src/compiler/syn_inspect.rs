@@ -154,14 +154,25 @@ pub(super) fn strip_paren_or_group(mut expr: &syn::Expr) -> &syn::Expr {
     }
 }
 
-pub(super) fn direct_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+pub(super) fn zero_arg_method_call_receiver_expr<'a>(
+    expr: &'a syn::Expr,
+    method_name: &str,
+) -> Option<&'a syn::Expr> {
     let syn::Expr::MethodCall(method) = expr else {
         return None;
     };
-    if method.method != "clone" || !method.args.is_empty() {
+    if method.method != method_name || !method.args.is_empty() {
         return None;
     }
-    Some((*method.receiver).clone())
+    Some(&method.receiver)
+}
+
+pub(super) fn is_zero_arg_method_call(expr: &syn::Expr, method_name: &str) -> bool {
+    zero_arg_method_call_receiver_expr(expr, method_name).is_some()
+}
+
+pub(super) fn direct_clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    zero_arg_method_call_receiver_expr(expr, "clone").cloned()
 }
 
 pub(super) fn clone_call_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
@@ -1116,6 +1127,25 @@ mod tests {
         assert!(is_clone_call_expr(&parened_clone));
         assert!(stripped_clone_call_receiver_expr(&clone_with_arg).is_none());
         assert!(!is_clone_call_expr(&clone_with_arg));
+    }
+
+    #[test]
+    fn zero_arg_method_call_helpers_read_receiver_only_for_exact_zero_arg_calls() {
+        let plain: syn::Expr = parse_quote! { value.clone() };
+        let with_arg: syn::Expr = parse_quote! { value.clone(extra) };
+        let other: syn::Expr = parse_quote! { value.to_vec() };
+        let path: syn::Expr = parse_quote! { clone(value) };
+
+        assert_eq!(
+            zero_arg_method_call_receiver_expr(&plain, "clone")
+                .map(|expr| expr.to_token_stream().to_string())
+                .as_deref(),
+            Some("value")
+        );
+        assert!(is_zero_arg_method_call(&plain, "clone"));
+        assert!(zero_arg_method_call_receiver_expr(&with_arg, "clone").is_none());
+        assert!(!is_zero_arg_method_call(&other, "clone"));
+        assert!(!is_zero_arg_method_call(&path, "clone"));
     }
 
     #[test]

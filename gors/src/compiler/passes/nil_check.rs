@@ -80,7 +80,7 @@ impl VisitMut for NilCheck {
 }
 
 fn is_unsafe_pointer_call(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::MethodCall(mc) if mc.method == "UnsafePointer")
+    super::super::syn_inspect::is_zero_arg_method_call(expr, "UnsafePointer")
 }
 
 fn is_none_expr(expr: &syn::Expr) -> bool {

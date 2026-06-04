@@ -70,7 +70,7 @@ use syn_inspect::{
     is_slice_range_index_expr, item_macro_name, item_name, macro_token_item_names, named_self_type,
     pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
     slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
-    vec_type_inner,
+    vec_type_inner, zero_arg_method_call_receiver_expr,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -5831,13 +5831,8 @@ fn expr_can_be_mutably_borrowed(expr: &syn::Expr) -> bool {
 }
 
 fn to_vec_receiver_expr(expr: &syn::Expr) -> Option<syn::Expr> {
-    let syn::Expr::MethodCall(method) = expr else {
-        return None;
-    };
-    if method.method != "to_vec" || !method.args.is_empty() {
-        return None;
-    }
-    Some(strip_cloned_lvalue_slice_source((*method.receiver).clone()))
+    let receiver = zero_arg_method_call_receiver_expr(expr, "to_vec")?;
+    Some(strip_cloned_lvalue_slice_source(receiver.clone()))
 }
 
 fn strip_cloned_lvalue_slice_source(expr: syn::Expr) -> syn::Expr {
@@ -6692,6 +6687,10 @@ fn vec_newtype_receiver_call(
     current_module: &str,
     vec_newtypes: &std::collections::HashSet<String>,
 ) -> Option<VecNewtypeReceiverCall> {
+    if let Some(receiver) = zero_arg_method_call_receiver_expr(expr, "clone") {
+        return vec_newtype_receiver_call(receiver, current_module, vec_newtypes);
+    }
+
     match expr {
         syn::Expr::Call(call) => {
             let type_key = from_call_vec_newtype_key(&call.func, current_module)?;
@@ -6706,9 +6705,6 @@ fn vec_newtype_receiver_call(
         }
         syn::Expr::Group(group) => {
             vec_newtype_receiver_call(&group.expr, current_module, vec_newtypes)
-        }
-        syn::Expr::MethodCall(method) if method.method == "clone" && method.args.is_empty() => {
-            vec_newtype_receiver_call(&method.receiver, current_module, vec_newtypes)
         }
         syn::Expr::Paren(paren) => {
             vec_newtype_receiver_call(&paren.expr, current_module, vec_newtypes)

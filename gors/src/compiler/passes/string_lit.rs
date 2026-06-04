@@ -1,3 +1,4 @@
+use super::super::syn_inspect::is_zero_arg_method_call;
 use syn::visit_mut::{self, VisitMut};
 
 pub fn pass(file: &mut syn::File) {
@@ -94,7 +95,7 @@ fn is_string_lit(expr: &syn::Expr) -> bool {
 fn is_string_concat_expr(expr: &syn::Expr) -> bool {
     match expr {
         syn::Expr::Lit(_) => is_string_lit(expr),
-        syn::Expr::MethodCall(mc) => mc.method == "to_string",
+        syn::Expr::MethodCall(_) => is_zero_arg_method_call(expr, "to_string"),
         syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::Add(_)) => {
             is_string_concat_expr(&binary.left)
         }
