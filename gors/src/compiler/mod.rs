@@ -23,6 +23,7 @@ mod current_receiver;
 mod defer_context;
 mod display_impls;
 mod embedded_interfaces;
+mod external_interface_implementors;
 mod generated_attrs;
 mod go_strings;
 mod goto_context;
@@ -79,6 +80,7 @@ use const_context::{
 };
 use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
 use defer_context::PanicReturnsThroughDeferGuard;
+use external_interface_implementors::ExternalInterfaceImplementorsGuard;
 use go_strings::{
     byte_slice_conversion_bytes_vec_expr, byte_vec_expr, const_eval_string_bytes,
     interpret_go_string_escapes, is_active_selector_string_const_fn, is_active_string_const_fn,
@@ -138,7 +140,6 @@ thread_local! {
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static ACTIVE_REACHABILITY_ROOTS: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
-    static EXTERNAL_INTERFACE_IMPLEMENTORS: RefCell<BTreeMap<String, Vec<syn::Type>>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 #[derive(Clone)]
@@ -212,10 +213,6 @@ fn finish_reachability_fingerprint(hasher: Sha256) -> String {
         .collect()
 }
 
-struct ExternalInterfaceImplementorsGuard {
-    previous: BTreeMap<String, Vec<syn::Type>>,
-}
-
 struct LocalTypeEnvScopeGuard {
     previous: typeinfer::TypeEnv,
 }
@@ -223,22 +220,6 @@ struct LocalTypeEnvScopeGuard {
 fn local_binding_ident_for_ast(ident: &ast::Ident<'_>) -> syn::Ident {
     record_mapping(&ident.name_pos, Some(ident.name));
     local_binding_ident(ident.name)
-}
-
-impl ExternalInterfaceImplementorsGuard {
-    fn set(current: BTreeMap<String, Vec<syn::Type>>) -> Self {
-        let previous = EXTERNAL_INTERFACE_IMPLEMENTORS
-            .with(|implementors| std::mem::replace(&mut *implementors.borrow_mut(), current));
-        Self { previous }
-    }
-}
-
-impl Drop for ExternalInterfaceImplementorsGuard {
-    fn drop(&mut self) {
-        EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
-            *implementors.borrow_mut() = self.previous.clone();
-        });
-    }
 }
 
 impl LocalTypeEnvScopeGuard {
@@ -432,7 +413,7 @@ pub(crate) fn with_active_reachability_roots<T>(
 }
 
 pub(crate) fn has_external_interface_implementors() -> bool {
-    EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| !implementors.borrow().is_empty())
+    external_interface_implementors::has_any()
 }
 
 fn rust_safe_ident_name(name: &str) -> String {
@@ -20769,13 +20750,7 @@ fn current_package_qualified_interface_name(interface_name: &str) -> String {
 
 fn external_interface_assertion_implementors(interface_name: &str) -> Vec<syn::Type> {
     let qualified_name = current_package_qualified_interface_name(interface_name);
-    EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
-        implementors
-            .borrow()
-            .get(&qualified_name)
-            .cloned()
-            .unwrap_or_default()
-    })
+    external_interface_implementors::implementors_for_interface(&qualified_name)
 }
 
 fn go_type_contains_borrowed_interface_field(
