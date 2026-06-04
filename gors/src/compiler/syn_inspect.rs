@@ -619,10 +619,6 @@ pub(super) fn is_box_leak_expr(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Call(call) if is_path_call_expr(&call.func, &["Box", "leak"]))
 }
 
-pub(super) fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
-    single_call_arg_for_path(expr, &["Box", "new"]).cloned()
-}
-
 pub(super) fn is_box_new_unit_expr(expr: &syn::Expr) -> bool {
     let expr = strip_paren_or_group(expr);
     let Some(arg) = single_call_arg_for_suffix_path(expr, &["Box", "new"]) else {
@@ -1380,14 +1376,7 @@ mod tests {
         let arc_other: syn::Expr = parse_quote! { std::sync::Arc::new(value) };
 
         assert!(is_box_new_call(&boxed));
-        assert_eq!(
-            box_new_call_arg(&boxed)
-                .map(|expr| expr.to_token_stream().to_string())
-                .as_deref(),
-            Some("value")
-        );
         assert!(!is_box_new_call(&qualified_boxed));
-        assert!(box_new_call_arg(&qualified_boxed).is_none());
         assert!(is_box_new_unit_expr(&boxed_unit));
         assert!(!is_box_new_unit_expr(&boxed));
         assert!(is_box_leak_expr(&leaked));

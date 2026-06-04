@@ -93,14 +93,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, box_new_call_arg,
-    call_expr_path_last_ident, dedupe_syn_types, direct_clone_call_receiver_expr, expr_path_ident,
-    fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr, is_box_leak_expr, is_box_new_call,
-    is_box_type_with_any_bound, is_clone_call_expr, is_path_call_expr,
-    is_receiver_type_wrapper_method, is_self_or_ref_self_expr, item_macro_name, item_name,
-    macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
-    self_type_reachability_names, syn_expr_matches_target, type_param_bound_matches,
-    vec_type_inner,
+    arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, call_expr_path_last_ident,
+    dedupe_syn_types, expr_path_ident, fn_arg_ident, impl_trait_targets_match, is_box_dyn_any_expr,
+    is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
+    is_path_call_expr, is_receiver_type_wrapper_method, is_self_or_ref_self_expr, item_macro_name,
+    item_name, macro_token_item_names, named_self_type, pat_ident_name,
+    receiver_expr_needs_scoped_temp, self_type_reachability_names, syn_expr_matches_target,
+    type_param_bound_matches, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -108,8 +107,6 @@ thread_local! {
     static TRACKER: RefCell<SourceMapTracker> = RefCell::new(SourceMapTracker::new());
     static INTERFACE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
-    static BORROW_POINTER_ARG_INDICES: RefCell<BTreeMap<String, std::collections::HashSet<usize>>> = const { RefCell::new(BTreeMap::new()) };
-    static BORROW_POINTER_ARG_INDICES_PRESEEDED: RefCell<bool> = const { RefCell::new(false) };
     static BYTE_SEQ_TYPE_PARAMS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
@@ -3331,7 +3328,6 @@ fn reset_lowering_thread_state() {
 
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
-    clear_borrow_pointer_arg_indices();
     // Pre-scan the AST to build a type environment
     let mut type_env = typeinfer::TypeEnv::new();
     type_env.scan_file(&file);
@@ -3342,7 +3338,6 @@ pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
     set_import_package_names(import_package_names);
     set_dot_import_renames(BTreeMap::new());
     set_type_env(type_env);
-    set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
@@ -3361,12 +3356,10 @@ pub fn compile_with_type_env_and_import_renames(
     import_renames: BTreeMap<String, String>,
 ) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
-    clear_borrow_pointer_arg_indices();
     set_import_renames(import_renames);
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
-    set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
@@ -4175,7 +4168,6 @@ impl CompileSession {
 
 struct PackageGraph {
     stdlib_imports: Vec<String>,
-    stdlib_type_env_paths: Vec<String>,
     local_type_envs: PackageFactMap,
     stdlib_type_envs: PackageFactMap,
     import_package_names: BTreeMap<String, String>,
@@ -4275,7 +4267,6 @@ impl PackageGraph {
 
         Self {
             stdlib_imports,
-            stdlib_type_env_paths,
             local_type_envs,
             stdlib_type_envs,
             import_package_names,
@@ -4284,16 +4275,6 @@ impl PackageGraph {
             stdlib_module_names,
             pkg_names,
         }
-    }
-
-    fn seed_borrow_pointer_arg_indices(&self, program: &crate::parser::ParsedProgram) {
-        let stdlib_borrow_pointer_files =
-            parse_stdlib_borrow_pointer_files(&self.stdlib_type_env_paths);
-        let files = std::iter::once(&program.main_package.ast)
-            .chain(program.imports.iter().map(|pkg| &pkg.ast))
-            .chain(stdlib_borrow_pointer_files.iter())
-            .collect::<Vec<_>>();
-        set_borrow_pointer_arg_indices_for_files(&files);
     }
 }
 
@@ -4521,7 +4502,6 @@ fn compile_program_impl(
 ) -> Result<CompiledProgram, CompilerError> {
     let mut session = CompileSession::new(source_map_config);
     let graph = PackageGraph::from_program(&program);
-    graph.seed_borrow_pointer_arg_indices(&program);
     let mut modules = BTreeMap::new();
 
     let builtins_file: syn::File = syn::parse_str(crate::printer::GORS_BUILTINS).map_err(|e| {
@@ -4681,25 +4661,6 @@ fn compile_program_impl(
         modules,
         has_main: has_main_fn,
     })
-}
-
-fn parse_stdlib_borrow_pointer_files(import_paths: &[String]) -> Vec<ast::File<'static>> {
-    let mut parsed = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for import_path in import_paths {
-        if !seen.insert(import_path) {
-            continue;
-        }
-        let Some(files) = crate::resolve::package_files(import_path) else {
-            continue;
-        };
-        for (filename, content) in files.iter() {
-            if let Ok(ast) = crate::parser::parse_file(filename, content) {
-                parsed.push(ast);
-            }
-        }
-    }
-    parsed
 }
 
 fn inject_post_prune_stdlib_helpers(
@@ -7068,7 +7029,6 @@ pub fn compile_with_source_map(
     set_import_package_names(import_package_names);
     set_dot_import_renames(BTreeMap::new());
     set_type_env(type_env);
-    set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
     let mut out = TryInto::<syn::File>::try_into(file)?;
     passes::pass(&mut out);
     Ok(out)
@@ -9815,16 +9775,14 @@ fn compile_method(
         }
     });
 
-    let mut borrow_pointer_params =
-        pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
     if let Some(body) = func_decl.body.as_ref() {
         validate_function_semantics(Some(recv), &func_decl.type_, body)?;
     }
+    let mut borrowed_pointer_names = std::collections::HashSet::new();
     if is_pointer && !recv_name.is_empty() {
-        borrow_pointer_params.insert(recv_name.clone());
+        borrowed_pointer_names.insert(recv_name.clone());
     }
-    let borrowed_pointer_param_names =
-        BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
+    let borrowed_pointer_param_names = BorrowedPointerParamNamesGuard::set(borrowed_pointer_names);
     let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
         borrowed_slice_alias_param_names(&func_decl.type_.params),
     );
@@ -9841,7 +9799,6 @@ fn compile_method(
         for arg in compile_field_to_fn_args_with_type_params(
             param,
             &type_param_info,
-            &borrow_pointer_params,
             &borrowed_generic_slice_params,
         )? {
             inputs.push(arg);
@@ -18100,7 +18057,6 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
     fn from(call_expr: ast::CallExpr) -> Self {
         record_mapping(&call_expr.lparen, None);
         let param_types = call_signature_param_types(&call_expr);
-        let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
 
         let func = compile_call_function_expr(*call_expr.fun);
 
@@ -18109,24 +18065,7 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
             for (idx, arg) in cargs.into_iter().enumerate() {
                 let actual =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                let borrow_pointer_by_shape =
-                    should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-                let should_borrow_pointer =
-                    borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
-                if should_borrow_pointer && is_nil_expr(&arg) {
-                    args.push(nil_borrowed_pointer_arg_expr());
-                    continue;
-                }
-                if should_borrow_pointer {
-                    if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
-                        args.push(arg);
-                        continue;
-                    }
-                }
-                let mut arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
-                if should_borrow_pointer {
-                    borrow_pointer_arg_expr(&mut arg, Some(&actual));
-                }
+                let arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
                 args.push(arg)
             }
         }
@@ -18189,7 +18128,6 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     return reflect_slice_any::compile_call(call_expr);
                 }
                 let param_types = call_signature_param_types(&call_expr);
-                let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
                 // Detect method call vs package function call
                 let is_method_call = matches!(&*call_expr.fun, ast::Expr::SelectorExpr(sel) if {
                     match &*sel.x {
@@ -18213,28 +18151,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             for (idx, arg) in cargs.into_iter().enumerate() {
                                 let actual = TYPE_ENV
                                     .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                                let borrow_pointer_by_shape =
-                                    should_borrow_pointer_arg_by_shape(&arg, param_types.get(idx));
-                                let should_borrow_pointer = borrow_pointer_indices.contains(&idx)
-                                    || borrow_pointer_by_shape;
-                                if should_borrow_pointer && is_nil_expr(&arg) {
-                                    args.push(nil_borrowed_pointer_arg_expr());
-                                    continue;
-                                }
-                                if should_borrow_pointer {
-                                    if let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
-                                        args.push(arg);
-                                        continue;
-                                    }
-                                }
-                                let mut arg = compile_call_arg_with_expected(
+                                let arg = compile_call_arg_with_expected(
                                     arg,
                                     param_types.get(idx),
                                     &actual,
                                 );
-                                if should_borrow_pointer {
-                                    borrow_pointer_arg_expr(&mut arg, Some(&actual));
-                                }
                                 args.push(arg);
                             }
                         }
@@ -18723,7 +18644,6 @@ impl TryFrom<ast::File<'_>> for syn::File {
         BORROWED_INTERFACE_STRUCTS.with(|structs| structs.borrow_mut().clear());
         NON_CLONE_STRUCTS.with(|structs| structs.borrow_mut().clear());
 
-        set_borrow_pointer_arg_indices_for_decls_if_unseeded(&file.decls);
         preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
 
@@ -19298,256 +19218,10 @@ impl TryFrom<ast::File<'_>> for syn::File {
     }
 }
 
-fn pointer_params_to_borrow(
-    params: &ast::FieldList,
-    body: Option<&ast::BlockStmt>,
-) -> std::collections::HashSet<String> {
-    let _ = (params, body);
-    std::collections::HashSet::new()
-}
-
-fn borrow_pointer_param_indices(
-    params: &ast::FieldList,
-    body: Option<&ast::BlockStmt>,
-) -> std::collections::HashSet<usize> {
-    let borrow_names = pointer_params_to_borrow(params, body);
-    let mut indices = std::collections::HashSet::new();
-    let mut index = 0;
-    for field in &params.list {
-        let is_pointer = matches!(field.type_, Some(ast::Expr::StarExpr(_)));
-        let count = field.names.as_ref().map_or(1, Vec::len);
-        if let Some(names) = &field.names {
-            for name in names {
-                if is_pointer && borrow_names.contains(&rust_safe_ident_name(name.name)) {
-                    indices.insert(index);
-                }
-                index += 1;
-            }
-        } else {
-            index += count;
-        }
-    }
-    indices
-}
-
-fn collect_borrow_pointer_arg_indices(
-    decls: &[ast::Decl],
-) -> BTreeMap<String, std::collections::HashSet<usize>> {
-    let mut map = BTreeMap::new();
-    for decl in decls {
-        let ast::Decl::FuncDecl(func_decl) = decl else {
-            continue;
-        };
-        let indices =
-            borrow_pointer_param_indices(&func_decl.type_.params, func_decl.body.as_ref());
-        if indices.is_empty() {
-            continue;
-        }
-        if let Some(recv) = &func_decl.recv
-            && let Some(recv_field) = recv.list.first()
-            && let Some(recv_type) = &recv_field.type_
-            && let Ok((type_name, _)) = extract_receiver_type(recv_type)
-        {
-            map.insert(format!("{type_name}.{}", func_decl.name.name), indices);
-        } else {
-            map.insert(func_decl.name.name.to_string(), indices.clone());
-        }
-    }
-    map
-}
-
-fn set_borrow_pointer_arg_indices_for_decls(decls: &[ast::Decl], preseeded: bool) {
-    let map = collect_borrow_pointer_arg_indices(decls);
-    BORROW_POINTER_ARG_INDICES.with(|indices| {
-        *indices.borrow_mut() = map;
-    });
-    BORROW_POINTER_ARG_INDICES_PRESEEDED.with(|flag| {
-        *flag.borrow_mut() = preseeded;
-    });
-}
-
-fn set_borrow_pointer_arg_indices_for_decls_if_unseeded(decls: &[ast::Decl]) {
-    let preseeded = BORROW_POINTER_ARG_INDICES_PRESEEDED.with(|flag| *flag.borrow());
-    if !preseeded {
-        set_borrow_pointer_arg_indices_for_decls(decls, false);
-    }
-}
-
-pub(crate) fn set_borrow_pointer_arg_indices_for_files(files: &[&ast::File<'_>]) {
-    let mut map = BTreeMap::new();
-    for file in files {
-        let file_map = collect_borrow_pointer_arg_indices(&file.decls);
-        for (name, indices) in &file_map {
-            map.insert(format!("{}.{}", file.name.name, name), indices.clone());
-        }
-        map.extend(file_map);
-    }
-    BORROW_POINTER_ARG_INDICES.with(|indices| {
-        *indices.borrow_mut() = map;
-    });
-    BORROW_POINTER_ARG_INDICES_PRESEEDED.with(|flag| {
-        *flag.borrow_mut() = true;
-    });
-}
-
-pub(crate) fn clear_borrow_pointer_arg_indices() {
-    BORROW_POINTER_ARG_INDICES.with(|indices| indices.borrow_mut().clear());
-    BORROW_POINTER_ARG_INDICES_PRESEEDED.with(|flag| {
-        *flag.borrow_mut() = false;
-    });
-}
-
-fn borrow_pointer_call_arg_indices(fun: &ast::Expr) -> std::collections::HashSet<usize> {
-    let names = match fun {
-        ast::Expr::Ident(ident) => vec![ident.name.to_string()],
-        ast::Expr::SelectorExpr(selector) => borrow_pointer_selector_candidate_names(selector),
-        _ => vec![],
-    };
-    BORROW_POINTER_ARG_INDICES.with(|indices| {
-        let indices = indices.borrow();
-        names
-            .iter()
-            .find_map(|name| indices.get(name).cloned())
-            .unwrap_or_else(std::collections::HashSet::new)
-    })
-}
-
-fn borrow_pointer_selector_candidate_names(selector: &ast::SelectorExpr) -> Vec<String> {
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        let method_name = selector.sel.name;
-
-        if let ast::Expr::Ident(receiver) = &*selector.x {
-            let receiver_name = receiver.name;
-            let package_key = format!("{receiver_name}.{method_name}");
-            if env.has_func(&package_key) {
-                return vec![package_key];
-            }
-            if let Some(type_name) = env
-                .get_var(receiver_name)
-                .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
-            {
-                return receiver_method_borrow_pointer_keys(&type_name, method_name);
-            }
-            return vec![package_key];
-        }
-
-        let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
-        if let Some(type_name) = receiver_method_type_name_for_call(receiver_type, &env) {
-            return receiver_method_borrow_pointer_keys(&type_name, method_name);
-        }
-
-        Vec::new()
-    })
-}
-
-fn receiver_method_borrow_pointer_keys(type_name: &str, method_name: &str) -> Vec<String> {
-    let mut names = vec![format!("{type_name}.{method_name}")];
-    if let Some(base_name) = type_name.rsplit('.').next()
-        && base_name != type_name
-    {
-        names.push(format!("{base_name}.{method_name}"));
-    }
-    names
-}
-
-fn borrow_pointer_arg_expr(expr: &mut syn::Expr, actual: Option<&typeinfer::GoType>) {
-    if matches!(expr, syn::Expr::Reference(_)) {
-        return;
-    }
-    if matches!(expr, syn::Expr::Path(path) if path.path.is_ident("self")) {
-        return;
-    }
-    if is_box_leak_expr(expr) {
-        return;
-    }
-    if let Some(inner) = box_new_call_arg(expr) {
-        *expr = syn::parse_quote! { &mut #inner };
-        return;
-    }
-    if let Some(inner) = arc_mutex_new_inner_expr(expr) {
-        *expr = syn::parse_quote! { &mut #inner };
-        return;
-    }
-    if let Some(lock_target) = pointer_cell_lock_target_expr(expr) {
-        *expr = syn::parse_quote! { &mut *(#lock_target).lock().unwrap() };
-        return;
-    }
-    let inner = expr.clone();
-    if matches!(
-        actual.map(resolved_go_type),
-        Some(typeinfer::GoType::Pointer(_))
-    ) {
-        if is_borrowed_pointer_path_expr(&inner) {
-            *expr = syn::parse_quote! { &mut *#inner };
-        } else {
-            let lock_target = direct_clone_call_receiver_expr(&inner).unwrap_or(inner);
-            *expr = syn::parse_quote! { &mut *(#lock_target).lock().unwrap() };
-        }
-    } else {
-        *expr = syn::parse_quote! { &mut #inner };
-    }
-}
-
-fn nil_borrowed_pointer_arg_expr() -> syn::Expr {
-    syn::parse_quote! {
-        &mut {
-            crate::builtin::panic_value("nil pointer dereference");
-            Default::default()
-        }
-    }
-}
-
-fn borrowed_address_of_ident_arg_expr(expr: &ast::Expr) -> Option<syn::Expr> {
-    let ast::Expr::UnaryExpr(unary) = expr else {
-        return None;
-    };
-    if unary.op != token::Token::AND {
-        return None;
-    }
-    let ast::Expr::Ident(ident) = &*unary.x else {
-        return None;
-    };
-    let source_name = ident.name;
-    let ident = value_ident(source_name);
-    if is_shared_capture_name(source_name) {
-        Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
-    } else {
-        Some(syn::parse_quote! { &mut #ident })
-    }
-}
-
-fn should_borrow_pointer_arg_by_shape(
-    expr: &ast::Expr,
-    expected: Option<&typeinfer::GoType>,
-) -> bool {
-    let _ = (expr, expected);
-    false
-}
-
-fn pointer_cell_lock_target_expr(expr: &syn::Expr) -> Option<syn::Expr> {
-    if let Some(stripped) = direct_clone_call_receiver_expr(expr) {
-        return pointer_cell_lock_target_expr(&stripped).or(Some(stripped));
-    }
-    match expr {
-        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => Some(expr.clone()),
-        _ => None,
-    }
-}
-
-fn is_borrowed_pointer_path_expr(expr: &syn::Expr) -> bool {
-    expr_path_ident(expr).is_some_and(|name| is_borrowed_pointer_param_name(&name))
-}
-
-fn type_from_param_expr(
-    expr: &ast::Expr,
-    name: &str,
-    borrow_pointer_params: &std::collections::HashSet<String>,
-) -> syn::Type {
+fn type_from_param_expr(expr: &ast::Expr) -> syn::Type {
     match expr {
         ast::Expr::StarExpr(star) => {
             let inner = type_from_expr_ref(&star.x);
-            let _ = (name, borrow_pointer_params);
             syn::parse_quote! { crate::builtin::GorsPtr<#inner> }
         }
         ast::Expr::Ellipsis(ellipsis) => {
@@ -19819,7 +19493,6 @@ fn type_expr_resolves_to_slice_alias(expr: &ast::Expr) -> bool {
 fn compile_field_to_fn_args_with_type_params(
     field: ast::Field,
     type_param_info: &TypeParamInfo,
-    borrow_pointer_params: &std::collections::HashSet<String>,
     borrow_generic_slice_params: &std::collections::HashSet<String>,
 ) -> Result<Vec<syn::FnArg>, CompilerError> {
     let type_expr = field
@@ -19850,7 +19523,7 @@ fn compile_field_to_fn_args_with_type_params(
             } else if let Some(map_type) = generic_map_param_type(&type_expr, type_param_info) {
                 map_type
             } else {
-                type_from_param_expr(&type_expr, name_str, borrow_pointer_params)
+                type_from_param_expr(&type_expr)
             };
 
         // Use &mut dyn Trait for interface parameters
@@ -20077,13 +19750,11 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             }
         });
 
-        let borrow_pointer_params =
-            pointer_params_to_borrow(&func_decl.type_.params, func_decl.body.as_ref());
         if let Some(body) = func_decl.body.as_ref() {
             validate_function_semantics(None, &func_decl.type_, body)?;
         }
         let borrowed_pointer_param_names =
-            BorrowedPointerParamNamesGuard::set(borrow_pointer_params.clone());
+            BorrowedPointerParamNamesGuard::set(std::collections::HashSet::new());
         let borrowed_generic_slice_params = borrowed_generic_slice_alias_param_names(
             &func_decl.type_.params,
             &type_param_info,
@@ -20097,7 +19768,6 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             for arg in compile_field_to_fn_args_with_type_params(
                 param,
                 &type_param_info,
-                &borrow_pointer_params,
                 &borrowed_generic_slice_params,
             )? {
                 inputs.push(arg);
@@ -23744,7 +23414,6 @@ func main() {
             field,
             &super::TypeParamInfo::default(),
             &std::collections::HashSet::new(),
-            &std::collections::HashSet::new(),
         )
         .unwrap();
         let output = quote! { #(#args),* }.to_string();
@@ -27097,22 +26766,6 @@ func main() {
             !main_rs.contains("let (mut s, mut ok) = makeState();"),
             "{main_rs}"
         );
-    }
-
-    #[test]
-    fn borrow_pointer_arg_expr_preserves_box_leak_refs() {
-        let mut expr: syn::Expr = syn::parse_quote! {
-            Box::leak(Box::new(Value::default()))
-        };
-
-        super::borrow_pointer_arg_expr(&mut expr, None);
-        let output = quote! { #expr }.to_string();
-
-        assert!(
-            output.contains("Box :: leak (Box :: new (Value :: default ()))"),
-            "{output}"
-        );
-        assert!(!output.contains("& mut Box :: leak"), "{output}");
     }
 
     #[test]

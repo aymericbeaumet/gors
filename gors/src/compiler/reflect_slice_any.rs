@@ -1,9 +1,7 @@
 use super::import_context::selector_base_is_import;
 use super::{
-    TYPE_ENV, ast, borrow_pointer_arg_expr, borrow_pointer_call_arg_indices,
-    borrowed_address_of_ident_arg_expr, call_signature_param_types, compile_call_arg_with_expected,
-    compile_call_function_expr, is_nil_expr, lvalue_expr_from_ref, nil_borrowed_pointer_arg_expr,
-    record_mapping, resolved_go_type, should_borrow_pointer_arg_by_shape, typeinfer,
+    TYPE_ENV, ast, call_signature_param_types, compile_call_arg_with_expected,
+    compile_call_function_expr, lvalue_expr_from_ref, record_mapping, resolved_go_type, typeinfer,
 };
 use proc_macro2::Span;
 use std::collections::HashMap;
@@ -48,7 +46,6 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
             args: Vec::new(),
         }
     });
-    let borrow_pointer_indices = borrow_pointer_call_arg_indices(&call_expr.fun);
     let args = call_expr.args.unwrap_or_default();
     let plan_indices: HashMap<usize, &WritebackArg> =
         plan.args.iter().map(|plan| (plan.index, plan)).collect();
@@ -65,22 +62,7 @@ pub(super) fn compile_call(call_expr: ast::CallExpr) -> syn::Expr {
         }
 
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-        let borrow_pointer_by_shape =
-            should_borrow_pointer_arg_by_shape(&arg, plan.param_types.get(idx));
-        let should_borrow_pointer =
-            borrow_pointer_indices.contains(&idx) || borrow_pointer_by_shape;
-        if should_borrow_pointer && is_nil_expr(&arg) {
-            call_args.push(nil_borrowed_pointer_arg_expr());
-            continue;
-        }
-        if should_borrow_pointer && let Some(arg) = borrowed_address_of_ident_arg_expr(&arg) {
-            call_args.push(arg);
-            continue;
-        }
-        let mut arg = compile_call_arg_with_expected(arg, plan.param_types.get(idx), &actual);
-        if should_borrow_pointer {
-            borrow_pointer_arg_expr(&mut arg, Some(&actual));
-        }
+        let arg = compile_call_arg_with_expected(arg, plan.param_types.get(idx), &actual);
         call_args.push(arg);
     }
 
