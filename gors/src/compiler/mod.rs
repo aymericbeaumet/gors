@@ -123,6 +123,7 @@ thread_local! {
     static ACTIVE_ITEM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static ACTIVE_LOCAL_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static ACTIVE_LOCAL_RENAMES: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
+    static CURRENT_RECEIVER: RefCell<Option<CurrentReceiver>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone)]
@@ -290,6 +291,16 @@ struct TypeParamKindsGuard {
     previous: Vec<(String, Option<typeinfer::TypeKind>)>,
 }
 
+#[derive(Clone)]
+struct CurrentReceiver {
+    rust_name: String,
+    go_type: typeinfer::GoType,
+}
+
+struct CurrentReceiverGuard {
+    previous: Option<CurrentReceiver>,
+}
+
 impl MainPackageVarModeGuard {
     fn set(current: bool) -> Self {
         let previous = MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| {
@@ -433,6 +444,27 @@ impl TypeParamKindsGuard {
         Self {
             previous: seed_type_param_kinds(type_args),
         }
+    }
+}
+
+impl CurrentReceiverGuard {
+    fn set(current: CurrentReceiver) -> Self {
+        let previous = CURRENT_RECEIVER.with(|receiver| receiver.borrow_mut().replace(current));
+        Self { previous }
+    }
+
+    fn clear() -> Self {
+        let previous =
+            CURRENT_RECEIVER.with(|receiver| std::mem::take(&mut *receiver.borrow_mut()));
+        Self { previous }
+    }
+}
+
+impl Drop for CurrentReceiverGuard {
+    fn drop(&mut self) {
+        CURRENT_RECEIVER.with(|receiver| {
+            *receiver.borrow_mut() = self.previous.clone();
+        });
     }
 }
 
@@ -12052,12 +12084,18 @@ fn compile_method(
             (syn::parse_quote! { &self }, true)
         };
 
+    let recv_go_type = if is_pointer {
+        typeinfer::GoType::Pointer(Box::new(typeinfer::GoType::Named(type_name.clone())))
+    } else {
+        typeinfer::GoType::Named(type_name.clone())
+    };
+    let _current_receiver = (!recv_name.is_empty()).then(|| {
+        CurrentReceiverGuard::set(CurrentReceiver {
+            rust_name: recv_name.clone(),
+            go_type: recv_go_type.clone(),
+        })
+    });
     if !recv_name.is_empty() {
-        let recv_go_type = if is_pointer {
-            typeinfer::GoType::Pointer(Box::new(typeinfer::GoType::Named(type_name.clone())))
-        } else {
-            typeinfer::GoType::Named(type_name.clone())
-        };
         TYPE_ENV.with(|env| {
             env.borrow_mut().set_var(&recv_name, recv_go_type);
         });
@@ -12322,6 +12360,18 @@ fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
     }
 }
 
+fn expr_is_current_receiver(expr: &ast::Expr, go_type: &typeinfer::GoType) -> bool {
+    let ast::Expr::Ident(ident) = expr else {
+        return false;
+    };
+    let ident_name = rust_safe_ident_name(ident.name);
+    CURRENT_RECEIVER.with(|receiver| {
+        receiver.borrow().as_ref().is_some_and(|receiver| {
+            receiver.rust_name == ident_name && receiver.go_type == *go_type
+        })
+    })
+}
+
 fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let target_fun = *call_expr.fun;
     let target_fun = match target_fun {
@@ -12343,6 +12393,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let is_unsafe_pointer_arg = expr_contains_unsafe_pointer_conversion(&raw_arg);
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let arg_go_type = typeinfer::GoType::infer_expr(&raw_arg, &env);
+    let arg_is_current_receiver = expr_is_current_receiver(&raw_arg, &arg_go_type);
     let source_is_owning_pointer_cell = is_owning_pointer_cell_expr_ref(&raw_arg);
     let fixed_array_pointer_target =
         fixed_array_pointer_conversion_target(&target_fun, &arg_go_type, &env);
@@ -12387,7 +12438,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
         && let Some(inner) = named_numeric_newtype_inner(&arg_go_type, &env)
         && let Some(inner_ty) = rust_type_from_go_type(&inner)
     {
-        if is_self_or_ref_self_expr(&arg) {
+        if arg_is_current_receiver || is_self_or_ref_self_expr(&arg) {
             return syn::parse_quote! { ((self.0) as #target_ty) };
         }
         return syn::parse_quote! { ((#inner_ty::from(#arg)) as #target_ty) };
@@ -14108,6 +14159,7 @@ fn compile_func_lit(func_lit: ast::FuncLit) -> syn::Expr {
 }
 
 fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool) -> syn::Expr {
+    let _current_receiver = CurrentReceiverGuard::clear();
     let shared_capture_clones = if move_capture {
         move_closure_shared_capture_clones(&func_lit)
     } else {

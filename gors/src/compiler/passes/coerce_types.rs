@@ -6,10 +6,8 @@ mod evaluation_order;
 mod pointer_cells;
 mod structural_helpers;
 mod syntax;
-mod tuple_newtypes;
 
 pub fn pass(file: &mut syn::File) {
-    let tuple_newtypes = tuple_newtypes::collect(file);
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = pointer_cells::collect_statics(file);
     let structural_helper_metadata = structural_helpers::Metadata::collect(file);
@@ -19,7 +17,6 @@ pub fn pass(file: &mut syn::File) {
         mutable_ref_call_args,
         pointer_cell_statics,
         structural_helper_metadata,
-        tuple_newtypes,
         ..Default::default()
     }
     .visit_file_mut(file);
@@ -41,7 +38,6 @@ struct CoerceTypes {
     mutable_ref_call_args: call_args::MutableRefCallArgs,
     pointer_cell_statics: pointer_cells::StaticNames,
     structural_helper_metadata: structural_helpers::Metadata,
-    tuple_newtypes: tuple_newtypes::Names,
     impl_self_types: Vec<String>,
 }
 
@@ -120,19 +116,8 @@ impl VisitMut for CoerceTypes {
         );
     }
 
-    fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
-        visit_mut::visit_expr_assign_mut(self, assign);
-        tuple_newtypes::coerce_assignment(assign, &self.impl_self_types, &self.tuple_newtypes);
-    }
-
-    fn visit_expr_cast_mut(&mut self, cast: &mut syn::ExprCast) {
-        visit_mut::visit_expr_cast_mut(self, cast);
-        tuple_newtypes::coerce_cast(cast, &self.impl_self_types, &self.tuple_newtypes);
-    }
-
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
         visit_mut::visit_expr_call_mut(self, call);
-        tuple_newtypes::coerce_numeric_from_call(call, &self.impl_self_types, &self.tuple_newtypes);
         call_args::coerce_scoped_call_args(&mut call.args, self.call_arg_scopes.last());
         call_args::coerce_signature_call_args(
             &call.func,
@@ -1039,31 +1024,6 @@ mod tests {
         assert!(
             !tokens.contains("(value) . clone"),
             "expected no field-name-driven value clone: {tokens}"
-        );
-    }
-
-    #[test]
-    fn it_casts_tuple_newtype_self_through_inner_field() {
-        let mut file: syn::File = syn::parse_quote! {
-            pub struct KeySizeError(pub isize);
-
-            impl KeySizeError {
-                pub fn Error(&self) -> String {
-                    crate::strconv::Itoa((self as isize))
-                }
-            }
-        };
-
-        pass(&mut file);
-
-        let tokens = quote::quote!(#file).to_string();
-        assert!(
-            tokens.contains("self . 0 as isize"),
-            "expected tuple newtype receiver casts to use the inner field: {tokens}"
-        );
-        assert!(
-            !tokens.contains("self as isize"),
-            "expected borrowed receiver cast to be rewritten: {tokens}"
         );
     }
 
