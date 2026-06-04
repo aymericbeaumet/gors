@@ -1,10 +1,11 @@
 use super::syn_helpers::{
     ImplSelfType, has_impl, has_method, type_path_ident_name, type_path_pointer_cell_inner_name,
 };
+use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
     for plan in fmt_flush_plans(items) {
-        if !has_method(items, &plan.receiver, "__gors_flush_fmt") {
+        if !has_method(items, &plan.receiver, FMT_FLUSH_HOOK) {
             items.insert(0, fmt_flush_impl(&plan));
         }
     }
@@ -178,6 +179,7 @@ fn type_is_vec_u8(ty: &syn::Type) -> bool {
 }
 
 fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
+    let hook = fmt_flush_hook_ident();
     let receiver = syn::Ident::new(&plan.receiver, proc_macro2::Span::mixed_site());
     let source_field = syn::Ident::new(&plan.source_field, proc_macro2::Span::mixed_site());
     let source_buffer_field =
@@ -194,7 +196,7 @@ fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
     };
     syn::parse_quote! {
         impl #receiver {
-            fn __gors_flush_fmt(&mut self) {
+            fn #hook(&mut self) {
                 let bytes = #take_bytes;
                 self.#destination_field.0.extend(bytes);
             }

@@ -77,6 +77,8 @@ pub mod compiler;
 /// Provides structured error reporting with source context.
 pub mod error;
 
+pub(crate) mod generated_names;
+
 /// Go source code parser.
 ///
 /// Parses Go source code into an Abstract Syntax Tree following

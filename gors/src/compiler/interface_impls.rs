@@ -1,4 +1,5 @@
 use super::{interface_hooks, signature_arg_idents, typeinfer};
+use crate::generated_names::as_any_method_ident;
 use proc_macro2::Span;
 use std::collections::{BTreeMap, BTreeSet};
 use syn::Token;
@@ -348,15 +349,16 @@ fn concrete_can_emit_method(
 }
 
 fn concrete_as_any_item(exposes_any: bool) -> syn::ImplItem {
+    let as_any = as_any_method_ident();
     if exposes_any {
         syn::parse_quote! {
-            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+            fn #as_any(&self) -> Option<&dyn std::any::Any> {
                 Some(self)
             }
         }
     } else {
         syn::parse_quote! {
-            fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+            fn #as_any(&self) -> Option<&dyn std::any::Any> {
                 None
             }
         }
@@ -438,14 +440,15 @@ fn concrete_error_method_block(
 
 impl PointerImplTarget {
     fn as_any_item(self) -> syn::ImplItem {
+        let as_any = as_any_method_ident();
         match self {
             Self::GorsPtr => syn::parse_quote! {
-                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                fn #as_any(&self) -> Option<&dyn std::any::Any> {
                     Some(self)
                 }
             },
             Self::BorrowedMut => syn::parse_quote! {
-                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                fn #as_any(&self) -> Option<&dyn std::any::Any> {
                     None
                 }
             },

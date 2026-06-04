@@ -1,4 +1,5 @@
 use super::{CompiledModule, module_has_static, prune_replaced_items};
+use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
 use std::collections::HashSet;
 
 pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
@@ -11,6 +12,8 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
         &HashSet::from(["File".to_string(), "Stdout".to_string()]),
         &HashSet::from(["File".to_string()]),
     );
+    let as_any = as_any_method_ident();
+    let clone_box = clone_box_method_ident();
     module.file.items.extend([
         syn::parse_quote! {
             #[derive(Clone, Copy, Default)]
@@ -23,11 +26,11 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
         },
         syn::parse_quote! {
             impl crate::io::Writer for File {
-                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                fn #as_any(&self) -> Option<&dyn std::any::Any> {
                     Some(self)
                 }
 
-                fn __gors_clone_box(&self) -> Box<dyn crate::io::Writer> {
+                fn #clone_box(&self) -> Box<dyn crate::io::Writer> {
                     Box::new(*self) as Box<dyn crate::io::Writer>
                 }
 

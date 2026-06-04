@@ -1,4 +1,5 @@
 use super::{noop_interfaces, typeinfer};
+use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
 use syn::Token;
 
 pub(super) fn rust_path_name_candidates(name: &str) -> Vec<String> {
@@ -30,12 +31,14 @@ pub(super) fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<sy
             return Vec::new();
         };
         let trait_path = super::interface_trait_path_from_name(interface_name);
+        let as_any = as_any_method_ident();
+        let clone_box = clone_box_method_ident();
         let mut items = vec![
             noop_interfaces::impl_item_for_signature(syn::parse_quote! {
-                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>
+                fn #as_any(&self) -> Option<&dyn std::any::Any>
             }),
             noop_interfaces::impl_item_for_signature(syn::parse_quote! {
-                fn __gors_clone_box(&self) -> Box<dyn #trait_path>
+                fn #clone_box(&self) -> Box<dyn #trait_path>
             }),
         ];
         items.extend(method_names.iter().map(|method_name| {

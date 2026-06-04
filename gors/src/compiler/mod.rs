@@ -34,6 +34,7 @@ mod runtime_primitives;
 mod syn_inspect;
 pub mod typeinfer;
 
+use crate::generated_names::{as_any_method_ident, clone_box_method_ident, noop_interface_ident};
 use crate::mapping::SourceMapTracker;
 use crate::{ast, token};
 use item_reachability::{impl_method_reachability_name, reachable_item_for_names};
@@ -11239,10 +11240,11 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
 }
 
 fn interface_box_clone_impl(ident: &syn::Ident) -> syn::Item {
+    let clone_box = clone_box_method_ident();
     syn::parse_quote! {
         impl Clone for Box<dyn #ident> {
             fn clone(&self) -> Self {
-                #ident::__gors_clone_box(&**self)
+                #ident::#clone_box(&**self)
             }
         }
     }
@@ -11701,16 +11703,18 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let has_go_methods = !trait_items.is_empty();
             let needs_runtime_interface_items = has_go_methods || has_embedded_runtime_interfaces;
             if needs_runtime_interface_items {
+                let as_any = as_any_method_ident();
+                let clone_box = clone_box_method_ident();
                 trait_items.insert(
                     0,
                     syn::parse_quote! {
-                        fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                        fn #as_any(&self) -> Option<&dyn std::any::Any>;
                     },
                 );
                 trait_items.insert(
                     1,
                     syn::parse_quote! {
-                        fn __gors_clone_box(&self) -> Box<dyn #ident>;
+                        fn #clone_box(&self) -> Box<dyn #ident>;
                     },
                 );
             }
@@ -14732,11 +14736,12 @@ fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -
     let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
     let trait_path = interface_trait_path_from_name(&interface_name);
     if go_type_interface_name(&actual).is_some() {
+        let clone_box = clone_box_method_ident();
         if let Some(lvalue) = lvalue_expr_from_ref(&expr) {
-            return syn::parse_quote! { #trait_path::__gors_clone_box(&*(#lvalue)) };
+            return syn::parse_quote! { #trait_path::#clone_box(&*(#lvalue)) };
         }
         let compiled: syn::Expr = expr.into();
-        return syn::parse_quote! { #trait_path::__gors_clone_box(&*(#compiled)) };
+        return syn::parse_quote! { #trait_path::#clone_box(&*(#compiled)) };
     }
 
     let compiled: syn::Expr = expr.into();
@@ -19479,6 +19484,15 @@ fn compile_string_concat_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr 
     }}
 }
 
+fn compile_runtime_interface_nil_check(other_expr: syn::Expr, is_eq: bool) -> syn::Expr {
+    let as_any = as_any_method_ident();
+    if is_eq {
+        syn::parse_quote! { (#other_expr).#as_any().is_none() }
+    } else {
+        syn::parse_quote! { (#other_expr).#as_any().is_some() }
+    }
+}
+
 fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let op = binary_expr.op;
     if let Some(compare) = reflect_kind::detect_compare(&binary_expr, |name| {
@@ -19522,30 +19536,15 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         let other_ty = typeinfer::GoType::infer_expr(other, &TYPE_ENV.with(|e| e.borrow().clone()));
         let is_eq = op == token::Token::EQL;
 
-        if matches!(other_ty, typeinfer::GoType::Error) {
+        if matches!(other_ty, typeinfer::GoType::Error)
+            || go_type_interface_name(&other_ty).is_some()
+        {
             let other_expr = if left_nil {
                 syn::Expr::from(*binary_expr.y)
             } else {
                 syn::Expr::from(*binary_expr.x)
             };
-            return if is_eq {
-                syn::parse_quote! { (#other_expr).__gors_as_any().is_none() }
-            } else {
-                syn::parse_quote! { (#other_expr).__gors_as_any().is_some() }
-            };
-        }
-
-        if go_type_interface_name(&other_ty).is_some() {
-            let other_expr = if left_nil {
-                syn::Expr::from(*binary_expr.y)
-            } else {
-                syn::Expr::from(*binary_expr.x)
-            };
-            return if is_eq {
-                syn::parse_quote! { (#other_expr).__gors_as_any().is_none() }
-            } else {
-                syn::parse_quote! { (#other_expr).__gors_as_any().is_some() }
-            };
+            return compile_runtime_interface_nil_check(other_expr, is_eq);
         }
 
         if other_ty.is_interface() {
@@ -25439,7 +25438,8 @@ fn type_assert_any_option_expr(source: syn::Expr, source_type: &typeinfer::GoTyp
     if go_type_is_interface_like(source_type)
         && !matches!(resolved_go_type(source_type), typeinfer::GoType::Any)
     {
-        syn::parse_quote! { (#source).__gors_as_any() }
+        let as_any = as_any_method_ident();
+        syn::parse_quote! { (#source).#as_any() }
     } else {
         syn::parse_quote! { Some((#source).as_ref() as &dyn std::any::Any) }
     }
@@ -25605,7 +25605,8 @@ fn noop_interface_type_from_name(name: &str) -> syn::Type {
     }
     let mut parts = qualified_name_rust_segments(name);
     let Some(last) = parts.pop() else {
-        return syn::parse_quote! { __GorsNoopInterface };
+        let noop = noop_interface_ident();
+        return syn::parse_quote! { #noop };
     };
     parts.push(format!("__GorsNoop{}", rust_safe_ident_name(&last)));
     rust_type_path_from_segments(parts.iter().map(String::as_str), true)

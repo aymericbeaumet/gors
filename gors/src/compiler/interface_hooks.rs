@@ -1,7 +1,6 @@
 use super::syn_inspect::named_self_type;
 
-pub(super) const AS_ANY_METHOD: &str = "__gors_as_any";
-pub(super) const CLONE_BOX_METHOD: &str = "__gors_clone_box";
+pub(super) use crate::generated_names::{AS_ANY_METHOD, CLONE_BOX_METHOD, clone_box_method_ident};
 
 pub(super) fn is_runtime_hook(name: &str) -> bool {
     matches!(name, AS_ANY_METHOD | CLONE_BOX_METHOD)
@@ -30,15 +29,16 @@ pub(super) fn trait_path_interface_name(path: &syn::Path) -> Option<String> {
 }
 
 pub(super) fn clone_box_impl_item(trait_path: &syn::Path, can_clone_self: bool) -> syn::ImplItem {
+    let clone_box = clone_box_method_ident();
     if can_clone_self {
         syn::parse_quote! {
-            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+            fn #clone_box(&self) -> Box<dyn #trait_path> {
                 Box::new(self.clone()) as Box<dyn #trait_path>
             }
         }
     } else {
         syn::parse_quote! {
-            fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+            fn #clone_box(&self) -> Box<dyn #trait_path> {
                 crate::builtin::panic_value("cloned non-clone interface value")
             }
         }
@@ -85,18 +85,19 @@ pub(super) fn add_missing_clone_hooks(items: &mut [syn::Item]) {
             continue;
         }
 
+        let clone_box = clone_box_method_ident();
         let item = if named_self_type(&item_impl.self_ty)
             .as_deref()
             .is_some_and(is_noop_type_name)
         {
             syn::parse_quote! {
-                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                fn #clone_box(&self) -> Box<dyn #trait_path> {
                     Box::new(Self::default()) as Box<dyn #trait_path>
                 }
             }
         } else {
             syn::parse_quote! {
-                fn __gors_clone_box(&self) -> Box<dyn #trait_path> {
+                fn #clone_box(&self) -> Box<dyn #trait_path> {
                     crate::builtin::panic_value("cloned non-clone interface value")
                 }
             }

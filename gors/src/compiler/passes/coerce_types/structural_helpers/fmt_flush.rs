@@ -1,6 +1,8 @@
 type NameSet = std::collections::HashSet<String>;
 type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
+use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
+
 #[derive(Default)]
 pub(super) struct Metadata {
     methods_by_receiver: ReceiverNameMap,
@@ -36,8 +38,9 @@ impl Metadata {
         let needs_flush = self.should_flush_after_stmt(impl_self_types, &stmt);
         stmts.push(stmt);
         if needs_flush {
+            let hook = fmt_flush_hook_ident();
             stmts.push(syn::parse_quote! {
-                self.__gors_flush_fmt();
+                self.#hook();
             });
         }
     }
@@ -70,7 +73,7 @@ fn collect_source_fields_by_receiver(file: &syn::File) -> ReceiverNameMap {
             let syn::ImplItem::Fn(func) = item else {
                 return None;
             };
-            (func.sig.ident == "__gors_flush_fmt").then_some(func)
+            (func.sig.ident == FMT_FLUSH_HOOK).then_some(func)
         }) {
             let fields = flush_source_fields(func);
             if !fields.is_empty() {
@@ -102,7 +105,7 @@ fn collect_receiver_methods(file: &syn::File, self_ty: &str, source_fields: &Nam
             let syn::ImplItem::Fn(func) = item else {
                 return None;
             };
-            (func.sig.ident != "__gors_flush_fmt").then_some(func)
+            (func.sig.ident != FMT_FLUSH_HOOK).then_some(func)
         }) {
             let name = func.sig.ident.to_string();
             calls_by_method

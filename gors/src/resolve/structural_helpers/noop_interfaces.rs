@@ -1,7 +1,9 @@
 use super::syn_helpers::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
+use crate::generated_names::{
+    AS_ANY_METHOD, CLONE_BOX_METHOD, ERROR_EXT_TRAIT, NOOP_INTERFACE, error_ext_trait_ident,
+    noop_interface_ident,
+};
 
-const NOOP_INTERFACE: &str = "__GorsNoopInterface";
-const ERROR_EXT: &str = "__GorsErrorExt";
 const STATE_TRAIT: &str = "State";
 
 #[derive(Clone, Copy)]
@@ -52,15 +54,16 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
 }
 
 fn noop_struct_item() -> syn::Item {
+    let noop_ident = noop_interface_ident();
     syn::parse_quote! {
         #[derive(Clone, Default)]
-        struct __GorsNoopInterface;
+        struct #noop_ident;
     }
 }
 
 fn noop_trait_impl(trait_name: &str, methods: &[syn::TraitItemFn]) -> syn::Item {
     let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::mixed_site());
-    let noop_ident = syn::Ident::new(NOOP_INTERFACE, proc_macro2::Span::mixed_site());
+    let noop_ident = noop_interface_ident();
     let impl_methods = methods
         .iter()
         .map(|method| noop_impl_method(&trait_ident, method))
@@ -86,9 +89,9 @@ fn noop_impl_method(trait_ident: &syn::Ident, method: &syn::TraitItemFn) -> syn:
 }
 
 fn noop_method_body(trait_ident: &syn::Ident, sig: &syn::Signature) -> syn::Block {
-    if sig.ident == "__gors_as_any" {
+    if sig.ident == AS_ANY_METHOD {
         syn::parse_quote!({ None })
-    } else if sig.ident == "__gors_clone_box" {
+    } else if sig.ident == CLONE_BOX_METHOD {
         syn::parse_quote!({ Box::new(Self::default()) as Box<dyn #trait_ident> })
     } else if matches!(sig.output, syn::ReturnType::Default) {
         syn::parse_quote!({})
@@ -98,40 +101,41 @@ fn noop_method_body(trait_ident: &syn::Ident, sig: &syn::Signature) -> syn::Bloc
 }
 
 fn inject_error_ext(items: &mut Vec<syn::Item>) {
-    if !has_trait(items, ERROR_EXT) {
+    let trait_ident = error_ext_trait_ident();
+    let noop_ident = noop_interface_ident();
+
+    if !has_trait(items, ERROR_EXT_TRAIT) {
         items.insert(
             0,
             syn::parse_quote! {
-                trait __GorsErrorExt {
+                trait #trait_ident {
                     fn Error(&mut self) -> String;
                 }
             },
         );
     }
 
-    if !has_impl(items, ERROR_EXT, ImplSelfType::Named("String")) {
+    if !has_impl(items, ERROR_EXT_TRAIT, ImplSelfType::Named("String")) {
         items.insert(
             0,
             syn::parse_quote! {
-                impl __GorsErrorExt for String {
+                impl #trait_ident for String {
                     fn Error(&mut self) -> String { self.clone() }
                 }
             },
         );
     }
 
-    if !has_impl(items, ERROR_EXT, ImplSelfType::Named(NOOP_INTERFACE)) {
-        items.insert(0, noop_error_ext_impl());
+    if !has_impl(items, ERROR_EXT_TRAIT, ImplSelfType::Named(NOOP_INTERFACE)) {
+        items.insert(0, noop_error_ext_impl(&trait_ident, &noop_ident));
     }
 }
 
-fn noop_error_ext_impl() -> syn::Item {
+fn noop_error_ext_impl(trait_ident: &syn::Ident, noop_ident: &syn::Ident) -> syn::Item {
     let method: syn::TraitItemFn = syn::parse_quote! {
         fn Error(&mut self) -> String;
     };
-    let trait_ident = syn::Ident::new(ERROR_EXT, proc_macro2::Span::mixed_site());
-    let noop_ident = syn::Ident::new(NOOP_INTERFACE, proc_macro2::Span::mixed_site());
-    let impl_method = noop_impl_method(&trait_ident, &method);
+    let impl_method = noop_impl_method(trait_ident, &method);
 
     syn::parse_quote! {
         impl #trait_ident for #noop_ident {
