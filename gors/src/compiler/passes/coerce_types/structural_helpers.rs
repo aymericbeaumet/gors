@@ -1,6 +1,7 @@
 use syn::visit_mut::{self, VisitMut};
 
 mod fmt_flush;
+mod local_names;
 mod reflection_fallback;
 mod self_fields;
 
