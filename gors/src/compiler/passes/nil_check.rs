@@ -84,16 +84,5 @@ fn is_unsafe_pointer_call(expr: &syn::Expr) -> bool {
 }
 
 fn is_none_expr(expr: &syn::Expr) -> bool {
-    if let syn::Expr::Path(path) = expr {
-        if path.path.segments.len() == 1
-            && path
-                .path
-                .segments
-                .first()
-                .is_some_and(|seg| seg.ident == "None")
-        {
-            return true;
-        }
-    }
-    false
+    super::super::syn_inspect::is_path_ident(expr, "None")
 }
