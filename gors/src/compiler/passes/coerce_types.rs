@@ -10,7 +10,7 @@ mod structural_helpers;
 pub fn pass(file: &mut syn::File) {
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = pointer_cells::collect_statics(file);
-    let structural_helper_metadata = structural_helpers::Metadata::collect(file);
+    let structural_helper_metadata = structural_helpers::InitialPassMetadata::collect(file);
     CoerceTypes {
         mutable_ref_call_args,
         pointer_cell_statics,
@@ -33,7 +33,7 @@ struct CoerceTypes {
     call_arg_scopes: Vec<call_args::FnArgScope>,
     mutable_ref_call_args: call_args::MutableRefCallArgs,
     pointer_cell_statics: pointer_cells::StaticNames,
-    structural_helper_metadata: structural_helpers::Metadata,
+    structural_helper_metadata: structural_helpers::InitialPassMetadata,
     impl_self_types: Vec<String>,
 }
 
@@ -82,11 +82,7 @@ impl VisitMut for CoerceTypes {
             new_stmts
                 .extend(evaluation_order::hoist_condition_args_read_after_mut_borrow(&mut stmt));
             new_stmts.extend(evaluation_order::hoist_method_args_read_receiver(&mut stmt));
-            self.structural_helper_metadata.push_stmt_with_flush(
-                &self.impl_self_types,
-                stmt,
-                &mut new_stmts,
-            );
+            new_stmts.push(stmt);
         }
 
         block.stmts = new_stmts;
@@ -396,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn it_inserts_flush_for_receivers_with_generated_flush_hook() {
+    fn initial_pass_leaves_flush_insertion_to_post_structural_helper_pass() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Printer {
                 pub inner: Inner,
@@ -433,8 +429,8 @@ mod tests {
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
-            tokens.contains("self . emit (1) ; self . __gors_flush_fmt ()"),
-            "expected generated flush hook after method using the hook source field: {tokens}"
+            tokens.contains("self . emit (1)") && !tokens.contains("__gors_flush_fmt ()"),
+            "expected initial pass not to own fmt flush insertion: {tokens}"
         );
     }
 

@@ -8,13 +8,35 @@ mod reflection_fallback;
 mod self_fields;
 
 #[derive(Default)]
-pub(super) struct Metadata {
+pub(super) struct InitialPassMetadata {
+    reflection_fallback: reflection_fallback::Metadata,
+}
+
+impl InitialPassMetadata {
+    pub(super) fn collect(file: &syn::File) -> Self {
+        Self {
+            reflection_fallback: reflection_fallback::Metadata::collect(file),
+        }
+    }
+
+    pub(super) fn self_reflect_fields_for_initial_pass(
+        &self,
+        self_ty: &str,
+        block: &syn::Block,
+    ) -> Option<&reflection_fallback::FieldSet> {
+        self.reflection_fallback
+            .fields_for_initial_pass(self_ty, block)
+    }
+}
+
+#[derive(Default)]
+struct PostHelperMetadata {
     fmt_flush: fmt_flush::Metadata,
     reflection_fallback: reflection_fallback::Metadata,
 }
 
-impl Metadata {
-    pub(super) fn collect(file: &syn::File) -> Self {
+impl PostHelperMetadata {
+    fn collect(file: &syn::File) -> Self {
         Self {
             fmt_flush: fmt_flush::Metadata::collect(file),
             reflection_fallback: reflection_fallback::Metadata::collect(file),
@@ -25,7 +47,7 @@ impl Metadata {
         self.fmt_flush.is_empty() && self.reflection_fallback.is_empty()
     }
 
-    pub(super) fn push_stmt_with_flush(
+    fn push_stmt_with_flush(
         &self,
         impl_self_types: &[String],
         stmt: syn::Stmt,
@@ -33,15 +55,6 @@ impl Metadata {
     ) {
         self.fmt_flush
             .push_stmt_with_flush(impl_self_types, stmt, stmts);
-    }
-
-    pub(super) fn self_reflect_fields_for_initial_pass(
-        &self,
-        self_ty: &str,
-        block: &syn::Block,
-    ) -> Option<&reflection_fallback::FieldSet> {
-        self.reflection_fallback
-            .fields_for_initial_pass(self_ty, block)
     }
 
     fn self_reflect_fields_after_helpers(
@@ -55,7 +68,7 @@ impl Metadata {
 }
 
 pub(super) fn pass_after_structural_helpers(file: &mut syn::File) {
-    let metadata = Metadata::collect(file);
+    let metadata = PostHelperMetadata::collect(file);
     if metadata.is_empty() {
         return;
     }
@@ -67,7 +80,7 @@ pub(super) fn pass_after_structural_helpers(file: &mut syn::File) {
 }
 
 struct CoerceStructuralHelpers {
-    metadata: Metadata,
+    metadata: PostHelperMetadata,
     impl_self_types: Vec<String>,
 }
 
