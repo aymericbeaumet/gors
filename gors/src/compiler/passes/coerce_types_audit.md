@@ -194,3 +194,4 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | name-scanned local trait parameter pass | The stale `trait_param` pass was removed; local interface parameter lowering now comes from the compiler's type environment instead of scanning generated Rust trait item names after codegen. |
 | primitive type mapping postpass | The stale `map_type` pass was removed; `syn::Type` conversion now delegates to compiler AST type lowering, so Go primitive type names are mapped before generated Rust postpasses run. |
 | primitive type-conversion postpass | The stale `type_conversion` pass was removed; Go type conversion calls lower through IR call ABI and compiler AST lowering instead of rewriting generated Rust calls by primitive type name. |
+| nil-check postpass | The stale `nil_check` pass was removed; expected-type nil construction and typed nil comparisons now lower from Go type facts before generated Rust postpasses run. |

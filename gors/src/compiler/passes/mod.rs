@@ -4,13 +4,11 @@ mod flatten_block;
 mod hoist_use;
 mod index_cast;
 mod inject_channel;
-mod nil_check;
 mod simplify_return;
 mod string_lit;
 
 pub fn pass(file: &mut syn::File) {
     inject_channel::pass(file);
-    nil_check::pass(file);
     string_lit::pass(file);
     hoist_use::pass(file);
     simplify_return::pass(file);

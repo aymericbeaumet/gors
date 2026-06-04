@@ -1277,14 +1277,13 @@ needs fuller interface method-set modeling.
 
 Main package (`pass()`):
 1. `inject_channel` — channel send/receive
-2. `nil_check` — nil comparisons → Default::default() / is_empty()
-3. `string_lit` — string literal `.to_string()` in assignments/returns/method args
-4. `hoist_use` — extract multi-segment paths to `use` declarations
-5. `simplify_return` — remove trailing `return` (Rust style)
-6. `flatten_block` — flatten single-expression nested blocks
-7. `index_cast` — array/slice index expressions cast to usize
-8. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-9. `avoid_item_shadowing` — rename generated locals that shadow item names
+2. `string_lit` — string literal `.to_string()` in assignments/returns/method args
+3. `hoist_use` — extract multi-segment paths to `use` declarations
+4. `simplify_return` — remove trailing `return` (Rust style)
+5. `flatten_block` — flatten single-expression nested blocks
+6. `index_cast` — array/slice index expressions cast to usize
+7. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+8. `avoid_item_shadowing` — rename generated locals that shadow item names
 
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;

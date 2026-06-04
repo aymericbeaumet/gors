@@ -25455,6 +25455,67 @@ func main() {
     }
 
     #[test]
+    fn nil_values_lower_from_expected_type_without_postpass() {
+        let nil = crate::ast::Expr::Ident(crate::ast::Ident {
+            name_pos: crate::token::Position::default(),
+            name: "nil",
+            obj: None,
+        });
+        let pointer_nil = super::compile_expr_with_expected(
+            nil,
+            Some(&super::typeinfer::GoType::Pointer(Box::new(
+                super::typeinfer::GoType::Int,
+            ))),
+        );
+        let byte_slice_nil = super::compile_expr_with_expected(
+            crate::ast::Expr::Ident(crate::ast::Ident {
+                name_pos: crate::token::Position::default(),
+                name: "nil",
+                obj: None,
+            }),
+            Some(&super::typeinfer::GoType::Slice(Box::new(
+                super::typeinfer::GoType::Uint8,
+            ))),
+        );
+
+        assert_eq!(quote! { #pointer_nil }.to_string(), "Default :: default ()");
+        assert_eq!(
+            quote! { #byte_slice_nil }.to_string(),
+            "Default :: default ()"
+        );
+    }
+
+    #[test]
+    fn nil_comparison_lowers_from_go_types_without_postpass() {
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_var(
+            "p",
+            super::typeinfer::GoType::Pointer(Box::new(super::typeinfer::GoType::Named(
+                "Node".to_string(),
+            ))),
+        );
+        super::set_type_env(env);
+
+        let ident = |name| {
+            crate::ast::Expr::Ident(crate::ast::Ident {
+                name_pos: crate::token::Position::default(),
+                name,
+                obj: None,
+            })
+        };
+        let binary = crate::ast::BinaryExpr {
+            x: Box::new(ident("p")),
+            op_pos: crate::token::Position::default(),
+            op: crate::token::Token::EQL,
+            y: Box::new(ident("nil")),
+        };
+        let expr: syn::Expr = crate::ast::Expr::BinaryExpr(binary).into();
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(quote! { #expr }.to_string(), "(p) . is_nil ()");
+    }
+
+    #[test]
     fn imported_interface_param_type_uses_type_env_not_trait_name() {
         fn ident(name: &'static str) -> crate::ast::Ident<'static> {
             crate::ast::Ident {
