@@ -682,6 +682,16 @@ pub(super) fn pat_ident_names(pat: &syn::Pat) -> Vec<String> {
     }
 }
 
+pub(super) fn fn_arg_ident(arg: &syn::FnArg) -> Option<syn::Ident> {
+    let syn::FnArg::Typed(pat_type) = arg else {
+        return None;
+    };
+    let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
+        return None;
+    };
+    Some(pat_ident.ident.clone())
+}
+
 pub(super) fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
     let syn::Type::Path(path) = ty else {
         return None;
@@ -1363,6 +1373,22 @@ mod tests {
     fn pat_ident_names_reads_nested_bindings() {
         let pat: syn::Pat = parse_quote! { (first, &second, Some(third)) };
         assert_eq!(pat_ident_names(&pat), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn fn_arg_ident_reads_typed_identifier_args_only() {
+        let value_arg: syn::FnArg = parse_quote! { value: isize };
+        let receiver_arg: syn::FnArg = parse_quote! { &self };
+        let tuple_arg: syn::FnArg = parse_quote! { (left, right): (isize, isize) };
+
+        assert_eq!(
+            fn_arg_ident(&value_arg)
+                .map(|ident| ident.to_string())
+                .as_deref(),
+            Some("value")
+        );
+        assert!(fn_arg_ident(&receiver_arg).is_none());
+        assert!(fn_arg_ident(&tuple_arg).is_none());
     }
 
     #[test]

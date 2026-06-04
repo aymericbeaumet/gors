@@ -63,10 +63,10 @@ use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, box_new_call_arg,
     clone_call_receiver_expr, dedupe_syn_types, direct_clone_call_receiver_expr, expr_is_ident,
-    expr_path_ident, expr_path_ident_or_clone, impl_trait_targets_match, is_box_dyn_any_expr,
-    is_box_dyn_any_type, is_box_leak_expr, is_box_new_call, is_box_type_with_any_bound,
-    is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr, is_self_expr,
-    is_self_or_ref_self_expr, is_slice_range_index_expr, item_macro_name, item_name,
+    expr_path_ident, expr_path_ident_or_clone, fn_arg_ident, impl_trait_targets_match,
+    is_box_dyn_any_expr, is_box_dyn_any_type, is_box_leak_expr, is_box_new_call,
+    is_box_type_with_any_bound, is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr,
+    is_self_expr, is_self_or_ref_self_expr, is_slice_range_index_expr, item_macro_name, item_name,
     macro_token_item_names, named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp,
     self_type_reachability_names, slice_type_inner, syn_expr_matches_target, type_mentions_name,
     type_param_bound_matches, vec_type_inner,
@@ -21660,16 +21660,6 @@ fn compile_field_to_fn_args_with_type_params(
     Ok(args)
 }
 
-fn fn_arg_ident(arg: &syn::FnArg) -> Option<syn::Ident> {
-    let syn::FnArg::Typed(pat_type) = arg else {
-        return None;
-    };
-    let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
-        return None;
-    };
-    Some(pat_ident.ident.clone())
-}
-
 fn bodyless_function_block(
     output: &syn::ReturnType,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, Token![,]>,
@@ -28153,6 +28143,25 @@ func main() {
         super::append_missing_return_panic(&mut block, &output, None);
 
         assert_eq!(quote! { #block }.to_string(), "{ 1 }");
+    }
+
+    #[test]
+    fn bodyless_function_block_uses_typed_arg_ident_for_vec_len() {
+        let output: syn::ReturnType = syn::parse_quote! { -> Vec<u8> };
+        let mut inputs = syn::punctuated::Punctuated::<syn::FnArg, syn::token::Comma>::new();
+        inputs.push(syn::parse_quote! { n: isize });
+
+        let block = super::bodyless_function_block(&output, &inputs);
+        let rendered = quote! { #block }.to_string();
+
+        assert!(
+            rendered.contains("usize :: try_from (n)"),
+            "expected Vec bodyless fallback to size from first typed arg: {rendered}"
+        );
+        assert!(
+            rendered.contains("repeat_with (Default :: default)"),
+            "expected Vec bodyless fallback to construct default elements: {rendered}"
+        );
     }
 
     #[test]
