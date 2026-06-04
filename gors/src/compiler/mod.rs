@@ -35,6 +35,7 @@ mod runtime_primitives;
 mod struct_derives;
 mod syn_inspect;
 pub mod typeinfer;
+mod zero_values;
 
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident, noop_interface_ident};
 use crate::mapping::SourceMapTracker;
@@ -10671,43 +10672,6 @@ fn anonymous_struct_type(struct_type: ast::StructType) -> syn::Type {
     }
 }
 
-fn default_expr_for_type(expr: &ast::Expr) -> syn::Expr {
-    match expr {
-        ast::Expr::Ident(id) if id.name == "any" => {
-            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
-        }
-        ast::Expr::Ident(id) if id.name == "error" => {
-            syn::parse_quote! {
-                Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
-            }
-        }
-        _ if let Some(interface_name) = interface_name_from_type_expr(expr) => {
-            boxed_noop_interface_expr(&interface_name)
-        }
-        ast::Expr::InterfaceType(_) => {
-            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
-        }
-        ast::Expr::FuncType(func_type) => default_expr_for_func_type(func_type),
-        ast::Expr::ArrayType(array_type) if array_type.len.is_some() => {
-            default_expr_for_array_type(array_type)
-        }
-        _ => syn::parse_quote! { Default::default() },
-    }
-}
-
-fn default_expr_for_func_type(func_type: &ast::FuncType<'_>) -> syn::Expr {
-    let box_ty = shared_func_box_type_from_ast(func_type);
-    syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(None::<#box_ty>)) }
-}
-
-fn default_expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
-    if array_type.len.is_none() {
-        return syn::parse_quote! { Default::default() };
-    }
-    let elem_default = default_expr_for_type(&array_type.elt);
-    syn::parse_quote! { std::array::from_fn(|_| #elem_default) }
-}
-
 fn selector_path_from_ref(selector_expr: &ast::SelectorExpr) -> syn::Path {
     let mut segments = syn::punctuated::Punctuated::new();
 
@@ -11299,7 +11263,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         interface_trait_path.is_some(),
                         borrowed_interface_trait_path.is_some(),
                     );
-                    let field_default = default_expr_for_type(&field_type);
+                    let field_default = zero_values::expr_for_type(&field_type);
 
                     if let Some(names) = field.names {
                         let rust_type: syn::Type =
@@ -11735,7 +11699,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let (impl_generics, ty_generics, where_clause) = generics_for_impl.split_for_impl();
             let fixed_array_default = match &other {
                 ast::Expr::ArrayType(array_type) if array_type.len.is_some() => {
-                    Some(default_expr_for_array_type(array_type))
+                    Some(zero_values::expr_for_array_type(array_type))
                 }
                 _ => None,
             };
@@ -14967,7 +14931,7 @@ fn compile_array_literal(array_type: &ast::ArrayType, raw_elts: Vec<ast::Expr>) 
                 .map(|index| {
                     keyed_slice_elts
                         .remove(&index)
-                        .unwrap_or_else(|| default_expr_for_type(&array_type.elt))
+                        .unwrap_or_else(|| zero_values::expr_for_type(&array_type.elt))
                 })
                 .collect::<Vec<_>>();
             syn::parse_quote! { Vec::from([#(#elts),*]) }
@@ -21130,7 +21094,7 @@ fn collect_goto_state_hoist_binding_types(
                     continue;
                 };
                 let ty = local_value_type_from_expr(type_expr);
-                let init = default_expr_for_type(type_expr);
+                let init = zero_values::expr_for_type(type_expr);
                 for name in &value.names {
                     let rust_name = rust_safe_ident_name(name.name);
                     if hoisted_names.contains(&rust_name) {
@@ -22170,7 +22134,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                         } else if let (Some(type_expr), Some(ty)) =
                                             (type_expr.as_ref(), rust_type.as_ref())
                                         {
-                                            let zero = default_expr_for_type(type_expr);
+                                            let zero = zero_values::expr_for_type(type_expr);
                                             package_var_stmts.push(syn::parse_quote! {
                                                 let mut #ident: #ty = #zero;
                                             });
@@ -25181,7 +25145,7 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                         let init = init_expr.unwrap_or_else(|| {
                             type_expr
                                 .as_ref()
-                                .map(default_expr_for_type)
+                                .map(zero_values::expr_for_type)
                                 .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()))
                         });
                         let name = ident.to_string();
@@ -25225,7 +25189,7 @@ fn go_zero_value(type_expr: Option<&ast::Expr>) -> syn::Expr {
         Some(ast::Expr::InterfaceType(_)) => {
             syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
         }
-        Some(ast::Expr::ArrayType(array_type)) => default_expr_for_array_type(array_type),
+        Some(ast::Expr::ArrayType(array_type)) => zero_values::expr_for_array_type(array_type),
         Some(ast::Expr::MapType(_)) => syn::parse_quote! { Default::default() },
         Some(ast::Expr::StarExpr(_)) => syn::parse_quote! { Default::default() },
         Some(_) => syn::parse_quote! { Default::default() },
