@@ -582,6 +582,10 @@ pub(super) fn is_box_new_call(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Call(call) if is_path_call_expr(&call.func, &["Box", "new"]))
 }
 
+pub(super) fn is_box_leak_expr(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Call(call) if is_path_call_expr(&call.func, &["Box", "leak"]))
+}
+
 pub(super) fn box_new_call_arg(expr: &syn::Expr) -> Option<syn::Expr> {
     single_call_arg_for_path(expr, &["Box", "new"]).cloned()
 }
@@ -1277,6 +1281,8 @@ mod tests {
         let boxed: syn::Expr = parse_quote! { Box::new(value) };
         let qualified_boxed: syn::Expr = parse_quote! { crate::Box::new(value) };
         let boxed_unit: syn::Expr = parse_quote! { crate::Box::new((())) };
+        let leaked: syn::Expr = parse_quote! { Box::leak(Box::new(value)) };
+        let qualified_leak: syn::Expr = parse_quote! { crate::Box::leak(Box::new(value)) };
         let arc_mutex: syn::Expr =
             parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(value)) };
         let arc_other: syn::Expr = parse_quote! { std::sync::Arc::new(value) };
@@ -1292,6 +1298,8 @@ mod tests {
         assert!(box_new_call_arg(&qualified_boxed).is_none());
         assert!(is_box_new_unit_expr(&boxed_unit));
         assert!(!is_box_new_unit_expr(&boxed));
+        assert!(is_box_leak_expr(&leaked));
+        assert!(!is_box_leak_expr(&qualified_leak));
         assert_eq!(
             arc_mutex_new_inner_expr(&arc_mutex)
                 .map(|expr| expr.to_token_stream().to_string())
