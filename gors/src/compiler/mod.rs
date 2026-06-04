@@ -6554,7 +6554,7 @@ fn clone_value_arg(arg: &mut syn::Expr) {
 
 fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
-    let (targets, method_targets) = collect_mut_ref_targets(modules);
+    let (targets, method_targets) = collect_mut_ref_targets(modules, receiver_facts.module_names());
     let (direct_trait_impls, mut_ref_trait_impls) = collect_trait_impl_self_kinds(modules);
     if targets.is_empty() && method_targets.is_empty() {
         return;
@@ -6575,9 +6575,11 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
 
 fn collect_mut_ref_targets(
     modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
 ) -> (MutRefParamTargets, ReceiverMethodMutRefTargets) {
     let mut targets = BTreeMap::new();
     let mut method_targets = ReceiverMethodMutRefTargets::default();
+    let mut supertraits: ReceiverTraitSupertraits = BTreeMap::new();
     for module in modules.values() {
         for item in &module.file.items {
             match item {
@@ -6622,6 +6624,27 @@ fn collect_mut_ref_targets(
                 }
                 syn::Item::Trait(item_trait) => {
                     let self_name = item_trait.ident.to_string();
+                    let direct_supertraits = item_trait
+                        .supertraits
+                        .iter()
+                        .filter_map(|bound| {
+                            let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                                return None;
+                            };
+                            let mut receiver_type =
+                                receiver_type_from_path(&trait_bound.path, module_names)?;
+                            if receiver_type.module.is_none() {
+                                receiver_type.module = Some(module.mod_name.clone());
+                            }
+                            Some(receiver_type)
+                        })
+                        .collect::<Vec<_>>();
+                    if !direct_supertraits.is_empty() {
+                        supertraits.insert(
+                            (module.mod_name.clone(), self_name.clone()),
+                            direct_supertraits,
+                        );
+                    }
                     for item in &item_trait.items {
                         let syn::TraitItem::Fn(item_fn) = item else {
                             continue;
@@ -6647,6 +6670,7 @@ fn collect_mut_ref_targets(
             }
         }
     }
+    method_targets.inherit_supertrait_methods(&supertraits);
     method_targets.finalize_unambiguous_names();
     (targets, method_targets)
 }
@@ -28049,6 +28073,50 @@ func main() {
         assert!(
             !output.contains("__gors_self"),
             "expected direct trait impl not to receive the &mut Self reborrow: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_uses_supertrait_method_args() {
+        let main_file: syn::File = rust! {
+            pub trait Writer {
+                fn write(&mut self, values: &mut [String]);
+            }
+
+            pub trait ReadWriter: Writer {}
+
+            pub struct Sink;
+
+            impl Writer for Sink {
+                fn write(&mut self, values: &mut [String]) {}
+            }
+
+            impl ReadWriter for Sink {}
+
+            pub fn call(mut rw: Box<dyn ReadWriter>, mut values: Vec<String>) {
+                rw.write(values);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("rw . write (& mut values)"),
+            "expected mutable borrow to follow inherited Writer::write signature: {output}"
         );
     }
 
