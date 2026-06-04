@@ -65,8 +65,17 @@ impl<'a> Tracker<'a> {
     }
 
     pub(super) fn record_local(&mut self, local: &syn::Local) {
-        let context = self.context();
-        if let Some((name, receiver_type)) = local_receiver_type_binding(local, &context) {
+        let bindings = {
+            let context = self.context();
+            let mut bindings = Vec::new();
+            if let Some(binding) = local_receiver_type_binding(local, &context) {
+                bindings.push(binding);
+            }
+            bindings.extend(tuple_local_receiver_type_bindings(local, &context));
+            bindings
+        };
+
+        for (name, receiver_type) in bindings {
             record_local_receiver_type(name, receiver_type, &mut self.local_types);
         }
     }
@@ -74,6 +83,10 @@ impl<'a> Tracker<'a> {
     pub(super) fn receiver_type_for_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
         let context = self.context();
         method_receiver_type_from_expr(expr, &context)
+    }
+
+    pub(super) fn current_self_type(&self) -> Option<&ReceiverTypeRef> {
+        self.current_self_type.as_ref()
     }
 
     fn context(&self) -> ReceiverTypeContext<'_> {
@@ -125,6 +138,51 @@ fn local_receiver_type_binding(
         )
     })?;
     Some((name, receiver_type))
+}
+
+fn tuple_local_receiver_type_bindings(
+    local: &syn::Local,
+    context: &ReceiverTypeContext<'_>,
+) -> Vec<(String, ReceiverTypeRef)> {
+    let syn::Pat::Tuple(pat_tuple) = &local.pat else {
+        return Vec::new();
+    };
+    let Some(init) = &local.init else {
+        return Vec::new();
+    };
+    let Some(expr_tuple) = expr_tuple(&init.expr) else {
+        return Vec::new();
+    };
+    if pat_tuple.elems.len() != expr_tuple.elems.len() {
+        return Vec::new();
+    }
+
+    pat_tuple
+        .elems
+        .iter()
+        .zip(expr_tuple.elems.iter())
+        .filter_map(|(pat, expr)| {
+            let name = pat_ident_name(pat)?;
+            let receiver_type = method_receiver_type_from_expr(expr, context).or_else(|| {
+                receiver_type_from_init_expr(
+                    expr,
+                    context.module_names,
+                    context.item_names,
+                    context.top_level_return_types,
+                )
+            })?;
+            Some((name, receiver_type))
+        })
+        .collect()
+}
+
+fn expr_tuple(expr: &syn::Expr) -> Option<&syn::ExprTuple> {
+    match expr {
+        syn::Expr::Group(group) => expr_tuple(&group.expr),
+        syn::Expr::Paren(paren) => expr_tuple(&paren.expr),
+        syn::Expr::Tuple(tuple) => Some(tuple),
+        _ => None,
+    }
 }
 
 fn record_local_receiver_type(

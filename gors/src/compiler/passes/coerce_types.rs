@@ -1,7 +1,5 @@
 use syn::visit_mut::{self, VisitMut};
 
-use super::super::syn_inspect::type_path_ident_name;
-
 mod call_args;
 mod evaluation_order;
 mod pointer_cells;
@@ -10,11 +8,9 @@ mod structural_helpers;
 pub fn pass(file: &mut syn::File) {
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = pointer_cells::collect_statics(file);
-    let structural_helper_metadata = structural_helpers::InitialPassMetadata::collect(file);
     CoerceTypes {
         mutable_ref_call_args,
         pointer_cell_statics,
-        structural_helper_metadata,
         ..Default::default()
     }
     .visit_file_mut(file);
@@ -33,28 +29,14 @@ struct CoerceTypes {
     call_arg_scopes: Vec<call_args::FnArgScope>,
     mutable_ref_call_args: call_args::MutableRefCallArgs,
     pointer_cell_statics: pointer_cells::StaticNames,
-    structural_helper_metadata: structural_helpers::InitialPassMetadata,
-    impl_self_types: Vec<String>,
 }
 
 impl VisitMut for CoerceTypes {
-    fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-        if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
-            self.impl_self_types.push(self_ty);
-            visit_mut::visit_item_impl_mut(self, item_impl);
-            self.impl_self_types.pop();
-        } else {
-            visit_mut::visit_item_impl_mut(self, item_impl);
-        }
-    }
-
     fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
         let scope = call_args::FnArgScope::collect(&func.sig);
         self.call_arg_scopes.push(scope);
         visit_mut::visit_item_fn_mut(self, func);
         self.call_arg_scopes.pop();
-
-        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, None);
     }
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
@@ -62,12 +44,6 @@ impl VisitMut for CoerceTypes {
         self.call_arg_scopes.push(scope);
         visit_mut::visit_impl_item_fn_mut(self, func);
         self.call_arg_scopes.pop();
-
-        let self_reflect_fields = self.impl_self_types.last().and_then(|ty| {
-            self.structural_helper_metadata
-                .self_reflect_fields_for_initial_pass(ty, &func.block)
-        });
-        structural_helpers::prune_reflection_fallback(&mut func.block.stmts, self_reflect_fields);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
@@ -239,6 +215,52 @@ mod tests {
     }
 
     #[test]
+    fn initial_pass_does_not_prune_reflect_valueof_from_ordinary_code() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub fn call(mut v: Box<dyn std::any::Any>) {
+                let value = crate::reflect::ValueOf(v);
+                let _ = value;
+            }
+        };
+
+        pass(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("crate :: reflect :: ValueOf"),
+            "expected initial pass not to own reflection fallback pruning: {tokens}"
+        );
+    }
+
+    #[test]
+    fn post_helper_pass_prunes_top_level_reflect_fallback() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub fn intFromArg(mut a: Vec<Box<dyn std::any::Any>>, mut argNum: isize) -> bool {
+                let mut isInt = false;
+                if argNum < a.len() as isize {
+                    let mut v = crate::reflect::ValueOf(a[argNum as usize].clone());
+                    if v.Kind() == crate::reflect::Int {
+                        isInt = true;
+                    }
+                }
+                isInt
+            }
+        };
+
+        pass_after_structural_helpers(&mut file);
+
+        let tokens = quote::quote!(#file).to_string();
+        assert!(
+            tokens.contains("let mut isInt = false") && tokens.contains("isInt"),
+            "expected non-reflection top-level function body to remain: {tokens}"
+        );
+        assert!(
+            !tokens.contains("crate :: reflect :: ValueOf") && !tokens.contains("Kind"),
+            "expected post-helper pass to prune top-level reflect fallback: {tokens}"
+        );
+    }
+
+    #[test]
     fn it_does_not_replace_named_bodies_from_literal_mentions() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct pp;
@@ -351,7 +373,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
@@ -382,7 +404,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
@@ -493,7 +515,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
@@ -530,7 +552,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
@@ -559,7 +581,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(
@@ -650,7 +672,7 @@ mod tests {
             }
         };
 
-        pass(&mut file);
+        pass_after_structural_helpers(&mut file);
 
         let tokens = quote::quote!(#file).to_string();
         assert!(

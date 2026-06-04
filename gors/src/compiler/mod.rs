@@ -58,7 +58,7 @@ use receiver_type_facts::{
 };
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -5468,7 +5468,17 @@ enum CloneValueParamKind {
     Vec,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum MutRefParamKind {
+    Plain,
+    TraitObject { trait_name: String },
+}
+
 type ReceiverMethodArgTargets = receiver_method_targets::Targets<std::collections::HashSet<usize>>;
+type MutRefParamTargets = BTreeMap<String, BTreeMap<usize, MutRefParamKind>>;
+type ReceiverMethodMutRefTargets =
+    receiver_method_targets::Targets<BTreeMap<usize, MutRefParamKind>>;
+type TraitImplSet = BTreeSet<(String, String, String)>;
 type CloneValueParamTargets = BTreeMap<String, BTreeMap<usize, CloneValueParamKind>>;
 type ReceiverTraitSupertraits = receiver_method_targets::Supertraits;
 type ReceiverMethodCloneValueTargets =
@@ -6604,6 +6614,7 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
     let top_level_return_types = merged_top_level_return_types(modules, &module_names);
     let top_level_field_types = merged_top_level_field_types(modules, &module_names);
     let (targets, method_targets) = collect_mut_ref_targets(modules);
+    let (direct_trait_impls, mut_ref_trait_impls) = collect_trait_impl_self_kinds(modules);
     if targets.is_empty() && method_targets.is_empty() {
         return;
     }
@@ -6619,6 +6630,8 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
                 ),
                 targets: &targets,
                 method_targets: &method_targets,
+                direct_trait_impls: &direct_trait_impls,
+                mut_ref_trait_impls: &mut_ref_trait_impls,
             },
             &mut module.file,
         );
@@ -6627,23 +6640,20 @@ fn borrow_mut_ref_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
 
 fn collect_mut_ref_targets(
     modules: &BTreeMap<String, CompiledModule>,
-) -> (
-    BTreeMap<String, std::collections::HashSet<usize>>,
-    ReceiverMethodArgTargets,
-) {
+) -> (MutRefParamTargets, ReceiverMethodMutRefTargets) {
     let mut targets = BTreeMap::new();
-    let mut method_targets = ReceiverMethodArgTargets::default();
+    let mut method_targets = ReceiverMethodMutRefTargets::default();
     for module in modules.values() {
         for item in &module.file.items {
             match item {
                 syn::Item::Fn(item_fn) => {
-                    let indices = mut_ref_param_indices(&item_fn.sig);
-                    if indices.is_empty() {
+                    let param_kinds = mut_ref_param_kinds(&item_fn.sig);
+                    if param_kinds.is_empty() {
                         continue;
                     }
                     targets.insert(
                         format!("{}::{}", module.mod_name, item_fn.sig.ident),
-                        indices,
+                        param_kinds,
                     );
                 }
                 syn::Item::Impl(item_impl) => {
@@ -6658,18 +6668,43 @@ fn collect_mut_ref_targets(
                         let syn::ImplItem::Fn(item_fn) = item else {
                             continue;
                         };
-                        let indices = mut_ref_param_indices(&item_fn.sig)
+                        let param_kinds = mut_ref_param_kinds(&item_fn.sig)
                             .into_iter()
-                            .filter_map(|index| index.checked_sub(1))
-                            .collect::<std::collections::HashSet<_>>();
-                        if indices.is_empty() {
+                            .filter_map(|(index, kind)| {
+                                index.checked_sub(1).map(|arg_index| (arg_index, kind))
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                        if param_kinds.is_empty() {
                             continue;
                         }
                         method_targets.insert_receiver(
                             &module.mod_name,
                             &self_name,
                             &item_fn.sig.ident.to_string(),
-                            indices,
+                            param_kinds,
+                        );
+                    }
+                }
+                syn::Item::Trait(item_trait) => {
+                    let self_name = item_trait.ident.to_string();
+                    for item in &item_trait.items {
+                        let syn::TraitItem::Fn(item_fn) = item else {
+                            continue;
+                        };
+                        let param_kinds = mut_ref_param_kinds(&item_fn.sig)
+                            .into_iter()
+                            .filter_map(|(index, kind)| {
+                                index.checked_sub(1).map(|arg_index| (arg_index, kind))
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                        if param_kinds.is_empty() {
+                            continue;
+                        }
+                        method_targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &item_fn.sig.ident.to_string(),
+                            param_kinds,
                         );
                     }
                 }
@@ -6681,7 +6716,7 @@ fn collect_mut_ref_targets(
     (targets, method_targets)
 }
 
-fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usize> {
+fn mut_ref_param_kinds(sig: &syn::Signature) -> BTreeMap<usize, MutRefParamKind> {
     sig.inputs
         .iter()
         .enumerate()
@@ -6689,16 +6724,143 @@ fn mut_ref_param_indices(sig: &syn::Signature) -> std::collections::HashSet<usiz
             let syn::FnArg::Typed(pat_type) = input else {
                 return None;
             };
-            matches!(&*pat_type.ty, syn::Type::Reference(reference) if reference.mutability.is_some())
-                .then_some(index)
+            let syn::Type::Reference(reference) = &*pat_type.ty else {
+                return None;
+            };
+            reference.mutability.as_ref()?;
+            Some((
+                index,
+                trait_object_name(&reference.elem)
+                    .map(|trait_name| MutRefParamKind::TraitObject { trait_name })
+                    .unwrap_or(MutRefParamKind::Plain),
+            ))
         })
         .collect()
 }
 
+fn trait_object_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::TraitObject(trait_object) = ty else {
+        return None;
+    };
+    trait_object.bounds.iter().find_map(|bound| {
+        let syn::TypeParamBound::Trait(trait_bound) = bound else {
+            return None;
+        };
+        trait_bound
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+    })
+}
+
+fn collect_trait_impl_self_kinds(
+    modules: &BTreeMap<String, CompiledModule>,
+) -> (TraitImplSet, TraitImplSet) {
+    let mut direct_impls = TraitImplSet::new();
+    let mut mut_ref_impls = TraitImplSet::new();
+
+    for module in modules.values() {
+        for item in &module.file.items {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let Some((_, trait_path, _)) = &item_impl.trait_ else {
+                continue;
+            };
+            let Some(trait_name) = trait_path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+            else {
+                continue;
+            };
+
+            if let Some(self_name) = direct_impl_self_name(&item_impl.self_ty) {
+                direct_impls.insert((module.mod_name.clone(), self_name, trait_name.clone()));
+            }
+            if let Some(self_name) = mut_ref_impl_self_name(&item_impl.self_ty) {
+                mut_ref_impls.insert((module.mod_name.clone(), self_name, trait_name));
+            }
+        }
+    }
+
+    (direct_impls, mut_ref_impls)
+}
+
+fn direct_impl_self_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn mut_ref_impl_self_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Reference(reference) = ty else {
+        return None;
+    };
+    reference.mutability.as_ref()?;
+    direct_impl_self_name(&reference.elem)
+}
+
+fn borrow_mut_ref_call_arg(
+    arg: &mut syn::Expr,
+    kind: &MutRefParamKind,
+    receiver_types: &receiver_type_scopes::Tracker<'_>,
+    direct_trait_impls: &TraitImplSet,
+    mut_ref_trait_impls: &TraitImplSet,
+) {
+    if should_reborrow_self_for_mut_trait_object(
+        arg,
+        kind,
+        receiver_types,
+        direct_trait_impls,
+        mut_ref_trait_impls,
+    ) {
+        *arg = syn::parse_quote! { &mut { let __gors_self = &mut *self; __gors_self } };
+        return;
+    }
+
+    borrow_mut_vec_call_arg(arg);
+}
+
+fn should_reborrow_self_for_mut_trait_object(
+    arg: &syn::Expr,
+    kind: &MutRefParamKind,
+    receiver_types: &receiver_type_scopes::Tracker<'_>,
+    direct_trait_impls: &TraitImplSet,
+    mut_ref_trait_impls: &TraitImplSet,
+) -> bool {
+    let MutRefParamKind::TraitObject { trait_name } = kind else {
+        return false;
+    };
+    if expr_path_ident(arg).as_deref() != Some("self") {
+        return false;
+    }
+    let Some(self_type) = receiver_types.current_self_type() else {
+        return false;
+    };
+    let self_module = self_type
+        .module
+        .as_deref()
+        .unwrap_or_else(|| receiver_types.module_name());
+    let key = (
+        self_module.to_string(),
+        self_type.name.clone(),
+        trait_name.clone(),
+    );
+    mut_ref_trait_impls.contains(&key) && !direct_trait_impls.contains(&key)
+}
+
 struct BorrowMutRefCallArgs<'a> {
     receiver_types: receiver_type_scopes::Tracker<'a>,
-    targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
-    method_targets: &'a ReceiverMethodArgTargets,
+    targets: &'a MutRefParamTargets,
+    method_targets: &'a ReceiverMethodMutRefTargets,
+    direct_trait_impls: &'a TraitImplSet,
+    mut_ref_trait_impls: &'a TraitImplSet,
 }
 
 impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
@@ -6741,12 +6903,18 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
         let Some(key) = call_target_key(&call.func, self.receiver_types.module_name()) else {
             return;
         };
-        let Some(indices) = self.targets.get(&key) else {
+        let Some(param_kinds) = self.targets.get(&key) else {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
-            if indices.contains(&index) {
-                borrow_mut_vec_call_arg(arg);
+            if let Some(kind) = param_kinds.get(&index) {
+                borrow_mut_ref_call_arg(
+                    arg,
+                    kind,
+                    &self.receiver_types,
+                    self.direct_trait_impls,
+                    self.mut_ref_trait_impls,
+                );
             }
         }
     }
@@ -6754,7 +6922,7 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
     fn visit_expr_method_call_mut(&mut self, call: &mut syn::ExprMethodCall) {
         syn::visit_mut::visit_expr_method_call_mut(self, call);
         let receiver_type = self.receiver_types.receiver_type_for_expr(&call.receiver);
-        let Some(indices) = self.method_targets.target_for_call(
+        let Some(param_kinds) = self.method_targets.target_for_call(
             self.receiver_types.module_name(),
             &call.method.to_string(),
             receiver_type.as_ref(),
@@ -6762,8 +6930,14 @@ impl syn::visit_mut::VisitMut for BorrowMutRefCallArgs<'_> {
             return;
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
-            if indices.contains(&index) {
-                borrow_mut_vec_call_arg(arg);
+            if let Some(kind) = param_kinds.get(&index) {
+                borrow_mut_ref_call_arg(
+                    arg,
+                    kind,
+                    &self.receiver_types,
+                    self.direct_trait_impls,
+                    self.mut_ref_trait_impls,
+                );
             }
         }
     }
@@ -27820,6 +27994,126 @@ func main() {
         assert!(
             !output.contains("plain . fill (& mut other)"),
             "expected same-named value method not to inherit NeedsMut::fill coercion: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_reborrows_self_for_mut_trait_object_impls() {
+        let main_file: syn::File = rust! {
+            pub trait State {
+                fn write(&mut self);
+            }
+
+            pub trait Formatter {
+                fn format(&mut self, state: &mut dyn State);
+            }
+
+            pub struct Printer;
+            pub struct FormatterImpl;
+
+            impl<'a> State for &'a mut Printer {
+                fn write(&mut self) {}
+            }
+
+            impl Formatter for FormatterImpl {
+                fn format(&mut self, state: &mut dyn State) {}
+            }
+
+            impl Printer {
+                pub fn call(&mut self) {
+                    let (mut formatter, mut ok) = (
+                        Box::new(FormatterImpl::default()) as Box<dyn Formatter>,
+                        true,
+                    );
+                    if ok {
+                        formatter.format(self);
+                    }
+                }
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("formatter . format (& mut {")
+                && output.contains("let __gors_self = & mut * self")
+                && output.contains("__gors_self"),
+            "expected self to be reborrowed when &mut Self implements the trait object target: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_keeps_self_for_direct_trait_object_impls() {
+        let main_file: syn::File = rust! {
+            pub trait State {
+                fn write(&mut self);
+            }
+
+            pub trait Formatter {
+                fn format(&mut self, state: &mut dyn State);
+            }
+
+            pub struct Printer;
+            pub struct FormatterImpl;
+
+            impl State for Printer {
+                fn write(&mut self) {}
+            }
+
+            impl Formatter for FormatterImpl {
+                fn format(&mut self, state: &mut dyn State) {}
+            }
+
+            impl Printer {
+                pub fn call(&mut self) {
+                    let (mut formatter, mut ok) = (
+                        Box::new(FormatterImpl::default()) as Box<dyn Formatter>,
+                        true,
+                    );
+                    if ok {
+                        formatter.format(self);
+                    }
+                }
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = &modules.get("__main__").expect("main module").file;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("formatter . format (self)"),
+            "expected self to stay unchanged when Self directly implements the trait object target: {output}"
+        );
+        assert!(
+            !output.contains("__gors_self"),
+            "expected direct trait impl not to receive the &mut Self reborrow: {output}"
         );
     }
 

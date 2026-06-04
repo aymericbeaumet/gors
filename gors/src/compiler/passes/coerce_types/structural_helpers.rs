@@ -8,28 +8,6 @@ mod reflection_fallback;
 mod self_fields;
 
 #[derive(Default)]
-pub(super) struct InitialPassMetadata {
-    reflection_fallback: reflection_fallback::Metadata,
-}
-
-impl InitialPassMetadata {
-    pub(super) fn collect(file: &syn::File) -> Self {
-        Self {
-            reflection_fallback: reflection_fallback::Metadata::collect(file),
-        }
-    }
-
-    pub(super) fn self_reflect_fields_for_initial_pass(
-        &self,
-        self_ty: &str,
-        block: &syn::Block,
-    ) -> Option<&reflection_fallback::FieldSet> {
-        self.reflection_fallback
-            .fields_for_initial_pass(self_ty, block)
-    }
-}
-
-#[derive(Default)]
 struct PostHelperMetadata {
     fmt_flush: fmt_flush::Metadata,
     reflection_fallback: reflection_fallback::Metadata,
@@ -41,10 +19,6 @@ impl PostHelperMetadata {
             fmt_flush: fmt_flush::Metadata::collect(file),
             reflection_fallback: reflection_fallback::Metadata::collect(file),
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.fmt_flush.is_empty() && self.reflection_fallback.is_empty()
     }
 
     fn push_stmt_with_flush(
@@ -62,16 +36,12 @@ impl PostHelperMetadata {
         self_ty: &str,
         block: &syn::Block,
     ) -> Option<&reflection_fallback::FieldSet> {
-        self.reflection_fallback
-            .fields_after_helpers(self_ty, block)
+        self.reflection_fallback.fields_for_pruning(self_ty, block)
     }
 }
 
 pub(super) fn pass_after_structural_helpers(file: &mut syn::File) {
     let metadata = PostHelperMetadata::collect(file);
-    if metadata.is_empty() {
-        return;
-    }
     CoerceStructuralHelpers {
         metadata,
         impl_self_types: Vec::new(),
@@ -85,6 +55,11 @@ struct CoerceStructuralHelpers {
 }
 
 impl VisitMut for CoerceStructuralHelpers {
+    fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+        visit_mut::visit_item_fn_mut(self, func);
+        prune_reflection_fallback(&mut func.block.stmts, None);
+    }
+
     fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
         if let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) {
             self.impl_self_types.push(self_ty);

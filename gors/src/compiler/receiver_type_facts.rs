@@ -273,7 +273,10 @@ pub(super) fn method_receiver_type_from_expr(
                 }
             })
         }
-        syn::Expr::Cast(cast) => method_receiver_type_from_expr(&cast.expr, context),
+        syn::Expr::Cast(cast) => {
+            receiver_type_from_trait_object_cast_type(&cast.ty, context.module_names)
+                .or_else(|| method_receiver_type_from_expr(&cast.expr, context))
+        }
         syn::Expr::Field(field) => {
             let base_type = method_receiver_type_from_expr(&field.base, context)?;
             let syn::Member::Named(member) = &field.member else {
@@ -511,12 +514,15 @@ pub(super) fn receiver_type_from_init_expr(
                 top_level_return_types,
             )
         }
-        syn::Expr::Cast(cast) => receiver_type_from_init_expr(
-            &cast.expr,
-            module_names,
-            item_names,
-            top_level_return_types,
-        ),
+        syn::Expr::Cast(cast) => receiver_type_from_trait_object_cast_type(&cast.ty, module_names)
+            .or_else(|| {
+                receiver_type_from_init_expr(
+                    &cast.expr,
+                    module_names,
+                    item_names,
+                    top_level_return_types,
+                )
+            }),
         syn::Expr::Group(group) => receiver_type_from_init_expr(
             &group.expr,
             module_names,
@@ -554,6 +560,30 @@ pub(super) fn receiver_type_from_init_expr(
             top_level_return_types,
         ),
         _ => None,
+    }
+}
+
+fn receiver_type_from_trait_object_cast_type(
+    ty: &syn::Type,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTypeRef> {
+    if !type_is_or_wraps_trait_object(ty) {
+        return None;
+    }
+    receiver_type_from_type(ty, module_names)
+}
+
+fn type_is_or_wraps_trait_object(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Group(group) => type_is_or_wraps_trait_object(&group.elem),
+        syn::Type::Paren(paren) => type_is_or_wraps_trait_object(&paren.elem),
+        syn::Type::Path(path) => {
+            first_type_arg_for_path_last_ident_any(&path.path, &["Arc", "Box", "GorsPtr", "Mutex"])
+                .is_some_and(type_is_or_wraps_trait_object)
+        }
+        syn::Type::Reference(reference) => type_is_or_wraps_trait_object(&reference.elem),
+        syn::Type::TraitObject(_) => true,
+        _ => false,
     }
 }
 

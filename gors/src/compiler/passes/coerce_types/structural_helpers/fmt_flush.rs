@@ -16,10 +16,6 @@ impl Metadata {
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.methods_by_receiver.is_empty()
-    }
-
     fn should_flush_after_stmt(&self, impl_self_types: &[String], stmt: &syn::Stmt) -> bool {
         let Some(methods) = impl_self_types
             .last()

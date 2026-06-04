@@ -18,11 +18,7 @@ impl Metadata {
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.self_reflect_value_fields.is_empty()
-    }
-
-    pub(super) fn fields_for_initial_pass(
+    pub(super) fn fields_for_pruning(
         &self,
         self_ty: &str,
         block: &syn::Block,
@@ -34,15 +30,6 @@ impl Metadata {
                 block_passes_self_reflect_field_to_method(block, fields, methods)
             }))
         .then_some(fields)
-    }
-
-    pub(super) fn fields_after_helpers(
-        &self,
-        self_ty: &str,
-        block: &syn::Block,
-    ) -> Option<&FieldSet> {
-        let fields = self.fields_for_receiver(self_ty)?;
-        block_has_self_reflect_field_runtime_fallback(block, fields).then_some(fields)
     }
 
     fn fields_for_receiver(&self, self_ty: &str) -> Option<&FieldSet> {
@@ -452,9 +439,7 @@ mod tests {
         };
 
         assert!(
-            metadata
-                .fields_for_initial_pass("Printer", &run.block)
-                .is_some(),
+            metadata.fields_for_pruning("Printer", &run.block).is_some(),
             "expected reflect.Value method argument to activate fallback pruning"
         );
     }
@@ -484,9 +469,7 @@ mod tests {
         };
 
         assert!(
-            metadata
-                .fields_for_initial_pass("Printer", &run.block)
-                .is_none(),
+            metadata.fields_for_pruning("Printer", &run.block).is_none(),
             "expected method name alone not to activate fallback pruning"
         );
     }
