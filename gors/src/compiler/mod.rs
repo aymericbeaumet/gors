@@ -36341,6 +36341,42 @@ func main() {
     }
 
     #[test]
+    fn it_should_prune_unrequested_qualified_external_trait_impls_generically() {
+        let file: syn::File = rust! {
+            pub struct helper;
+
+            impl crate::labels::Labeler for helper {
+                fn Label(&mut self) -> String {
+                    crate::other::Name()
+                }
+            }
+        };
+        let roots = std::collections::HashSet::from(["helper".to_string()]);
+        let module_names =
+            std::collections::HashSet::from(["labels".to_string(), "other".to_string()]);
+
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(reachable.names.contains("helper"));
+        assert!(
+            !reachable
+                .refs
+                .get("labels")
+                .is_some_and(|refs| refs.contains("Labeler")),
+            "{:?}",
+            reachable.refs
+        );
+        assert!(
+            !reachable
+                .refs
+                .get("other")
+                .is_some_and(|refs| refs.contains("Name")),
+            "{:?}",
+            reachable.refs
+        );
+    }
+
+    #[test]
     fn it_should_collect_methods_called_on_indexed_newtype_elements() {
         let file: syn::File = rust! {
             pub struct sparseEntry {

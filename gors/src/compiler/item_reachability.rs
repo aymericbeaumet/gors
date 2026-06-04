@@ -150,7 +150,13 @@ pub(super) fn reachable_item_for_names(
         }
         if let Some((_, path, _)) = &item_impl.trait_
             && let Some(trait_name) = path.segments.last().map(|seg| seg.ident.to_string())
-            && !trait_impl_can_follow_self_reachability(path, &trait_name, names, top_level_names)
+            && !trait_impl_can_follow_self_reachability(
+                path,
+                &trait_name,
+                &item_impl.self_ty,
+                names,
+                top_level_names,
+            )
         {
             return None;
         }
@@ -212,6 +218,7 @@ fn qualified_external_trait_path(
 fn trait_impl_can_follow_self_reachability(
     path: &syn::Path,
     trait_name: &str,
+    self_ty: &syn::Type,
     names: &std::collections::HashSet<String>,
     top_level_names: &std::collections::HashSet<String>,
 ) -> bool {
@@ -222,17 +229,56 @@ fn trait_impl_can_follow_self_reachability(
     {
         return true;
     }
-    if external_trait_impl_requires_explicit_reachability(path, trait_name) {
-        return false;
+    if is_rust_display_trait_path(path, trait_name)
+        || is_rust_operator_trait_path(path)
+        || is_builtin_runtime_trait_path(path)
+        || is_host_resource_trait_impl(path, self_ty)
+        || is_generated_pointer_cell_impl(self_ty)
+        || is_runtime_error_trait_path(path, trait_name)
+    {
+        return true;
     }
     !top_level_names.contains(trait_name)
+        && path.leading_colon.is_none()
+        && path.segments.len() == 1
 }
 
-fn external_trait_impl_requires_explicit_reachability(path: &syn::Path, trait_name: &str) -> bool {
-    // Do not generalize this to all qualified external traits: generated
-    // interface conversions for builtin errors and local packages still depend
-    // on self-reachable external impls.
-    trait_name == "Stringer" && path_starts_with(path, &["crate", "fmt"])
+fn is_generated_pointer_cell_impl(self_ty: &syn::Type) -> bool {
+    match self_ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "GorsPtr"),
+        syn::Type::Reference(reference) => is_generated_pointer_cell_impl(&reference.elem),
+        _ => false,
+    }
+}
+
+fn is_runtime_error_trait_path(path: &syn::Path, trait_name: &str) -> bool {
+    matches!(trait_name, "error" | "Error")
+        && ((path.segments.len() == 3 && path_starts_with(path, &["crate", "builtin", "error"]))
+            || (path.segments.len() == 3 && path_starts_with(path, &["std", "error", "Error"])))
+}
+
+fn is_rust_display_trait_path(path: &syn::Path, trait_name: &str) -> bool {
+    trait_name == "Display"
+        && path.segments.len() == 3
+        && path_starts_with(path, &["std", "fmt", "Display"])
+}
+
+fn is_rust_operator_trait_path(path: &syn::Path) -> bool {
+    path.segments.len() == 3 && path_starts_with(path, &["std", "ops"])
+}
+
+fn is_builtin_runtime_trait_path(path: &syn::Path) -> bool {
+    path.segments.len() == 3 && path_starts_with(path, &["crate", "builtin"])
+}
+
+fn is_host_resource_trait_impl(path: &syn::Path, self_ty: &syn::Type) -> bool {
+    named_self_type(self_ty).as_deref() == Some("File")
+        && path.segments.len() == 3
+        && path_starts_with(path, &["crate", "io"])
 }
 
 pub(super) fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
