@@ -6278,27 +6278,13 @@ fn collect_vec_value_method_targets(
                 }
                 syn::Item::Trait(item_trait) => {
                     let self_name = item_trait.ident.to_string();
-                    let direct_supertraits = item_trait
-                        .supertraits
-                        .iter()
-                        .filter_map(|bound| {
-                            let syn::TypeParamBound::Trait(trait_bound) = bound else {
-                                return None;
-                            };
-                            let mut receiver_type =
-                                receiver_type_from_path(&trait_bound.path, module_names)?;
-                            if receiver_type.module.is_none() {
-                                receiver_type.module = Some(module.mod_name.clone());
-                            }
-                            Some(receiver_type)
-                        })
-                        .collect::<Vec<_>>();
-                    if !direct_supertraits.is_empty() {
-                        supertraits.insert(
-                            (module.mod_name.clone(), self_name.clone()),
-                            direct_supertraits,
-                        );
-                    }
+                    record_direct_supertraits(
+                        &mut supertraits,
+                        &module.mod_name,
+                        &self_name,
+                        item_trait,
+                        module_names,
+                    );
                     for trait_item in &item_trait.items {
                         let syn::TraitItem::Fn(method) = trait_item else {
                             continue;
@@ -6330,6 +6316,35 @@ fn collect_vec_value_method_targets(
     targets.inherit_supertrait_methods(&supertraits);
     targets.finalize_unambiguous_names();
     targets
+}
+
+fn record_direct_supertraits(
+    supertraits: &mut ReceiverTraitSupertraits,
+    module_name: &str,
+    self_name: &str,
+    item_trait: &syn::ItemTrait,
+    module_names: &std::collections::HashSet<String>,
+) {
+    let direct_supertraits = item_trait
+        .supertraits
+        .iter()
+        .filter_map(|bound| {
+            let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                return None;
+            };
+            let mut receiver_type = receiver_type_from_path(&trait_bound.path, module_names)?;
+            if receiver_type.module.is_none() {
+                receiver_type.module = Some(module_name.to_string());
+            }
+            Some(receiver_type)
+        })
+        .collect::<Vec<_>>();
+    if !direct_supertraits.is_empty() {
+        supertraits.insert(
+            (module_name.to_string(), self_name.to_string()),
+            direct_supertraits,
+        );
+    }
 }
 
 fn clone_value_param_kinds(sig: &syn::Signature) -> BTreeMap<usize, CloneValueParamKind> {
@@ -6624,27 +6639,13 @@ fn collect_mut_ref_targets(
                 }
                 syn::Item::Trait(item_trait) => {
                     let self_name = item_trait.ident.to_string();
-                    let direct_supertraits = item_trait
-                        .supertraits
-                        .iter()
-                        .filter_map(|bound| {
-                            let syn::TypeParamBound::Trait(trait_bound) = bound else {
-                                return None;
-                            };
-                            let mut receiver_type =
-                                receiver_type_from_path(&trait_bound.path, module_names)?;
-                            if receiver_type.module.is_none() {
-                                receiver_type.module = Some(module.mod_name.clone());
-                            }
-                            Some(receiver_type)
-                        })
-                        .collect::<Vec<_>>();
-                    if !direct_supertraits.is_empty() {
-                        supertraits.insert(
-                            (module.mod_name.clone(), self_name.clone()),
-                            direct_supertraits,
-                        );
-                    }
+                    record_direct_supertraits(
+                        &mut supertraits,
+                        &module.mod_name,
+                        &self_name,
+                        item_trait,
+                        module_names,
+                    );
                     for item in &item_trait.items {
                         let syn::TraitItem::Fn(item_fn) = item else {
                             continue;
