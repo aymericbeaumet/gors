@@ -1,5 +1,9 @@
 use syn::visit_mut::{self, VisitMut};
 
+use super::super::super::syn_inspect::{
+    expr_contains_path_ident, mut_borrowed_path_name, receiver_root_ident_name,
+};
+
 pub(super) fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
     let syn::Stmt::Expr(syn::Expr::Call(call), _) = stmt else {
         return Vec::new();
@@ -90,97 +94,4 @@ pub(super) fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::
         });
     }
     hoisted
-}
-
-fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
-    match expr {
-        syn::Expr::Path(_) => super::syntax::path_ident_name(expr),
-        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
-            receiver_root_ident_name(&unary.expr)
-        }
-        syn::Expr::Paren(paren) => receiver_root_ident_name(&paren.expr),
-        syn::Expr::Group(group) => receiver_root_ident_name(&group.expr),
-        syn::Expr::Field(field) => receiver_root_ident_name(&field.base),
-        syn::Expr::Reference(reference) => receiver_root_ident_name(&reference.expr),
-        syn::Expr::MethodCall(method)
-            if method.args.is_empty() && is_transparent_receiver_method(&method.method) =>
-        {
-            receiver_root_ident_name(&method.receiver)
-        }
-        _ => None,
-    }
-}
-
-fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
-    matches!(
-        method.to_string().as_str(),
-        "as_mut" | "as_ref" | "clone" | "lock" | "unwrap"
-    )
-}
-
-fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
-    let syn::Expr::Reference(reference) = expr else {
-        return None;
-    };
-    reference.mutability.as_ref()?;
-    super::syntax::path_ident_name(&reference.expr)
-}
-
-fn expr_contains_path_ident(expr: &syn::Expr, name: &str) -> bool {
-    struct Finder<'a> {
-        name: &'a str,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-            if path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1
-                && path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|segment| segment.ident == self.name)
-            {
-                self.found = true;
-            }
-            syn::visit::visit_expr_path(self, path);
-        }
-    }
-
-    let mut finder = Finder { name, found: false };
-    syn::visit::Visit::visit_expr(&mut finder, expr);
-    finder.found
-}
-
-pub(super) fn expr_contains_any_path_ident(
-    expr: &syn::Expr,
-    names: &std::collections::HashSet<String>,
-) -> bool {
-    names
-        .iter()
-        .any(|name| expr_contains_path_ident(expr, name))
-}
-
-pub(super) fn expr_contains_method_call(expr: &syn::Expr, method: &str) -> bool {
-    struct Finder<'a> {
-        method: &'a str,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if call.method == self.method {
-                self.found = true;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-    }
-
-    let mut finder = Finder {
-        method,
-        found: false,
-    };
-    syn::visit::Visit::visit_expr(&mut finder, expr);
-    finder.found
 }

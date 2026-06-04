@@ -138,6 +138,99 @@ pub(super) fn expr_path_ident_or_clone(expr: &syn::Expr) -> Option<String> {
     }
 }
 
+pub(super) fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(_) => path_ident_name(expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            receiver_root_ident_name(&unary.expr)
+        }
+        syn::Expr::Paren(paren) => receiver_root_ident_name(&paren.expr),
+        syn::Expr::Group(group) => receiver_root_ident_name(&group.expr),
+        syn::Expr::Field(field) => receiver_root_ident_name(&field.base),
+        syn::Expr::Reference(reference) => receiver_root_ident_name(&reference.expr),
+        syn::Expr::MethodCall(method)
+            if method.args.is_empty() && is_transparent_receiver_method(&method.method) =>
+        {
+            receiver_root_ident_name(&method.receiver)
+        }
+        _ => None,
+    }
+}
+
+fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
+    matches!(
+        method.to_string().as_str(),
+        "as_mut" | "as_ref" | "clone" | "lock" | "unwrap"
+    )
+}
+
+pub(super) fn mut_borrowed_path_name(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Reference(reference) = expr else {
+        return None;
+    };
+    reference.mutability.as_ref()?;
+    path_ident_name(&reference.expr)
+}
+
+pub(super) fn expr_contains_path_ident(expr: &syn::Expr, name: &str) -> bool {
+    struct Finder<'a> {
+        name: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+            if path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == self.name)
+            {
+                self.found = true;
+            }
+            syn::visit::visit_expr_path(self, path);
+        }
+    }
+
+    let mut finder = Finder { name, found: false };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
+pub(super) fn expr_contains_any_path_ident(
+    expr: &syn::Expr,
+    names: &std::collections::HashSet<String>,
+) -> bool {
+    names
+        .iter()
+        .any(|name| expr_contains_path_ident(expr, name))
+}
+
+pub(super) fn expr_contains_method_call(expr: &syn::Expr, method: &str) -> bool {
+    struct Finder<'a> {
+        method: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if call.method == self.method {
+                self.found = true;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        method,
+        found: false,
+    };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
 pub(super) fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
@@ -502,6 +595,50 @@ mod tests {
         );
         assert_eq!(expr_path_ident_or_clone(&field_clone), None);
         assert_eq!(expr_path_ident_or_clone(&clone_with_arg), None);
+    }
+
+    #[test]
+    fn receiver_root_ident_name_follows_generated_receiver_wrappers() {
+        let receiver: syn::Expr = parse_quote! { (&((*value).field.clone().lock().unwrap())) };
+        let call_with_args: syn::Expr = parse_quote! { value.wrap(extra) };
+        let call_no_root: syn::Expr = parse_quote! { make_value().field };
+
+        assert_eq!(
+            receiver_root_ident_name(&receiver).as_deref(),
+            Some("value")
+        );
+        assert_eq!(receiver_root_ident_name(&call_with_args), None);
+        assert_eq!(receiver_root_ident_name(&call_no_root), None);
+    }
+
+    #[test]
+    fn mut_borrowed_path_name_reads_only_simple_mut_path_borrows() {
+        let borrow: syn::Expr = parse_quote! { &mut value };
+        let parened_borrow: syn::Expr = parse_quote! { &mut ((value)) };
+        let field_borrow: syn::Expr = parse_quote! { &mut value.field };
+        let shared_borrow: syn::Expr = parse_quote! { &value };
+
+        assert_eq!(mut_borrowed_path_name(&borrow).as_deref(), Some("value"));
+        assert_eq!(
+            mut_borrowed_path_name(&parened_borrow).as_deref(),
+            Some("value")
+        );
+        assert_eq!(mut_borrowed_path_name(&field_borrow), None);
+        assert_eq!(mut_borrowed_path_name(&shared_borrow), None);
+    }
+
+    #[test]
+    fn expression_contains_helpers_match_local_paths_and_methods() {
+        let expr: syn::Expr = parse_quote! { value + other.wrap(crate::value) };
+        let names = ["missing".to_string(), "other".to_string()]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+
+        assert!(expr_contains_path_ident(&expr, "value"));
+        assert!(expr_contains_any_path_ident(&expr, &names));
+        assert!(!expr_contains_path_ident(&expr, "crate"));
+        assert!(expr_contains_method_call(&expr, "wrap"));
+        assert!(!expr_contains_method_call(&expr, "missing"));
     }
 
     #[test]

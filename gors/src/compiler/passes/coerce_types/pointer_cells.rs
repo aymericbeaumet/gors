@@ -1,8 +1,9 @@
 use syn::visit_mut::{self, VisitMut};
 
 use super::super::super::syn_inspect::{
-    first_type_arg_if_path_last_ident, pat_ident_name, pat_ident_names, path_ident_name,
-    strip_paren_or_group, stripped_clone_call_receiver_expr,
+    expr_contains_any_path_ident, expr_contains_method_call, first_type_arg_if_path_last_ident,
+    pat_ident_name, pat_ident_names, path_ident_name, strip_paren_or_group,
+    stripped_clone_call_receiver_expr,
 };
 
 pub(super) type StaticNames = std::collections::HashSet<String>;
@@ -129,12 +130,10 @@ fn pointer_cell_for_loop_bindings(
         .flatten()
         .cloned()
         .collect::<std::collections::HashSet<_>>();
-    if iter_names.is_empty()
-        || !super::evaluation_order::expr_contains_any_path_ident(iter, &iter_names)
-    {
+    if iter_names.is_empty() || !expr_contains_any_path_ident(iter, &iter_names) {
         return std::collections::HashSet::new();
     }
-    let skip_first = super::evaluation_order::expr_contains_method_call(iter, "enumerate");
+    let skip_first = expr_contains_method_call(iter, "enumerate");
     pat_value_ident_names(pat, skip_first)
 }
 
