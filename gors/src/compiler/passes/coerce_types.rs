@@ -1,7 +1,6 @@
 use syn::visit_mut::{self, VisitMut};
 
 mod call_args;
-mod comparisons;
 mod evaluation_order;
 mod pointer_cells;
 mod structural_helpers;
@@ -95,11 +94,6 @@ impl VisitMut for CoerceTypes {
     fn visit_expr_method_call_mut(&mut self, mc: &mut syn::ExprMethodCall) {
         visit_mut::visit_expr_method_call_mut(self, mc);
         call_args::coerce_scoped_call_args(&mut mc.args, self.call_arg_scopes.last());
-    }
-
-    fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
-        visit_mut::visit_expr_binary_mut(self, binary);
-        comparisons::coerce_binary_expr(binary);
     }
 
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {

@@ -26090,6 +26090,48 @@ func main() {
     }
 
     #[test]
+    fn equality_shapes_lower_from_go_types_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func checks(err error, value any, fn func(), p *int, q *int) bool {
+                    return err == nil &&
+                        nil != value &&
+                        fn == nil &&
+                        p == q
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("__gors_as_any () . is_none ()"),
+            "expected error nil comparison to use runtime interface hook: {output}"
+        );
+        assert!(
+            output.contains("! crate :: builtin :: interface_is_nil"),
+            "expected any nil comparison to use runtime interface nil check: {output}"
+        );
+        assert!(
+            output.contains("fn_) . lock () . unwrap () . is_none ()"),
+            "expected function nil comparison to inspect the function cell: {output}"
+        );
+        assert!(
+            output.contains("crate :: builtin :: GorsPtr :: ptr_eq"),
+            "expected pointer equality to use pointer-cell identity: {output}"
+        );
+        assert!(
+            !output.contains("Box :: new"),
+            "expected equality lowering not to depend on Box::new normalization: {output}"
+        );
+    }
+
+    #[test]
     fn imported_interface_param_type_uses_type_env_not_trait_name() {
         fn ident(name: &'static str) -> crate::ast::Ident<'static> {
             crate::ast::Ident {
