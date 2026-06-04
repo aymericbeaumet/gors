@@ -194,10 +194,9 @@ fn impl_item_name_reachable(
     item_name: &str,
     names: &std::collections::HashSet<String>,
 ) -> bool {
-    names.contains(item_name)
-        || self_names
-            .iter()
-            .any(|self_name| names.contains(&impl_method_reachability_name(self_name, item_name)))
+    self_names
+        .iter()
+        .any(|self_name| names.contains(&impl_method_reachability_name(self_name, item_name)))
 }
 
 fn trait_item_name_reachable(

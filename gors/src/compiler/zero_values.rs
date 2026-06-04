@@ -1,14 +1,10 @@
-use super::ast;
+use super::{ast, typeinfer};
 
 pub(super) fn expr_for_type(expr: &ast::Expr) -> syn::Expr {
     match expr {
-        ast::Expr::Ident(id) if id.name == "any" => {
-            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
-        }
-        ast::Expr::Ident(id) if id.name == "error" => {
-            syn::parse_quote! {
-                Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
-            }
+        ast::Expr::ParenExpr(paren) => expr_for_type(&paren.x),
+        ast::Expr::Ident(id) if matches!(id.name, "any" | "error") => {
+            expr_for_type_name(Some(id.name))
         }
         _ if let Some(interface_name) = super::interface_name_from_type_expr(expr) => {
             super::boxed_noop_interface_expr(&interface_name)
@@ -21,6 +17,82 @@ pub(super) fn expr_for_type(expr: &ast::Expr) -> syn::Expr {
             expr_for_array_type(array_type)
         }
         _ => syn::parse_quote! { Default::default() },
+    }
+}
+
+pub(super) fn expr_for_optional_type(type_expr: Option<&ast::Expr>) -> syn::Expr {
+    match type_expr {
+        Some(ast::Expr::Ident(ident)) => expr_for_type_name(Some(ident.name)),
+        Some(ast::Expr::InterfaceType(_)) => {
+            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
+        }
+        Some(ast::Expr::ArrayType(array_type)) => expr_for_array_type(array_type),
+        Some(ast::Expr::MapType(_) | ast::Expr::StarExpr(_)) => {
+            syn::parse_quote! { Default::default() }
+        }
+        Some(_) => syn::parse_quote! { Default::default() },
+        None => syn::parse_quote! { 0 },
+    }
+}
+
+pub(super) fn expr_for_type_name(type_name: Option<&str>) -> syn::Expr {
+    match type_name {
+        Some("bool") => syn::parse_quote! { false },
+        Some("string") => syn::parse_quote! { String::new() },
+        Some("float32") | Some("float64") => syn::parse_quote! { 0.0 },
+        Some("int") | Some("int8") | Some("int16") | Some("int32") | Some("int64")
+        | Some("uint") | Some("uint8") | Some("uint16") | Some("uint32") | Some("uint64")
+        | Some("uintptr") | Some("byte") | Some("rune") => syn::parse_quote! { 0 },
+        Some("error") => syn::parse_quote! {
+            Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+        },
+        Some("any") => syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> },
+        _ => syn::parse_quote! { Default::default() },
+    }
+}
+
+pub(super) fn expr_for_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr> {
+    match super::resolved_go_type(go_type) {
+        typeinfer::GoType::Error => Some(expr_for_type_name(Some("error"))),
+        typeinfer::GoType::Any => Some(expr_for_type_name(Some("any"))),
+        typeinfer::GoType::Bool => Some(expr_for_type_name(Some("bool"))),
+        typeinfer::GoType::String => Some(expr_for_type_name(Some("string"))),
+        typeinfer::GoType::Interface(_) => None,
+        _ => Some(syn::parse_quote! { Default::default() }),
+    }
+}
+
+pub(super) fn expr_for_syn_type(ty: Option<&syn::Type>) -> syn::Expr {
+    if let Some(ty) = ty {
+        if super::is_any_type(ty) {
+            return expr_for_type_name(Some("any"));
+        }
+    }
+    if matches!(ty, Some(syn::Type::Array(_))) {
+        return syn::parse_quote! { std::array::from_fn(|_| Default::default()) };
+    }
+    if let Some(syn::Type::Path(type_path)) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            let name = seg.ident.to_string();
+            match name.as_str() {
+                "bool" => return expr_for_type_name(Some("bool")),
+                "string" | "String" => return expr_for_type_name(Some("string")),
+                "float32" | "float64" | "f32" | "f64" => {
+                    return expr_for_type_name(Some("float64"));
+                }
+                "isize" | "i8" | "i16" | "i32" | "i64" | "usize" | "u8" | "u16" | "u32" | "u64" => {
+                    return expr_for_type_name(Some("int"));
+                }
+                "Vec" => return syn::parse_quote! { Vec::new() },
+                "HashMap" => return syn::parse_quote! { std::collections::HashMap::new() },
+                _ => {}
+            }
+        }
+    }
+    if ty.is_some() {
+        syn::parse_quote! { Default::default() }
+    } else {
+        syn::parse_quote! { 0 }
     }
 }
 
@@ -86,5 +158,44 @@ mod tests {
         assert!(zero.contains("std :: array :: from_fn"), "{zero}");
         assert!(zero.contains("Box :: new (())"), "{zero}");
         Ok(())
+    }
+
+    #[test]
+    fn optional_string_type_zero_value_is_owned_string() -> Result<(), String> {
+        let expr = first_type_expr("package p\ntype T string\n")?;
+        let zero = expr_for_optional_type(Some(&expr))
+            .to_token_stream()
+            .to_string();
+
+        assert_eq!(zero, "String :: new ()");
+        Ok(())
+    }
+
+    #[test]
+    fn ast_primitive_type_defaults_stay_contextual() -> Result<(), String> {
+        let expr = first_type_expr("package p\ntype T string\n")?;
+        let zero = expr_for_type(&expr).to_token_stream().to_string();
+
+        assert_eq!(zero, "Default :: default ()");
+        Ok(())
+    }
+
+    #[test]
+    fn go_type_zero_values_preserve_unknown_interfaces() {
+        let string_zero = expr_for_go_type(&typeinfer::GoType::String)
+            .map(|expr| expr.to_token_stream().to_string());
+        let interface_zero = expr_for_go_type(&typeinfer::GoType::Interface("io.Writer".into()));
+
+        assert_eq!(string_zero.as_deref(), Some("String :: new ()"));
+        assert!(interface_zero.is_none());
+    }
+
+    #[test]
+    fn rust_array_type_zero_value_uses_from_fn() {
+        let ty: syn::Type = syn::parse_quote! { [String; 2] };
+        let zero = expr_for_syn_type(Some(&ty)).to_token_stream().to_string();
+
+        assert!(zero.contains("std :: array :: from_fn"), "{zero}");
+        assert!(!zero.contains("[Default :: default () ;"), "{zero}");
     }
 }

@@ -3181,33 +3181,6 @@ fn const_rust_type_from_type_name(name: &str) -> syn::Type {
     syn::parse_quote! { #type_ident }
 }
 
-/// Helper to get the zero value expression for a Go type name.
-fn zero_value_for_type(type_name: Option<&str>) -> syn::Expr {
-    match type_name {
-        Some("string") => syn::parse_quote! { "" },
-        Some("int") | Some("int8") | Some("int16") | Some("int32") | Some("int64")
-        | Some("uint") | Some("uint8") | Some("uint16") | Some("uint32") | Some("uint64") => {
-            syn::parse_quote! { 0 }
-        }
-        Some("float32") | Some("float64") => syn::parse_quote! { 0.0 },
-        Some("bool") => syn::parse_quote! { false },
-        Some("error") => syn::parse_quote! {
-            Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
-        },
-        Some("any") => syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> },
-        _ => syn::parse_quote! { Default::default() },
-    }
-}
-
-/// Helper to get the Go type name from an expression (for zero values).
-fn go_type_name_from_expr<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
-    match expr {
-        ast::Expr::Ident(ident) => Some(ident.name),
-        ast::Expr::StarExpr(_) => None,
-        _ => None,
-    }
-}
-
 fn wrap_named_return_block(
     block: &mut syn::Block,
     named_return_info: &[(syn::Ident, Option<syn::Type>, syn::Expr)],
@@ -9987,6 +9960,24 @@ fn collect_refs_from_item(
                     .insert(impl_method_reachability_name(&receiver_type.name, method));
             }
         }
+
+        fn fallback_field_receiver_types(&self, expr: &syn::Expr) -> Vec<ReceiverTypeRef> {
+            match expr {
+                syn::Expr::Group(group) => self.fallback_field_receiver_types(&group.expr),
+                syn::Expr::Paren(paren) => self.fallback_field_receiver_types(&paren.expr),
+                syn::Expr::Field(field) => {
+                    let syn::Member::Named(member) = &field.member else {
+                        return Vec::new();
+                    };
+                    let field_name = member.to_string();
+                    self.top_level_field_types
+                        .values()
+                        .filter_map(|fields| fields.get(&field_name).cloned())
+                        .collect()
+                }
+                _ => Vec::new(),
+            }
+        }
     }
 
     impl VisitMut for RefCollector<'_> {
@@ -10128,23 +10119,30 @@ fn collect_refs_from_item(
             let name = method.method.to_string();
             if let Some(receiver_type) = self.receiver_type_from_expr(&method.receiver) {
                 self.insert_receiver_method_ref(receiver_type, &name);
-            } else if let Some(module) =
-                external_module_from_expr(&method.receiver, self.module_names)
-            {
-                let entry = self.external_refs.entry(module).or_default();
-                if let Some((_, symbol)) =
-                    external_path_symbol_from_expr(&method.receiver, self.module_names)
+            } else {
+                let fallback_receivers = self.fallback_field_receiver_types(&method.receiver);
+                if !fallback_receivers.is_empty() {
+                    for receiver_type in fallback_receivers {
+                        self.insert_receiver_method_ref(receiver_type, &name);
+                    }
+                } else if let Some(module) =
+                    external_module_from_expr(&method.receiver, self.module_names)
                 {
-                    entry.insert(impl_method_reachability_name(
-                        &symbol,
-                        &method.method.to_string(),
-                    ));
-                    entry.insert(symbol);
-                } else {
-                    entry.insert(name);
+                    let entry = self.external_refs.entry(module).or_default();
+                    if let Some((_, symbol)) =
+                        external_path_symbol_from_expr(&method.receiver, self.module_names)
+                    {
+                        entry.insert(impl_method_reachability_name(
+                            &symbol,
+                            &method.method.to_string(),
+                        ));
+                        entry.insert(symbol);
+                    } else {
+                        entry.insert(name);
+                    }
+                } else if !self.top_level_names.contains(&name) {
+                    self.local_names.insert(name);
                 }
-            } else if !self.top_level_names.contains(&name) {
-                self.local_names.insert(name);
             }
             syn::visit_mut::visit_expr_method_call_mut(self, method);
         }
@@ -13104,9 +13102,8 @@ fn compile_method(
             for field in &results.list {
                 if let Some(ref names) = field.names {
                     for name in names {
-                        let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
                         let rust_type = field.type_.as_ref().map(type_from_expr_ref);
-                        let zero = zero_value_for_type(type_name);
+                        let zero = zero_values::expr_for_optional_type(field.type_.as_ref());
                         if let Some(type_expr) = field.type_.as_ref() {
                             let go_type = typeinfer::GoType::from_expr(type_expr);
                             TYPE_ENV.with(|env| {
@@ -14267,7 +14264,10 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 None
             };
             let src = compile_expr_with_expected(src_raw, None);
-            if matches!(resolved_go_type(&src_ty), typeinfer::GoType::String) {
+            let copy_call: syn::Expr = if matches!(
+                resolved_go_type(&src_ty),
+                typeinfer::GoType::String
+            ) {
                 if let Some(bytes) = src_bytes {
                     syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#bytes) }
                 } else {
@@ -14275,7 +14275,8 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                 }
             } else {
                 syn::parse_quote! { crate::builtin::copy_slice(&mut #dst, &#src) }
-            }
+            };
+            syn::parse_quote! { (#copy_call) as isize }
         }
         ir::BuiltinCallKind::Delete if raw_args.len() == 2 => {
             let mut raw_args = raw_args.into_iter();
@@ -14823,7 +14824,7 @@ fn compile_struct_composite_lit(
                     .iter()
                     .filter(|(field_name, _)| !present.contains(&rust_safe_ident_name(field_name)))
                     .map(|(field_name, field_type)| {
-                        go_zero_value_from_go_type(field_type).map(|expr| (field_name, expr))
+                        zero_values::expr_for_go_type(field_type).map(|expr| (field_name, expr))
                     })
                     .collect::<Option<Vec<_>>>();
                 if let Some(missing_defaults) = missing_defaults {
@@ -18829,7 +18830,7 @@ fn compile_top_level_value_spec(
                         expr.into()
                     }
                 }
-                None => go_zero_value(vs.type_.as_ref()),
+                None => zero_values::expr_for_optional_type(vs.type_.as_ref()),
             };
             let mut ty: syn::Type =
                 inferred_type.unwrap_or_else(|| syn::parse_quote! { Box<dyn std::any::Any> });
@@ -23414,9 +23415,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 for field in &results.list {
                     if let Some(ref names) = field.names {
                         for name in names {
-                            let type_name = field.type_.as_ref().and_then(go_type_name_from_expr);
                             let rust_type = field.type_.as_ref().map(type_from_expr_ref);
-                            let zero = zero_value_for_type(type_name);
+                            let zero = zero_values::expr_for_optional_type(field.type_.as_ref());
                             if let Some(type_expr) = field.type_.as_ref() {
                                 let go_type = typeinfer::GoType::from_expr(type_expr);
                                 TYPE_ENV.with(|env| {
@@ -25146,7 +25146,9 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                             type_expr
                                 .as_ref()
                                 .map(zero_values::expr_for_type)
-                                .unwrap_or_else(|| go_zero_value_from_type(rust_type.as_ref()))
+                                .unwrap_or_else(|| {
+                                    zero_values::expr_for_syn_type(rust_type.as_ref())
+                                })
                         });
                         let name = ident.to_string();
                         let init = shared_capture_init_expr(&name, init);
@@ -25172,43 +25174,6 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
             }
         }
         stmts
-    }
-}
-
-fn go_zero_value(type_expr: Option<&ast::Expr>) -> syn::Expr {
-    match type_expr {
-        Some(ast::Expr::Ident(ident)) => match ident.name {
-            "bool" => syn::parse_quote! { false },
-            "string" => syn::parse_quote! { String::new() },
-            "float32" | "float64" => syn::parse_quote! { 0.0 },
-            "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
-            | "uint32" | "uint64" | "uintptr" | "byte" | "rune" => syn::parse_quote! { 0 },
-            "any" => syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> },
-            _ => syn::parse_quote! { Default::default() },
-        },
-        Some(ast::Expr::InterfaceType(_)) => {
-            syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
-        }
-        Some(ast::Expr::ArrayType(array_type)) => zero_values::expr_for_array_type(array_type),
-        Some(ast::Expr::MapType(_)) => syn::parse_quote! { Default::default() },
-        Some(ast::Expr::StarExpr(_)) => syn::parse_quote! { Default::default() },
-        Some(_) => syn::parse_quote! { Default::default() },
-        None => syn::parse_quote! { 0 },
-    }
-}
-
-fn go_zero_value_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr> {
-    match resolved_go_type(go_type) {
-        typeinfer::GoType::Error => Some(syn::parse_quote! {
-            Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
-        }),
-        typeinfer::GoType::Any => Some(syn::parse_quote! {
-            Box::new(()) as Box<dyn std::any::Any>
-        }),
-        typeinfer::GoType::Bool => Some(syn::parse_quote! { false }),
-        typeinfer::GoType::String => Some(syn::parse_quote! { String::new() }),
-        typeinfer::GoType::Interface(_) => None,
-        _ => Some(syn::parse_quote! { Default::default() }),
     }
 }
 
@@ -25284,39 +25249,6 @@ fn is_box_dyn_any_cast_expr(expr: &syn::Expr) -> bool {
         return false;
     };
     is_any_type(&cast.ty)
-}
-
-fn go_zero_value_from_type(ty: Option<&syn::Type>) -> syn::Expr {
-    if let Some(ty) = ty {
-        if is_any_type(ty) {
-            return syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> };
-        }
-    }
-    if let Some(syn::Type::Array(type_array)) = ty {
-        let len = &type_array.len;
-        return syn::parse_quote! { [Default::default(); #len] };
-    }
-    if let Some(syn::Type::Path(type_path)) = ty {
-        if let Some(seg) = type_path.path.segments.last() {
-            let name = seg.ident.to_string();
-            match name.as_str() {
-                "bool" => return syn::parse_quote! { false },
-                "string" | "String" => return syn::parse_quote! { String::new() },
-                "float32" | "float64" | "f32" | "f64" => return syn::parse_quote! { 0.0 },
-                "isize" | "i8" | "i16" | "i32" | "i64" | "usize" | "u8" | "u16" | "u32" | "u64" => {
-                    return syn::parse_quote! { 0 };
-                }
-                "Vec" => return syn::parse_quote! { Vec::new() },
-                "HashMap" => return syn::parse_quote! { std::collections::HashMap::new() },
-                _ => {}
-            }
-        }
-    }
-    if ty.is_some() {
-        syn::parse_quote! { Default::default() }
-    } else {
-        syn::parse_quote! { 0 }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -32224,6 +32156,31 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_casts_copy_result_to_go_int() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func main() {
+	dst := []byte{0, 0}
+	src := []byte{1}
+	w := 0
+	w += copy(dst[w:], src)
+	_ = w
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("crate::builtin::copy_slice"), "{main_rs}");
+        assert!(main_rs.contains("as isize"), "{main_rs}");
+    }
+
+    #[test]
     fn compile_program_multi_rejects_duplicate_default_import_package_names() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -33380,7 +33337,8 @@ func main() {
             }
         };
         let roots = std::collections::HashSet::from(["root".to_string()]);
-        let module_names = std::collections::HashSet::from(["builtin".to_string()]);
+        let module_names =
+            std::collections::HashSet::from(["builtin".to_string(), "fmt".to_string()]);
 
         let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
 
@@ -36028,6 +35986,120 @@ func main() {
     }
 
     #[test]
+    fn it_should_not_keep_inherent_methods_by_bare_name() {
+        let file: syn::File = rust! {
+            pub struct A;
+            pub struct B;
+
+            impl A {
+                pub fn String(&mut self) -> String {
+                    String::new()
+                }
+
+                pub fn Used(&mut self) {}
+            }
+
+            impl B {
+                pub fn String(&mut self) -> String {
+                    String::new()
+                }
+            }
+
+            pub fn String() -> String {
+                String::new()
+            }
+        };
+        let names = std::collections::HashSet::from([
+            "A".to_string(),
+            "B".to_string(),
+            "String".to_string(),
+            super::impl_method_reachability_name("A", "Used"),
+        ]);
+        let roots = names.clone();
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+
+        let kept = file
+            .items
+            .iter()
+            .filter_map(|item| {
+                super::reachable_item_for_names(item, &names, &item_names, &top_level_names, &roots)
+            })
+            .collect::<Vec<_>>();
+        let output = quote::quote!(#(#kept)*).to_string();
+
+        assert!(output.contains("pub fn Used"), "{output}");
+        assert!(!output.contains("impl B"), "{output}");
+        assert!(!output.contains("pub fn String (& mut self)"), "{output}");
+    }
+
+    #[test]
+    fn it_should_follow_field_method_calls_through_pointer_cells() {
+        let file: syn::File = rust! {
+            pub struct fmt;
+            pub struct pp {
+                fmt: fmt,
+            }
+
+            impl fmt {
+                pub fn init(&mut self, _arg: crate::builtin::GorsPtr<fmt>) {}
+            }
+
+            pub fn newPrinter() -> crate::builtin::GorsPtr<pp> {
+                let mut p = Default::default();
+                (|| {
+                    let arg = crate::builtin::GorsPtr::new({
+                        let field = (p.lock().unwrap().fmt).clone();
+                        field
+                    });
+                    (p.lock().unwrap().fmt).init(arg);
+                })();
+                (p).clone()
+            }
+
+            pub fn root() {
+                let _ = newPrinter();
+            }
+        };
+        let roots = std::collections::HashSet::from(["root".to_string()]);
+        let module_names = std::collections::HashSet::from(["builtin".to_string()]);
+
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(
+            reachable.names.contains("newPrinter"),
+            "{:?}",
+            reachable.names
+        );
+        assert!(
+            reachable
+                .names
+                .contains(&super::impl_method_reachability_name("fmt", "init")),
+            "{:?}",
+            reachable.names
+        );
+
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+        let kept = file
+            .items
+            .iter()
+            .filter_map(|item| {
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
+            })
+            .collect::<Vec<_>>();
+        let output = quote::quote!(#(#kept)*).to_string();
+
+        assert!(output.contains("pub fn init"), "{output}");
+    }
+
+    #[test]
     fn it_should_preserve_runtime_interface_hooks_during_dce() {
         let file: syn::File = rust! {
             pub trait Interface {
@@ -37905,6 +37977,30 @@ func main() {
                         }
                     };
                     (x, y)
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn it_should_zero_string_named_return_values() {
+        test(
+            r#"
+                package main
+
+                func empty() (s string) {
+                    return
+                }
+            "#,
+            rust! {
+                fn empty() -> String {
+                    let mut s: String = String::new();
+                    '__gors_named_return_0: {
+                        {
+                            break '__gors_named_return_0;
+                        }
+                    };
+                    s
                 }
             },
         );
