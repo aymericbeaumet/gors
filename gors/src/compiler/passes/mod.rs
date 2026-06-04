@@ -8,7 +8,6 @@ mod map_type;
 mod nil_check;
 mod simplify_return;
 mod string_lit;
-mod trait_param;
 mod type_conversion;
 
 pub fn pass(file: &mut syn::File) {
@@ -17,7 +16,6 @@ pub fn pass(file: &mut syn::File) {
     inject_channel::pass(file);
     nil_check::pass(file);
     string_lit::pass(file);
-    trait_param::pass(file);
     hoist_use::pass(file);
     simplify_return::pass(file);
     flatten_block::pass(file);

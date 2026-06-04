@@ -1281,13 +1281,12 @@ Main package (`pass()`):
 3. `inject_channel` — channel send/receive
 4. `nil_check` — nil comparisons → Default::default() / is_empty()
 5. `string_lit` — string literal `.to_string()` in assignments/returns/method args
-6. `trait_param` — local trait parameter handling
-7. `hoist_use` — extract multi-segment paths to `use` declarations
-8. `simplify_return` — remove trailing `return` (Rust style)
-9. `flatten_block` — flatten single-expression nested blocks
-10. `index_cast` — array/slice index expressions cast to usize
-11. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-12. `avoid_item_shadowing` — rename generated locals that shadow item names
+6. `hoist_use` — extract multi-segment paths to `use` declarations
+7. `simplify_return` — remove trailing `return` (Rust style)
+8. `flatten_block` — flatten single-expression nested blocks
+9. `index_cast` — array/slice index expressions cast to usize
+10. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+11. `avoid_item_shadowing` — rename generated locals that shadow item names
 
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;

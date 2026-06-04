@@ -25501,6 +25501,40 @@ var X int
     }
 
     #[test]
+    fn local_interface_param_type_uses_type_env_not_trait_names_postpass() {
+        fn ident(name: &'static str) -> crate::ast::Ident<'static> {
+            crate::ast::Ident {
+                name_pos: crate::token::Position::default(),
+                name,
+                obj: None,
+            }
+        }
+
+        let _guard = super::LocalTypeEnvScopeGuard::push();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("Sinker", super::typeinfer::TypeKind::Interface);
+        super::set_type_env(env);
+
+        let field = crate::ast::Field {
+            doc: None,
+            names: Some(vec![ident("s")]),
+            type_: Some(crate::ast::Expr::Ident(ident("Sinker"))),
+            tag: None,
+            comment: None,
+        };
+        let args = super::compile_field_to_fn_args_with_type_params(
+            field,
+            &super::TypeParamInfo::default(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+        let output = quote! { #(#args),* }.to_string();
+
+        assert_eq!(output, "mut s : & mut dyn Sinker");
+    }
+
+    #[test]
     fn it_should_support_binary_operators() {
         test(
             r#"
