@@ -145,7 +145,7 @@ fn flush_source_fields(func: &syn::ImplItemFn) -> NameSet {
 
     impl syn::visit::Visit<'_> for Finder {
         fn visit_expr_call(&mut self, call: &syn::ExprCall) {
-            if expr_call_path_ends_with(call, "take") {
+            if super::super::syntax::is_path_call(call.func.as_ref(), &["std", "mem", "take"]) {
                 for arg in &call.args {
                     super::self_fields::collect_direct_self_fields(arg, &mut self.fields);
                 }
@@ -205,16 +205,6 @@ fn method_calls_flush_source_field(func: &syn::ImplItemFn, source_fields: &NameS
     };
     syn::visit::Visit::visit_block(&mut finder, &func.block);
     finder.found
-}
-
-fn expr_call_path_ends_with(call: &syn::ExprCall, name: &str) -> bool {
-    let syn::Expr::Path(path) = &*call.func else {
-        return false;
-    };
-    path.path
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == name)
 }
 
 fn stmt_needs_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {
@@ -338,6 +328,45 @@ mod tests {
         let receiver = ["Printer".to_string()];
         let stmt: syn::Stmt = syn::parse_quote! {
             self.printArg(1);
+        };
+
+        assert!(!metadata.should_flush_after_stmt(&receiver, &stmt));
+    }
+
+    #[test]
+    fn metadata_requires_generated_std_mem_take_source() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                inner: Inner,
+                buf: Buffer,
+            }
+
+            struct Inner {
+                buf: Buffer,
+            }
+
+            struct Buffer(Vec<u8>);
+
+            impl Inner {
+                fn write(&mut self, value: isize) {}
+            }
+
+            impl Printer {
+                fn __gors_flush_fmt(&mut self) {
+                    let bytes = take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
+
+                fn emit(&mut self, value: isize) {
+                    self.inner.write(value);
+                }
+            }
+        };
+
+        let metadata = Metadata::collect(&file);
+        let receiver = ["Printer".to_string()];
+        let stmt: syn::Stmt = syn::parse_quote! {
+            self.emit(1);
         };
 
         assert!(!metadata.should_flush_after_stmt(&receiver, &stmt));
