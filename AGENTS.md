@@ -403,16 +403,18 @@ Compiler-side root propagation should go through the private
 `RequiredModuleRoots` helper in
 `gors/src/compiler/required_module_roots.rs` rather than open-coded
 `HashMap<String, HashSet<String>>` loops. The same module owns the shared
-module-root merge primitive used by DCE and external-reference collection. The
-`SemanticReachabilityGraph` scaffold records item-level local/external refs,
-supports traversal from explicit module root names, and mirrors DCE expansion
-for supertraits plus top-level receiver-method roots through `SyntheticRoot`
-nodes such as `LittleEndian::Uint32` pointing at concrete receiver methods such
-as `littleEndian::Uint32`. With `GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE
-audit path compares semantic external-root traversal against the current
-token-derived collector for both main-package roots and transitive non-main
-module roots. Broaden that graph toward the remaining existing DCE semantics
-before replacing token-derived pruning paths.
+module-root merge primitive used by DCE and external-reference collection.
+`SemanticReachabilityGraph` lives in
+`gors/src/compiler/semantic_reachability.rs`; it records item-level
+local/external refs, supports traversal from explicit module root names, and
+mirrors DCE expansion for supertraits plus top-level receiver-method roots
+through `SyntheticRoot` nodes such as `LittleEndian::Uint32` pointing at
+concrete receiver methods such as `littleEndian::Uint32`. With
+`GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE audit path compares semantic
+external-root traversal against the current token-derived collector for both
+main-package roots and transitive non-main module roots. Broaden that graph
+toward the remaining existing DCE semantics before replacing token-derived
+pruning paths.
 Per-iteration DCE state belongs in `DceIterationContext`, and cross-module
 external-root discovery lives in `gors/src/compiler/external_roots.rs` through
 `ExternalRootCollector`. Keep semantic reachability auditing attached to that
