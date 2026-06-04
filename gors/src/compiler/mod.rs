@@ -18240,6 +18240,108 @@ fn compile_binary_side_for_parent(
     parenthesize_binary_child_if_needed(compiled, child_op, parent_op, side)
 }
 
+fn is_comparison_token(op: token::Token) -> bool {
+    matches!(
+        op,
+        token::Token::EQL
+            | token::Token::NEQ
+            | token::Token::LSS
+            | token::Token::LEQ
+            | token::Token::GTR
+            | token::Token::GEQ
+    )
+}
+
+fn ast_unparen_expr_ref<'ast, 'src>(expr: &'ast ast::Expr<'src>) -> &'ast ast::Expr<'src> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => ast_unparen_expr_ref(&paren.x),
+        _ => expr,
+    }
+}
+
+fn expr_is_index_into_byte_sequence(expr: &ast::Expr, env: &typeinfer::TypeEnv) -> bool {
+    let ast::Expr::IndexExpr(index) = ast_unparen_expr_ref(expr) else {
+        return false;
+    };
+    let container_ty = typeinfer::GoType::infer_expr(&index.x, env);
+    go_type_is_byte_sequence(&container_ty, env)
+}
+
+fn go_type_is_byte_sequence(ty: &typeinfer::GoType, env: &typeinfer::TypeEnv) -> bool {
+    match env.resolve_alias_or_type_param_constraint(ty) {
+        typeinfer::GoType::String => true,
+        typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem) => {
+            env.resolve_alias_or_type_param_constraint(&elem) == typeinfer::GoType::Uint8
+        }
+        typeinfer::GoType::Pointer(inner) => {
+            matches!(
+                env.resolve_alias_or_type_param_constraint(&inner),
+                typeinfer::GoType::Array(elem)
+                    if env.resolve_alias_or_type_param_constraint(&elem) == typeinfer::GoType::Uint8
+            )
+        }
+        _ => false,
+    }
+}
+
+fn named_integer_const_cast_type(expr: &ast::Expr, env: &typeinfer::TypeEnv) -> Option<syn::Type> {
+    let name = match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) => {
+            if active_local_shadows_unqualified_name(ident.name) {
+                return None;
+            }
+            ident.name.to_string()
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(base) = selector.x.as_ref() else {
+                return None;
+            };
+            format!("{}.{}", base.name, selector.sel.name)
+        }
+        _ => return None,
+    };
+    if !env.is_const(&name) {
+        return None;
+    }
+    let ty = typeinfer::GoType::infer_expr(expr, env);
+    let resolved = env.resolve_alias_or_type_param_constraint(&ty);
+    if resolved == typeinfer::GoType::Uint8
+        || (!resolved.is_integer() && !matches!(resolved, typeinfer::GoType::Uintptr))
+    {
+        return None;
+    }
+    rust_type_from_go_type(&resolved)
+}
+
+fn byte_index_const_comparison_casts(
+    left: &ast::Expr,
+    right: &ast::Expr,
+    op: token::Token,
+    env: &typeinfer::TypeEnv,
+) -> (Option<syn::Type>, Option<syn::Type>) {
+    if !is_comparison_token(op) {
+        return (None, None);
+    }
+    if expr_is_index_into_byte_sequence(left, env)
+        && let Some(ty) = named_integer_const_cast_type(right, env)
+    {
+        return (Some(ty), None);
+    }
+    if expr_is_index_into_byte_sequence(right, env)
+        && let Some(ty) = named_integer_const_cast_type(left, env)
+    {
+        return (None, Some(ty));
+    }
+    (None, None)
+}
+
+fn maybe_cast_expr(expr: syn::Expr, ty: Option<syn::Type>) -> syn::Expr {
+    match ty {
+        Some(ty) => syn::parse_quote! { (#expr as #ty) },
+        None => expr,
+    }
+}
+
 fn shift_left_needs_wide_untyped_left(left: &ast::Expr, right: &ast::Expr) -> bool {
     if !is_const_like_expr(left) {
         return false;
@@ -18415,6 +18517,8 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let env = TYPE_ENV.with(|e| e.borrow().clone());
     let left_ty = typeinfer::GoType::infer_expr(&binary_expr.x, &env);
     let right_ty = typeinfer::GoType::infer_expr(&binary_expr.y, &env);
+    let (left_cast, right_cast) =
+        byte_index_const_comparison_casts(&binary_expr.x, &binary_expr.y, op, &env);
 
     if matches!(op, token::Token::EQL | token::Token::NEQ)
         && matches!(resolved_go_type(&left_ty), typeinfer::GoType::Pointer(_))
@@ -18448,6 +18552,16 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     let original_op = binary_expr.op;
     let op: syn::BinOp = original_op.into();
     let is_shift = matches!(original_op, token::Token::SHL | token::Token::SHR);
+    let left_other_ty = if right_cast.is_some() {
+        &left_ty
+    } else {
+        &right_ty
+    };
+    let right_other_ty = if left_cast.is_some() {
+        &right_ty
+    } else {
+        &left_ty
+    };
     let left = if is_shift {
         if original_op == token::Token::SHL
             && shift_left_needs_wide_untyped_left(&binary_expr.x, &binary_expr.y)
@@ -18461,11 +18575,12 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         compile_binary_side_for_parent(
             *binary_expr.x,
             &left_ty,
-            &right_ty,
+            left_other_ty,
             original_op,
             BinarySide::Left,
         )
     };
+    let left = maybe_cast_expr(left, left_cast);
     let right = if is_shift {
         let right_child_op = match &*binary_expr.y {
             ast::Expr::BinaryExpr(binary) => Some(binary.op),
@@ -18481,11 +18596,12 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         compile_binary_side_for_parent(
             *binary_expr.y,
             &right_ty,
-            &left_ty,
+            right_other_ty,
             original_op,
             BinarySide::Right,
         )
     };
+    let right = maybe_cast_expr(right, right_cast);
     if original_op == token::Token::AND_NOT {
         let not_right = syn::Expr::Unary(syn::ExprUnary {
             attrs: vec![],
@@ -26415,6 +26531,52 @@ func main() {
         assert!(
             !output.contains("isize :: from (self)"),
             "expected borrowed receiver conversion not to call From<&Self>: {output}"
+        );
+    }
+
+    #[test]
+    fn byte_index_comparisons_use_integer_const_type_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const Limit uint32 = 128
+                const ByteLimit byte = 7
+
+                func check(data []byte, other []int32, text string) bool {
+                    return data[0] < Limit &&
+                        Limit > data[1] &&
+                        data[2] == ByteLimit &&
+                        other[0] < Limit &&
+                        text[0] < Limit
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("as u32) < Limit"),
+            "expected byte index to cast to typed integer const: {output}"
+        );
+        assert!(
+            output.contains("Limit >") && output.contains("as u32)"),
+            "expected right-side byte index to cast to typed integer const: {output}"
+        );
+        assert!(
+            output.contains("== ByteLimit") && !output.contains("as u8"),
+            "expected byte constants not to force a byte index cast: {output}"
+        );
+        assert!(
+            output.contains("< (128 as i32)"),
+            "expected non-byte indexed values not to be rewritten: {output}"
+        );
+        assert!(
+            !output.contains("RuneSelf"),
+            "regression should not depend on unicode/utf8 constant names: {output}"
         );
     }
 

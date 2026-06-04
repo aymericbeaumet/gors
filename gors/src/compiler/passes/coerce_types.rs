@@ -11,9 +11,7 @@ pub fn pass(file: &mut syn::File) {
     let mutable_ref_call_args = call_args::collect_mutable_ref_call_args(file);
     let pointer_cell_statics = pointer_cells::collect_statics(file);
     let structural_helper_metadata = structural_helpers::Metadata::collect(file);
-    let integer_const_types = comparisons::collect_integer_const_types(file);
     CoerceTypes {
-        integer_const_types,
         mutable_ref_call_args,
         pointer_cell_statics,
         structural_helper_metadata,
@@ -32,9 +30,7 @@ pub fn pass_after_structural_helpers(file: &mut syn::File) {
 
 #[derive(Default)]
 struct CoerceTypes {
-    byte_index_scopes: Vec<comparisons::ByteIndexScope>,
     call_arg_scopes: Vec<call_args::FnArgScope>,
-    integer_const_types: comparisons::IntegerConstTypes,
     mutable_ref_call_args: call_args::MutableRefCallArgs,
     pointer_cell_statics: pointer_cells::StaticNames,
     structural_helper_metadata: structural_helpers::Metadata,
@@ -54,11 +50,8 @@ impl VisitMut for CoerceTypes {
 
     fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
         let scope = call_args::FnArgScope::collect(&func.sig);
-        let byte_index_scope = comparisons::ByteIndexScope::collect(&func.sig);
         self.call_arg_scopes.push(scope);
-        self.byte_index_scopes.push(byte_index_scope);
         visit_mut::visit_item_fn_mut(self, func);
-        self.byte_index_scopes.pop();
         self.call_arg_scopes.pop();
 
         structural_helpers::prune_reflection_fallback(&mut func.block.stmts, None);
@@ -66,11 +59,8 @@ impl VisitMut for CoerceTypes {
 
     fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
         let scope = call_args::FnArgScope::collect(&func.sig);
-        let byte_index_scope = comparisons::ByteIndexScope::collect(&func.sig);
         self.call_arg_scopes.push(scope);
-        self.byte_index_scopes.push(byte_index_scope);
         visit_mut::visit_impl_item_fn_mut(self, func);
-        self.byte_index_scopes.pop();
         self.call_arg_scopes.pop();
 
         let self_reflect_fields = self.impl_self_types.last().and_then(|ty| {
@@ -109,11 +99,7 @@ impl VisitMut for CoerceTypes {
 
     fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
         visit_mut::visit_expr_binary_mut(self, binary);
-        comparisons::coerce_binary_expr(
-            binary,
-            &self.integer_const_types,
-            self.byte_index_scopes.last(),
-        );
+        comparisons::coerce_binary_expr(binary);
     }
 
     fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
