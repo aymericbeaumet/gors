@@ -1276,16 +1276,15 @@ needs fuller interface method-set modeling.
 ## Compiler passes (in order)
 
 Main package (`pass()`):
-1. `type_conversion` — type calls to casts (`int(x)` → `x as isize`)
-2. `inject_channel` — channel send/receive
-3. `nil_check` — nil comparisons → Default::default() / is_empty()
-4. `string_lit` — string literal `.to_string()` in assignments/returns/method args
-5. `hoist_use` — extract multi-segment paths to `use` declarations
-6. `simplify_return` — remove trailing `return` (Rust style)
-7. `flatten_block` — flatten single-expression nested blocks
-8. `index_cast` — array/slice index expressions cast to usize
-9. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-10. `avoid_item_shadowing` — rename generated locals that shadow item names
+1. `inject_channel` — channel send/receive
+2. `nil_check` — nil comparisons → Default::default() / is_empty()
+3. `string_lit` — string literal `.to_string()` in assignments/returns/method args
+4. `hoist_use` — extract multi-segment paths to `use` declarations
+5. `simplify_return` — remove trailing `return` (Rust style)
+6. `flatten_block` — flatten single-expression nested blocks
+7. `index_cast` — array/slice index expressions cast to usize
+8. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
+9. `avoid_item_shadowing` — rename generated locals that shadow item names
 
 `coerce_types` also prunes unsupported reflection fallback branches from the
 generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
@@ -1297,8 +1296,8 @@ generated fmt flush insertion through its `fmt_flush` submodule and self-value
 reflection fallback pruning through its `reflection_fallback` submodule after
 helpers such as `__gors_flush_fmt` have been injected.
 
-Imported packages (`pass_for_imported_package()`): type_conversion,
-simplify_return, flatten_block, index_cast, coerce_types, avoid_item_shadowing.
+Imported packages (`pass_for_imported_package()`): simplify_return,
+flatten_block, index_cast, coerce_types, avoid_item_shadowing.
 
 ## Stdlib system — embedded Go source
 

@@ -25417,6 +25417,44 @@ var X int
     }
 
     #[test]
+    fn general_type_conversion_lowers_to_cast_without_postpass() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func main() {
+	var x uint8
+	_ = int(x)
+}
+"#,
+        )
+        .unwrap();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.scan_file(&parsed);
+        super::set_type_env(env);
+
+        let crate::ast::Decl::FuncDecl(func) = parsed.decls.into_iter().next().unwrap() else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.expect("expected function body");
+        let mut stmts = body.list.into_iter();
+        let Some(crate::ast::Stmt::DeclStmt(_)) = stmts.next() else {
+            panic!("expected var declaration");
+        };
+        let Some(crate::ast::Stmt::AssignStmt(assign)) = stmts.next() else {
+            panic!("expected assignment");
+        };
+        let Some(crate::ast::Expr::CallExpr(call)) = assign.rhs.into_iter().next() else {
+            panic!("expected conversion call");
+        };
+        let expr: syn::Expr = crate::ast::Expr::CallExpr(call).into();
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(quote! { #expr }.to_string(), "((x) as isize)");
+    }
+
+    #[test]
     fn imported_interface_param_type_uses_type_env_not_trait_name() {
         fn ident(name: &'static str) -> crate::ast::Ident<'static> {
             crate::ast::Ident {
