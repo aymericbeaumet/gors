@@ -270,6 +270,17 @@ unreachable branches; one blank line separates the prelude from generated code.
 Dependency modules are emitted alphabetically by Rust module name, and generated
 items/methods are ordered with public functions before private functions.
 
+## CI and Pages deploy
+
+CI runs on pull requests and on pushes to `main`. The website deploy must use
+GitHub Pages' native workflow artifact path: upload `www/dist` with
+`actions/upload-pages-artifact`, then publish with `actions/deploy-pages` to the
+`github-pages` environment. Do not force-push `www/dist` to `gh-pages`; the web
+bundle includes a large v86 filesystem, and branch-based Pages deploys are
+unreliable for that artifact size. The repository Pages source must remain
+`build_type: workflow`, and the custom domain is stored in repository Pages
+settings rather than in a generated `CNAME` file.
+
 ## Known limitations
 
 - No closures or variadic function definitions
