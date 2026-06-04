@@ -44,6 +44,7 @@ mod reflect_kind;
 mod reflect_semantics;
 mod reflect_slice_any;
 mod runtime_primitives;
+mod shared_captures;
 mod struct_derives;
 mod syn_inspect;
 mod synthetic_names;
@@ -88,6 +89,12 @@ use receiver_type_facts::{
     top_level_item_types,
 };
 use sha2::{Digest, Sha256};
+use shared_captures::{
+    SharedCaptureNamesGuard, function_literal_shared_capture_clones, is_shared_capture_name,
+    move_closure_shared_capture_clones, range_function_shared_capture_clones, shared_capture_ident,
+    shared_capture_init_expr, shared_capture_lvalue_expr, shared_capture_read_expr,
+    shared_capture_type,
+};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -113,7 +120,6 @@ thread_local! {
     static RETURN_TYPES: RefCell<Vec<typeinfer::GoType>> = const { RefCell::new(Vec::new()) };
     static BORROWED_INTERFACE_STRUCTS: RefCell<BTreeMap<String, Vec<EmbeddedInterfaceField>>> = const { RefCell::new(BTreeMap::new()) };
     static NON_CLONE_STRUCTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
-    static SHARED_CAPTURE_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_CONTINUE_LABELS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
     static GOTO_STATE_CONTEXTS: RefCell<Vec<GotoStateContext>> = const { RefCell::new(Vec::new()) };
     static BORROWED_POINTER_PARAM_NAMES: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
@@ -199,10 +205,6 @@ fn finish_reachability_fingerprint(hasher: Sha256) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-struct SharedCaptureNamesGuard {
-    previous: std::collections::HashSet<String>,
 }
 
 struct ExternalInterfaceImplementorsGuard {
@@ -294,25 +296,6 @@ impl TypeParamKindsGuard {
 impl Drop for TypeParamKindsGuard {
     fn drop(&mut self) {
         restore_type_param_kinds(std::mem::take(&mut self.previous));
-    }
-}
-
-impl SharedCaptureNamesGuard {
-    fn extend(names: impl IntoIterator<Item = String>) -> Self {
-        let previous = SHARED_CAPTURE_NAMES.with(|shared| {
-            let previous = shared.borrow().clone();
-            shared.borrow_mut().extend(names);
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for SharedCaptureNamesGuard {
-    fn drop(&mut self) {
-        SHARED_CAPTURE_NAMES.with(|shared| {
-            *shared.borrow_mut() = self.previous.clone();
-        });
     }
 }
 
@@ -2677,36 +2660,6 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
             })
             .collect()
     })
-}
-
-fn move_closure_shared_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
-    TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        let mut names: std::collections::BTreeSet<_> = ir::func_lit_captures(func_lit, &env)
-            .into_iter()
-            .map(|capture| capture.name)
-            .collect();
-        names.extend(ir::mutable_func_lit_capture_names_in_block(
-            &func_lit.body,
-            &env,
-        ));
-        names
-            .into_iter()
-            .filter(|name| is_shared_capture_name(name))
-            .map(|name| {
-                let ident = syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
-                syn::parse_quote! { let #ident = #ident.clone(); }
-            })
-            .collect()
-    })
-}
-
-fn function_literal_shared_capture_clones(expr: &ast::Expr) -> Vec<syn::Stmt> {
-    match expr {
-        ast::Expr::FuncLit(func_lit) => move_closure_shared_capture_clones(func_lit),
-        ast::Expr::ParenExpr(paren) => function_literal_shared_capture_clones(&paren.x),
-        _ => Vec::new(),
-    }
 }
 
 /// Compile a Go select statement into Rust.
@@ -12622,20 +12575,6 @@ fn clone_expr_for_non_copy_go_type(
     }
 }
 
-fn is_shared_capture_name(name: &str) -> bool {
-    SHARED_CAPTURE_NAMES.with(|shared| shared.borrow().contains(name))
-}
-
-fn shared_capture_ident(expr: &ast::Expr) -> Option<syn::Ident> {
-    let ast::Expr::Ident(ident) = expr else {
-        return None;
-    };
-    if !is_shared_capture_name(ident.name) {
-        return None;
-    }
-    Some(value_ident(ident.name))
-}
-
 fn is_goto_continue_label(name: &str) -> bool {
     GOTO_CONTINUE_LABELS.with(|labels| labels.borrow().contains(name))
 }
@@ -12702,53 +12641,6 @@ fn is_owning_pointer_cell_expr_ref(expr: &ast::Expr) -> bool {
             typeinfer::GoType::Pointer(_)
         )
     })
-}
-
-fn shared_capture_init_expr(name: &str, init: syn::Expr) -> syn::Expr {
-    if is_shared_capture_name(name) {
-        syn::parse_quote! { std::sync::Arc::new(std::sync::Mutex::new(#init)) }
-    } else {
-        init
-    }
-}
-
-fn shared_capture_type(name: &str, ty: syn::Type) -> syn::Type {
-    if is_shared_capture_name(name) {
-        syn::parse_quote! { std::sync::Arc<std::sync::Mutex<#ty>> }
-    } else {
-        ty
-    }
-}
-
-fn shared_capture_lvalue_expr(name: &str) -> Option<syn::Expr> {
-    if !is_shared_capture_name(name) {
-        return None;
-    }
-    let ident = value_ident(name);
-    Some(syn::parse_quote! { (*#ident.lock().unwrap()) })
-}
-
-fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
-    if !is_shared_capture_name(name) {
-        return None;
-    }
-    let ident = value_ident(name);
-    let go_type = TYPE_ENV.with(|env| {
-        env.borrow()
-            .get_var(name)
-            .unwrap_or(typeinfer::GoType::Unknown)
-    });
-    if go_type_is_copy(&go_type) {
-        Some(syn::parse_quote! {{
-            let __gors_shared_value = *#ident.lock().unwrap();
-            __gors_shared_value
-        }})
-    } else {
-        Some(syn::parse_quote! {{
-            let __gors_shared_value = #ident.lock().unwrap().clone();
-            __gors_shared_value
-        }})
-    }
 }
 
 fn is_byte_seq_type_param(go_type: &typeinfer::GoType) -> bool {
@@ -14697,19 +14589,6 @@ fn range_function_assignment_stmts(
                 compile_assignment_lhs_checked(target)
                     .map(|left| syn::parse_quote! { #left = #right; }),
             )
-        })
-        .collect()
-}
-
-fn range_function_shared_capture_clones(
-    names: &std::collections::BTreeSet<String>,
-) -> Vec<syn::Stmt> {
-    names
-        .iter()
-        .filter(|name| is_shared_capture_name(name))
-        .map(|name| {
-            let ident = value_ident(name);
-            syn::parse_quote! { let #ident = #ident.clone(); }
         })
         .collect()
 }

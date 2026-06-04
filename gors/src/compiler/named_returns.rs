@@ -4,8 +4,12 @@ use proc_macro2::Span;
 use syn::Token;
 
 use super::{
-    is_shared_capture_name, local_binding_rust_name, shared_capture_init_expr,
-    shared_capture_read_expr, shared_capture_type, syn_inspect::expr_is_ident,
+    local_binding_rust_name,
+    shared_captures::{
+        is_shared_capture_name, shared_capture_init_expr, shared_capture_read_expr,
+        shared_capture_type,
+    },
+    syn_inspect::expr_is_ident,
 };
 
 thread_local! {
