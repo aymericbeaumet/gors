@@ -61,14 +61,14 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
-    arc_mutex_new_inner_expr, box_new_call_arg, clone_call_receiver_expr, dedupe_syn_types,
-    direct_clone_call_receiver_expr, expr_is_ident, expr_path_ident, expr_path_ident_or_clone,
-    impl_trait_targets_match, is_box_dyn_any_type, is_box_new_call, is_box_new_unit_expr,
-    is_box_type_with_any_bound, is_clone_call_expr, is_direct_self_field_expr, is_path_call_expr,
-    is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name, macro_token_item_names,
-    named_self_type, pat_ident_name, receiver_expr_needs_scoped_temp, self_type_reachability_names,
-    slice_type_inner, syn_expr_matches_target, type_mentions_name, type_param_bound_matches,
-    vec_type_inner,
+    arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, box_new_call_arg,
+    clone_call_receiver_expr, dedupe_syn_types, direct_clone_call_receiver_expr, expr_is_ident,
+    expr_path_ident, expr_path_ident_or_clone, impl_trait_targets_match, is_box_dyn_any_expr,
+    is_box_dyn_any_type, is_box_new_call, is_box_type_with_any_bound, is_clone_call_expr,
+    is_direct_self_field_expr, is_path_call_expr, is_self_expr, is_self_or_ref_self_expr,
+    item_macro_name, item_name, macro_token_item_names, named_self_type, pat_ident_name,
+    receiver_expr_needs_scoped_temp, self_type_reachability_names, slice_type_inner,
+    syn_expr_matches_target, type_mentions_name, type_param_bound_matches, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -17374,7 +17374,11 @@ fn compile_top_level_value_spec(
                 if is_box_dyn_any_expr(&value) {
                     value =
                         syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any + Send + Sync> };
-                } else if !is_box_dyn_any_cast_expr(&value) {
+                } else if let Some(inner) = box_dyn_any_cast_source_expr(&value) {
+                    value = syn::parse_quote! {
+                        #inner as Box<dyn std::any::Any + Send + Sync>
+                    };
+                } else {
                     value = syn::parse_quote! {
                         Box::new(#value) as Box<dyn std::any::Any + Send + Sync>
                     };
@@ -23678,24 +23682,6 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
     }
 }
 
-fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Cast(cast) => {
-            is_box_type_with_any_bound(&cast.ty) && is_box_new_unit_expr(&cast.expr)
-        }
-        syn::Expr::Paren(paren) => is_box_dyn_any_expr(&paren.expr),
-        syn::Expr::Group(group) => is_box_dyn_any_expr(&group.expr),
-        _ => false,
-    }
-}
-
-fn is_box_dyn_any_cast_expr(expr: &syn::Expr) -> bool {
-    let syn::Expr::Cast(cast) = expr else {
-        return false;
-    };
-    is_box_type_with_any_bound(&cast.ty)
-}
-
 #[derive(Clone, Copy)]
 enum CommaOkKind {
     MapIndex,
@@ -29662,23 +29648,6 @@ func main() {
     }
 
     #[test]
-    fn box_dyn_any_zero_value_detection_uses_ast_shape() {
-        let empty_any: syn::Expr = syn::parse_quote! {
-            Box::new(()) as Box<dyn std::any::Any>
-        };
-        let empty_any_send_sync: syn::Expr = syn::parse_quote! {
-            (Box::new(()) as Box<dyn std::any::Any + Send + Sync>)
-        };
-        let boxed_value: syn::Expr = syn::parse_quote! {
-            Box::new(value) as Box<dyn std::any::Any>
-        };
-
-        assert!(super::is_box_dyn_any_expr(&empty_any));
-        assert!(super::is_box_dyn_any_expr(&empty_any_send_sync));
-        assert!(!super::is_box_dyn_any_expr(&boxed_value));
-    }
-
-    #[test]
     fn box_dyn_any_type_detection_uses_trait_bound_shape() {
         let std_any: syn::Type = syn::parse_quote! { Box<dyn std::any::Any> };
         let any_with_bounds: syn::Type = syn::parse_quote! { Box<dyn Any + Send + Sync> };
@@ -30028,6 +29997,53 @@ var ErrValue error = &wrapError{msg: "boom"}
         assert!(
             !errpkg_rs.contains("impl crate::builtin::error for wrapError"),
             "{errpkg_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_imported_any_vars_static_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/anyp"
+
+func main() {
+	_ = anyp.Empty
+	_ = anyp.Value
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("anyp/anyp.go").as_path(),
+            r#"
+package anyp
+
+var Empty any
+var Value any = "value"
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let anyp_rs = output.files.get("example__anyp.rs").unwrap();
+        assert!(
+            anyp_rs.contains(
+                "pub static Empty: std::sync::LazyLock<Box<dyn std::any::Any + Send + Sync>>"
+            ),
+            "{anyp_rs}"
+        );
+        assert!(
+            anyp_rs.contains("Box::new(()) as Box<dyn std::any::Any + Send + Sync>"),
+            "{anyp_rs}"
+        );
+        assert!(
+            anyp_rs.contains(
+                "Box::new(\"value\".to_string()) as Box<dyn std::any::Any + Send + Sync>"
+            ),
+            "{anyp_rs}"
         );
     }
 

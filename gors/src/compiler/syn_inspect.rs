@@ -594,6 +594,26 @@ pub(super) fn is_box_new_unit_expr(expr: &syn::Expr) -> bool {
     expr_is_unit(arg)
 }
 
+pub(super) fn is_box_dyn_any_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Cast(cast) => {
+            is_box_type_with_any_bound(&cast.ty) && is_box_new_unit_expr(&cast.expr)
+        }
+        syn::Expr::Paren(paren) => is_box_dyn_any_expr(&paren.expr),
+        syn::Expr::Group(group) => is_box_dyn_any_expr(&group.expr),
+        _ => false,
+    }
+}
+
+pub(super) fn box_dyn_any_cast_source_expr(expr: &syn::Expr) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::Cast(cast) if is_box_type_with_any_bound(&cast.ty) => Some((*cast.expr).clone()),
+        syn::Expr::Paren(paren) => box_dyn_any_cast_source_expr(&paren.expr),
+        syn::Expr::Group(group) => box_dyn_any_cast_source_expr(&group.expr),
+        _ => None,
+    }
+}
+
 pub(super) fn arc_mutex_new_inner_expr(expr: &syn::Expr) -> Option<syn::Expr> {
     let mutex_call = single_call_arg_for_path(expr, &["std", "sync", "Arc", "new"])?;
     single_call_arg_for_path(mutex_call, &["std", "sync", "Mutex", "new"]).cloned()
@@ -1279,6 +1299,33 @@ mod tests {
             Some("value")
         );
         assert!(arc_mutex_new_inner_expr(&arc_other).is_none());
+    }
+
+    #[test]
+    fn boxed_any_expression_helpers_detect_zero_and_existing_casts() {
+        let empty_any: syn::Expr = parse_quote! {
+            Box::new(()) as Box<dyn std::any::Any>
+        };
+        let empty_any_send_sync: syn::Expr = parse_quote! {
+            (Box::new(()) as Box<dyn std::any::Any + Send + Sync>)
+        };
+        let boxed_value: syn::Expr = parse_quote! {
+            Box::new(value) as Box<dyn std::any::Any>
+        };
+        let not_cast: syn::Expr = parse_quote! { Box::new(()) };
+
+        assert!(is_box_dyn_any_expr(&empty_any));
+        assert!(is_box_dyn_any_expr(&empty_any_send_sync));
+        assert!(!is_box_dyn_any_expr(&boxed_value));
+        assert!(box_dyn_any_cast_source_expr(&empty_any).is_some());
+        assert!(box_dyn_any_cast_source_expr(&boxed_value).is_some());
+        assert_eq!(
+            box_dyn_any_cast_source_expr(&boxed_value)
+                .map(|expr| expr.to_token_stream().to_string())
+                .as_deref(),
+            Some("Box :: new (value)")
+        );
+        assert!(box_dyn_any_cast_source_expr(&not_cast).is_none());
     }
 
     #[test]
