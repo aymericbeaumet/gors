@@ -404,6 +404,83 @@ pub(super) fn syn_type_matches(left: &syn::Type, right: &syn::Type) -> bool {
     }
 }
 
+pub(super) fn type_param_bound_matches(
+    left: &syn::TypeParamBound,
+    right: &syn::TypeParamBound,
+) -> bool {
+    match (left, right) {
+        (syn::TypeParamBound::Trait(left), syn::TypeParamBound::Trait(right)) => {
+            trait_bound_modifier_matches(&left.modifier, &right.modifier)
+                && left.paren_token.is_some() == right.paren_token.is_some()
+                && bound_lifetimes_match(left.lifetimes.as_ref(), right.lifetimes.as_ref())
+                && syn_path_matches(&left.path, &right.path)
+        }
+        (syn::TypeParamBound::Lifetime(left), syn::TypeParamBound::Lifetime(right)) => {
+            left.ident == right.ident
+        }
+        _ => false,
+    }
+}
+
+fn trait_bound_modifier_matches(
+    left: &syn::TraitBoundModifier,
+    right: &syn::TraitBoundModifier,
+) -> bool {
+    matches!(
+        (left, right),
+        (syn::TraitBoundModifier::None, syn::TraitBoundModifier::None)
+            | (
+                syn::TraitBoundModifier::Maybe(_),
+                syn::TraitBoundModifier::Maybe(_)
+            )
+    )
+}
+
+fn bound_lifetimes_match(
+    left: Option<&syn::BoundLifetimes>,
+    right: Option<&syn::BoundLifetimes>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.lifetimes.len() == right.lifetimes.len()
+                && left
+                    .lifetimes
+                    .iter()
+                    .zip(right.lifetimes.iter())
+                    .all(|(left, right)| generic_param_matches(left, right))
+        }
+        _ => false,
+    }
+}
+
+fn generic_param_matches(left: &syn::GenericParam, right: &syn::GenericParam) -> bool {
+    match (left, right) {
+        (syn::GenericParam::Lifetime(left), syn::GenericParam::Lifetime(right)) => {
+            left.lifetime.ident == right.lifetime.ident
+                && left.bounds.len() == right.bounds.len()
+                && left
+                    .bounds
+                    .iter()
+                    .zip(right.bounds.iter())
+                    .all(|(left, right)| left.ident == right.ident)
+        }
+        (syn::GenericParam::Type(left), syn::GenericParam::Type(right)) => {
+            left.ident == right.ident
+                && left.bounds.len() == right.bounds.len()
+                && left
+                    .bounds
+                    .iter()
+                    .zip(right.bounds.iter())
+                    .all(|(left, right)| type_param_bound_matches(left, right))
+        }
+        (syn::GenericParam::Const(left), syn::GenericParam::Const(right)) => {
+            left.ident == right.ident && syn_type_matches(&left.ty, &right.ty)
+        }
+        _ => false,
+    }
+}
+
 fn syn_lit_matches(left: &syn::Lit, right: &syn::Lit) -> bool {
     match (left, right) {
         (syn::Lit::Str(left), syn::Lit::Str(right)) => left.value() == right.value(),
@@ -972,6 +1049,50 @@ mod tests {
         assert!(!syn_expr_matches_target(&other_field, &field_target));
         assert!(syn_expr_matches_target(&pointer_read, &pointer_target));
         assert!(syn_expr_matches_target(&index_read, &index_target));
+    }
+
+    #[test]
+    fn type_param_bound_matches_compares_trait_bounds_structurally() {
+        let bound: syn::TypeParamBound = parse_quote! { for<'a> Fn(&'a str) -> usize };
+        let same_bound: syn::TypeParamBound = parse_quote! { for<'a> Fn(&'a str) -> usize };
+        let other_lifetime: syn::TypeParamBound = parse_quote! { for<'b> Fn(&'b str) -> usize };
+        let other_output: syn::TypeParamBound = parse_quote! { for<'a> Fn(&'a str) -> isize };
+        let maybe_bound: syn::TypeParamBound = parse_quote! { ?Sized };
+        let same_maybe_bound: syn::TypeParamBound = parse_quote! { ?Sized };
+        let plain_bound: syn::TypeParamBound = parse_quote! { Sized };
+
+        assert!(type_param_bound_matches(&bound, &same_bound));
+        assert!(!type_param_bound_matches(&bound, &other_lifetime));
+        assert!(!type_param_bound_matches(&bound, &other_output));
+        assert!(type_param_bound_matches(&maybe_bound, &same_maybe_bound));
+        assert!(!type_param_bound_matches(&maybe_bound, &plain_bound));
+    }
+
+    #[test]
+    fn type_param_bound_matches_compares_lifetime_bounds() {
+        let lifetime: syn::TypeParamBound = parse_quote! { 'a };
+        let same_lifetime: syn::TypeParamBound = parse_quote! { 'a };
+        let other_lifetime: syn::TypeParamBound = parse_quote! { 'b };
+        let trait_bound: syn::TypeParamBound = parse_quote! { Clone };
+
+        assert!(type_param_bound_matches(&lifetime, &same_lifetime));
+        assert!(!type_param_bound_matches(&lifetime, &other_lifetime));
+        assert!(!type_param_bound_matches(&lifetime, &trait_bound));
+    }
+
+    #[test]
+    fn generic_param_matches_compares_type_and_const_params_structurally() {
+        let type_param: syn::GenericParam = parse_quote! { T: Clone + Default };
+        let same_type_param: syn::GenericParam = parse_quote! { T: Clone + Default };
+        let reordered_type_param: syn::GenericParam = parse_quote! { T: Default + Clone };
+        let const_param: syn::GenericParam = parse_quote! { const N: usize };
+        let same_const_param: syn::GenericParam = parse_quote! { const N: usize };
+        let other_const_ty: syn::GenericParam = parse_quote! { const N: isize };
+
+        assert!(generic_param_matches(&type_param, &same_type_param));
+        assert!(!generic_param_matches(&type_param, &reordered_type_param));
+        assert!(generic_param_matches(&const_param, &same_const_param));
+        assert!(!generic_param_matches(&const_param, &other_const_ty));
     }
 
     #[test]

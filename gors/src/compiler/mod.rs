@@ -67,7 +67,7 @@ use syn_inspect::{
     is_path_call_expr, is_self_expr, is_self_or_ref_self_expr, item_macro_name, item_name,
     macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
     slice_type_inner, syn_expr_matches_target, syn_path_matches, syn_type_matches,
-    type_mentions_name, vec_type_inner,
+    type_mentions_name, type_param_bound_matches, vec_type_inner,
 };
 
 // Thread-local storage for source map tracker during compilation
@@ -1362,80 +1362,6 @@ fn type_param_bounds_contains(
     bounds
         .iter()
         .any(|existing| type_param_bound_matches(existing, needle))
-}
-
-fn type_param_bound_matches(left: &syn::TypeParamBound, right: &syn::TypeParamBound) -> bool {
-    match (left, right) {
-        (syn::TypeParamBound::Trait(left), syn::TypeParamBound::Trait(right)) => {
-            trait_bound_modifier_matches(&left.modifier, &right.modifier)
-                && left.paren_token.is_some() == right.paren_token.is_some()
-                && bound_lifetimes_match(left.lifetimes.as_ref(), right.lifetimes.as_ref())
-                && syn_path_matches(&left.path, &right.path)
-        }
-        (syn::TypeParamBound::Lifetime(left), syn::TypeParamBound::Lifetime(right)) => {
-            left.ident == right.ident
-        }
-        _ => false,
-    }
-}
-
-fn trait_bound_modifier_matches(
-    left: &syn::TraitBoundModifier,
-    right: &syn::TraitBoundModifier,
-) -> bool {
-    matches!(
-        (left, right),
-        (syn::TraitBoundModifier::None, syn::TraitBoundModifier::None)
-            | (
-                syn::TraitBoundModifier::Maybe(_),
-                syn::TraitBoundModifier::Maybe(_)
-            )
-    )
-}
-
-fn bound_lifetimes_match(
-    left: Option<&syn::BoundLifetimes>,
-    right: Option<&syn::BoundLifetimes>,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => {
-            left.lifetimes.len() == right.lifetimes.len()
-                && left
-                    .lifetimes
-                    .iter()
-                    .zip(right.lifetimes.iter())
-                    .all(|(left, right)| generic_param_matches(left, right))
-        }
-        _ => false,
-    }
-}
-
-fn generic_param_matches(left: &syn::GenericParam, right: &syn::GenericParam) -> bool {
-    match (left, right) {
-        (syn::GenericParam::Lifetime(left), syn::GenericParam::Lifetime(right)) => {
-            left.lifetime.ident == right.lifetime.ident
-                && left
-                    .bounds
-                    .iter()
-                    .zip(right.bounds.iter())
-                    .all(|(left, right)| left.ident == right.ident)
-                && left.bounds.len() == right.bounds.len()
-        }
-        (syn::GenericParam::Type(left), syn::GenericParam::Type(right)) => {
-            left.ident == right.ident
-                && left
-                    .bounds
-                    .iter()
-                    .zip(right.bounds.iter())
-                    .all(|(left, right)| type_param_bound_matches(left, right))
-                && left.bounds.len() == right.bounds.len()
-        }
-        (syn::GenericParam::Const(left), syn::GenericParam::Const(right)) => {
-            left.ident == right.ident && syn_type_matches(&left.ty, &right.ty)
-        }
-        _ => false,
-    }
 }
 
 #[derive(Default)]
