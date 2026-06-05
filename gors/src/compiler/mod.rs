@@ -18854,7 +18854,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     .any(|expr| matches!(expr, ast::Expr::Ident(ident) if is_shared_capture_name(ident.name)))
                 {
                     let temps = (0..assign_stmt.lhs.len())
-                        .map(|idx| quote::format_ident!("__gors_multi_{}", idx))
+                        .map(synthetic_names::multi_value_temp_ident)
                         .collect::<Vec<_>>();
                     let temp_pats = temps.iter();
                     let mut out: Vec<syn::Stmt> = vec![syn::parse_quote! {
@@ -18922,7 +18922,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 let mut tmp_pats = syn::punctuated::Punctuated::new();
                 let mut assignments = vec![];
                 for (idx, lhs) in assign_stmt.lhs.into_iter().enumerate() {
-                    let tmp = quote::format_ident!("__gors_multi_{}", idx);
+                    let tmp = synthetic_names::multi_value_temp_ident(idx);
                     tmp_pats.push(syn::Pat::Ident(syn::PatIdent {
                         attrs: vec![],
                         ident: tmp.clone(),
@@ -19291,7 +19291,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             let mut values: Vec<syn::Expr> = vec![];
             let mut skip_indices = std::collections::HashSet::new();
             for (idx, (lhs, rhs)) in assign_stmt.lhs.iter().zip(assign_stmt.rhs).enumerate() {
-                let tmp = quote::format_ident!("__gors_assign_{}", idx);
+                let tmp = synthetic_names::assignment_temp_ident(idx);
                 if matches!(lhs, ast::Expr::Ident(ident) if ident.name == "_") {
                     skip_indices.insert(idx);
                 }
@@ -19310,7 +19310,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 if skip_indices.contains(&idx) {
                     continue;
                 }
-                let right = quote::format_ident!("__gors_assign_{}", idx);
+                let right = synthetic_names::assignment_temp_ident(idx);
                 let left = compile_assignment_lhs_checked(lhs)?;
                 let right: syn::Expr = syn::parse_quote! { #right };
                 out.push(assign_expr_stmt(left, right));

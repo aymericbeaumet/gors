@@ -60,6 +60,14 @@ pub(super) fn comma_ok_ok_ident() -> syn::Ident {
     syn::Ident::new("__gors_comma_ok_ok", Span::mixed_site())
 }
 
+pub(super) fn multi_value_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_multi_{index}"), Span::mixed_site())
+}
+
+pub(super) fn assignment_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_assign_{index}"), Span::mixed_site())
+}
+
 pub(super) fn next_type_switch_value_ident() -> syn::Ident {
     let n = next_id(&SWITCH_COUNTER);
     syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
@@ -173,6 +181,8 @@ mod tests {
         assert_eq!(switch_tag_ident().to_string(), "__gors_switch_tag");
         assert_eq!(comma_ok_value_ident().to_string(), "__gors_comma_ok_value");
         assert_eq!(comma_ok_ok_ident().to_string(), "__gors_comma_ok_ok");
+        assert_eq!(multi_value_temp_ident(4).to_string(), "__gors_multi_4");
+        assert_eq!(assignment_temp_ident(5).to_string(), "__gors_assign_5");
         assert_eq!(
             next_type_switch_value_ident().to_string(),
             "__gors_type_switch_value_1"
