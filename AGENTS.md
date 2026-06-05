@@ -87,6 +87,10 @@ gors-builtin/
   structural helper dispatch lives in `gors/src/resolve/structural_helpers.rs`,
   with noop interface sentinels, mutable-reference forwarding, and fmt flush
   helper injection split under `gors/src/resolve/structural_helpers/`. Keep
+  shared resolver structural-helper `syn` predicates in
+  `gors/src/resolve/structural_helpers/syn_helpers.rs`; focused helper modules
+  should consume those predicates instead of carrying local path/type-shape
+  matchers.
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
   inlining these policies. Resolver fmt flush injection should be driven by the
   generated receiver/source-buffer data flow, not by package-specific receiver

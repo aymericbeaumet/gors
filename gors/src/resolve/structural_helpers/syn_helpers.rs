@@ -90,6 +90,29 @@ pub(super) fn type_path_pointer_cell_inner_name(ty: &syn::Type) -> Option<String
     type_path_ident_name(inner)
 }
 
+pub(super) fn type_is_vec_u8(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Vec" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    let mut args = arguments.args.iter();
+    let Some(syn::GenericArgument::Type(inner)) = args.next() else {
+        return false;
+    };
+    args.next().is_none() && type_path_ident_name(inner).as_deref() == Some("u8")
+}
+
 pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
@@ -106,6 +129,22 @@ pub(super) fn type_path_ident_name(ty: &syn::Type) -> Option<String> {
 
 fn type_path_matches_name(ty: &syn::Type, name: &str) -> bool {
     type_path_ident_name(ty).is_some_and(|ident| ident == name)
+}
+
+pub(super) fn is_self_expr(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Group(group) => is_self_expr(&group.expr),
+        syn::Expr::Paren(paren) => is_self_expr(&paren.expr),
+        syn::Expr::Path(path) if path.path.leading_colon.is_none() => {
+            path.path.segments.len() == 1
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == "self")
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn has_method(items: &[syn::Item], ty_name: &str, method_name: &str) -> bool {
@@ -129,4 +168,35 @@ pub(super) fn has_method(items: &[syn::Item], ty_name: &str, method_name: &str) 
             .iter()
             .any(|item| matches!(item, syn::ImplItem::Fn(func) if func.sig.ident == method_name))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn self_expr_matches_direct_and_wrapped_self_only() {
+        let direct: syn::Expr = syn::parse_quote! { self };
+        let wrapped: syn::Expr = syn::parse_quote! { ((self)) };
+        let field: syn::Expr = syn::parse_quote! { self.out };
+        let absolute: syn::Expr = syn::parse_quote! { ::self };
+
+        assert!(is_self_expr(&direct));
+        assert!(is_self_expr(&wrapped));
+        assert!(!is_self_expr(&field));
+        assert!(!is_self_expr(&absolute));
+    }
+
+    #[test]
+    fn vec_u8_type_matches_single_vec_byte_type() {
+        let direct: syn::Type = syn::parse_quote! { Vec<u8> };
+        let qualified: syn::Type = syn::parse_quote! { std::vec::Vec<u8> };
+        let wrong_inner: syn::Type = syn::parse_quote! { Vec<usize> };
+        let extra_arg: syn::Type = syn::parse_quote! { Vec<u8, usize> };
+
+        assert!(type_is_vec_u8(&direct));
+        assert!(type_is_vec_u8(&qualified));
+        assert!(!type_is_vec_u8(&wrong_inner));
+        assert!(!type_is_vec_u8(&extra_arg));
+    }
 }

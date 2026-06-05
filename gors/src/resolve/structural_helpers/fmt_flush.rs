@@ -1,4 +1,7 @@
-use super::syn_helpers::{has_method, type_path_ident_name, type_path_pointer_cell_inner_name};
+use super::syn_helpers::{
+    has_method, is_self_expr, type_is_vec_u8, type_path_ident_name,
+    type_path_pointer_cell_inner_name,
+};
 use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
@@ -266,7 +269,7 @@ fn expr_mentions_direct_self_field(expr: &syn::Expr, field_name: &str) -> bool {
 
     impl syn::visit::Visit<'_> for Finder<'_> {
         fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if expr_is_self(&field.base)
+            if is_self_expr(&field.base)
                 && let syn::Member::Named(member) = &field.member
                 && member == self.field_name
             {
@@ -285,22 +288,6 @@ fn expr_mentions_direct_self_field(expr: &syn::Expr, field_name: &str) -> bool {
     finder.found
 }
 
-fn expr_is_self(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Group(group) => expr_is_self(&group.expr),
-        syn::Expr::Paren(paren) => expr_is_self(&paren.expr),
-        syn::Expr::Path(path) if path.path.leading_colon.is_none() => {
-            path.path.segments.len() == 1
-                && path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|segment| segment.ident == "self")
-        }
-        _ => false,
-    }
-}
-
 fn is_byte_buffer_struct(item_struct: &syn::ItemStruct) -> bool {
     let syn::Fields::Unnamed(fields) = &item_struct.fields else {
         return false;
@@ -310,29 +297,6 @@ fn is_byte_buffer_struct(item_struct: &syn::ItemStruct) -> bool {
         return false;
     };
     fields.next().is_none() && type_is_vec_u8(&field.ty)
-}
-
-fn type_is_vec_u8(ty: &syn::Type) -> bool {
-    let syn::Type::Path(path) = ty else {
-        return false;
-    };
-    if path.qself.is_some() {
-        return false;
-    }
-    let Some(segment) = path.path.segments.last() else {
-        return false;
-    };
-    if segment.ident != "Vec" {
-        return false;
-    }
-    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-        return false;
-    };
-    let mut args = arguments.args.iter();
-    let Some(syn::GenericArgument::Type(inner)) = args.next() else {
-        return false;
-    };
-    args.next().is_none() && type_path_ident_name(inner).as_deref() == Some("u8")
 }
 
 fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
