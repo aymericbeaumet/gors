@@ -440,6 +440,10 @@ Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
 the DCE loop should delegate builtin channel, complex, bitcast, and builtin
 trait retention policy there instead of carrying runtime-specific root lists in
 the compiler root.
+Post-reachability item filtering lives in `gors/src/compiler/dce_pruning.rs`;
+the DCE loop should delegate reachable-item retention, unused generated struct
+field pruning, and unused `use` pruning there rather than keeping AST visitors
+inside `compiler/mod.rs`.
 Active reachability root scope lives in
 `gors/src/compiler/reachability_context.rs`. Resolver/stdlib parsing should keep
 using `compiler::with_active_reachability_roots()`, and compiler-side consumers
