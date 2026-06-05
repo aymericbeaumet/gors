@@ -390,6 +390,10 @@ symbol set. The resolver parses selected Go files only when the package is
 needed, filters unused top-level AST declarations before compiling, and caches
 type environments, transitive imports, and resolved token streams. Direct
 imports with no surviving references should not force module generation.
+Compiler-side stdlib module loading, dependency pruning, unreferenced-module
+cleanup, and `GORS_STDLIB_TRACE` formatting live in
+`gors/src/compiler/stdlib_modules.rs`; `compiler/mod.rs` should only orchestrate
+when those steps run in the compile pipeline.
 Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
 stream, requested roots, and known module names; keep that key aligned with any
 future reachability input that can change the kept item set.
