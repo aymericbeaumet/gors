@@ -1,4 +1,5 @@
 use super::{interface_hooks, syn_inspect};
+use crate::noop_methods::{CloneBoxPolicy, MethodPolicy, NonHookReturnPolicy};
 
 pub(super) fn items(
     interface_ident: &syn::Ident,
@@ -8,28 +9,23 @@ pub(super) fn items(
         &format!("__GorsNoop{interface_ident}"),
         proc_macro2::Span::mixed_site(),
     );
+    let default_expr: syn::Expr = syn::parse_quote! { #noop_ident::default() };
+    let trait_path: syn::Path = syn::parse_quote! { #interface_ident };
+    let policy = MethodPolicy {
+        clone_box: CloneBoxPolicy::BoxDefault {
+            default_expr: &default_expr,
+            trait_path: &trait_path,
+        },
+        non_hook_return: NonHookReturnPolicy::Panic,
+    };
     let mut impl_methods = Vec::new();
     for trait_item in trait_items {
         let syn::TraitItem::Fn(trait_fn) = trait_item else {
             continue;
         };
-        let sig = trait_fn.sig.clone();
-        let block = if sig.ident == interface_hooks::AS_ANY_METHOD {
-            syn::parse_quote!({ None })
-        } else if sig.ident == interface_hooks::CLONE_BOX_METHOD {
-            syn::parse_quote!({ Box::new(#noop_ident::default()) as Box<dyn #interface_ident> })
-        } else if matches!(sig.output, syn::ReturnType::Default) {
-            syn::parse_quote!({})
-        } else {
-            syn::parse_quote!({ crate::builtin::panic_value("called no-op interface method") })
-        };
-        impl_methods.push(syn::ImplItemFn {
-            attrs: vec![],
-            vis: syn::Visibility::Inherited,
-            defaultness: None,
-            sig,
-            block,
-        });
+        impl_methods.push(crate::noop_methods::impl_fn_for_trait_method(
+            trait_fn, &policy,
+        ));
     }
 
     vec![
@@ -46,20 +42,11 @@ pub(super) fn items(
 }
 
 pub(super) fn impl_item_for_signature(sig: syn::Signature) -> syn::ImplItem {
-    let block = if sig.ident == interface_hooks::AS_ANY_METHOD {
-        syn::parse_quote!({ None })
-    } else if matches!(sig.output, syn::ReturnType::Default) {
-        syn::parse_quote!({})
-    } else {
-        syn::parse_quote!({ crate::builtin::panic_value("called no-op interface method") })
+    let policy = MethodPolicy {
+        clone_box: CloneBoxPolicy::UseNonHookReturn,
+        non_hook_return: NonHookReturnPolicy::Panic,
     };
-    syn::ImplItem::Fn(syn::ImplItemFn {
-        attrs: vec![],
-        vis: syn::Visibility::Inherited,
-        defaultness: None,
-        sig,
-        block,
-    })
+    crate::noop_methods::impl_item_for_signature(sig, &policy)
 }
 
 pub(super) fn impl_items_for_trait_fns<'a>(

@@ -90,7 +90,11 @@ gors-builtin/
   names or a literal `State` trait gate. Resolver noop interface helper
   injection should derive method bodies from generated trait signatures and
   gate target traits on their actual signature dependencies rather than a
-  package-specific trait-name condition. Within the `coerce_types` pass,
+  package-specific trait-name condition. Shared no-op interface method body
+  synthesis lives in `gors/src/noop_methods.rs`; compiler-generated named
+  interface sentinels and resolver-injected fmt sentinels must choose their
+  explicit non-hook return policy there instead of carrying duplicate hook/body
+  builders. Within the `coerce_types` pass,
   generated fmt flush metadata lives in
   `gors/src/compiler/passes/coerce_types/structural_helpers/fmt_flush.rs`;
   reflection fallback pruning lives in

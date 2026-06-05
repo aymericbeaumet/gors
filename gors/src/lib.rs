@@ -78,6 +78,7 @@ pub mod compiler;
 pub mod error;
 
 pub(crate) mod generated_names;
+pub(crate) mod noop_methods;
 
 /// Go source code parser.
 ///

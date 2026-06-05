@@ -1,8 +1,8 @@
 use super::syn_helpers::{ImplSelfType, has_impl, has_struct, has_trait, trait_methods};
 use crate::generated_names::{
-    AS_ANY_METHOD, CLONE_BOX_METHOD, ERROR_EXT_TRAIT, NOOP_INTERFACE, error_ext_trait_ident,
-    noop_interface_ident,
+    ERROR_EXT_TRAIT, NOOP_INTERFACE, error_ext_trait_ident, noop_interface_ident,
 };
+use crate::noop_methods::{CloneBoxPolicy, MethodPolicy, NonHookReturnPolicy};
 
 #[derive(Clone, Copy)]
 struct FmtNoopTrait {
@@ -52,39 +52,24 @@ fn noop_struct_item() -> syn::Item {
 fn noop_trait_impl(trait_name: &str, methods: &[syn::TraitItemFn]) -> syn::Item {
     let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::mixed_site());
     let noop_ident = noop_interface_ident();
+    let default_expr: syn::Expr = syn::parse_quote! { Self::default() };
+    let trait_path: syn::Path = syn::parse_quote! { #trait_ident };
+    let policy = MethodPolicy {
+        clone_box: CloneBoxPolicy::BoxDefault {
+            default_expr: &default_expr,
+            trait_path: &trait_path,
+        },
+        non_hook_return: NonHookReturnPolicy::Default,
+    };
     let impl_methods = methods
         .iter()
-        .map(|method| noop_impl_method(&trait_ident, method))
+        .map(|method| crate::noop_methods::impl_fn_for_trait_method(method, &policy))
         .collect::<Vec<_>>();
 
     syn::parse_quote! {
         impl #trait_ident for #noop_ident {
             #(#impl_methods)*
         }
-    }
-}
-
-fn noop_impl_method(trait_ident: &syn::Ident, method: &syn::TraitItemFn) -> syn::ImplItemFn {
-    let sig = method.sig.clone();
-    let block = noop_method_body(trait_ident, &sig);
-    syn::ImplItemFn {
-        attrs: vec![],
-        vis: syn::Visibility::Inherited,
-        defaultness: None,
-        sig,
-        block,
-    }
-}
-
-fn noop_method_body(trait_ident: &syn::Ident, sig: &syn::Signature) -> syn::Block {
-    if sig.ident == AS_ANY_METHOD {
-        syn::parse_quote!({ None })
-    } else if sig.ident == CLONE_BOX_METHOD {
-        syn::parse_quote!({ Box::new(Self::default()) as Box<dyn #trait_ident> })
-    } else if matches!(sig.output, syn::ReturnType::Default) {
-        syn::parse_quote!({})
-    } else {
-        syn::parse_quote!({ Default::default() })
     }
 }
 
@@ -123,7 +108,16 @@ fn noop_error_ext_impl(trait_ident: &syn::Ident, noop_ident: &syn::Ident) -> syn
     let method: syn::TraitItemFn = syn::parse_quote! {
         fn Error(&mut self) -> String;
     };
-    let impl_method = noop_impl_method(trait_ident, &method);
+    let default_expr: syn::Expr = syn::parse_quote! { Self::default() };
+    let trait_path: syn::Path = syn::parse_quote! { #trait_ident };
+    let policy = MethodPolicy {
+        clone_box: CloneBoxPolicy::BoxDefault {
+            default_expr: &default_expr,
+            trait_path: &trait_path,
+        },
+        non_hook_return: NonHookReturnPolicy::Default,
+    };
+    let impl_method = crate::noop_methods::impl_fn_for_trait_method(&method, &policy);
 
     syn::parse_quote! {
         impl #trait_ident for #noop_ident {
