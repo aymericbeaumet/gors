@@ -7066,14 +7066,7 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
 }
 
 fn unsafe_intrinsic_name<'ast>(call_expr: &ast::CallExpr<'ast>) -> Option<&'ast str> {
-    let ast::Expr::SelectorExpr(selector) = &*call_expr.fun else {
-        return None;
-    };
-    if matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") {
-        Some(selector.sel.name)
-    } else {
-        None
-    }
+    ast_inspect::call_unsafe_member(call_expr)
 }
 
 fn compile_unsafe_pointer_value(expr: ast::Expr) -> syn::Expr {

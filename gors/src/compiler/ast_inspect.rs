@@ -1,8 +1,21 @@
 use super::ast;
 
-pub(super) fn selector_is_unsafe_pointer(selector: &ast::SelectorExpr<'_>) -> bool {
+pub(super) fn selector_unsafe_member<'src>(
+    selector: &ast::SelectorExpr<'src>,
+) -> Option<&'src str> {
     matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-        && selector.sel.name == "Pointer"
+        .then_some(selector.sel.name)
+}
+
+pub(super) fn selector_is_unsafe_pointer(selector: &ast::SelectorExpr<'_>) -> bool {
+    selector_unsafe_member(selector) == Some("Pointer")
+}
+
+pub(super) fn selector_is_unsafe_constant(selector: &ast::SelectorExpr<'_>) -> bool {
+    matches!(
+        selector_unsafe_member(selector),
+        Some("Alignof" | "Offsetof" | "Sizeof")
+    )
 }
 
 pub(super) fn expr_is_unsafe_pointer_selector(expr: &ast::Expr<'_>) -> bool {
@@ -11,6 +24,17 @@ pub(super) fn expr_is_unsafe_pointer_selector(expr: &ast::Expr<'_>) -> bool {
 
 pub(super) fn call_is_unsafe_pointer_conversion(call: &ast::CallExpr<'_>) -> bool {
     expr_is_unsafe_pointer_selector(&call.fun)
+}
+
+pub(super) fn call_unsafe_member<'src>(call: &ast::CallExpr<'src>) -> Option<&'src str> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    selector_unsafe_member(selector)
+}
+
+pub(super) fn call_unsafe_constant_member<'src>(call: &ast::CallExpr<'src>) -> Option<&'src str> {
+    call_unsafe_member(call).filter(|member| matches!(*member, "Alignof" | "Offsetof" | "Sizeof"))
 }
 
 #[cfg(test)]
@@ -35,9 +59,15 @@ mod tests {
 
     #[test]
     fn unsafe_pointer_selector_matches_exact_package_member() {
+        assert_eq!(
+            selector_unsafe_member(&selector("unsafe", "Pointer")),
+            Some("Pointer")
+        );
         assert!(selector_is_unsafe_pointer(&selector("unsafe", "Pointer")));
         assert!(!selector_is_unsafe_pointer(&selector("unsafe", "Sizeof")));
         assert!(!selector_is_unsafe_pointer(&selector("safe", "Pointer")));
+        assert!(selector_is_unsafe_constant(&selector("unsafe", "Sizeof")));
+        assert!(!selector_is_unsafe_constant(&selector("unsafe", "Pointer")));
     }
 
     #[test]
@@ -59,5 +89,7 @@ mod tests {
 
         assert!(call_is_unsafe_pointer_conversion(&call));
         assert!(!call_is_unsafe_pointer_conversion(&other));
+        assert_eq!(call_unsafe_member(&call), Some("Pointer"));
+        assert_eq!(call_unsafe_constant_member(&call), None);
     }
 }

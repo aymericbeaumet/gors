@@ -8497,14 +8497,7 @@ fn const_call_is_known_non_constant(call: &ast::CallExpr<'_>, env: &TypeEnv) -> 
 }
 
 fn unsafe_constant_call_name<'a>(call: &'a ast::CallExpr<'a>) -> Option<&'a str> {
-    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
-        return None;
-    };
-    let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
-        return None;
-    };
-    (pkg.name == "unsafe" && matches!(selector.sel.name, "Alignof" | "Offsetof" | "Sizeof"))
-        .then_some(selector.sel.name)
+    super::ast_inspect::call_unsafe_constant_member(call)
 }
 
 fn len_cap_call_is_compile_time_constant(

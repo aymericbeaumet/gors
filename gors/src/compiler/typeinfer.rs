@@ -405,10 +405,7 @@ impl GoType {
                         }
                     }
                     ast::Expr::SelectorExpr(sel) => {
-                        if let ast::Expr::Ident(pkg) = &*sel.x
-                            && pkg.name == "unsafe"
-                            && matches!(sel.sel.name, "Alignof" | "Offsetof" | "Sizeof")
-                        {
+                        if super::ast_inspect::selector_is_unsafe_constant(sel) {
                             return GoType::Uintptr;
                         }
                         if let ast::Expr::Ident(pkg) = &*sel.x {
