@@ -46,6 +46,8 @@ mod tests {
         let mut items: Vec<syn::Item> = vec![
             syn::parse_quote! {
                 trait State {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn __gors_clone_box(&self) -> Box<dyn State>;
                     fn Write(&mut self, b: Vec<u8>) -> usize;
                     fn Width(&self) -> usize;
                 }
@@ -74,6 +76,10 @@ mod tests {
             },
             syn::parse_quote! {
                 impl State for pp {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
+                    fn __gors_clone_box(&self) -> Box<dyn State> {
+                        crate::builtin::panic_value("cloned non-clone interface value")
+                    }
                     fn Write(&mut self, b: Vec<u8>) -> usize {
                         self.fmt.write(b)
                     }
@@ -208,10 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn mut_ref_forwarders_are_derived_from_named_trait_impls() {
+    fn mut_ref_forwarders_are_derived_from_generated_interface_impls() {
         let mut items: Vec<syn::Item> = vec![
             syn::parse_quote! {
                 trait State {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn __gors_clone_box(&self) -> Box<dyn State>;
                     fn Write(&mut self, b: Vec<u8>) -> usize;
                     fn Width(&self) -> usize;
                 }
@@ -226,13 +234,33 @@ mod tests {
             },
             syn::parse_quote! {
                 impl State for Printer {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
+                    fn __gors_clone_box(&self) -> Box<dyn State> {
+                        crate::builtin::panic_value("cloned non-clone interface value")
+                    }
                     fn Write(&mut self, b: Vec<u8>) -> usize { b.len() }
                     fn Width(&self) -> usize { 0 }
                 }
             },
             syn::parse_quote! {
+                impl crate::io__fs::FileInfo for Printer {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any> { None }
+                    fn __gors_clone_box(&self) -> Box<dyn crate::io__fs::FileInfo> {
+                        crate::builtin::panic_value("cloned non-clone interface value")
+                    }
+                    fn Name(&mut self) -> String { Default::default() }
+                }
+            },
+            syn::parse_quote! {
                 impl Sink for Printer {
                     fn Push(&mut self, value: isize) -> isize { value }
+                }
+            },
+            syn::parse_quote! {
+                impl std::fmt::Display for Printer {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        Ok(())
+                    }
                 }
             },
         ];
@@ -264,12 +292,14 @@ mod tests {
         let tokens = quote::quote!(#(#items)*).to_string();
 
         assert!(state_ref_impl.is_some(), "{tokens}");
-        assert!(sink_ref_impl.is_some(), "{tokens}");
+        assert!(sink_ref_impl.is_none(), "{tokens}");
         assert!(
-            tokens.contains("< Printer as State > :: Write (& mut * * self , b)")
-                && tokens.contains("< Printer as State > :: Width (& * * self)")
-                && tokens.contains("< Printer as Sink > :: Push (& mut * * self , value)"),
-            "expected generated &mut trait impls to forward through named impls: {tokens}"
+            tokens.contains("State :: Write (& mut * * self , b)")
+                && tokens.contains("State :: Width (& * * self)")
+                && tokens.contains("crate :: io__fs :: FileInfo :: Name (& mut * * self)")
+                && !tokens.contains("Sink :: Push (& mut * * self , value)")
+                && !tokens.contains("std :: fmt :: Display for & 'a mut Printer"),
+            "expected generated &mut interface impls to forward through named impls only: {tokens}"
         );
     }
 

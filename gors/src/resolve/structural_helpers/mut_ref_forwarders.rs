@@ -1,23 +1,24 @@
-use super::syn_helpers::{ImplSelfType, has_impl, type_path_ident_name};
+use super::syn_helpers::{ImplSelfType, type_path_ident_name};
+use crate::generated_names::{AS_ANY_METHOD, CLONE_BOX_METHOD};
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
     let mut forwarders = Vec::new();
-    for trait_methods in forwardable_traits(items) {
-        for self_ty in named_trait_impl_self_types(items, &trait_methods.name) {
-            if has_impl(
-                items,
-                &trait_methods.name,
-                ImplSelfType::MutableReferenceToNamed(&self_ty),
-            ) {
-                continue;
-            }
-            let Some(forwarder) =
-                mutable_ref_trait_forwarder(&trait_methods.name, &self_ty, &trait_methods.methods)
-            else {
-                continue;
-            };
-            forwarders.push(forwarder);
+    for trait_impl in forwardable_impls(items) {
+        if has_matching_impl(
+            items,
+            &trait_impl.trait_path,
+            ImplSelfType::MutableReferenceToNamed(&trait_impl.self_ty),
+        ) {
+            continue;
         }
+        let Some(forwarder) = mutable_ref_trait_forwarder(
+            &trait_impl.trait_path,
+            &trait_impl.self_ty,
+            &trait_impl.methods,
+        ) else {
+            continue;
+        };
+        forwarders.push(forwarder);
     }
 
     for forwarder in forwarders {
@@ -25,80 +26,72 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
     }
 }
 
-struct ForwardableTrait {
-    name: String,
-    methods: Vec<syn::TraitItemFn>,
+struct ForwardableImpl {
+    trait_path: syn::Path,
+    self_ty: String,
+    methods: Vec<syn::ImplItemFn>,
 }
 
-fn forwardable_traits(items: &[syn::Item]) -> Vec<ForwardableTrait> {
-    items
+fn forwardable_impls(items: &[syn::Item]) -> Vec<ForwardableImpl> {
+    let mut out = items
         .iter()
         .filter_map(|item| {
-            let syn::Item::Trait(item_trait) = item else {
+            let syn::Item::Impl(item_impl) = item else {
                 return None;
             };
-            let methods = item_trait
+            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
+            let self_ty = type_path_ident_name(&item_impl.self_ty)?;
+            let methods = item_impl
                 .items
                 .iter()
                 .map(|item| match item {
-                    syn::TraitItem::Fn(func) => Some(func.clone()),
+                    syn::ImplItem::Fn(func) => Some(func.clone()),
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?;
-            (!methods.is_empty()).then(|| ForwardableTrait {
-                name: item_trait.ident.to_string(),
+            (impl_has_interface_hooks(&methods) && !methods.is_empty()).then(|| ForwardableImpl {
+                trait_path: trait_path.clone(),
+                self_ty,
                 methods,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    out.sort_by(|left, right| {
+        path_key(&left.trait_path)
+            .cmp(&path_key(&right.trait_path))
+            .then_with(|| left.self_ty.cmp(&right.self_ty))
+    });
+    out
 }
 
-fn named_trait_impl_self_types(items: &[syn::Item], trait_name: &str) -> Vec<String> {
-    let mut names = std::collections::BTreeSet::new();
-    for item in items {
-        let syn::Item::Impl(item_impl) = item else {
-            continue;
-        };
-        let Some((_, path, _)) = &item_impl.trait_ else {
-            continue;
-        };
-        if path
-            .segments
-            .last()
-            .is_none_or(|seg| seg.ident != trait_name)
-        {
-            continue;
-        }
-        if let Some(name) = type_path_ident_name(&item_impl.self_ty) {
-            names.insert(name);
-        }
-    }
-    names.into_iter().collect()
+fn impl_has_interface_hooks(methods: &[syn::ImplItemFn]) -> bool {
+    methods.iter().any(|method| {
+        let ident = &method.sig.ident;
+        ident == AS_ANY_METHOD || ident == CLONE_BOX_METHOD
+    })
 }
 
 fn mutable_ref_trait_forwarder(
-    trait_name: &str,
+    trait_path: &syn::Path,
     self_ty: &str,
-    methods: &[syn::TraitItemFn],
+    methods: &[syn::ImplItemFn],
 ) -> Option<syn::Item> {
-    let trait_ident = syn::Ident::new(trait_name, proc_macro2::Span::mixed_site());
     let self_ty_ident = syn::Ident::new(self_ty, proc_macro2::Span::mixed_site());
     let methods = methods
         .iter()
-        .map(|method| forwarding_impl_method(&trait_ident, &self_ty_ident, method))
+        .map(|method| forwarding_impl_method(trait_path, method))
         .collect::<Option<Vec<_>>>()?;
 
     Some(syn::parse_quote! {
-        impl<'a> #trait_ident for &'a mut #self_ty_ident {
+        impl<'a> #trait_path for &'a mut #self_ty_ident {
             #(#methods)*
         }
     })
 }
 
 fn forwarding_impl_method(
-    trait_ident: &syn::Ident,
-    self_ty_ident: &syn::Ident,
-    method: &syn::TraitItemFn,
+    trait_path: &syn::Path,
+    method: &syn::ImplItemFn,
 ) -> Option<syn::ImplItemFn> {
     let sig = method.sig.clone();
     let method_ident = &sig.ident;
@@ -106,9 +99,49 @@ fn forwarding_impl_method(
 
     Some(syn::parse_quote! {
         #sig {
-            <#self_ty_ident as #trait_ident>::#method_ident(#(#args),*)
+            #trait_path::#method_ident(#(#args),*)
         }
     })
+}
+
+fn has_matching_impl(
+    items: &[syn::Item],
+    trait_path: &syn::Path,
+    self_ty: ImplSelfType<'_>,
+) -> bool {
+    items.iter().any(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return false;
+        };
+        let Some((_, existing_path, _)) = &item_impl.trait_ else {
+            return false;
+        };
+        paths_match(existing_path, trait_path)
+            && super::syn_helpers::type_matches_impl_self(&item_impl.self_ty, self_ty)
+    })
+}
+
+fn paths_match(left: &syn::Path, right: &syn::Path) -> bool {
+    left.leading_colon.is_some() == right.leading_colon.is_some()
+        && left.segments.len() == right.segments.len()
+        && left
+            .segments
+            .iter()
+            .zip(&right.segments)
+            .all(|(left, right)| {
+                left.ident == right.ident
+                    && matches!(
+                        (&left.arguments, &right.arguments),
+                        (syn::PathArguments::None, syn::PathArguments::None)
+                    )
+            })
+}
+
+fn path_key(path: &syn::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect()
 }
 
 fn forwarding_call_args(sig: &syn::Signature) -> Option<Vec<syn::Expr>> {
