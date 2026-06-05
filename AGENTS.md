@@ -322,6 +322,11 @@ gors-builtin/
   rewriting must avoid turning `string(r)` into `builtin::string(&self)` because
   trait impl receiver shims can make that `&&mut T`; use the receiver value
   itself for the builtin string conversion.
+- Deferred recover-handler elision is scoped through
+  `gors/src/compiler/recover_handlers.rs`. It should derive from receiver
+  methods that start with a real `if err := recover(); err != nil` guard and
+  only elide defers on the current receiver to those active handlers; do not
+  reintroduce a `catchPanic` method-name trigger.
 - Direct method-expression calls lower through the generated Rust inherent
   method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`),
   and variadic method-expression arguments use the same packed/spread lowering

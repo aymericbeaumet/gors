@@ -53,6 +53,7 @@ mod reachability_names;
 mod receiver_method_targets;
 mod receiver_type_facts;
 mod receiver_type_scopes;
+mod recover_handlers;
 mod ref_collection;
 mod reflect_kind;
 mod reflect_semantics;
@@ -6528,6 +6529,7 @@ fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
 
 fn compile_method(
     func_decl: ast::FuncDecl,
+    receiver_recover_handlers: &recover_handlers::HandlerMap,
 ) -> Result<(String, Vec<syn::Ident>, syn::ImplItemFn), CompilerError> {
     synthetic_names::reset_unnamed_arg_counter();
 
@@ -6643,6 +6645,12 @@ fn compile_method(
     let mutable_slice_view_return_guard =
         MutableSliceViewReturnGuard::set(mutable_slice_view_return.clone());
     let type_param_info = TypeParamInfo::default();
+    let _recover_handlers = recover_handlers::ActiveHandlerGuard::set(
+        receiver_recover_handlers
+            .get(&type_name)
+            .cloned()
+            .unwrap_or_default(),
+    );
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
     for param in func_decl.type_.params.list {
@@ -15358,6 +15366,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
         preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
+        let receiver_recover_handlers = recover_handlers::collect(&file.decls);
 
         let mut items = vec![];
         let mut type_decl_generics: BTreeMap<String, syn::Generics> = BTreeMap::new();
@@ -15466,7 +15475,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 .or_default()
                                 .push(method_name);
                         }
-                        let (type_name, type_args, method) = compile_method(func_decl)?;
+                        let (type_name, type_args, method) =
+                            compile_method(func_decl, &receiver_recover_handlers)?;
                         method_generics
                             .entry(type_name.clone())
                             .or_insert(type_args);
@@ -16771,7 +16781,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
             ast::Stmt::BranchStmt(s) => Ok(s.into()),
             ast::Stmt::DeclStmt(s) => Ok(s.into()),
             ast::Stmt::DeferStmt(s) => {
-                if is_catch_panic_defer(&s.call) {
+                if is_deferred_recover_handler(&s.call) {
                     return Ok(vec![]);
                 }
                 Ok(compile_defer_stmt(s.call))
@@ -16947,11 +16957,11 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
     }
 }
 
-fn is_catch_panic_defer(call: &ast::CallExpr) -> bool {
-    matches!(
-        call.fun.as_ref(),
-        ast::Expr::SelectorExpr(selector) if selector.sel.name == "catchPanic"
-    )
+fn is_deferred_recover_handler(call: &ast::CallExpr) -> bool {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return false;
+    };
+    expr_is_current_receiver_name(&selector.x) && recover_handlers::is_active(selector.sel.name)
 }
 
 fn compile_inc_dec_stmt(inc_dec_stmt: ast::IncDecStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
@@ -30495,6 +30505,66 @@ func main() {
     }
 
     #[test]
+    fn deferred_recover_handler_elision_uses_recover_guard_not_method_name() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type printer struct{}
+
+func (p *printer) recoverAfter() {
+	if err := recover(); err != nil {
+		_ = err
+	}
+}
+
+func (p *printer) run() {
+	defer p.recoverAfter()
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("fn recoverAfter"), "{output}");
+        assert!(
+            !output.contains("__gors_defer_stack . 0 . push"),
+            "expected deferred recover handler to be elided from the defer stack: {output}"
+        );
+    }
+
+    #[test]
+    fn deferred_non_recover_handler_is_not_elided_by_catch_panic_name() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type printer struct{}
+
+func (p *printer) catchPanic() {}
+
+func (p *printer) run() {
+	defer p.catchPanic()
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("fn catchPanic"), "{output}");
+        assert!(
+            output.contains("__gors_defer_stack . 0 . push"),
+            "expected ordinary catchPanic-named method to stay in the defer stack: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_compile_interface_type_declaration() {
         test(
             r#"
@@ -31374,7 +31444,8 @@ func main() {}
                 _ => None,
             })
             .unwrap();
-        let (_, _, lowered_get) = super::compile_method(get_method).unwrap();
+        let (_, _, lowered_get) =
+            super::compile_method(get_method, &super::recover_handlers::HandlerMap::new()).unwrap();
         let lowered_get_output = quote! { #lowered_get }.to_string();
         assert!(
             lowered_get_output.contains("self . value"),
