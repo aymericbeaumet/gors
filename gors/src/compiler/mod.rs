@@ -18337,8 +18337,8 @@ fn comma_ok_lhs_expr(expr: ast::Expr) -> Result<Option<syn::Expr>, CompilerError
 }
 
 fn comma_ok_assignment_stmts(lhs: Vec<Option<syn::Expr>>, rhs_expr: syn::Expr) -> Vec<syn::Stmt> {
-    let val_tmp = syn::Ident::new("__gors_comma_ok_value", Span::mixed_site());
-    let ok_tmp = syn::Ident::new("__gors_comma_ok_ok", Span::mixed_site());
+    let val_tmp = synthetic_names::comma_ok_value_ident();
+    let ok_tmp = synthetic_names::comma_ok_ok_ident();
     let mut stmts = vec![syn::parse_quote! {
         let (mut #val_tmp, mut #ok_tmp) = #rhs_expr;
     }];
