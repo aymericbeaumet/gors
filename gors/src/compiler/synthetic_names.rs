@@ -66,8 +66,23 @@ pub(super) fn next_goto_state_names() -> (syn::Ident, syn::Lifetime) {
     )
 }
 
-pub(super) fn next_range_function_id() -> usize {
-    next_id(&RANGE_FUNCTION_COUNTER)
+pub(super) fn range_assign_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_range_{index}"), Span::mixed_site())
+}
+
+pub(super) fn range_function_arg_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_range_arg_{index}"), Span::mixed_site())
+}
+
+pub(super) fn next_range_function_return_idents() -> (syn::Ident, syn::Ident) {
+    let n = next_id(&RANGE_FUNCTION_COUNTER);
+    (
+        syn::Ident::new(&format!("__gors_range_return_{n}"), Span::mixed_site()),
+        syn::Ident::new(
+            &format!("__gors_range_return_for_yield_{n}"),
+            Span::mixed_site(),
+        ),
+    )
 }
 
 pub(super) fn next_named_return_label() -> syn::Lifetime {
@@ -123,7 +138,17 @@ mod tests {
         );
         assert_eq!(next_select_label().ident.to_string(), "__gors_select_0");
         assert_eq!(next_defer_id(), 0);
-        assert_eq!(next_range_function_id(), 0);
+        assert_eq!(range_assign_temp_ident(2).to_string(), "__gors_range_2");
+        assert_eq!(
+            range_function_arg_ident(3).to_string(),
+            "__gors_range_arg_3"
+        );
+        let (range_return, range_return_for_yield) = next_range_function_return_idents();
+        assert_eq!(range_return.to_string(), "__gors_range_return_0");
+        assert_eq!(
+            range_return_for_yield.to_string(),
+            "__gors_range_return_for_yield_0"
+        );
         assert_eq!(
             next_named_return_label().ident.to_string(),
             "__gors_named_return_0"
@@ -146,7 +171,10 @@ mod tests {
             "__gors_select_value_0"
         );
         assert_eq!(next_defer_id(), 0);
-        assert_eq!(next_range_function_id(), 0);
+        assert_eq!(
+            next_range_function_return_idents().0.to_string(),
+            "__gors_range_return_0"
+        );
         assert_eq!(
             next_named_return_label().ident.to_string(),
             "__gors_named_return_0"

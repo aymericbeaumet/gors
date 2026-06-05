@@ -11369,7 +11369,7 @@ fn range_pat_and_body_with_value_types(
     }
 
     let temps: Vec<syn::Ident> = (0..targets.len())
-        .map(|idx| syn::Ident::new(&format!("__gors_range_{idx}"), Span::mixed_site()))
+        .map(synthetic_names::range_assign_temp_ident)
         .collect();
     let pat: syn::Pat = match temps.as_slice() {
         [tmp] => syn::parse_quote! { #tmp },
@@ -11435,7 +11435,7 @@ fn range_function_param_pat(
         let ident = local_binding_ident_for_ast(ident);
         return syn::parse_quote! { mut #ident };
     }
-    let ident = quote::format_ident!("__gors_range_arg_{}", idx);
+    let ident = synthetic_names::range_function_arg_ident(idx);
     syn::parse_quote! { mut #ident }
 }
 
@@ -11454,7 +11454,7 @@ fn range_function_assignment_stmts(
             if matches!(&target, ast::Expr::Ident(ident) if ident.name == "_") {
                 return None;
             }
-            let right = quote::format_ident!("__gors_range_arg_{}", idx);
+            let right = synthetic_names::range_function_arg_ident(idx);
             Some(
                 compile_assignment_lhs_checked(target)
                     .map(|left| syn::parse_quote! { #left = #right; }),
@@ -11527,10 +11527,10 @@ fn scoped_if_result_stmts(
 }
 
 fn range_function_return_context() -> RangeFunctionReturnContext {
-    let id = synthetic_names::next_range_function_id();
+    let (slot_ident, slot_for_yield_ident) = synthetic_names::next_range_function_return_idents();
     RangeFunctionReturnContext {
-        slot_ident: quote::format_ident!("__gors_range_return_{id}"),
-        slot_for_yield_ident: quote::format_ident!("__gors_range_return_for_yield_{id}"),
+        slot_ident,
+        slot_for_yield_ident,
         return_ty: return_context::current_syn_type(),
     }
 }
