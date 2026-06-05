@@ -421,10 +421,11 @@ Per-iteration DCE state lives in `gors/src/compiler/dce_iteration.rs` through
 semantic reachability auditing attached to those DCE boundaries instead of
 scattering ad hoc `collect_external_refs()` calls through stdlib resolution,
 pruning, or post-prune preservation code.
-Reachable-item cache state and length-delimited reachability fingerprinting live
-in `gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
-cache keys, cached entries, and fingerprint builders from that module instead of
-owning lock mechanics or hash serialization in `compiler/mod.rs`.
+Reachable-item cache state, module-level DCE fingerprints, and
+length-delimited reachability fingerprinting live in
+`gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
+cache keys, cached entries, and fingerprint builders from that module instead
+of owning lock mechanics or hash serialization in `compiler/mod.rs`.
 Active reachability root scope lives in
 `gors/src/compiler/reachability_context.rs`. Resolver/stdlib parsing should keep
 using `compiler::with_active_reachability_roots()`, and compiler-side consumers

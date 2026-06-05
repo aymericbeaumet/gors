@@ -105,7 +105,7 @@ use item_reachability::{impl_method_reachability_name, reachable_item_for_names}
 use package_context::{CurrentGoPackageNameGuard, MainPackageVarModeGuard};
 use phantom_type_params::add_fields_for_unused_type_params;
 use proc_macro2::Span;
-use reachability_cache::{ReachabilityFingerprint, ReachableItems};
+use reachability_cache::ReachableItems;
 use receiver_type_facts::{
     ReceiverFieldTypeMap, ReceiverTupleReturnMap, ReceiverTupleTypes, ReceiverTypeMap,
     ReceiverTypeRef, external_receiver_method_return_type, receiver_type_from_associated_call_path,
@@ -3566,7 +3566,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
     use std::collections::HashSet;
 
     loop {
-        let before = modules_reachability_fingerprint(modules);
+        let before = reachability_cache::modules_fingerprint(modules);
         let context = DceIterationContext::new(modules, has_main);
         let module_names = context.module_names();
         let external_root_collector = context.external_root_collector();
@@ -3682,7 +3682,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
             modules.remove(&key);
         }
 
-        if modules_reachability_fingerprint(modules) == before {
+        if reachability_cache::modules_fingerprint(modules) == before {
             break;
         }
     }
@@ -3734,21 +3734,6 @@ fn retain_reachable_items(
                 .flatten()
         })
         .collect();
-}
-
-fn modules_reachability_fingerprint(modules: &BTreeMap<String, CompiledModule>) -> String {
-    let mut fingerprint = ReachabilityFingerprint::new("modules");
-    fingerprint.push_len(modules.len());
-    for (key, module) in modules {
-        fingerprint.push_str(key);
-        fingerprint.push_str(&module.mod_name);
-        fingerprint.push_str(&module.import_path);
-        fingerprint.push_str(&module.filename);
-        fingerprint.push_bool(module.is_main);
-        fingerprint.push_bool(module.is_stdlib);
-        fingerprint.push_items(&module.file.items);
-    }
-    fingerprint.finish()
 }
 
 fn exported_item_reachability_names(items: &[syn::Item]) -> std::collections::HashSet<String> {
@@ -26531,8 +26516,8 @@ func B() {}
         );
 
         assert_ne!(
-            super::modules_reachability_fingerprint(&needed_modules),
-            super::modules_reachability_fingerprint(&other_modules)
+            super::reachability_cache::modules_fingerprint(&needed_modules),
+            super::reachability_cache::modules_fingerprint(&other_modules)
         );
     }
 

@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
+use super::CompiledModule;
+
 #[derive(Clone)]
 pub(super) struct ReachableItems {
     pub(super) keep: HashSet<usize>,
@@ -95,6 +97,21 @@ pub(super) fn cache_key(
         fingerprint.push_str(module_name);
     }
     fingerprint.push_items(items);
+    fingerprint.finish()
+}
+
+pub(super) fn modules_fingerprint(modules: &BTreeMap<String, CompiledModule>) -> String {
+    let mut fingerprint = ReachabilityFingerprint::new("modules");
+    fingerprint.push_len(modules.len());
+    for (key, module) in modules {
+        fingerprint.push_str(key);
+        fingerprint.push_str(&module.mod_name);
+        fingerprint.push_str(&module.import_path);
+        fingerprint.push_str(&module.filename);
+        fingerprint.push_bool(module.is_main);
+        fingerprint.push_bool(module.is_stdlib);
+        fingerprint.push_items(&module.file.items);
+    }
     fingerprint.finish()
 }
 
