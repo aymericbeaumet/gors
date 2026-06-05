@@ -435,6 +435,10 @@ Ref-collection input state lives in `gors/src/compiler/ref_collection.rs`;
 token DCE, semantic reachability, and external-root discovery should construct
 `RefCollectionContext` from that module rather than owning ad hoc context
 structs in the compiler root.
+Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
+the DCE loop should delegate builtin channel, complex, bitcast, and builtin
+trait retention policy there instead of carrying runtime-specific root lists in
+the compiler root.
 Active reachability root scope lives in
 `gors/src/compiler/reachability_context.rs`. Resolver/stdlib parsing should keep
 using `compiler::with_active_reachability_roots()`, and compiler-side consumers
