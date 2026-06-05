@@ -1,6 +1,4 @@
-use super::syn_helpers::{
-    ImplSelfType, has_impl, has_method, type_path_ident_name, type_path_pointer_cell_inner_name,
-};
+use super::syn_helpers::{has_method, type_path_ident_name, type_path_pointer_cell_inner_name};
 use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
@@ -58,9 +56,6 @@ fn fmt_flush_plan_for_receiver(
     receiver_struct: &syn::ItemStruct,
 ) -> Option<FmtFlushPlan> {
     let receiver = receiver_struct.ident.to_string();
-    if !has_state_impl_for_receiver(items, &receiver) {
-        return None;
-    }
     let receiver_fields = named_fields(receiver_struct)?;
     for source in &receiver_fields {
         let Some(source_ty) = type_path_ident_name(&source.ty) else {
@@ -81,6 +76,12 @@ fn fmt_flush_plan_for_receiver(
         else {
             continue;
         };
+        let source_methods = methods_touching_field_buffer(items, &source_ty, &source_buffer_field);
+        if source_methods.is_empty()
+            || !receiver_calls_source_methods(items, &receiver, &source.name, &source_methods)
+        {
+            continue;
+        }
         return Some(FmtFlushPlan {
             receiver,
             source_field: source.name.clone(),
@@ -90,11 +91,6 @@ fn fmt_flush_plan_for_receiver(
         });
     }
     None
-}
-
-fn has_state_impl_for_receiver(items: &[syn::Item], receiver: &str) -> bool {
-    has_impl(items, "State", ImplSelfType::Named(receiver))
-        || has_impl(items, "State", ImplSelfType::PointerCellToNamed(receiver))
 }
 
 #[derive(Clone)]
@@ -142,6 +138,167 @@ fn source_buffer_field(
         }
     }
     None
+}
+
+fn methods_touching_field_buffer(
+    items: &[syn::Item],
+    receiver: &str,
+    field_name: &str,
+) -> std::collections::HashSet<String> {
+    let mut methods = std::collections::HashSet::new();
+    for item in items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        if type_path_ident_name(&item_impl.self_ty).as_deref() != Some(receiver) {
+            continue;
+        }
+        for func in item_impl.items.iter().filter_map(|item| {
+            let syn::ImplItem::Fn(func) = item else {
+                return None;
+            };
+            Some(func)
+        }) {
+            if method_touches_self_field(func, field_name) {
+                methods.insert(func.sig.ident.to_string());
+            }
+        }
+    }
+    methods
+}
+
+fn method_touches_self_field(func: &syn::ImplItemFn, field_name: &str) -> bool {
+    struct Finder<'a> {
+        field_name: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_assign(&mut self, assign: &syn::ExprAssign) {
+            if expr_mentions_direct_self_field(&assign.left, self.field_name) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_assign(self, assign);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if expr_mentions_direct_self_field(&call.receiver, self.field_name) {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        field_name,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, &func.block);
+    finder.found
+}
+
+fn receiver_calls_source_methods(
+    items: &[syn::Item],
+    receiver: &str,
+    source_field: &str,
+    source_methods: &std::collections::HashSet<String>,
+) -> bool {
+    for item in items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        if type_path_ident_name(&item_impl.self_ty).as_deref() != Some(receiver) {
+            continue;
+        }
+        for func in item_impl.items.iter().filter_map(|item| {
+            let syn::ImplItem::Fn(func) = item else {
+                return None;
+            };
+            Some(func)
+        }) {
+            if method_calls_source_method(func, source_field, source_methods) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn method_calls_source_method(
+    func: &syn::ImplItemFn,
+    source_field: &str,
+    source_methods: &std::collections::HashSet<String>,
+) -> bool {
+    struct Finder<'a> {
+        source_field: &'a str,
+        source_methods: &'a std::collections::HashSet<String>,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if self.source_methods.contains(&call.method.to_string())
+                && expr_mentions_direct_self_field(&call.receiver, self.source_field)
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        source_field,
+        source_methods,
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut finder, &func.block);
+    finder.found
+}
+
+fn expr_mentions_direct_self_field(expr: &syn::Expr, field_name: &str) -> bool {
+    struct Finder<'a> {
+        field_name: &'a str,
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder<'_> {
+        fn visit_expr_field(&mut self, field: &syn::ExprField) {
+            if expr_is_self(&field.base)
+                && let syn::Member::Named(member) = &field.member
+                && member == self.field_name
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_field(self, field);
+        }
+    }
+
+    let mut finder = Finder {
+        field_name,
+        found: false,
+    };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
+fn expr_is_self(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Group(group) => expr_is_self(&group.expr),
+        syn::Expr::Paren(paren) => expr_is_self(&paren.expr),
+        syn::Expr::Path(path) if path.path.leading_colon.is_none() => {
+            path.path.segments.len() == 1
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == "self")
+        }
+        _ => false,
+    }
 }
 
 fn is_byte_buffer_struct(item_struct: &syn::ItemStruct) -> bool {

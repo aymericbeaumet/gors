@@ -38,11 +38,6 @@ mod tests {
             "State",
             ImplSelfType::MutableReferenceToNamed("pp")
         ));
-        assert!(has_impl(
-            &items,
-            "State",
-            ImplSelfType::PointerCellToNamed("pp")
-        ));
         assert!(!has_impl(&items, "State", ImplSelfType::Named("pp")));
     }
 
@@ -64,6 +59,14 @@ mod tests {
                 struct byteBuffer(Vec<u8>);
             },
             syn::parse_quote! {
+                impl fmtState {
+                    fn write(&mut self, b: Vec<u8>) -> usize {
+                        self.buf.lock().unwrap().0.extend(b);
+                        0
+                    }
+                }
+            },
+            syn::parse_quote! {
                 struct pp {
                     fmt: fmtState,
                     buf: byteBuffer,
@@ -71,7 +74,9 @@ mod tests {
             },
             syn::parse_quote! {
                 impl State for pp {
-                    fn Write(&mut self, b: Vec<u8>) -> usize { b.len() }
+                    fn Write(&mut self, b: Vec<u8>) -> usize {
+                        self.fmt.write(b)
+                    }
                     fn Width(&self) -> usize { 0 }
                 }
             },
@@ -115,10 +120,51 @@ mod tests {
     fn fmt_flush_injection_uses_receiver_shape() {
         let mut items: Vec<syn::Item> = vec![
             syn::parse_quote! {
-                trait State {
-                    fn Write(&mut self, b: Vec<u8>) -> usize;
+                struct FormatState {
+                    pending: crate::builtin::GorsPtr<ByteBuffer>,
                 }
             },
+            syn::parse_quote! {
+                struct ByteBuffer(Vec<u8>);
+            },
+            syn::parse_quote! {
+                struct Printer {
+                    scratch: FormatState,
+                    out: ByteBuffer,
+                }
+            },
+            syn::parse_quote! {
+                impl FormatState {
+                    fn write(&mut self, b: Vec<u8>) -> usize {
+                        self.pending.lock().unwrap().0.extend(b);
+                        0
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl Printer {
+                    fn print(&mut self, b: Vec<u8>) -> usize {
+                        self.scratch.write(b)
+                    }
+                }
+            },
+        ];
+
+        inject(&mut items);
+
+        let tokens = quote::quote!(#(#items)*).to_string();
+        assert!(has_method(&items, "Printer", "__gors_flush_fmt"));
+        assert!(!has_method(&items, "pp", "__gors_flush_fmt"));
+        assert!(
+            tokens.contains("self . scratch . pending . lock () . unwrap () . 0")
+                && tokens.contains("self . out . 0 . extend (bytes)"),
+            "expected flush hook to use detected field names: {tokens}"
+        );
+    }
+
+    #[test]
+    fn fmt_flush_injection_requires_source_buffer_flow() {
+        let mut items: Vec<syn::Item> = vec![
             syn::parse_quote! {
                 struct FormatState {
                     pending: crate::builtin::GorsPtr<ByteBuffer>,
@@ -134,22 +180,24 @@ mod tests {
                 }
             },
             syn::parse_quote! {
-                impl State for crate::builtin::GorsPtr<Printer> {
-                    fn Write(&mut self, b: Vec<u8>) -> usize { b.len() }
+                impl FormatState {
+                    fn write(&mut self, b: Vec<u8>) -> usize {
+                        b.len()
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl Printer {
+                    fn print(&mut self, b: Vec<u8>) -> usize {
+                        self.scratch.write(b)
+                    }
                 }
             },
         ];
 
         inject(&mut items);
 
-        let tokens = quote::quote!(#(#items)*).to_string();
-        assert!(has_method(&items, "Printer", "__gors_flush_fmt"));
-        assert!(!has_method(&items, "pp", "__gors_flush_fmt"));
-        assert!(
-            tokens.contains("self . scratch . pending . lock () . unwrap () . 0")
-                && tokens.contains("self . out . 0 . extend (bytes)"),
-            "expected flush hook to use detected field names: {tokens}"
-        );
+        assert!(!has_method(&items, "Printer", "__gors_flush_fmt"));
     }
 
     #[test]

@@ -37,7 +37,6 @@ pub(super) fn has_struct(items: &[syn::Item], name: &str) -> bool {
 pub(super) enum ImplSelfType<'a> {
     Named(&'a str),
     MutableReferenceToNamed(&'a str),
-    PointerCellToNamed(&'a str),
 }
 
 pub(super) fn has_impl(items: &[syn::Item], trait_name: &str, self_ty: ImplSelfType<'_>) -> bool {
@@ -64,12 +63,7 @@ pub(super) fn type_matches_impl_self(ty: &syn::Type, expected: ImplSelfType<'_>)
             };
             reference.mutability.is_some() && type_path_matches_name(&reference.elem, name)
         }
-        ImplSelfType::PointerCellToNamed(name) => type_path_is_pointer_cell_to_name(ty, name),
     }
-}
-
-fn type_path_is_pointer_cell_to_name(ty: &syn::Type, name: &str) -> bool {
-    type_path_pointer_cell_inner_name(ty).is_some_and(|inner| inner == name)
 }
 
 pub(super) fn type_path_pointer_cell_inner_name(ty: &syn::Type) -> Option<String> {

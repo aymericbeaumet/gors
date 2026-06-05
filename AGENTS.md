@@ -85,8 +85,10 @@ gors-builtin/
   with noop interface sentinels, mutable-reference forwarding, and fmt flush
   helper injection split under `gors/src/resolve/structural_helpers/`. Keep
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
-  inlining these policies. Within the `coerce_types` pass, generated fmt flush
-  metadata lives in
+  inlining these policies. Resolver fmt flush injection should be driven by the
+  generated receiver/source-buffer data flow, not by package-specific receiver
+  names or a literal `State` trait gate. Within the `coerce_types` pass,
+  generated fmt flush metadata lives in
   `gors/src/compiler/passes/coerce_types/structural_helpers/fmt_flush.rs`;
   reflection fallback pruning lives in
   `gors/src/compiler/passes/coerce_types/structural_helpers/reflection_fallback.rs`;
