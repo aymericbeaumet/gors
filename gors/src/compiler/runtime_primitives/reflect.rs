@@ -1,15 +1,15 @@
 use super::{CompiledModule, module_has_struct, prune_replaced_items};
-use crate::compiler::reflect_semantics;
 use crate::compiler::syn_inspect::type_mentions_name;
+use crate::reflect_names;
 use std::collections::{BTreeMap, HashSet};
 
-pub(super) const MODULE: &str = reflect_semantics::MODULE;
+pub(super) const MODULE: &str = reflect_names::REFLECT_MODULE;
 
 pub(super) fn replace_value_module(module: &mut CompiledModule) -> bool {
-    if !module_has_struct(module, reflect_semantics::VALUE_TYPE) {
+    if !module_has_struct(module, reflect_names::VALUE_TYPE) {
         return false;
     }
-    let value_names = HashSet::from([reflect_semantics::VALUE_TYPE.to_string()]);
+    let value_names = HashSet::from([reflect_names::VALUE_TYPE.to_string()]);
     prune_replaced_items(module, &value_names, &value_names);
     module
         .file

@@ -1,15 +1,11 @@
-pub(super) const MODULE: &str = crate::reflect_names::REFLECT_MODULE;
-pub(super) const KIND_METHOD: &str = crate::reflect_names::KIND_METHOD;
-pub(super) const TYPE_OF_FUNC: &str = crate::reflect_names::TYPE_OF_FUNC;
-pub(super) const VALUE_OF_FUNC: &str = crate::reflect_names::VALUE_OF_FUNC;
-pub(super) const VALUE_TYPE: &str = crate::reflect_names::VALUE_TYPE;
+use crate::reflect_names;
 
 pub(super) fn is_fallback_expr_path(path: &syn::Path) -> bool {
     syn_path_member(path).is_some_and(is_fallback_expr_member)
 }
 
 pub(super) fn is_value_type_path(path: &syn::Path) -> bool {
-    syn_path_member(path).is_some_and(|member| member == VALUE_TYPE)
+    syn_path_member(path).is_some_and(|member| member == reflect_names::VALUE_TYPE)
 }
 
 fn syn_path_member(path: &syn::Path) -> Option<&syn::Ident> {
@@ -17,8 +13,8 @@ fn syn_path_member(path: &syn::Path) -> Option<&syn::Ident> {
     let first = segments.next()?;
     let member = if first.ident == "crate" {
         let module = segments.next()?;
-        (module.ident == MODULE).then(|| segments.next())??
-    } else if first.ident == MODULE {
+        (module.ident == reflect_names::REFLECT_MODULE).then(|| segments.next())??
+    } else if first.ident == reflect_names::REFLECT_MODULE {
         segments.next()?
     } else {
         return None;
@@ -30,7 +26,7 @@ fn syn_path_member(path: &syn::Path) -> Option<&syn::Ident> {
 }
 
 fn is_fallback_expr_member(member: &syn::Ident) -> bool {
-    member == VALUE_OF_FUNC || member == TYPE_OF_FUNC
+    member == reflect_names::VALUE_OF_FUNC || member == reflect_names::TYPE_OF_FUNC
 }
 
 #[cfg(test)]
@@ -46,7 +42,7 @@ mod tests {
         let Some(member) = member else {
             return;
         };
-        assert_eq!(member, VALUE_OF_FUNC);
+        assert_eq!(member, reflect_names::VALUE_OF_FUNC);
     }
 
     #[test]
@@ -58,7 +54,7 @@ mod tests {
         let Some(member) = member else {
             return;
         };
-        assert_eq!(member, VALUE_TYPE);
+        assert_eq!(member, reflect_names::VALUE_TYPE);
     }
 
     #[test]
