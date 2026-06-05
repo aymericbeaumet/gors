@@ -1,4 +1,4 @@
-use super::{EmbeddedInterfaceField, interface_hooks, syn_inspect};
+use super::{EmbeddedInterfaceField, interface_hooks, syn_inspect, synthetic_names};
 use proc_macro2::Span;
 use std::collections::BTreeMap;
 use syn::Token;
@@ -37,14 +37,16 @@ pub(super) fn impls(
                 continue;
             }
             let trait_path = field.trait_path.clone();
+            let generics = synthetic_names::borrowed_interface_generics();
+            let lifetime = synthetic_names::borrowed_interface_lifetime();
             out.push(syn::Item::Impl(syn::ItemImpl {
                 attrs: vec![],
                 defaultness: None,
                 unsafety: None,
                 impl_token: <Token![impl]>::default(),
-                generics: syn::parse_quote! { <'__gors> },
+                generics,
                 trait_: Some((None, trait_path, <Token![for]>::default())),
-                self_ty: Box::new(syn::parse_quote! { #struct_ident<'__gors> }),
+                self_ty: Box::new(syn::parse_quote! { #struct_ident<#lifetime> }),
                 brace_token: syn::token::Brace::default(),
                 items: impl_items,
             }));
@@ -60,8 +62,9 @@ pub(super) fn impls(
             }
             if !pointer_impl_items.is_empty() {
                 let trait_path = field.trait_path.clone();
+                let lifetime = synthetic_names::borrowed_interface_lifetime();
                 out.push(syn::parse_quote! {
-                    impl<'__gors> #trait_path for crate::builtin::GorsPtr<#struct_ident<'__gors>> {
+                    impl<#lifetime> #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
                         #(#pointer_impl_items)*
                     }
                 });

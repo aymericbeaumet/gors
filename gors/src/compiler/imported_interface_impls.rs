@@ -1,4 +1,4 @@
-use super::{interface_impls, interface_method_sets};
+use super::{interface_impls, interface_method_sets, synthetic_names};
 use proc_macro2::Span;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -135,8 +135,9 @@ pub(super) fn impls_for_local_structs(
                         methods,
                         pointer_methods,
                     );
+                    let lifetime = synthetic_names::borrowed_interface_lifetime();
                     items.push(syn::parse_quote! {
-                        impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                        impl<#lifetime> #trait_path for &#lifetime mut #struct_ident {
                             #(#impl_items)*
                         }
                     });
@@ -197,13 +198,14 @@ fn push_concrete_impl(
         state.methods,
         exposes_any,
     );
+    let lifetime = synthetic_names::borrowed_interface_lifetime();
     let generics = if has_borrowed_interface_field {
-        syn::parse_quote! { <'__gors> }
+        synthetic_names::borrowed_interface_generics()
     } else {
         syn::Generics::default()
     };
     let self_ty = if has_borrowed_interface_field {
-        syn::parse_quote! { #struct_ident<'__gors> }
+        syn::parse_quote! { #struct_ident<#lifetime> }
     } else {
         syn::parse_quote! { #struct_ident }
     };
@@ -298,8 +300,9 @@ fn push_embedded_pointer_impls(
             state.methods,
             embedded.pointer_methods,
         );
+        let lifetime = synthetic_names::borrowed_interface_lifetime();
         state.items.push(syn::parse_quote! {
-            impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+            impl<#lifetime> #trait_path for &#lifetime mut #struct_ident {
                 #(#impl_items)*
             }
         });

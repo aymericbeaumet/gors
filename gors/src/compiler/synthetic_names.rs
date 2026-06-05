@@ -60,6 +60,12 @@ pub(super) fn borrowed_interface_lifetime_param() -> syn::GenericParam {
     syn::GenericParam::Lifetime(syn::LifetimeParam::new(borrowed_interface_lifetime()))
 }
 
+pub(super) fn borrowed_interface_generics() -> syn::Generics {
+    let mut generics = syn::Generics::default();
+    generics.params.push(borrowed_interface_lifetime_param());
+    generics
+}
+
 pub(super) fn next_switch_label() -> syn::Lifetime {
     let n = next_id(&SWITCH_COUNTER);
     syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
@@ -266,6 +272,11 @@ mod tests {
                 syn::GenericParam::Lifetime(_)
             ),
             "expected borrowed interface helper to produce a lifetime generic parameter"
+        );
+        assert_eq!(
+            borrowed_interface_generics().params.len(),
+            1,
+            "expected borrowed interface helper to produce one lifetime parameter"
         );
         assert_eq!(comma_ok_value_ident().to_string(), "__gors_comma_ok_value");
         assert_eq!(comma_ok_ok_ident().to_string(), "__gors_comma_ok_ok");
