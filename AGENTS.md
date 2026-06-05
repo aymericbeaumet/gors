@@ -109,7 +109,8 @@ gors-builtin/
   `structural_helpers.rs` should stay focused on post-helper orchestration.
   Shared Go-source AST predicates used across lowering, type inference, and IR
   validation live in `gors/src/compiler/ast_inspect.rs`; do not reopen
-  package/member selector matching such as `unsafe.Pointer` in each phase.
+  package/member selector matching such as `unsafe.Pointer`, or package
+  `init` function classification, in each phase.
 
 ### Cross-module references
 

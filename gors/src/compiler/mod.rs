@@ -15293,7 +15293,7 @@ fn file_top_level_rust_item_names(
     for decl in decls {
         match decl {
             ast::Decl::FuncDecl(func_decl)
-                if func_decl.recv.is_none() && func_decl.name.name != "init" =>
+                if !ast_inspect::func_decl_is_package_init(func_decl) =>
             {
                 names.insert(rust_safe_ident_name(func_decl.name.name));
             }
@@ -15388,7 +15388,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {
                     // Detect init() functions: collect their bodies, don't emit as standalone
-                    if func_decl.name.name == "init" && func_decl.recv.is_none() {
+                    if ast_inspect::func_decl_is_package_init(&func_decl) {
                         if let Some(body) = func_decl.body {
                             let block: syn::Block = body.try_into()?;
                             init_bodies.push(block);

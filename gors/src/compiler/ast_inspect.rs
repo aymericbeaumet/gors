@@ -1,5 +1,9 @@
 use super::ast;
 
+pub(super) fn func_decl_is_package_init(func_decl: &ast::FuncDecl<'_>) -> bool {
+    func_decl.recv.is_none() && func_decl.name.name == "init"
+}
+
 pub(super) fn selector_unsafe_member<'src>(
     selector: &ast::SelectorExpr<'src>,
 ) -> Option<&'src str> {
@@ -55,6 +59,42 @@ mod tests {
             x: Box::new(ast::Expr::Ident(ident(pkg))),
             sel: ident(name),
         }
+    }
+
+    fn field_list() -> ast::FieldList<'static> {
+        ast::FieldList {
+            opening: None,
+            list: Vec::new(),
+            closing: None,
+        }
+    }
+
+    fn func_decl(
+        name: &'static str,
+        recv: Option<ast::FieldList<'static>>,
+    ) -> ast::FuncDecl<'static> {
+        ast::FuncDecl {
+            doc: None,
+            recv,
+            name: ident(name),
+            type_: ast::FuncType {
+                func: None,
+                type_params: None,
+                params: field_list(),
+                results: None,
+            },
+            body: None,
+        }
+    }
+
+    #[test]
+    fn package_init_matches_only_receiverless_init_declarations() {
+        assert!(func_decl_is_package_init(&func_decl("init", None)));
+        assert!(!func_decl_is_package_init(&func_decl("Init", None)));
+        assert!(!func_decl_is_package_init(&func_decl(
+            "init",
+            Some(field_list())
+        )));
     }
 
     #[test]
