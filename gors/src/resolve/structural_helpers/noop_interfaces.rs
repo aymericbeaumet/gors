@@ -4,21 +4,10 @@ use crate::generated_names::{
 };
 use crate::noop_methods::{CloneBoxPolicy, MethodPolicy, NonHookReturnPolicy};
 
-#[derive(Clone, Copy)]
-struct FmtNoopTrait {
-    name: &'static str,
-}
-
-const FMT_NOOP_TRAITS: &[FmtNoopTrait] = &[
-    FmtNoopTrait { name: "Formatter" },
-    FmtNoopTrait { name: "Stringer" },
-    FmtNoopTrait { name: "GoStringer" },
-];
-
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
-    let facts = FmtInterfaceFacts::collect(items);
+    let facts = NoopInterfaceFacts::collect(items);
 
-    if !facts.has_noop_targets() {
+    if !facts.has_noop_uses() {
         return;
     }
 
@@ -26,16 +15,14 @@ pub(super) fn inject(items: &mut Vec<syn::Item>) {
         items.insert(0, noop_struct_item());
     }
 
-    for target in FMT_NOOP_TRAITS {
-        if !facts.should_inject(target)
-            || has_impl(items, target.name, ImplSelfType::Named(NOOP_INTERFACE))
-        {
+    for target in facts.required_trait_targets() {
+        if has_impl(items, &target, ImplSelfType::Named(NOOP_INTERFACE)) {
             continue;
         }
-        let Some(methods) = trait_methods(items, target.name) else {
+        let Some(methods) = trait_methods(items, &target) else {
             continue;
         };
-        items.insert(0, noop_trait_impl(target.name, &methods));
+        items.insert(0, noop_trait_impl(&target, &methods));
     }
 
     inject_error_ext(items);
@@ -126,54 +113,297 @@ fn noop_error_ext_impl(trait_ident: &syn::Ident, noop_ident: &syn::Ident) -> syn
     }
 }
 
-struct FmtInterfaceFacts {
+struct NoopInterfaceFacts {
     traits: std::collections::BTreeSet<String>,
     item_names: std::collections::BTreeSet<String>,
+    noop_method_uses: Vec<std::collections::BTreeSet<String>>,
+    trait_methods: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     signature_dependencies: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
-impl FmtInterfaceFacts {
+impl NoopInterfaceFacts {
     fn collect(items: &[syn::Item]) -> Self {
         let mut traits = std::collections::BTreeSet::new();
         let mut item_names = std::collections::BTreeSet::new();
+        let mut trait_methods_by_name = std::collections::BTreeMap::new();
         let mut signature_dependencies = std::collections::BTreeMap::new();
+        let mut noop_uses = NoopUseCollector::default();
 
         for item in items {
             if let Some(name) = item_name(item) {
                 item_names.insert(name);
             }
+            syn::visit::Visit::visit_item(&mut noop_uses, item);
             let syn::Item::Trait(item_trait) = item else {
                 continue;
             };
             let name = item_trait.ident.to_string();
             traits.insert(name.clone());
+            trait_methods_by_name.insert(name.clone(), trait_method_names(item_trait));
             signature_dependencies.insert(name, trait_signature_dependencies(item_trait));
         }
 
         Self {
             traits,
             item_names,
+            noop_method_uses: noop_uses.finish(),
+            trait_methods: trait_methods_by_name,
             signature_dependencies,
         }
     }
 
-    fn has_noop_targets(&self) -> bool {
-        FMT_NOOP_TRAITS
-            .iter()
-            .any(|target| self.should_inject(target))
+    fn has_noop_uses(&self) -> bool {
+        !self.noop_method_uses.is_empty()
     }
 
-    fn should_inject(&self, target: &FmtNoopTrait) -> bool {
-        self.traits.contains(target.name)
+    fn required_trait_targets(&self) -> std::collections::BTreeSet<String> {
+        let mut targets = std::collections::BTreeSet::new();
+        for methods in &self.noop_method_uses {
+            let called_trait_methods = methods
+                .iter()
+                .filter(|method| method.as_str() != "Error")
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            if called_trait_methods.is_empty() {
+                continue;
+            }
+            let matching_traits = self
+                .traits
+                .iter()
+                .filter(|trait_name| self.should_inject(trait_name, &called_trait_methods))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let [target] = matching_traits.as_slice() {
+                targets.insert(target.clone());
+            }
+        }
+        targets
+    }
+
+    fn should_inject(
+        &self,
+        trait_name: &str,
+        called_trait_methods: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        let Some(methods) = self.trait_methods.get(trait_name) else {
+            return false;
+        };
+        called_trait_methods
+            .iter()
+            .all(|method| methods.contains(method))
             && self
                 .signature_dependencies
-                .get(target.name)
+                .get(trait_name)
                 .is_none_or(|dependencies| {
                     dependencies
                         .iter()
                         .all(|dependency| self.item_names.contains(dependency))
                 })
     }
+}
+
+#[derive(Default)]
+struct NoopUseCollector {
+    scopes: Vec<std::collections::BTreeMap<String, Option<usize>>>,
+    methods_by_binding: Vec<std::collections::BTreeSet<String>>,
+}
+
+impl NoopUseCollector {
+    fn finish(self) -> Vec<std::collections::BTreeSet<String>> {
+        self.methods_by_binding
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(std::collections::BTreeMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn bind_name(&mut self, name: String, is_noop: bool) {
+        if self.scopes.is_empty() {
+            self.push_scope();
+        }
+        let binding = if is_noop {
+            let index = self.methods_by_binding.len();
+            self.methods_by_binding
+                .push(std::collections::BTreeSet::new());
+            Some(index)
+        } else {
+            None
+        };
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name, binding);
+        }
+    }
+
+    fn binding_for_name(&self, name: &str) -> Option<usize> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+            .flatten()
+    }
+
+    fn bind_pat_with_noop_expr(&mut self, pat: &syn::Pat, expr: Option<&syn::Expr>) {
+        match (pat, expr) {
+            (syn::Pat::Tuple(tuple_pat), Some(syn::Expr::Tuple(tuple_expr))) => {
+                for (pat, expr) in tuple_pat.elems.iter().zip(tuple_expr.elems.iter()) {
+                    self.bind_pat_with_noop_expr(pat, Some(expr));
+                }
+                for pat in tuple_pat.elems.iter().skip(tuple_expr.elems.len()) {
+                    self.bind_pat_with_noop_expr(pat, None);
+                }
+            }
+            (syn::Pat::Paren(paren), expr) => self.bind_pat_with_noop_expr(&paren.pat, expr),
+            (syn::Pat::Ident(ident), expr) => {
+                self.bind_name(
+                    ident.ident.to_string(),
+                    expr.is_some_and(expr_is_noop_default),
+                );
+            }
+            _ => {
+                for ident in pat_idents(pat) {
+                    self.bind_name(ident, false);
+                }
+            }
+        }
+    }
+
+    fn bind_fn_args(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>) {
+        for input in inputs {
+            let syn::FnArg::Typed(typed) = input else {
+                continue;
+            };
+            for ident in pat_idents(&typed.pat) {
+                self.bind_name(ident, false);
+            }
+        }
+    }
+}
+
+impl syn::visit::Visit<'_> for NoopUseCollector {
+    fn visit_item_fn(&mut self, func: &syn::ItemFn) {
+        self.push_scope();
+        self.bind_fn_args(&func.sig.inputs);
+        syn::visit::visit_block(self, &func.block);
+        self.pop_scope();
+    }
+
+    fn visit_impl_item_fn(&mut self, func: &syn::ImplItemFn) {
+        self.push_scope();
+        self.bind_fn_args(&func.sig.inputs);
+        syn::visit::visit_block(self, &func.block);
+        self.pop_scope();
+    }
+
+    fn visit_expr_closure(&mut self, closure: &syn::ExprClosure) {
+        self.push_scope();
+        for input in &closure.inputs {
+            for ident in pat_idents(input) {
+                self.bind_name(ident, false);
+            }
+        }
+        syn::visit::visit_expr(self, &closure.body);
+        self.pop_scope();
+    }
+
+    fn visit_block(&mut self, block: &syn::Block) {
+        self.push_scope();
+        for stmt in &block.stmts {
+            syn::visit::Visit::visit_stmt(self, stmt);
+        }
+        self.pop_scope();
+    }
+
+    fn visit_local(&mut self, local: &syn::Local) {
+        syn::visit::visit_local(self, local);
+        self.bind_pat_with_noop_expr(
+            &local.pat,
+            local.init.as_ref().map(|init| init.expr.as_ref()),
+        );
+    }
+
+    fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+        if let Some(name) = expr_path_ident(&call.receiver)
+            && let Some(binding) = self.binding_for_name(&name)
+            && let Some(methods) = self.methods_by_binding.get_mut(binding)
+        {
+            methods.insert(call.method.to_string());
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn pat_idents(pat: &syn::Pat) -> Vec<String> {
+    struct Finder {
+        idents: Vec<String>,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_pat_ident(&mut self, pat: &syn::PatIdent) {
+            self.idents.push(pat.ident.to_string());
+        }
+    }
+
+    let mut finder = Finder { idents: Vec::new() };
+    syn::visit::Visit::visit_pat(&mut finder, pat);
+    finder.idents
+}
+
+fn expr_path_ident(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Group(group) => expr_path_ident(&group.expr),
+        syn::Expr::Paren(paren) => expr_path_ident(&paren.expr),
+        syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
+            .path
+            .segments
+            .first()
+            .map(|segment| segment.ident.to_string()),
+        _ => None,
+    }
+}
+
+fn expr_is_noop_default(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Group(group) => expr_is_noop_default(&group.expr),
+        syn::Expr::Paren(paren) => expr_is_noop_default(&paren.expr),
+        syn::Expr::Call(call) => {
+            let syn::Expr::Path(path) = call.func.as_ref() else {
+                return false;
+            };
+            path.qself.is_none()
+                && path.path.leading_colon.is_none()
+                && path.path.segments.len() == 2
+                && path
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == NOOP_INTERFACE)
+                && path
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "default")
+                && call.args.is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn trait_method_names(item_trait: &syn::ItemTrait) -> std::collections::BTreeSet<String> {
+    item_trait
+        .items
+        .iter()
+        .filter_map(|item| {
+            let syn::TraitItem::Fn(func) = item else {
+                return None;
+            };
+            let name = func.sig.ident.to_string();
+            (!name.starts_with("__gors_")).then_some(name)
+        })
+        .collect()
 }
 
 fn item_name(item: &syn::Item) -> Option<String> {

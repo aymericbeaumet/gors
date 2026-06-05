@@ -95,9 +95,9 @@ gors-builtin/
   inlining these policies. Resolver fmt flush injection should be driven by the
   generated receiver/source-buffer data flow, not by package-specific receiver
   names or a literal `State` trait gate. Resolver noop interface helper
-  injection should derive method bodies from generated trait signatures and
-  gate target traits on their actual signature dependencies rather than a
-  package-specific trait-name condition. Shared no-op interface method body
+  injection should derive method bodies from generated trait signatures, actual
+  `__GorsNoopInterface::default()` uses, and signature dependencies rather than
+  a package-specific trait-name condition. Shared no-op interface method body
   synthesis lives in `gors/src/noop_methods.rs`; compiler-generated named
   interface sentinels and resolver-injected fmt sentinels must choose their
   explicit non-hook return policy there instead of carrying duplicate hook/body

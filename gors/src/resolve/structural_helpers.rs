@@ -268,14 +268,22 @@ mod tests {
 
     #[test]
     fn noop_interface_impl_is_derived_from_trait_signatures() {
-        let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
-            trait Stringer {
-                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
-                fn __gors_clone_box(&self) -> Box<dyn Stringer>;
-                fn String(&mut self) -> String;
-                fn Count(&mut self) -> isize;
-            }
-        }];
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait Stringer {
+                    fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                    fn __gors_clone_box(&self) -> Box<dyn Stringer>;
+                    fn String(&mut self) -> String;
+                    fn Count(&mut self) -> isize;
+                }
+            },
+            syn::parse_quote! {
+                fn use_noop_stringer() {
+                    let mut stringer = __GorsNoopInterface::default();
+                    stringer.String();
+                }
+            },
+        ];
 
         inject(&mut items);
         inject(&mut items);
@@ -320,16 +328,26 @@ mod tests {
 
     #[test]
     fn formatter_noop_interface_requires_signature_dependencies() {
-        let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
-            trait Formatter {
-                fn Format(&mut self, f: &mut dyn State, verb: i32);
-            }
-        }];
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait Formatter {
+                    fn Format(&mut self, f: &mut dyn State, verb: i32);
+                }
+            },
+            syn::parse_quote! {
+                fn use_noop_formatter() {
+                    let (mut formatter, mut ok) = (__GorsNoopInterface::default(), false);
+                    if ok {
+                        formatter.Format(Default::default(), 0);
+                    }
+                }
+            },
+        ];
 
         inject(&mut items);
 
         let tokens = quote::quote!(#(#items)*).to_string();
-        assert!(!has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(has_struct(&items, "__GorsNoopInterface"), "{tokens}");
         assert!(
             !has_impl(
                 &items,
@@ -355,6 +373,63 @@ mod tests {
                 "Formatter",
                 ImplSelfType::Named("__GorsNoopInterface")
             ),
+            "{tokens}"
+        );
+    }
+
+    #[test]
+    fn noop_interface_requires_actual_noop_default_use() {
+        let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
+            trait Stringer {
+                fn String(&mut self) -> String;
+            }
+        }];
+
+        inject(&mut items);
+
+        let tokens = quote::quote!(#(#items)*).to_string();
+        assert!(!has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(
+            !has_impl(
+                &items,
+                "Stringer",
+                ImplSelfType::Named("__GorsNoopInterface")
+            ),
+            "{tokens}"
+        );
+    }
+
+    #[test]
+    fn noop_interface_does_not_guess_ambiguous_method_targets() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                trait Left {
+                    fn String(&mut self) -> String;
+                }
+            },
+            syn::parse_quote! {
+                trait Right {
+                    fn String(&mut self) -> String;
+                }
+            },
+            syn::parse_quote! {
+                fn use_noop_stringer() {
+                    let mut value = __GorsNoopInterface::default();
+                    value.String();
+                }
+            },
+        ];
+
+        inject(&mut items);
+
+        let tokens = quote::quote!(#(#items)*).to_string();
+        assert!(has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(
+            !has_impl(&items, "Left", ImplSelfType::Named("__GorsNoopInterface")),
+            "{tokens}"
+        );
+        assert!(
+            !has_impl(&items, "Right", ImplSelfType::Named("__GorsNoopInterface")),
             "{tokens}"
         );
     }
