@@ -649,7 +649,8 @@ fn new_arg_is_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
                 && env.get_var(ident.name).is_none()
                 && !env.has_func(ident.name)
                 && !env.is_const(ident.name)
-                && (predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some())
+                && (super::predeclared::is_type_name(ident.name)
+                    || env.get_type_kind(ident.name).is_some())
         }
         ast::Expr::SelectorExpr(selector) => {
             let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
@@ -679,33 +680,6 @@ fn new_arg_is_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
         }
         _ => false,
     }
-}
-
-fn predeclared_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "any"
-            | "bool"
-            | "byte"
-            | "complex64"
-            | "complex128"
-            | "error"
-            | "float32"
-            | "float64"
-            | "int"
-            | "int8"
-            | "int16"
-            | "int32"
-            | "int64"
-            | "rune"
-            | "string"
-            | "uint"
-            | "uint8"
-            | "uint16"
-            | "uint32"
-            | "uint64"
-            | "uintptr"
-    )
 }
 
 fn type_name(expr: &ast::Expr<'_>) -> Option<String> {

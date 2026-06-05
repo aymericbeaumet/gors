@@ -110,7 +110,10 @@ gors-builtin/
   Shared Go-source AST predicates used across lowering, type inference, and IR
   validation live in `gors/src/compiler/ast_inspect.rs`; do not reopen
   package/member selector matching such as `unsafe.Pointer`, or package
-  `init` function classification, in each phase.
+  `init` function classification, in each phase. Shared Go predeclared-name
+  tables live in `gors/src/compiler/predeclared.rs`; type inference, IR
+  validation, and lowering should consume those predicates instead of carrying
+  local copies.
 
 ### Cross-module references
 

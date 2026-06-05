@@ -933,7 +933,7 @@ pub fn is_general_type_conversion_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> boo
 }
 
 fn unshadowed_predeclared_type_name(name: &str, env: &TypeEnv) -> bool {
-    is_predeclared_type_name(name)
+    super::predeclared::is_type_name(name)
         && env.get_var(name).is_none()
         && !env.has_func(name)
         && !env.is_const(name)
@@ -944,7 +944,7 @@ fn ident_denotes_conversion_type(name: &str, env: &TypeEnv) -> bool {
     env.get_var(name).is_none()
         && !env.has_func(name)
         && !env.is_const(name)
-        && (is_predeclared_type_name(name) || env.get_type_kind(name).is_some())
+        && (super::predeclared::is_type_name(name) || env.get_type_kind(name).is_some())
 }
 
 fn declared_type_name_is_unshadowed(name: &str, env: &TypeEnv) -> bool {
@@ -963,33 +963,6 @@ fn type_name(expr: &ast::Expr<'_>) -> Option<String> {
         ast::Expr::IndexListExpr(index) => type_name(&index.x),
         _ => None,
     }
-}
-
-fn is_predeclared_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "any"
-            | "bool"
-            | "byte"
-            | "rune"
-            | "string"
-            | "float32"
-            | "float64"
-            | "complex64"
-            | "complex128"
-            | "int"
-            | "int8"
-            | "int16"
-            | "int32"
-            | "int64"
-            | "uint"
-            | "uint8"
-            | "uint16"
-            | "uint32"
-            | "uint64"
-            | "uintptr"
-            | "error"
-    )
 }
 
 fn lower_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<Item> {
@@ -9767,7 +9740,7 @@ fn ident_denotes_type_value(name: &str, env: &TypeEnv) -> bool {
         && env.get_var(name).is_none()
         && !env.has_func(name)
         && !env.is_const(name)
-        && (is_predeclared_type_name(name) || env.get_type_kind(name).is_some())
+        && (super::predeclared::is_type_name(name) || env.get_type_kind(name).is_some())
 }
 
 fn invalid_selector_type_value(
@@ -13386,7 +13359,7 @@ fn make_ident_type_arg(ident: &ast::Ident<'_>, env: &TypeEnv) -> MakeTypeArg {
     {
         return MakeTypeArg::NonType;
     }
-    if predeclared_type_name(ident.name) || env.get_type_kind(ident.name).is_some() {
+    if super::predeclared::is_type_name(ident.name) || env.get_type_kind(ident.name).is_some() {
         return make_type_arg_from_type(GoType::Named(ident.name.to_string()), env);
     }
     MakeTypeArg::Unknown
@@ -13411,33 +13384,6 @@ fn make_type_arg_from_type(ty: GoType, env: &TypeEnv) -> MakeTypeArg {
         GoType::Chan { .. } => MakeTypeArg::Type(MakeTypeKind::Channel),
         other => MakeTypeArg::NonMakeType(other),
     }
-}
-
-fn predeclared_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "any"
-            | "bool"
-            | "byte"
-            | "complex64"
-            | "complex128"
-            | "error"
-            | "float32"
-            | "float64"
-            | "int"
-            | "int8"
-            | "int16"
-            | "int32"
-            | "int64"
-            | "rune"
-            | "string"
-            | "uint"
-            | "uint8"
-            | "uint16"
-            | "uint32"
-            | "uint64"
-            | "uintptr"
-    )
 }
 
 fn invalid_builtin_new_call(call: &ast::CallExpr<'_>) -> Option<InvalidStatementReason> {
@@ -13482,7 +13428,7 @@ pub(super) fn new_arg_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> NewArgKind {
                 || matches!(ident.name, "true" | "false" | "nil")
             {
                 NewArgKind::Value
-            } else if is_predeclared_type_name(ident.name)
+            } else if super::predeclared::is_type_name(ident.name)
                 || env.get_type_kind(ident.name).is_some()
             {
                 NewArgKind::Type

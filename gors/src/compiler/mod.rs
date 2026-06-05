@@ -48,6 +48,7 @@ mod noop_interfaces;
 mod package_context;
 pub(crate) mod passes;
 mod phantom_type_params;
+mod predeclared;
 mod reachability_cache;
 mod reachability_context;
 mod reachability_names;
