@@ -15,6 +15,9 @@ pub(super) fn syn_path_member(path: &syn::Path) -> Option<&syn::Ident> {
     } else {
         return None;
     };
+    if segments.next().is_some() {
+        return None;
+    }
     Some(&member.ident)
 }
 
@@ -49,6 +52,13 @@ mod tests {
     #[test]
     fn syn_path_member_rejects_unrelated_paths() {
         let path: syn::Path = syn::parse_quote! { other::reflect::Value };
+
+        assert!(syn_path_member(&path).is_none());
+    }
+
+    #[test]
+    fn syn_path_member_rejects_nested_reflect_member_paths() {
+        let path: syn::Path = syn::parse_quote! { crate::reflect::Value::Nested };
 
         assert!(syn_path_member(&path).is_none());
     }
