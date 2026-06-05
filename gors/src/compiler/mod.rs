@@ -15,6 +15,7 @@
 //! - Some complex type expressions
 
 mod active_names;
+mod ast_inspect;
 mod borrowed_views;
 mod builtin_pruning;
 mod builtin_roots;
@@ -4389,9 +4390,7 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
             }
         }
         ast::Expr::SelectorExpr(selector_expr) => {
-            if matches!(&*selector_expr.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-                && selector_expr.sel.name == "Pointer"
-            {
+            if ast_inspect::selector_is_unsafe_pointer(selector_expr) {
                 return syn::parse_quote! { usize };
             }
             let path = selector_path_from_ref(selector_expr);
@@ -6847,12 +6846,7 @@ fn is_function_value_call(call_expr: &ast::CallExpr) -> bool {
 fn expr_contains_unsafe_pointer_conversion(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::CallExpr(call) => {
-            if matches!(
-                &*call.fun,
-                ast::Expr::SelectorExpr(sel)
-                    if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-                        && sel.sel.name == "Pointer"
-            ) {
+            if ast_inspect::call_is_unsafe_pointer_conversion(call) {
                 return true;
             }
             expr_contains_unsafe_pointer_conversion(&call.fun)
@@ -6902,8 +6896,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     let fixed_array_pointer_target =
         fixed_array_pointer_conversion_target(&target_fun, &arg_go_type, &env);
 
-    if matches!(&target_fun, ast::Expr::SelectorExpr(sel) if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe") && sel.sel.name == "Pointer")
-    {
+    if ast_inspect::expr_is_unsafe_pointer_selector(&target_fun) {
         return compile_unsafe_pointer_value(raw_arg);
     }
 
@@ -7231,9 +7224,7 @@ fn compile_unsafe_pointer_bitcast(expr: ast::Expr) -> Option<syn::Expr> {
     let ast::Expr::SelectorExpr(selector) = *unsafe_pointer_call.fun else {
         return None;
     };
-    if !matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-        || selector.sel.name != "Pointer"
-    {
+    if !ast_inspect::selector_is_unsafe_pointer(&selector) {
         return None;
     }
     let mut unsafe_args = unsafe_pointer_call.args?.into_iter();
@@ -7291,8 +7282,7 @@ fn is_unsafe_pointer_bitcast_expr(expr: &ast::Expr) -> bool {
     let ast::Expr::SelectorExpr(selector) = &*unsafe_pointer_call.fun else {
         return false;
     };
-    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-        && selector.sel.name == "Pointer"
+    ast_inspect::selector_is_unsafe_pointer(selector)
 }
 
 fn rust_type_path_from_segments<'a>(
@@ -12787,16 +12777,12 @@ fn pointer_conversion_targets_receiver_type(expr: &ast::Expr, receiver_type_name
 fn expr_contains_unsafe_pointer_conversion_of_current_receiver(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::CallExpr(call) => {
-            if matches!(
-                call.fun.as_ref(),
-                ast::Expr::SelectorExpr(sel)
-                    if matches!(&*sel.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
-                        && sel.sel.name == "Pointer"
-            ) && call
-                .args
-                .as_ref()
-                .and_then(|args| args.first())
-                .is_some_and(expr_is_current_receiver_name)
+            if ast_inspect::call_is_unsafe_pointer_conversion(call)
+                && call
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.first())
+                    .is_some_and(expr_is_current_receiver_name)
             {
                 return true;
             }

@@ -919,7 +919,7 @@ pub fn is_general_type_conversion_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> boo
         }
         ast::Expr::SelectorExpr(sel) => {
             if let ast::Expr::Ident(pkg) = &*sel.x {
-                if pkg.name == "unsafe" && sel.sel.name == "Pointer" {
+                if super::ast_inspect::selector_is_unsafe_pointer(sel) {
                     return true;
                 }
                 let key = format!("{}.{}", pkg.name, sel.sel.name);
@@ -13499,7 +13499,7 @@ pub(super) fn new_arg_kind(expr: &ast::Expr<'_>, env: &TypeEnv) -> NewArgKind {
         }
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
-                if pkg.name == "unsafe" && selector.sel.name == "Pointer" {
+                if super::ast_inspect::selector_is_unsafe_pointer(selector) {
                     return NewArgKind::Type;
                 }
                 let key = format!("{}.{}", pkg.name, selector.sel.name);

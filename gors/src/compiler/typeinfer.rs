@@ -658,7 +658,7 @@ fn new_arg_is_type(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
             let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
                 return false;
             };
-            if pkg.name == "unsafe" && selector.sel.name == "Pointer" {
+            if super::ast_inspect::selector_is_unsafe_pointer(selector) {
                 return true;
             }
             let key = format!("{}.{}", pkg.name, selector.sel.name);

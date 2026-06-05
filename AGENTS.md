@@ -107,6 +107,9 @@ gors-builtin/
   reflection fallback pruning lives in
   `gors/src/compiler/passes/coerce_types/structural_helpers/reflection_fallback.rs`;
   `structural_helpers.rs` should stay focused on post-helper orchestration.
+  Shared Go-source AST predicates used across lowering, type inference, and IR
+  validation live in `gors/src/compiler/ast_inspect.rs`; do not reopen
+  package/member selector matching such as `unsafe.Pointer` in each phase.
 
 ### Cross-module references
 
