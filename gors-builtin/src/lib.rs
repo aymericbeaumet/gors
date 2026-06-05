@@ -308,6 +308,7 @@ impl<T> Clone for GorsPtrInner<T> {
 
 trait ProjectedCell<T>: Send + Sync {
     fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_>;
+    fn cell_ptr(&self) -> *const ();
     fn owner_ptr(&self) -> *const ();
     fn field_key(&self) -> usize;
 }
@@ -317,7 +318,7 @@ pub trait ProjectedGuard<T>: std::ops::DerefMut<Target = T> {}
 impl<T, U> ProjectedGuard<T> for U where U: std::ops::DerefMut<Target = T> {}
 
 struct ProjectedFieldCell<Owner, T, F> {
-    owner: Arc<Mutex<Owner>>,
+    owner: GorsPtr<Owner>,
     field_key: usize,
     field: F,
     _field_ty: std::marker::PhantomData<fn() -> T>,
@@ -331,10 +332,7 @@ where
 {
     fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_> {
         let value = {
-            let mut owner_guard = self
-                .owner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut owner_guard = lock_projected_owner(&self.owner);
             (self.field)(&mut *owner_guard).clone()
         };
         Box::new(ProjectedFieldGuard {
@@ -345,7 +343,11 @@ where
     }
 
     fn owner_ptr(&self) -> *const () {
-        Arc::as_ptr(&self.owner).cast()
+        self.owner.ptr_id()
+    }
+
+    fn cell_ptr(&self) -> *const () {
+        (self as *const Self).cast()
     }
 
     fn field_key(&self) -> usize {
@@ -357,7 +359,7 @@ struct ProjectedFieldGuard<'a, Owner, T: Clone, F>
 where
     F: for<'b> Fn(&'b mut Owner) -> &'b mut T,
 {
-    owner: Arc<Mutex<Owner>>,
+    owner: GorsPtr<Owner>,
     field: &'a F,
     value: T,
 }
@@ -390,11 +392,15 @@ where
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
 {
     fn drop(&mut self) {
-        let mut owner = self
-            .owner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut owner = lock_projected_owner(&self.owner);
         *(self.field)(&mut *owner) = self.value.clone();
+    }
+}
+
+fn lock_projected_owner<T>(owner: &GorsPtr<T>) -> GorsPtrGuard<'_, T> {
+    match owner.lock() {
+        Ok(guard) => guard,
+        Err(err) => panic_value(err),
     }
 }
 
@@ -460,6 +466,15 @@ impl<T> GorsPtr<T> {
         T: Clone + 'static,
         F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
     {
+        Self::from_ptr_field(GorsPtr::from_arc(owner), field_key, field)
+    }
+
+    pub fn from_ptr_field<Owner, F>(owner: GorsPtr<Owner>, field_key: usize, field: F) -> Self
+    where
+        Owner: Send + 'static,
+        T: Clone + 'static,
+        F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
+    {
         Self {
             inner: Some(GorsPtrInner::Projected(Arc::new(ProjectedFieldCell {
                 owner,
@@ -496,6 +511,14 @@ impl<T> GorsPtr<T> {
                 left.owner_ptr() == right.owner_ptr() && left.field_key() == right.field_key()
             }
             _ => false,
+        }
+    }
+
+    fn ptr_id(&self) -> *const () {
+        match &self.inner {
+            None => std::ptr::null(),
+            Some(GorsPtrInner::Direct(inner)) => Arc::as_ptr(inner).cast(),
+            Some(GorsPtrInner::Projected(cell)) => cell.cell_ptr(),
         }
     }
 }
@@ -1803,6 +1826,38 @@ mod tests {
             |holder: &mut Holder| &mut holder.value,
         );
         let other_ptr = GorsPtr::from_arc_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, other),
+            |holder: &mut Holder| &mut holder.other,
+        );
+
+        *value_ptr.lock().unwrap() = 7;
+
+        assert_eq!(owner.lock().unwrap().value, 7);
+        assert!(GorsPtr::ptr_eq(&value_ptr, &same_value_ptr));
+        assert!(!GorsPtr::ptr_eq(&value_ptr, &other_ptr));
+    }
+
+    #[test]
+    fn projected_pointer_field_pointers_alias_owner_fields() {
+        #[derive(Default)]
+        struct Holder {
+            value: isize,
+            other: isize,
+        }
+
+        let owner = GorsPtr::new(Holder { value: 1, other: 2 });
+        let value_ptr = GorsPtr::from_ptr_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, value),
+            |holder: &mut Holder| &mut holder.value,
+        );
+        let same_value_ptr = GorsPtr::from_ptr_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, value),
+            |holder: &mut Holder| &mut holder.value,
+        );
+        let other_ptr = GorsPtr::from_ptr_field(
             owner.clone(),
             std::mem::offset_of!(Holder, other),
             |holder: &mut Holder| &mut holder.other,

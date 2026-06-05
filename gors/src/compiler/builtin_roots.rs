@@ -39,9 +39,11 @@ pub(super) fn expand(
             "GorsPtr::new",
             "GorsPtr::from_arc",
             "GorsPtr::from_arc_field",
+            "GorsPtr::from_ptr_field",
             "GorsPtr::is_nil",
             "GorsPtr::lock",
             "GorsPtr::ptr_eq",
+            "GorsPtr::ptr_id",
         ] {
             expanded.insert(root.to_string());
         }

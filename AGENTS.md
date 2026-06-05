@@ -210,11 +210,14 @@ gors-builtin/
   `p := &x`, `*p = v`, and later reads of `x` observe the shared storage.
   Address-of fields on promoted local struct owners, such as `&h.value`, lower
   through projected `GorsPtr::from_arc_field` cells so writes update the owner
-  field instead of a cloned field value. Do not blindly use projected field cells
-  for pointer-receiver field aliases such as `&p.buf` until receiver locking can
-  avoid re-locking the same pointer cell during method calls. Do not lower
-  ordinary Go pointer parameters to borrowed `&mut T`; the shared pointer model
-  must carry nil and aliasing through calls.
+  field instead of a cloned field value. Address-of fields on direct owning
+  pointer cells, such as a pointer parameter `&p.value`, lower through
+  `GorsPtr::from_ptr_field` for the same aliasing rule. Do not blindly use
+  projected field cells for shared-capture pointer cells or pointer-receiver
+  field aliases such as `&p.buf` until receiver locking can avoid re-locking the
+  same pointer cell during method calls. Do not lower ordinary Go pointer
+  parameters to borrowed `&mut T`; the shared pointer model must carry nil and
+  aliasing through calls.
 - Nil pointer values must lower to the pointer zero value for assignments,
   fields, returns, and other value construction. Do not emit an immediate panic
   for `nil` itself; the panic belongs to dereference/use.
