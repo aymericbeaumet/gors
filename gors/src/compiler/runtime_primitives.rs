@@ -95,9 +95,18 @@ mod tests {
         assert!(source.contains("pub const PathSeparator"), "{source}");
         assert!(source.contains("pub struct File"), "{source}");
         assert!(source.contains("pub static Stdout"), "{source}");
+        assert!(
+            source.contains("LazyLock<crate::builtin::GorsPtr<File>>"),
+            "{source}"
+        );
+        assert!(source.contains("pub fn Write"), "{source}");
         assert!(source.contains("#[allow(dead_code)]"), "{source}");
         assert!(
             source.contains("impl crate::io::Writer for File"),
+            "{source}"
+        );
+        assert!(
+            source.contains("impl crate::io::Writer for crate::builtin::GorsPtr<File>"),
             "{source}"
         );
         assert!(!source.contains("pub fn old"), "{source}");

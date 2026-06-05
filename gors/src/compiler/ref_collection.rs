@@ -667,15 +667,21 @@ pub(super) fn collect_refs_from_item(
         }
 
         fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
-            if let syn::Expr::Path(path) = &*call.func
-                && let Some(receiver_type) = receiver_type_from_associated_call_path(
+            if let syn::Expr::Path(path) = &*call.func {
+                if let Some(qself) = &path.qself
+                    && let Some(receiver_type) =
+                        receiver_type_from_type(&qself.ty, self.module_names)
+                    && let Some(method) = path.path.segments.last()
+                {
+                    self.insert_receiver_method_ref(receiver_type, &method.ident.to_string());
+                } else if let Some(receiver_type) = receiver_type_from_associated_call_path(
                     &path.path,
                     self.module_names,
                     self.item_names,
-                )
-                && let Some(method) = path.path.segments.last()
-            {
-                self.insert_receiver_method_ref(receiver_type, &method.ident.to_string());
+                ) && let Some(method) = path.path.segments.last()
+                {
+                    self.insert_receiver_method_ref(receiver_type, &method.ident.to_string());
+                }
             }
             syn::visit_mut::visit_expr_call_mut(self, call);
         }
@@ -766,4 +772,45 @@ fn is_reachability_name(name: &str) -> bool {
             | "i64"
             | "isize"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_refs_follows_qself_associated_method_calls() {
+        let module_names = ReachabilityNameSet::new();
+        let item_names = ReachabilityNameSet::from(["bucket".to_string()]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn update(mut receiver: bucket) {
+                <bucket>::fill(&mut receiver);
+            }
+        };
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(names.contains("bucket"), "{names:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("bucket", "fill")),
+            "{names:?}"
+        );
+    }
 }

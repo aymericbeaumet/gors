@@ -155,6 +155,16 @@ gors-builtin/
   function calls must still use the Go-inferred type when choosing the
   `LazyLock<T>` type; do not fall back to Rust initializer inference alone, or
   values such as constructor-returned pointers can degrade to `Box<dyn Any>`.
+  Pointer-typed package-level vars used as method receivers in generated modules
+  must be read through the same `LazyLock<T>` value path as ordinary expressions
+  before locking a pointer cell; do not emit `Var.lock()` or `pkg::Var.lock()`
+  against the static itself. Non-pointer static receivers should be dereferenced
+  for method dispatch instead of eagerly cloned, so non-`Clone` runtime
+  primitives such as `sync.Pool` can still be borrowed.
+  Host-resource replacements for pointer-typed package vars, such as
+  `os.Stdout`, must preserve the Go pointer shape as a generated pointer-cell
+  value and provide both inherent methods and interface-hook trait impls for the
+  injected resource.
 - Method calls whose generated receiver locks a package-level or pointer cell
   must scope the `MutexGuard` to that single call. Do not emit multiple
   `x.lock().unwrap().M()` temporaries directly into one Rust argument list,
@@ -213,11 +223,14 @@ gors-builtin/
   field instead of a cloned field value. Address-of fields on direct owning
   pointer cells, such as a pointer parameter `&p.value`, lower through
   `GorsPtr::from_ptr_field` for the same aliasing rule. Do not blindly use
-  projected field cells for shared-capture pointer cells or pointer-receiver
-  field aliases such as `&p.buf` until receiver locking can avoid re-locking the
-  same pointer cell during method calls. Do not lower ordinary Go pointer
-  parameters to borrowed `&mut T`; the shared pointer model must carry nil and
-  aliasing through calls.
+  projected field cells for shared-capture pointer cells until receiver locking
+  can avoid re-locking the same pointer cell during method calls.
+  Pointer-receiver method calls on non-pointer fields reached through owning
+  pointer cells, such as `h.bucket.fill(...)`, must lower the receiver through a
+  projected `GorsPtr::from_ptr_field` cell and call the inherent method by UFCS
+  so the owner lock is not held while method arguments or body code lock sibling
+  fields. Do not lower ordinary Go pointer parameters to borrowed `&mut T`; the
+  shared pointer model must carry nil and aliasing through calls.
 - Nil pointer values must lower to the pointer zero value for assignments,
   fields, returns, and other value construction. Do not emit an immediate panic
   for `nil` itself; the panic belongs to dereference/use.
@@ -511,7 +524,10 @@ Ref-collection traversal and input state live in
 `gors/src/compiler/ref_collection.rs`; token DCE, semantic reachability, and
 external-root discovery should construct `RefCollectionContext` and call
 `collect_refs_from_item` from that module rather than owning ad hoc visitors or
-context structs in the compiler root.
+context structs in the compiler root. That visitor is also responsible for
+generated associated-method call shapes, including qself/UFCS calls such as
+`<T>::M(...)`, so DCE keeps receiver impl methods emitted by projected receiver
+lowering.
 Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
 the DCE loop should delegate builtin channel, complex, bitcast, and builtin
 trait retention policy there instead of carrying runtime-specific root lists in

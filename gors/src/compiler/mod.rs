@@ -5738,6 +5738,24 @@ fn selector_top_level_var_type(sel: &ast::SelectorExpr) -> Option<typeinfer::GoT
     })
 }
 
+fn ident_top_level_var_type(name: &str) -> Option<typeinfer::GoType> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if !package_context::main_package_vars_are_locals()
+            && env.is_top_level_var(name)
+            && !env.is_const(name)
+            && env.get_top_level_var(name).is_some_and(|top_level_ty| {
+                env.get_var(name)
+                    .is_some_and(|current_ty| current_ty == top_level_ty)
+            })
+        {
+            env.get_var(name)
+        } else {
+            None
+        }
+    })
+}
+
 fn top_level_var_read_expr(path: syn::Expr, go_type: &typeinfer::GoType) -> syn::Expr {
     if go_type_is_copy(go_type)
         && !matches!(resolved_go_type(go_type), typeinfer::GoType::Pointer(_))
@@ -5745,6 +5763,43 @@ fn top_level_var_read_expr(path: syn::Expr, go_type: &typeinfer::GoType) -> syn:
         syn::parse_quote! { *#path }
     } else {
         syn::parse_quote! { (*#path).clone() }
+    }
+}
+
+fn top_level_var_read_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    let (path, go_type) = top_level_var_expr_and_type_from_ref(expr)?;
+    Some(top_level_var_read_expr(path, &go_type))
+}
+
+fn top_level_var_receiver_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    let (path, go_type) = top_level_var_expr_and_type_from_ref(expr)?;
+    if matches!(resolved_go_type(&go_type), typeinfer::GoType::Pointer(_)) {
+        Some(top_level_var_read_expr(path, &go_type))
+    } else {
+        Some(syn::parse_quote! { *#path })
+    }
+}
+
+fn top_level_var_expr_and_type_from_ref(
+    expr: &ast::Expr,
+) -> Option<(syn::Expr, typeinfer::GoType)> {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) => {
+            let go_type = ident_top_level_var_type(ident.name)?;
+            let ident = value_ident(ident.name);
+            let path = syn::parse_quote! { #ident };
+            Some((path, go_type))
+        }
+        ast::Expr::SelectorExpr(selector) if selector_base_is_import(selector) => {
+            let go_type = selector_top_level_var_type(selector)?;
+            let path = syn::Expr::Path(syn::ExprPath {
+                attrs: vec![],
+                qself: None,
+                path: selector_path_from_ref(selector),
+            });
+            Some((path, go_type))
+        }
+        _ => None,
     }
 }
 
@@ -9310,12 +9365,15 @@ fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
 
 fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
     if is_owning_pointer_cell_expr_ref(&expr) {
-        let base = lvalue_expr_from_ref(&expr)
+        let base = top_level_var_read_expr_from_ref(&expr)
+            .or_else(|| lvalue_expr_from_ref(&expr))
             .or_else(|| syn_expr_from_type_expr_like(&expr))
             .unwrap_or_else(|| expr.into());
         return syn::parse_quote! { #base.lock().unwrap() };
     }
-    lvalue_expr_from_ref(&expr).unwrap_or_else(|| expr.into())
+    top_level_var_receiver_expr_from_ref(&expr)
+        .or_else(|| lvalue_expr_from_ref(&expr))
+        .unwrap_or_else(|| expr.into())
 }
 
 fn method_call_expr(
@@ -9919,7 +9977,7 @@ fn borrowed_interface_selector_reborrow_expr(expr: &ast::Expr) -> Option<syn::Ex
     let ast::Expr::SelectorExpr(selector) = expr else {
         return None;
     };
-    let field_ty = selector_field_go_type(selector)?;
+    let field_ty = selector_direct_field_go_type(selector)?;
     if !TYPE_ENV.with(|env| go_type_contains_borrowed_interface_field(&env.borrow(), &field_ty)) {
         return None;
     }
@@ -9980,11 +10038,67 @@ fn pointer_selector_owner_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     let ast::Expr::Ident(ident) = ast_unparen_expr_ref(expr) else {
         return None;
     };
-    if is_shared_capture_name(ident.name) {
-        return None;
+    if let Some(expr) = shared_capture_read_expr(ident.name) {
+        return Some(expr);
     }
     let ident = value_ident(ident.name);
     Some(syn::parse_quote! { #ident })
+}
+
+struct PointerFieldMethodTarget {
+    receiver_ty: syn::Type,
+    receiver: syn::Expr,
+}
+
+fn pointer_field_method_target(selector: &ast::SelectorExpr) -> Option<PointerFieldMethodTarget> {
+    let method_name = selector.sel.name;
+    let expr = selector.x.as_ref();
+    let ast::Expr::SelectorExpr(selector) = ast_unparen_expr_ref(expr) else {
+        return None;
+    };
+    if !is_owning_pointer_cell_expr_ref(&selector.x) {
+        return None;
+    }
+    let field_ty = selector_direct_field_go_type(selector)?;
+    if matches!(resolved_go_type(&field_ty), typeinfer::GoType::Pointer(_)) {
+        return None;
+    }
+    if !method_has_pointer_receiver_for_type(&field_ty, method_name) {
+        return None;
+    }
+    let receiver_ty = rust_type_from_inferred_go_type(&field_ty);
+    let owner_ty = pointer_selector_owner_type(&selector.x)?;
+    let owner_expr = pointer_selector_owner_expr(&selector.x)?;
+    let field_ident = syn::Ident::new(
+        &rust_safe_ident_name(selector.sel.name),
+        proc_macro2::Span::mixed_site(),
+    );
+
+    let receiver = syn::parse_quote! {
+        crate::builtin::GorsPtr::from_ptr_field(
+            (#owner_expr).clone(),
+            std::mem::offset_of!(#owner_ty, #field_ident),
+            |__gors_owner: &mut #owner_ty| &mut __gors_owner.#field_ident,
+        ).lock().unwrap()
+    };
+
+    Some(PointerFieldMethodTarget {
+        receiver_ty,
+        receiver,
+    })
+}
+
+fn method_has_pointer_receiver_for_type(
+    receiver_type: &typeinfer::GoType,
+    method_name: &str,
+) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let Some(receiver_name) = named_method_receiver_type_name(receiver_type.clone()) else {
+            return false;
+        };
+        env.method_has_pointer_receiver(&method_key(&receiver_name, method_name))
+    })
 }
 
 fn shared_selector_owner_type(expr: &ast::Expr) -> Option<syn::Type> {
@@ -12277,22 +12391,34 @@ fn compile_index_assignment_lhs(index: ast::IndexExpr<'_>) -> Option<syn::Expr> 
     Some(syn::parse_quote! { (#base)[(#index) as usize] })
 }
 
+fn selector_direct_field_go_type_in_env(
+    selector: &ast::SelectorExpr,
+    env: &typeinfer::TypeEnv,
+) -> Option<typeinfer::GoType> {
+    let base_ty = typeinfer::GoType::infer_expr(&selector.x, env);
+    let base_name = match env.resolve_alias(&base_ty) {
+        typeinfer::GoType::Named(name) => Some(name),
+        typeinfer::GoType::Pointer(inner) => match *inner {
+            typeinfer::GoType::Named(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }?;
+    env.get_struct_fields(&base_name)
+        .into_iter()
+        .find_map(|(field_name, ty)| (field_name == selector.sel.name).then_some(ty))
+        .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+}
+
+fn selector_direct_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
+    TYPE_ENV.with(|env| selector_direct_field_go_type_in_env(selector, &env.borrow()))
+}
+
 fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoType> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
-        let direct = match env.resolve_alias(&base_ty) {
-            typeinfer::GoType::Named(name) => Some(env.get_field_type(&name, selector.sel.name)),
-            typeinfer::GoType::Pointer(inner) => match *inner {
-                typeinfer::GoType::Named(name) => {
-                    Some(env.get_field_type(&name, selector.sel.name))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        direct
-            .filter(|ty| !matches!(ty, typeinfer::GoType::Unknown))
+        selector_direct_field_go_type_in_env(selector, &env)
             .or_else(|| promoted_field_info(&base_ty, selector.sel.name, &env).map(|info| info.ty))
     })
 }
@@ -14914,13 +15040,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     if let ast::Expr::SelectorExpr(sel) = *call_expr.fun {
                         let should_clone_receiver =
                             value_method_call_receiver_should_clone(&sel.x, sel.sel.name);
-                        let receiver = method_receiver_expr_from_ref(*sel.x);
-                        let receiver = if should_clone_receiver {
-                            syn::parse_quote! { (#receiver).clone() }
-                        } else {
-                            receiver
-                        };
-                        let method: syn::Ident = sel.sel.into();
+                        let method = syn::Ident::new(
+                            &rust_safe_ident_name(sel.sel.name),
+                            Span::mixed_site(),
+                        );
                         let mut args = syn::punctuated::Punctuated::new();
                         if let Some(cargs) = call_expr.args {
                             for (idx, arg) in cargs.into_iter().enumerate() {
@@ -14934,6 +15057,19 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                 args.push(arg);
                             }
                         }
+                        if let Some(target) = pointer_field_method_target(&sel) {
+                            let receiver_ty = target.receiver_ty;
+                            let receiver = target.receiver;
+                            return syn::parse_quote! {
+                                <#receiver_ty>::#method(&mut *#receiver, #args)
+                            };
+                        }
+                        let receiver = method_receiver_expr_from_ref(*sel.x);
+                        let receiver = if should_clone_receiver {
+                            syn::parse_quote! { (#receiver).clone() }
+                        } else {
+                            receiver
+                        };
                         return method_call_expr(receiver, method, args);
                     }
                 }
@@ -14954,25 +15090,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 if let Some(expr) = dot_import_path_expr(ident_name) {
                     return expr;
                 }
-                let is_top_level_var = TYPE_ENV.with(|env| {
-                    let env = env.borrow();
-                    !package_context::main_package_vars_are_locals()
-                        && env.is_top_level_var(ident_name)
-                        && !env.is_const(ident_name)
-                        && env
-                            .get_top_level_var(ident_name)
-                            .is_some_and(|top_level_ty| {
-                                env.get_var(ident_name)
-                                    .is_some_and(|current_ty| current_ty == top_level_ty)
-                            })
-                });
                 let path = Self::Path(ident.into());
-                if is_top_level_var {
-                    let go_type = TYPE_ENV.with(|env| {
-                        env.borrow()
-                            .get_var(ident_name)
-                            .unwrap_or(typeinfer::GoType::Unknown)
-                    });
+                if let Some(go_type) = ident_top_level_var_type(ident_name) {
                     top_level_var_read_expr(path, &go_type)
                 } else {
                     path
@@ -24669,11 +24788,11 @@ func Read() string {
             "{debugpkg_rs}"
         );
         assert!(
-            main_rs.contains("(debugpkg::Debug.lock().unwrap()).Value()"),
+            main_rs.contains("((*debugpkg::Debug).clone().lock().unwrap()).Value()"),
             "{main_rs}"
         );
         assert!(
-            debugpkg_rs.contains("(Debug.lock().unwrap()).Value()"),
+            debugpkg_rs.contains("((*Debug).clone().lock().unwrap()).Value()"),
             "{debugpkg_rs}"
         );
     }
@@ -28936,6 +29055,193 @@ func main() {
         assert!(
             !main_rs.contains("GorsPtr::new({") && !main_rs.contains("GorsPtr :: new ({"),
             "expected address-of pointer field not to wrap a copied field value: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_address_of_shared_pointer_field_as_projected_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	value int
+	other int
+}
+
+func main() {
+	h := &holder{value: 1, other: 2}
+	p := &h.value
+	*p = 7
+	_ = h.value
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("GorsPtr::from_ptr_field")
+                || main_rs.contains("GorsPtr :: from_ptr_field"),
+            "expected shared address-of pointer field to use projected GorsPtr constructor: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(holder, value)")
+                || main_rs.contains("std :: mem :: offset_of ! (holder , value)"),
+            "expected projected pointer to identify the selected field: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("GorsPtr::new({") && !main_rs.contains("GorsPtr :: new ({"),
+            "expected shared address-of pointer field not to wrap a copied field value: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_pointer_field_method_receiver_as_projected_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type bucket struct {
+	total int
+}
+
+func (b *bucket) fill(p *int) {
+	*p = 9
+	b.total += *p
+}
+
+type holder struct {
+	bucket bucket
+	value int
+}
+
+func update(h *holder) {
+	h.bucket.fill(&h.value)
+}
+
+func main() {
+	h := &holder{}
+	update(h)
+	_ = h.value
+	_ = h.bucket.total
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("GorsPtr::from_ptr_field")
+                || main_rs.contains("GorsPtr :: from_ptr_field"),
+            "expected pointer field method receiver to use projected GorsPtr cells: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(holder, bucket)")
+                || main_rs.contains("std :: mem :: offset_of ! (holder , bucket)"),
+            "expected method receiver projection to identify the receiver field: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(holder, value)")
+                || main_rs.contains("std :: mem :: offset_of ! (holder , value)"),
+            "expected argument projection to identify the pointer argument field: {main_rs}"
+        );
+        assert!(
+            (main_rs.contains("impl bucket") || main_rs.contains("impl bucket {"))
+                && main_rs.contains("fn fill"),
+            "expected projected UFCS method call to keep the receiver impl method reachable: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_imported_top_level_pointer_var_method_receiver_from_lazy_lock_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("sink").join("sink.go").as_path(),
+            r#"
+package sink
+
+type Sink struct {
+	n int
+}
+
+var Default = &Sink{}
+
+func (s *Sink) Write(v int) {
+	s.n += v
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/sink"
+
+func main() {
+	sink.Default.Write(3)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("(*sink::Default).clone()")
+                || main_rs.contains("(* sink :: Default) . clone ()")
+                || main_rs.contains("( * sink :: Default ) . clone ()"),
+            "expected imported pointer var receiver to read the LazyLock value before locking it: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("sink::Default.lock()")
+                && !main_rs.contains("sink :: Default . lock ()"),
+            "expected imported pointer var receiver not to call lock on the static: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_non_clone_top_level_var_method_receiver_without_eager_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	fmt.Println(os.PathSeparator)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let fmt_rs = output.files.get("fmt.rs").unwrap();
+
+        assert!(
+            fmt_rs.contains("(*ppFree).Get()")
+                || fmt_rs.contains("(* ppFree) . Get ()")
+                || fmt_rs.contains("( * ppFree ) . Get ()"),
+            "expected non-pointer package var receiver to be borrowed from the LazyLock value: {fmt_rs}"
+        );
+        assert!(
+            !fmt_rs.contains("(*ppFree).clone().")
+                && !fmt_rs.contains("(* ppFree) . clone () .")
+                && !fmt_rs.contains("( * ppFree ) . clone () ."),
+            "expected non-pointer package var receiver not to require Clone: {fmt_rs}"
         );
     }
 

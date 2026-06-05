@@ -25,20 +25,12 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
         },
         syn::parse_quote! {
             #[allow(non_upper_case_globals)]
-            pub static Stdout: std::sync::LazyLock<File> =
-                std::sync::LazyLock::new(|| File);
+            pub static Stdout: std::sync::LazyLock<crate::builtin::GorsPtr<File>> =
+                std::sync::LazyLock::new(|| crate::builtin::GorsPtr::new(File));
         },
         syn::parse_quote! {
-            impl crate::io::Writer for File {
-                fn #as_any(&self) -> Option<&dyn std::any::Any> {
-                    Some(self)
-                }
-
-                fn #clone_box(&self) -> Box<dyn crate::io::Writer> {
-                    Box::new(*self) as Box<dyn crate::io::Writer>
-                }
-
-                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+            impl File {
+                fn write_stdout(b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
                     let mut stdout = std::io::stdout();
                     match std::io::Write::write_all(&mut stdout, &b) {
                         Ok(()) => (
@@ -52,6 +44,44 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                                 as Box<dyn crate::builtin::error>,
                         ),
                     }
+                }
+
+                pub fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+                    File::write_stdout(b)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl crate::io::Writer for File {
+                fn #as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn #clone_box(&self) -> Box<dyn crate::io::Writer> {
+                    Box::new(*self) as Box<dyn crate::io::Writer>
+                }
+
+                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+                    File::Write(self, b)
+                }
+            }
+        },
+        syn::parse_quote! {
+            impl crate::io::Writer for crate::builtin::GorsPtr<File> {
+                fn #as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn #clone_box(&self) -> Box<dyn crate::io::Writer> {
+                    Box::new(self.clone()) as Box<dyn crate::io::Writer>
+                }
+
+                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+                    let _file = match self.lock() {
+                        Ok(file) => file,
+                        Err(err) => crate::builtin::panic_value(err),
+                    };
+                    File::write_stdout(b)
                 }
             }
         },
