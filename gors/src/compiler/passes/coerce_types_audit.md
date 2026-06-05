@@ -27,7 +27,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
-| Reflection fallback pruning in `structural_helpers/reflection_fallback.rs` | `reflect` AST path/type-path checks and generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
+| Reflection fallback pruning in `structural_helpers/reflection_fallback.rs` | compiler-owned reflect-semantic path predicates plus generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
 | Format flush insertion in `structural_helpers/fmt_flush.rs` | generated `__gors_flush_fmt` hook source-field metadata plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
@@ -215,6 +215,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | rendered-token resolver use-item dedupe in `resolve/mod.rs` | Generated `use` items now dedupe through structural `syn::UseTree` matching, so formatting changes do not control resolver output. |
 | literal `reflect` qualifier in reflect-kind detection | `compiler/reflect_kind.rs` now receives an import-path predicate from current-file import facts, so aliased imports such as `import r "reflect"` lower through the same runtime primitive. |
 | duplicated compiler-side reflect runtime symbols | `compiler/reflect_semantics.rs` now owns reflect module/member constants and generated Rust reflect path parsing shared by reflect-kind lowering and reflection fallback pruning. |
+| raw reflect fallback member matching in reflection pruning | Reflection fallback pruning now consumes `compiler/reflect_semantics.rs` predicates for fallback expression paths and `reflect.Value` type paths instead of open-coding the generated member set. |
 | literal `printArg` / `printValue` fmt flush triggers | Flush insertion now derives trigger methods from the generated hook's source field and the receiver's self-call graph, so arbitrary method names only flush when they can write through the buffered source field. |
 | broad `take` call matching in fmt flush source detection | Flush-source metadata now recognizes the generated `std::mem::take` call shape instead of treating any call path ending in `take` as a source-buffer extraction. |
 | initial-pass fmt flush insertion | The initial `coerce_types` visitor no longer performs fmt flush insertion from preexisting hooks; the post-structural-helper pass is the only flush insertion owner after resolver helper injection has completed. |

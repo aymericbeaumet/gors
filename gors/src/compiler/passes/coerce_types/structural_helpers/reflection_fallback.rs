@@ -274,7 +274,7 @@ struct Finder<'a> {
 
 impl syn::visit::Visit<'_> for Finder<'_> {
     fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-        if is_reflect_fallback_expr_path(&path.path) {
+        if reflect_semantics::is_fallback_expr_path(&path.path) {
             self.found = true;
             return;
         }
@@ -282,7 +282,7 @@ impl syn::visit::Visit<'_> for Finder<'_> {
     }
 
     fn visit_type_path(&mut self, path: &syn::TypePath) {
-        if is_reflect_value_type_path(&path.path) {
+        if reflect_semantics::is_value_type_path(&path.path) {
             self.found = true;
             return;
         }
@@ -301,25 +301,11 @@ impl syn::visit::Visit<'_> for Finder<'_> {
     }
 }
 
-fn is_reflect_fallback_expr_path(path: &syn::Path) -> bool {
-    matches!(
-        reflect_semantics::syn_path_member(path),
-        Some(member)
-            if member == reflect_semantics::VALUE_OF_FUNC
-                || member == reflect_semantics::TYPE_OF_FUNC
-    )
-}
-
-fn is_reflect_value_type_path(path: &syn::Path) -> bool {
-    reflect_semantics::syn_path_member(path)
-        .is_some_and(|member| member == reflect_semantics::VALUE_TYPE)
-}
-
 fn is_reflect_value_type(ty: &syn::Type) -> bool {
     let syn::Type::Path(path) = ty else {
         return false;
     };
-    is_reflect_value_type_path(&path.path)
+    reflect_semantics::is_value_type_path(&path.path)
 }
 
 fn collect_self_reflect_value_fields(file: &syn::File) -> ReceiverFieldMap {
