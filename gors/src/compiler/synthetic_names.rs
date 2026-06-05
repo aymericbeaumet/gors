@@ -1,6 +1,8 @@
 use proc_macro2::Span;
 use std::cell::RefCell;
 
+use super::import_context::import_rust_name;
+
 thread_local! {
     static DEFER_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
@@ -93,6 +95,17 @@ pub(super) fn assignment_temp_ident(index: usize) -> syn::Ident {
 
 pub(super) fn shared_value_ident() -> syn::Ident {
     syn::Ident::new("__gors_shared_value", Span::mixed_site())
+}
+
+pub(super) fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_string_const_bytes_{}", import_rust_name(name)),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn string_bytes_temp_ident() -> syn::Ident {
+    syn::Ident::new("__gors_string_bytes", Span::mixed_site())
 }
 
 pub(super) fn preborrow_arg_ident(index: usize) -> syn::Ident {
@@ -259,6 +272,11 @@ mod tests {
         assert_eq!(multi_value_temp_ident(4).to_string(), "__gors_multi_4");
         assert_eq!(assignment_temp_ident(5).to_string(), "__gors_assign_5");
         assert_eq!(shared_value_ident().to_string(), "__gors_shared_value");
+        assert_eq!(
+            string_const_bytes_fn_ident("type").to_string(),
+            "__gors_string_const_bytes_type_"
+        );
+        assert_eq!(string_bytes_temp_ident().to_string(), "__gors_string_bytes");
         assert_eq!(preborrow_arg_ident(6).to_string(), "__gors_preborrow_arg_6");
         assert_eq!(premethod_arg_ident(7).to_string(), "__gors_premethod_arg_7");
         assert_eq!(

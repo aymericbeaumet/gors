@@ -5,10 +5,7 @@ use proc_macro2::Span;
 
 use crate::{ast, token};
 
-use super::{
-    TYPE_ENV, import_context::import_rust_name, ir, selector_path_from_ref,
-    special_type_conversion_kind,
-};
+use super::{TYPE_ENV, ir, selector_path_from_ref, special_type_conversion_kind, synthetic_names};
 
 thread_local! {
     static STRING_CONST_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -239,10 +236,7 @@ pub(super) fn byte_vec_expr(bytes: &[u8]) -> syn::Expr {
 }
 
 pub(super) fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
-    syn::Ident::new(
-        &format!("__gors_string_const_bytes_{}", import_rust_name(name)),
-        Span::mixed_site(),
-    )
+    synthetic_names::string_const_bytes_fn_ident(name)
 }
 
 fn selector_string_const_bytes_path(selector_expr: &ast::SelectorExpr) -> Option<syn::Path> {
@@ -285,10 +279,11 @@ pub(super) fn string_bytes_vec_expr_for_expr(expr: &ast::Expr) -> Option<syn::Ex
         ast::Expr::BinaryExpr(binary) if binary.op == token::Token::ADD => {
             let lhs = string_bytes_vec_expr_for_expr(&binary.x)?;
             let rhs = string_bytes_vec_expr_for_expr(&binary.y)?;
+            let string_bytes = synthetic_names::string_bytes_temp_ident();
             Some(syn::parse_quote! {{
-                let mut __gors_string_bytes = #lhs;
-                __gors_string_bytes.extend_from_slice(&#rhs);
-                __gors_string_bytes
+                let mut #string_bytes = #lhs;
+                #string_bytes.extend_from_slice(&#rhs);
+                #string_bytes
             }})
         }
         _ => None,
