@@ -431,6 +431,10 @@ Reachability root/name discovery and expansion live in
 share exported-root collection, item/top-level name discovery, trait
 supertrait/method maps, and top-level receiver-method root expansion through
 that module rather than duplicating name logic.
+Ref-collection input state lives in `gors/src/compiler/ref_collection.rs`;
+token DCE, semantic reachability, and external-root discovery should construct
+`RefCollectionContext` from that module rather than owning ad hoc context
+structs in the compiler root.
 Active reachability root scope lives in
 `gors/src/compiler/reachability_context.rs`. Resolver/stdlib parsing should keep
 using `compiler::with_active_reachability_roots()`, and compiler-side consumers

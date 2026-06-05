@@ -12,10 +12,9 @@ use super::receiver_type_facts::{
     ReceiverTypeMap, top_level_collection_element_types, top_level_item_field_types,
     top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
 };
+use super::ref_collection::RefCollectionContext;
 use super::syn_inspect::{item_name, named_self_type, self_type_reachability_names};
-use super::{
-    CompiledModule, RefCollectionContext, collect_refs_from_item, generated_attrs, interface_hooks,
-};
+use super::{CompiledModule, collect_refs_from_item, generated_attrs, interface_hooks};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SemanticItemId {

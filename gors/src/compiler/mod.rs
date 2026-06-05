@@ -50,6 +50,7 @@ mod reachability_names;
 mod receiver_method_targets;
 mod receiver_type_facts;
 mod receiver_type_scopes;
+mod ref_collection;
 mod reflect_kind;
 mod reflect_semantics;
 mod reflect_slice_any;
@@ -119,6 +120,7 @@ use receiver_type_facts::{
     top_level_item_field_types, top_level_item_return_types, top_level_item_tuple_return_types,
     top_level_item_types,
 };
+use ref_collection::{ReachabilityNameSet, RefCollectionContext};
 use required_module_roots::RequiredModuleRoots;
 use return_context::ReturnTypesGuard;
 use sha2::{Digest, Sha256};
@@ -4599,19 +4601,6 @@ fn reachable_stdlib_items(
     };
     reachability_cache::store_items(cache_key, &entry);
     entry
-}
-
-type ReachabilityNameSet = std::collections::HashSet<String>;
-
-struct RefCollectionContext<'a> {
-    module_names: &'a ReachabilityNameSet,
-    item_names: &'a ReachabilityNameSet,
-    top_level_names: &'a ReachabilityNameSet,
-    top_level_types: &'a ReceiverTypeMap,
-    top_level_field_types: &'a ReceiverFieldTypeMap,
-    top_level_element_types: &'a ReceiverTypeMap,
-    top_level_return_types: &'a ReceiverTypeMap,
-    top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
 }
 
 fn collect_refs_from_item(
