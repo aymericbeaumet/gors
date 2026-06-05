@@ -28,7 +28,11 @@ pub(super) fn reset_unnamed_arg_counter() {
 
 pub(super) fn next_unnamed_arg_ident() -> syn::Ident {
     let n = next_unnamed_arg_id();
-    syn::Ident::new(&format!("__gors_arg_{n}"), Span::mixed_site())
+    unnamed_arg_ident(n)
+}
+
+pub(super) fn unnamed_arg_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_arg_{index}"), Span::mixed_site())
 }
 
 pub(super) fn next_defer_id() -> usize {
@@ -348,6 +352,7 @@ mod tests {
         reset_unnamed_arg_counter();
         assert_eq!(next_unnamed_arg_ident().to_string(), "__gors_arg_0");
         assert_eq!(next_unnamed_arg_ident().to_string(), "__gors_arg_1");
+        assert_eq!(unnamed_arg_ident(7).to_string(), "__gors_arg_7");
 
         reset_unnamed_arg_counter();
         assert_eq!(next_unnamed_arg_ident().to_string(), "__gors_arg_0");

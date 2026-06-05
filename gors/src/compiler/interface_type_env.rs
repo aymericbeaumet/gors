@@ -1,4 +1,4 @@
-use super::{import_context, noop_interfaces, typeinfer};
+use super::{import_context, noop_interfaces, synthetic_names, typeinfer};
 use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
 use syn::Token;
 
@@ -96,10 +96,7 @@ fn interface_method_signature_from_type_env(
         .into_iter()
         .enumerate()
     {
-        let ident = syn::Ident::new(
-            &format!("__gors_arg_{idx}"),
-            proc_macro2::Span::mixed_site(),
-        );
+        let ident = synthetic_names::unnamed_arg_ident(idx);
         let ty = super::rust_type_preserving_named_go_type(&param);
         inputs.push(syn::FnArg::Typed(syn::PatType {
             attrs: vec![],
