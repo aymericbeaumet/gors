@@ -314,6 +314,9 @@ gors-builtin/
   function-name special case. Do not reintroduce a `maps.Clone` or `Clone`
   trigger; the replacement must depend on the generic map parameter/result and
   the runtime clone body shape.
+- Bool-to-`uint8` intrinsic lowering is selected by the Go source's
+  `compiler intrinsic` marker plus the exact `func(bool) uint8` signature, not
+  by the helper function's spelling.
 - Named `string` types are also newtypes and must implement `StringValue` for
   owned, shared-reference, and mutable-reference receivers. Method receiver
   rewriting must avoid turning `string(r)` into `builtin::string(&self)` because

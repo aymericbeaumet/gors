@@ -16321,9 +16321,6 @@ fn append_missing_return_panic(
 }
 
 fn bool_to_uint8_intrinsic_param(func_decl: &ast::FuncDecl) -> Option<syn::Ident> {
-    if func_decl.name.name != "boolToUint8" {
-        return None;
-    }
     if !func_decl.doc.as_ref().is_some_and(|doc| {
         doc.list
             .iter()
@@ -19913,6 +19910,29 @@ func Clone[M ~map[K]V, K comparable, V any](m M) M {
         let type_param_info = super::collect_type_param_info(func.type_.type_params.as_ref());
 
         assert!(super::generic_map_clone_func_block(&func, &type_param_info).is_none());
+    }
+
+    #[test]
+    fn bool_to_uint8_intrinsic_uses_doc_marker_and_signature_not_name() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+// truthByte is a compiler intrinsic.
+func truthByte(b bool) uint8 {
+	panic("unreachable")
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("fn truthByte"), "{output}");
+        assert!(output.contains("if b { 1u8 } else { 0u8 }"), "{output}");
+        assert!(!output.contains("unreachable"), "{output}");
     }
 
     #[test]
