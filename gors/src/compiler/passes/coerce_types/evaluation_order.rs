@@ -1,7 +1,8 @@
 use syn::visit_mut::{self, VisitMut};
 
-use super::super::super::syn_inspect::{
-    expr_contains_path_ident, mut_borrowed_path_name, receiver_root_ident_name,
+use super::super::super::{
+    syn_inspect::{expr_contains_path_ident, mut_borrowed_path_name, receiver_root_ident_name},
+    synthetic_names,
 };
 
 pub(super) fn hoist_args_read_after_mut_borrow(stmt: &mut syn::Stmt) -> Vec<syn::Stmt> {
@@ -63,7 +64,7 @@ fn hoist_args_read_after_mut_borrow_in_args(
             if arg_index <= borrow_index || !expr_contains_path_ident(arg, &name) {
                 continue;
             }
-            let temp = quote::format_ident!("__gors_preborrow_arg_{}", hoisted.len());
+            let temp = synthetic_names::preborrow_arg_ident(hoisted.len());
             let value = arg.clone();
             *arg = syn::parse_quote! { #temp };
             hoisted.push(syn::parse_quote! {
@@ -86,7 +87,7 @@ pub(super) fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::
         if !expr_contains_path_ident(arg, &receiver_name) {
             continue;
         }
-        let temp = quote::format_ident!("__gors_premethod_arg_{}", hoisted.len());
+        let temp = synthetic_names::premethod_arg_ident(hoisted.len());
         let value = arg.clone();
         *arg = syn::parse_quote! { #temp };
         hoisted.push(syn::parse_quote! {
