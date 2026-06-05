@@ -607,14 +607,21 @@ pub const GORS_BUILTINS: &str = include_str!(concat!(
 pub fn generate_with_sourcemap(
     file: syn::File,
     source_file: &str,
-) -> Result<(String, SourceMap), CodegenError> {
+) -> Result<(String, sourcemap::SourceMap), CodegenError> {
     let output = generate(file).map_err(|e| CodegenError::generation(e.to_string()))?;
-
-    // For now, create an empty source map
-    // TODO: Integrate with the compiler's source map tracking
-    let source_map = SourceMap::new(source_file);
+    let source_map = if crate::compiler::source_map_tracker_is_active() {
+        crate::compiler::build_source_map(&output)
+    } else {
+        empty_sourcemap(source_file)
+    };
 
     Ok((output, source_map))
+}
+
+fn empty_sourcemap(source_file: &str) -> sourcemap::SourceMap {
+    let mut builder = sourcemap::SourceMapBuilder::new(None);
+    builder.add_source(source_file);
+    builder.into_sourcemap()
 }
 
 #[cfg(test)]
@@ -637,6 +644,28 @@ mod tests {
             is_main,
             is_stdlib: false,
         }
+    }
+
+    #[test]
+    fn generate_with_sourcemap_uses_active_compiler_tracker() {
+        crate::compiler::clear_source_map_tracker();
+        let go_source = "package main\n\nfunc main() {}\n";
+        let parsed = crate::parser::parse_file("test.go", go_source).unwrap();
+        let compiled =
+            crate::compiler::compile_with_source_map(parsed, "test.go", go_source).unwrap();
+
+        let (rust_source, source_map) =
+            super::generate_with_sourcemap(compiled, "output.rs").unwrap();
+
+        assert!(rust_source.contains("fn main"), "{rust_source}");
+        assert!(source_map.get_token_count() > 0);
+        assert_eq!(source_map.get_source(0), Some("test.go"));
+        let names = (0..source_map.get_name_count())
+            .filter_map(|idx| source_map.get_name(idx))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"func"), "{names:?}");
+        assert!(names.contains(&"main"), "{names:?}");
+        crate::compiler::clear_source_map_tracker();
     }
 
     #[test]

@@ -38,6 +38,10 @@ pub(super) fn build_source_map(rust_source: &str) -> sourcemap::SourceMap {
     TRACKER.with(|tracker| tracker.borrow().build_source_map(rust_source))
 }
 
+pub(super) fn is_active() -> bool {
+    TRACKER.with(|tracker| tracker.borrow().is_active())
+}
+
 pub(super) fn clear() {
     TRACKER.with(|tracker| {
         tracker.borrow_mut().clear();

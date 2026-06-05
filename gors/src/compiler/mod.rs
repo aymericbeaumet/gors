@@ -3937,6 +3937,10 @@ pub fn build_source_map(rust_source: &str) -> sourcemap::SourceMap {
     source_map_context::build_source_map(rust_source)
 }
 
+pub(crate) fn source_map_tracker_is_active() -> bool {
+    source_map_context::is_active()
+}
+
 /// Clear the source map tracker.
 pub fn clear_source_map_tracker() {
     source_map_context::clear();
