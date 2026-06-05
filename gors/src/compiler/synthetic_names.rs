@@ -40,6 +40,18 @@ pub(super) fn next_switch_label() -> syn::Lifetime {
     syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
 }
 
+pub(super) fn switch_fallthrough_ident() -> syn::Ident {
+    syn::Ident::new("__gors_switch_fallthrough", Span::mixed_site())
+}
+
+pub(super) fn switch_selected_ident() -> syn::Ident {
+    syn::Ident::new("__gors_switch_selected", Span::mixed_site())
+}
+
+pub(super) fn switch_tag_ident() -> syn::Ident {
+    syn::Ident::new("__gors_switch_tag", Span::mixed_site())
+}
+
 pub(super) fn next_type_switch_value_ident() -> syn::Ident {
     let n = next_id(&SWITCH_COUNTER);
     syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
@@ -142,6 +154,15 @@ mod tests {
     fn lowering_counters_reset_all_control_name_sequences() {
         reset_lowering_counters();
         assert_eq!(next_switch_label().ident.to_string(), "__gors_switch_0");
+        assert_eq!(
+            switch_fallthrough_ident().to_string(),
+            "__gors_switch_fallthrough"
+        );
+        assert_eq!(
+            switch_selected_ident().to_string(),
+            "__gors_switch_selected"
+        );
+        assert_eq!(switch_tag_ident().to_string(), "__gors_switch_tag");
         assert_eq!(
             next_type_switch_value_ident().to_string(),
             "__gors_type_switch_value_1"

@@ -17239,13 +17239,13 @@ impl TryFrom<ast::SwitchStmt<'_>> for syn::Expr {
             return compile_non_fallthrough_switch(clauses, switch_stmt.tag, switch_label);
         }
 
-        let fallthrough_ident = syn::Ident::new("__gors_switch_fallthrough", Span::mixed_site());
-        let selected_ident = syn::Ident::new("__gors_switch_selected", Span::mixed_site());
+        let fallthrough_ident = synthetic_names::switch_fallthrough_ident();
+        let selected_ident = synthetic_names::switch_selected_ident();
         let mut stmts: Vec<syn::Stmt> = vec![syn::parse_quote! {
             let mut #selected_ident: isize = -1;
         }];
 
-        let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+        let tag_ident = synthetic_names::switch_tag_ident();
         let tag_type = switch_stmt
             .tag
             .as_ref()
@@ -17323,7 +17323,7 @@ fn compile_non_fallthrough_switch(
     switch_label: syn::Lifetime,
 ) -> Result<syn::Expr, CompilerError> {
     let mut prefix_stmts = vec![];
-    let tag_ident = syn::Ident::new("__gors_switch_tag", Span::mixed_site());
+    let tag_ident = synthetic_names::switch_tag_ident();
     let tag_type = tag
         .as_ref()
         .map(|tag| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(tag, &env.borrow())));
