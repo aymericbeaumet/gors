@@ -12,6 +12,16 @@ generates formatted Rust source code.
 
 Pipeline: Go source → scanner → parser → Go AST → compiler → Rust AST → passes → printer → Rust source
 
+### Parser contracts
+
+- `gors/src/parser/mod.rs::parse_type_parameters()` returns a private
+  `TypeParameterParse` enum for the bracketed forms it consumes. Keep slice and
+  array prefixes (`[]T`, `[N]T`) as explicit enum variants rather than smuggling
+  them through sentinel `ast::FieldList` values. Function declarations may still
+  convert those consumed prefixes into invalid type-parameter lists so the IR
+  signature validator can report semantic signature errors instead of making
+  parsing fail early.
+
 ## Repository layout
 
 ```
