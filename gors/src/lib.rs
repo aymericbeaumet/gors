@@ -79,6 +79,7 @@ pub mod error;
 
 pub(crate) mod generated_names;
 pub(crate) mod noop_methods;
+pub(crate) mod reflect_names;
 
 /// Go source code parser.
 ///

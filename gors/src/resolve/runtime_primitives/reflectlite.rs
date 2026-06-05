@@ -1,14 +1,11 @@
 use std::collections::HashSet;
 
-pub(super) const IMPORT_PATH: &str = "internal/reflectlite";
-const VALUE_TYPE: &str = "Value";
-const VALUE_OF_FUNC: &str = "ValueOf";
-const SWAPPER_FUNC: &str = "Swapper";
-const VALUE_LEN_ROOT: &str = "Value::Len";
-const VALUE_KIND_ROOT: &str = "Value::Kind";
-const KIND_TYPE: &str = "Kind";
-const SLICE_CONST: &str = "Slice";
-const INVALID_CONST: &str = "Invalid";
+use crate::reflect_names::{
+    INVALID_CONST, KIND_TYPE, REFLECTLITE_IMPORT_PATH, SLICE_CONST, SWAPPER_FUNC, VALUE_KIND_ROOT,
+    VALUE_LEN_ROOT, VALUE_OF_FUNC, VALUE_TYPE,
+};
+
+pub(super) const IMPORT_PATH: &str = REFLECTLITE_IMPORT_PATH;
 
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let roots = roots?;

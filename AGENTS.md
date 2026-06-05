@@ -77,8 +77,9 @@ gors-builtin/
   runtime primitive dispatch lives in `gors/src/compiler/runtime_primitives.rs`,
   with reflect, os, and sync replacements split under
   `gors/src/compiler/runtime_primitives/`; `reflect.TypeOf(...).Kind()`
-  detection lives in `gors/src/compiler/reflect_kind.rs`; generated reflect path
-  recognition lives behind named predicates in
+  detection lives in `gors/src/compiler/reflect_kind.rs`; shared reflect and
+  reflectlite primitive symbol names live in `gors/src/reflect_names.rs`;
+  generated reflect path recognition lives behind named predicates in
   `gors/src/compiler/reflect_semantics.rs` and should match exact generated
   reflect module/member paths rather than prefixes; reflect slice-to-`any`
   writeback lowering lives in

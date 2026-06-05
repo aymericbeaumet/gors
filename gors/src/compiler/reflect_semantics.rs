@@ -1,8 +1,8 @@
-pub(super) const MODULE: &str = "reflect";
-pub(super) const KIND_METHOD: &str = "Kind";
-pub(super) const TYPE_OF_FUNC: &str = "TypeOf";
-pub(super) const VALUE_OF_FUNC: &str = "ValueOf";
-pub(super) const VALUE_TYPE: &str = "Value";
+pub(super) const MODULE: &str = crate::reflect_names::REFLECT_MODULE;
+pub(super) const KIND_METHOD: &str = crate::reflect_names::KIND_METHOD;
+pub(super) const TYPE_OF_FUNC: &str = crate::reflect_names::TYPE_OF_FUNC;
+pub(super) const VALUE_OF_FUNC: &str = crate::reflect_names::VALUE_OF_FUNC;
+pub(super) const VALUE_TYPE: &str = crate::reflect_names::VALUE_TYPE;
 
 pub(super) fn is_fallback_expr_path(path: &syn::Path) -> bool {
     syn_path_member(path).is_some_and(is_fallback_expr_member)
