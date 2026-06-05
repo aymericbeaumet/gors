@@ -3,7 +3,9 @@ use super::local_names::NameSet;
 type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
 use crate::compiler::syn_inspect::{is_self_expr, type_path_ident_name};
-use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident, fmt_flush_source_from_doc};
+use crate::generated_names::{
+    FMT_FLUSH_HOOK, fmt_flush_hook_ident, fmt_flush_method_from_doc, fmt_flush_source_from_doc,
+};
 
 #[derive(Default)]
 pub(super) struct Metadata {
@@ -45,21 +47,7 @@ impl Metadata {
 }
 
 fn collect_methods_by_receiver(file: &syn::File) -> ReceiverNameMap {
-    let flush_source_fields = collect_source_fields_by_receiver(file);
     let mut methods_by_receiver = ReceiverNameMap::new();
-
-    for (self_ty, source_fields) in flush_source_fields {
-        let receiver_methods = collect_receiver_methods(file, &self_ty, &source_fields);
-        if !receiver_methods.is_empty() {
-            methods_by_receiver.insert(self_ty, receiver_methods);
-        }
-    }
-    methods_by_receiver
-}
-
-fn collect_source_fields_by_receiver(file: &syn::File) -> ReceiverNameMap {
-    let mut fields_by_receiver = ReceiverNameMap::new();
-
     for item in &file.items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -73,78 +61,41 @@ fn collect_source_fields_by_receiver(file: &syn::File) -> ReceiverNameMap {
             };
             (func.sig.ident == FMT_FLUSH_HOOK).then_some(func)
         }) {
-            let fields = flush_source_fields(func);
-            if !fields.is_empty() {
-                fields_by_receiver
+            let methods = flush_trigger_methods(func);
+            if !methods.is_empty() {
+                methods_by_receiver
                     .entry(self_ty.clone())
                     .or_default()
-                    .extend(fields);
+                    .extend(methods);
             }
         }
     }
-
-    fields_by_receiver
+    methods_by_receiver
 }
 
-fn collect_receiver_methods(file: &syn::File, self_ty: &str, source_fields: &NameSet) -> NameSet {
-    let mut direct_methods = NameSet::new();
-    let mut calls_by_method = std::collections::BTreeMap::<String, NameSet>::new();
-
-    for item in &file.items {
-        let syn::Item::Impl(item_impl) = item else {
-            continue;
-        };
-        if type_path_ident_name(&item_impl.self_ty).as_deref() != Some(self_ty) {
-            continue;
-        }
-        for func in item_impl.items.iter().filter_map(|item| {
-            let syn::ImplItem::Fn(func) = item else {
-                return None;
-            };
-            (func.sig.ident != FMT_FLUSH_HOOK).then_some(func)
-        }) {
-            let name = func.sig.ident.to_string();
-            calls_by_method
-                .entry(name.clone())
-                .or_default()
-                .extend(self_method_calls(func));
-            if method_calls_flush_source_field(func, source_fields) {
-                direct_methods.insert(name);
-            }
-        }
+fn flush_trigger_methods(func: &syn::ImplItemFn) -> NameSet {
+    if !has_flush_source_marker(func) {
+        return NameSet::new();
     }
-
-    expand_transitive_methods(direct_methods, &calls_by_method)
-}
-
-fn expand_transitive_methods(
-    mut methods: NameSet,
-    calls_by_method: &std::collections::BTreeMap<String, NameSet>,
-) -> NameSet {
-    loop {
-        let mut changed = false;
-        for (method, callees) in calls_by_method {
-            if methods.contains(method) || !callees.iter().any(|callee| methods.contains(callee)) {
-                continue;
-            }
-            methods.insert(method.clone());
-            changed = true;
-        }
-        if !changed {
-            break;
-        }
-    }
-    methods
-}
-
-fn flush_source_fields(func: &syn::ImplItemFn) -> NameSet {
     func.attrs
         .iter()
-        .filter_map(fmt_flush_source_attr)
+        .filter_map(fmt_flush_method_attr)
         .collect()
 }
 
-fn fmt_flush_source_attr(attr: &syn::Attribute) -> Option<String> {
+fn has_flush_source_marker(func: &syn::ImplItemFn) -> bool {
+    func.attrs
+        .iter()
+        .filter_map(doc_attr_value)
+        .any(|doc| fmt_flush_source_from_doc(&doc).is_some())
+}
+
+fn fmt_flush_method_attr(attr: &syn::Attribute) -> Option<String> {
+    let doc = doc_attr_value(attr)?;
+    fmt_flush_method_from_doc(&doc).map(str::to_owned)
+}
+
+fn doc_attr_value(attr: &syn::Attribute) -> Option<String> {
     let syn::Meta::NameValue(meta) = &attr.meta else {
         return None;
     };
@@ -157,52 +108,7 @@ fn fmt_flush_source_attr(attr: &syn::Attribute) -> Option<String> {
     let syn::Lit::Str(doc) = &expr_lit.lit else {
         return None;
     };
-    fmt_flush_source_from_doc(&doc.value()).map(str::to_owned)
-}
-
-fn self_method_calls(func: &syn::ImplItemFn) -> NameSet {
-    struct Finder {
-        calls: NameSet,
-    }
-
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if is_self_expr(&call.receiver) {
-                self.calls.insert(call.method.to_string());
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-    }
-
-    let mut finder = Finder {
-        calls: NameSet::new(),
-    };
-    syn::visit::Visit::visit_block(&mut finder, &func.block);
-    finder.calls
-}
-
-fn method_calls_flush_source_field(func: &syn::ImplItemFn, source_fields: &NameSet) -> bool {
-    struct Finder<'a> {
-        source_fields: &'a NameSet,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
-            if super::self_fields::expr_mentions(&call.receiver, self.source_fields) {
-                self.found = true;
-                return;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-    }
-
-    let mut finder = Finder {
-        source_fields,
-        found: false,
-    };
-    syn::visit::Visit::visit_block(&mut finder, &func.block);
-    finder.found
+    Some(doc.value())
 }
 
 fn stmt_needs_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {
@@ -270,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_derives_methods_from_hook_source_field() {
+    fn metadata_reads_flush_methods_from_hook_markers() {
         let file: syn::File = syn::parse_quote! {
             struct Printer {
                 inner: Inner,
@@ -289,6 +195,8 @@ mod tests {
 
             impl Printer {
                 #[doc = "gors:fmt-flush-source=inner"]
+                #[doc = "gors:fmt-flush-method=emit"]
+                #[doc = "gors:fmt-flush-method=run"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -368,6 +276,7 @@ mod tests {
 
             impl Printer {
                 #[doc = "gors:fmt-flush-source=inner"]
+                #[doc = "gors:fmt-flush-method=emit"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -381,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_ignores_method_names_without_source_field_use() {
+    fn metadata_ignores_method_names_without_hook_method_marker() {
         let file: syn::File = syn::parse_quote! {
             struct Printer {
                 inner: Inner,
@@ -419,6 +328,46 @@ mod tests {
     }
 
     #[test]
+    fn metadata_requires_generated_method_marker() {
+        let file: syn::File = syn::parse_quote! {
+            struct Printer {
+                inner: Inner,
+                buf: Buffer,
+            }
+
+            struct Inner {
+                buf: Buffer,
+            }
+
+            struct Buffer(Vec<u8>);
+
+            impl Inner {
+                fn write(&mut self, value: isize) {}
+            }
+
+            impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
+                fn __gors_flush_fmt(&mut self) {
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
+                    self.buf.0.extend(bytes);
+                }
+
+                fn emit(&mut self, value: isize) {
+                    self.inner.write(value);
+                }
+            }
+        };
+
+        let metadata = Metadata::collect(&file);
+        let receiver = ["Printer".to_string()];
+        let stmt: syn::Stmt = syn::parse_quote! {
+            self.emit(1);
+        };
+
+        assert!(!metadata.should_flush_after_stmt(&receiver, &stmt));
+    }
+
+    #[test]
     fn metadata_requires_generated_source_marker() {
         let file: syn::File = syn::parse_quote! {
             struct Printer {
@@ -437,6 +386,7 @@ mod tests {
             }
 
             impl Printer {
+                #[doc = "gors:fmt-flush-method=emit"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);

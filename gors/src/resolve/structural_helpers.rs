@@ -146,6 +146,10 @@ mod tests {
                     fn print(&mut self, b: Vec<u8>) -> usize {
                         self.scratch.write(b)
                     }
+
+                    fn run(&mut self, b: Vec<u8>) -> usize {
+                        self.print(b)
+                    }
                 }
             },
         ];
@@ -158,8 +162,10 @@ mod tests {
         assert!(
             tokens.contains("self . scratch . pending . lock () . unwrap () . 0")
                 && tokens.contains("self . out . 0 . extend (bytes)")
-                && tokens.contains("gors:fmt-flush-source=scratch"),
-            "expected flush hook to use and mark detected field names: {tokens}"
+                && tokens.contains("gors:fmt-flush-source=scratch")
+                && tokens.contains("gors:fmt-flush-method=print")
+                && tokens.contains("gors:fmt-flush-method=run"),
+            "expected flush hook to use and mark detected field names and trigger methods: {tokens}"
         );
     }
 

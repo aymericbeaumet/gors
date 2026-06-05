@@ -4,6 +4,8 @@ use super::syn_helpers::{
 };
 use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
 
+type NameSet = std::collections::BTreeSet<String>;
+
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
     for plan in fmt_flush_plans(items) {
         if !has_method(items, &plan.receiver, FMT_FLUSH_HOOK) {
@@ -19,6 +21,7 @@ struct FmtFlushPlan {
     source_buffer_field: String,
     source_buffer_access: BufferAccess,
     destination_field: String,
+    trigger_methods: NameSet,
 }
 
 #[derive(Clone, Copy)]
@@ -80,9 +83,12 @@ fn fmt_flush_plan_for_receiver(
             continue;
         };
         let source_methods = methods_touching_field_buffer(items, &source_ty, &source_buffer_field);
-        if source_methods.is_empty()
-            || !receiver_calls_source_methods(items, &receiver, &source.name, &source_methods)
-        {
+        if source_methods.is_empty() {
+            continue;
+        }
+        let trigger_methods =
+            flush_trigger_methods(items, &receiver, &source.name, &source_methods);
+        if trigger_methods.is_empty() {
             continue;
         }
         return Some(FmtFlushPlan {
@@ -91,6 +97,7 @@ fn fmt_flush_plan_for_receiver(
             source_buffer_field,
             source_buffer_access,
             destination_field: destination.name.clone(),
+            trigger_methods,
         });
     }
     None
@@ -143,12 +150,8 @@ fn source_buffer_field(
     None
 }
 
-fn methods_touching_field_buffer(
-    items: &[syn::Item],
-    receiver: &str,
-    field_name: &str,
-) -> std::collections::HashSet<String> {
-    let mut methods = std::collections::HashSet::new();
+fn methods_touching_field_buffer(items: &[syn::Item], receiver: &str, field_name: &str) -> NameSet {
+    let mut methods = NameSet::new();
     for item in items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -202,12 +205,15 @@ fn method_touches_self_field(func: &syn::ImplItemFn, field_name: &str) -> bool {
     finder.found
 }
 
-fn receiver_calls_source_methods(
+fn flush_trigger_methods(
     items: &[syn::Item],
     receiver: &str,
     source_field: &str,
-    source_methods: &std::collections::HashSet<String>,
-) -> bool {
+    source_methods: &NameSet,
+) -> NameSet {
+    let mut direct_methods = NameSet::new();
+    let mut calls_by_method = std::collections::BTreeMap::<String, NameSet>::new();
+
     for item in items {
         let syn::Item::Impl(item_impl) = item else {
             continue;
@@ -219,24 +225,30 @@ fn receiver_calls_source_methods(
             let syn::ImplItem::Fn(func) = item else {
                 return None;
             };
-            Some(func)
+            (func.sig.ident != FMT_FLUSH_HOOK).then_some(func)
         }) {
+            let name = func.sig.ident.to_string();
+            calls_by_method
+                .entry(name.clone())
+                .or_default()
+                .extend(self_method_calls(func));
             if method_calls_source_method(func, source_field, source_methods) {
-                return true;
+                direct_methods.insert(name);
             }
         }
     }
-    false
+
+    expand_transitive_methods(direct_methods, &calls_by_method)
 }
 
 fn method_calls_source_method(
     func: &syn::ImplItemFn,
     source_field: &str,
-    source_methods: &std::collections::HashSet<String>,
+    source_methods: &NameSet,
 ) -> bool {
     struct Finder<'a> {
         source_field: &'a str,
-        source_methods: &'a std::collections::HashSet<String>,
+        source_methods: &'a NameSet,
         found: bool,
     }
 
@@ -259,6 +271,47 @@ fn method_calls_source_method(
     };
     syn::visit::Visit::visit_block(&mut finder, &func.block);
     finder.found
+}
+
+fn self_method_calls(func: &syn::ImplItemFn) -> NameSet {
+    struct Finder {
+        calls: NameSet,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_expr_method_call(&mut self, call: &syn::ExprMethodCall) {
+            if is_self_expr(&call.receiver) {
+                self.calls.insert(call.method.to_string());
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut finder = Finder {
+        calls: NameSet::new(),
+    };
+    syn::visit::Visit::visit_block(&mut finder, &func.block);
+    finder.calls
+}
+
+fn expand_transitive_methods(
+    mut methods: NameSet,
+    calls_by_method: &std::collections::BTreeMap<String, NameSet>,
+) -> NameSet {
+    loop {
+        let mut changed = false;
+        for (method, callees) in calls_by_method {
+            if methods.contains(method) || !callees.iter().any(|callee| methods.contains(callee)) {
+                continue;
+            }
+            methods.insert(method.clone());
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    methods
 }
 
 fn expr_mentions_direct_self_field(expr: &syn::Expr, field_name: &str) -> bool {
@@ -306,6 +359,16 @@ fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
         &crate::generated_names::fmt_flush_source_doc(&plan.source_field),
         proc_macro2::Span::mixed_site(),
     );
+    let trigger_docs = plan
+        .trigger_methods
+        .iter()
+        .map(|method| {
+            syn::LitStr::new(
+                &crate::generated_names::fmt_flush_method_doc(method),
+                proc_macro2::Span::mixed_site(),
+            )
+        })
+        .collect::<Vec<_>>();
     let source_field = syn::Ident::new(&plan.source_field, proc_macro2::Span::mixed_site());
     let source_buffer_field =
         syn::Ident::new(&plan.source_buffer_field, proc_macro2::Span::mixed_site());
@@ -322,6 +385,7 @@ fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
     syn::parse_quote! {
         impl #receiver {
             #[doc = #source_doc]
+            #(#[doc = #trigger_docs])*
             fn #hook(&mut self) {
                 let bytes = #take_bytes;
                 self.#destination_field.0.extend(bytes);

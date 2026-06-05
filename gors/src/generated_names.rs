@@ -2,6 +2,7 @@ pub const AS_ANY_METHOD: &str = "__gors_as_any";
 pub const CLONE_BOX_METHOD: &str = "__gors_clone_box";
 pub const ERROR_EXT_TRAIT: &str = "__GorsErrorExt";
 pub const FMT_FLUSH_HOOK: &str = "__gors_flush_fmt";
+pub const FMT_FLUSH_METHOD_DOC_PREFIX: &str = "gors:fmt-flush-method=";
 pub const FMT_FLUSH_SOURCE_DOC_PREFIX: &str = "gors:fmt-flush-source=";
 pub const NOOP_INTERFACE: &str = "__GorsNoopInterface";
 
@@ -25,6 +26,15 @@ pub fn fmt_flush_hook_ident() -> syn::Ident {
     ident(FMT_FLUSH_HOOK)
 }
 
+pub fn fmt_flush_method_doc(method: &str) -> String {
+    format!("{FMT_FLUSH_METHOD_DOC_PREFIX}{method}")
+}
+
+pub fn fmt_flush_method_from_doc(doc: &str) -> Option<&str> {
+    doc.strip_prefix(FMT_FLUSH_METHOD_DOC_PREFIX)
+        .filter(|method| !method.is_empty())
+}
+
 pub fn fmt_flush_source_doc(source_field: &str) -> String {
     format!("{FMT_FLUSH_SOURCE_DOC_PREFIX}{source_field}")
 }
@@ -43,6 +53,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fmt_flush_method_doc_round_trips_method_name() {
+        let doc = fmt_flush_method_doc("emit");
+
+        assert_eq!(fmt_flush_method_from_doc(&doc), Some("emit"));
+    }
+
+    #[test]
     fn fmt_flush_source_doc_round_trips_source_field() {
         let doc = fmt_flush_source_doc("scratch");
 
@@ -50,7 +67,9 @@ mod tests {
     }
 
     #[test]
-    fn fmt_flush_source_doc_rejects_empty_or_unrelated_docs() {
+    fn fmt_flush_docs_reject_empty_or_unrelated_docs() {
+        assert_eq!(fmt_flush_method_from_doc(FMT_FLUSH_METHOD_DOC_PREFIX), None);
+        assert_eq!(fmt_flush_method_from_doc("gors:other"), None);
         assert_eq!(fmt_flush_source_from_doc(FMT_FLUSH_SOURCE_DOC_PREFIX), None);
         assert_eq!(fmt_flush_source_from_doc("gors:other"), None);
     }

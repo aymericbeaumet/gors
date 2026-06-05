@@ -433,6 +433,8 @@ mod tests {
 
             impl Printer {
                 #[doc = "gors:fmt-flush-source=inner"]
+                #[doc = "gors:fmt-flush-method=emit"]
+                #[doc = "gors:fmt-flush-method=run"]
                 pub fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -487,6 +489,8 @@ mod tests {
 
             impl Printer {
                 #[doc = "gors:fmt-flush-source=inner"]
+                #[doc = "gors:fmt-flush-method=emit"]
+                #[doc = "gors:fmt-flush-method=run"]
                 pub fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);

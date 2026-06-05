@@ -28,7 +28,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
 | Reflection fallback pruning in `structural_helpers/reflection_fallback.rs` | compiler-owned reflect-semantic path predicates plus generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
-| Format flush insertion in `structural_helpers/fmt_flush.rs` | resolver-emitted fmt-flush source marker plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
+| Format flush insertion in `structural_helpers/fmt_flush.rs` | resolver-emitted fmt-flush source and trigger method markers | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
 
@@ -101,6 +101,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | duplicated structural self-field visitors | `structural_helpers/self_fields.rs` now owns self-field detection shared by structural-helper metadata and reflection fallback pruning. |
 | duplicated structural-helper name-set aliases | `structural_helpers/local_names.rs` now owns the shared `NameSet` alias consumed by both reflection fallback and fmt flush helper metadata. |
 | compiler rediscovery of fmt-flush source from hook body | Resolver fmt-flush injection now emits a generated `gors:fmt-flush-source=...` doc marker from its concrete plan, and compiler flush metadata consumes that marker instead of scanning the hook body for `std::mem::take`. |
+| compiler rediscovery of fmt-flush trigger methods | Resolver fmt-flush injection now emits generated `gors:fmt-flush-method=...` doc markers for the transitive trigger methods from its concrete plan, and compiler flush metadata consumes those markers instead of scanning receiver method bodies. |
 | string-encoded `& mut pp` resolver helper matching | Resolver structural-helper injection is split by responsibility, and impl self-type checks now use explicit `syn::Type` matching instead of a rendered self-type string. |
 | inline runtime primitive post-prune replacement in `compiler/mod.rs` | Reflect, `os.Stdout`, and `sync.Pool` replacement policy now lives in `compiler/runtime_primitives.rs`, leaving the main compiler pipeline responsible for orchestration and module pruning. |
 | mixed runtime primitive replacements in `runtime_primitives.rs` | The runtime primitive dispatcher now delegates reflect, os, and sync replacement bodies to focused modules under `compiler/runtime_primitives/`. |
