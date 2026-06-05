@@ -20,6 +20,7 @@ mod builtin_roots;
 mod call_arg_rewrites;
 mod const_context;
 mod current_receiver;
+mod dce_iteration;
 mod defer_context;
 mod display_impls;
 mod embedded_interfaces;
@@ -85,6 +86,7 @@ use const_context::{
     local_const_go_type_for_expr, set_local_const_value, set_package_const_integer_value,
 };
 use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
+use dce_iteration::DceIterationContext;
 use defer_context::PanicReturnsThroughDeferGuard;
 use external_interface_implementors::ExternalInterfaceImplementorsGuard;
 use external_roots::ExternalRootCollector;
@@ -113,7 +115,6 @@ use receiver_type_facts::{
 };
 use required_module_roots::RequiredModuleRoots;
 use return_context::ReturnTypesGuard;
-use semantic_reachability::{SemanticReachabilityGraph, semantic_reachability_graph_enabled};
 use sha2::{Digest, Sha256};
 use shared_captures::{
     SharedCaptureNamesGuard, function_literal_shared_capture_clones, is_shared_capture_name,
@@ -3567,7 +3568,7 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
     loop {
         let before = modules_reachability_fingerprint(modules);
         let context = DceIterationContext::new(modules, has_main);
-        let module_names = &context.module_names;
+        let module_names = context.module_names();
         let external_root_collector = context.external_root_collector();
 
         if let Some(main_module) = modules.get_mut("__main__") {
@@ -3695,35 +3696,6 @@ fn main_module_root_names(
         std::collections::HashSet::from(["main".to_string()])
     } else {
         exported_item_reachability_names(&module.file.items)
-    }
-}
-
-struct DceIterationContext {
-    module_names: std::collections::HashSet<String>,
-    semantic_graph: Option<SemanticReachabilityGraph>,
-}
-
-impl DceIterationContext {
-    fn new(modules: &BTreeMap<String, CompiledModule>, has_main: bool) -> Self {
-        let module_names = modules
-            .values()
-            .filter(|module| !module.is_main)
-            .map(|module| module.mod_name.clone())
-            .collect();
-        let semantic_graph = semantic_reachability_graph_enabled().then(|| {
-            let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
-            debug_assert!(semantic_graph.has_consistent_local_edges());
-            let _reachable_external_roots = semantic_graph.reachable_external_roots_by_module();
-            semantic_graph
-        });
-        Self {
-            module_names,
-            semantic_graph,
-        }
-    }
-
-    fn external_root_collector(&self) -> ExternalRootCollector<'_> {
-        ExternalRootCollector::with_semantic_audit(&self.module_names, self.semantic_graph.as_ref())
     }
 }
 
