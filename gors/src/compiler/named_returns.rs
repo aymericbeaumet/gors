@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 
-use proc_macro2::Span;
 use syn::Token;
 
 use super::{
@@ -10,15 +9,11 @@ use super::{
         shared_capture_type,
     },
     syn_inspect::expr_is_ident,
+    synthetic_names,
 };
 
 thread_local! {
-    static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_IDENTS: RefCell<Vec<syn::Ident>> = const { RefCell::new(Vec::new()) };
-}
-
-pub(super) fn reset_counter() {
-    NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn replace_idents(idents: Vec<syn::Ident>) -> Vec<syn::Ident> {
@@ -52,15 +47,7 @@ pub(super) fn current_expr() -> Option<syn::Expr> {
 }
 
 pub(super) fn temp_idents(count: usize) -> Vec<syn::Ident> {
-    let n = next_index();
-    (0..count)
-        .map(|idx| {
-            syn::Ident::new(
-                &format!("__gors_named_return_{n}_{idx}"),
-                Span::mixed_site(),
-            )
-        })
-        .collect()
+    synthetic_names::next_named_return_temp_idents(count)
 }
 
 pub(super) fn assignment_stmt(ident: &syn::Ident, value: syn::Expr) -> Option<syn::Stmt> {
@@ -80,7 +67,7 @@ pub(super) fn wrap_block(
     named_return_info: &[(syn::Ident, Option<syn::Type>, syn::Expr)],
     named_return_idents: &[syn::Ident],
 ) {
-    let label = next_label();
+    let label = synthetic_names::next_named_return_label();
     let mut declarations: Vec<syn::Stmt> = named_return_info
         .iter()
         .map(|(ident, rust_type, zero)| named_return_decl_stmt(ident, rust_type, zero))
@@ -243,20 +230,6 @@ fn named_return_return_stmt(idents: &[syn::Ident]) -> syn::Stmt {
     )
 }
 
-fn next_label() -> syn::Lifetime {
-    let n = next_index();
-    syn::Lifetime::new(&format!("'__gors_named_return_{n}"), Span::mixed_site())
-}
-
-fn next_index() -> usize {
-    NAMED_RETURN_COUNTER.with(|counter| {
-        let mut counter = counter.borrow_mut();
-        let id = *counter;
-        *counter += 1;
-        id
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use quote::quote;
@@ -264,7 +237,7 @@ mod tests {
 
     #[test]
     fn wrap_block_rewrites_explicit_tuple_return_to_named_assignments() {
-        super::reset_counter();
+        super::synthetic_names::reset_lowering_counters();
         let mut block: syn::Block = rust!({
             return (1, 2);
         });

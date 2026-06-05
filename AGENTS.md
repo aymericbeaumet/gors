@@ -318,6 +318,10 @@ gors-builtin/
   the named results after RAII defer guards have been dropped. This preserves
   Go's ordering where deferred calls can mutate named results before the caller
   sees them.
+- Lowering-generated labels and temporary identifiers with deterministic
+  counters belong in `gors/src/compiler/synthetic_names.rs`. Focused lowering
+  modules such as named returns, switch/select, goto, and range lowering should
+  request names there instead of owning local counter/spelling state.
 - Deferred calls are pushed onto a function-scoped LIFO stack after evaluating
   the function value/receiver arguments that the current lowering can save.
   Dropping that stack at function exit preserves Go's nested-block defer timing

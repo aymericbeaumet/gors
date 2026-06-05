@@ -7,6 +7,7 @@ thread_local! {
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
@@ -16,6 +17,7 @@ pub(super) fn reset_lowering_counters() {
     SELECT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     RANGE_FUNCTION_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn reset_unnamed_arg_counter() {
@@ -66,6 +68,27 @@ pub(super) fn next_range_function_id() -> usize {
     next_id(&RANGE_FUNCTION_COUNTER)
 }
 
+pub(super) fn next_named_return_label() -> syn::Lifetime {
+    let n = next_named_return_id();
+    syn::Lifetime::new(&format!("'__gors_named_return_{n}"), Span::mixed_site())
+}
+
+pub(super) fn next_named_return_temp_idents(count: usize) -> Vec<syn::Ident> {
+    let n = next_named_return_id();
+    (0..count)
+        .map(|idx| {
+            syn::Ident::new(
+                &format!("__gors_named_return_{n}_{idx}"),
+                Span::mixed_site(),
+            )
+        })
+        .collect()
+}
+
+fn next_named_return_id() -> usize {
+    next_id(&NAMED_RETURN_COUNTER)
+}
+
 fn next_unnamed_arg_id() -> usize {
     next_id(&UNNAMED_ARG_COUNTER)
 }
@@ -94,6 +117,15 @@ mod tests {
         assert_eq!(next_select_label().ident.to_string(), "__gors_select_0");
         assert_eq!(next_defer_id(), 0);
         assert_eq!(next_range_function_id(), 0);
+        assert_eq!(
+            next_named_return_label().ident.to_string(),
+            "__gors_named_return_0"
+        );
+        let mut named_return_temps = next_named_return_temp_idents(2).into_iter();
+        assert_eq!(
+            named_return_temps.next().map(|ident| ident.to_string()),
+            Some("__gors_named_return_1_0".to_string())
+        );
         assert_eq!(next_goto_state_names().0.to_string(), "__gors_goto_state_0");
 
         reset_lowering_counters();
@@ -104,6 +136,10 @@ mod tests {
         );
         assert_eq!(next_defer_id(), 0);
         assert_eq!(next_range_function_id(), 0);
+        assert_eq!(
+            next_named_return_label().ident.to_string(),
+            "__gors_named_return_0"
+        );
     }
 
     #[test]
