@@ -1,14 +1,6 @@
-use proc_macro2::Span;
-use std::cell::RefCell;
 use syn::Token;
 
-thread_local! {
-    static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-}
-
-pub(super) fn reset_counter() {
-    LOOP_BODY_COUNTER.with(|counter| *counter.borrow_mut() = 0);
-}
+use super::synthetic_names;
 
 pub(super) fn range_for_loop(
     pat: syn::Pat,
@@ -16,7 +8,7 @@ pub(super) fn range_for_loop(
     mut body: syn::Block,
 ) -> Vec<syn::Stmt> {
     let label = if has_continue_for_post(&body.stmts, None, true) {
-        let label = next_loop_body_label();
+        let label = synthetic_names::next_loop_body_label();
         rewrite_unlabeled_continue_to_label(&mut body.stmts, &label);
         Some(syn::Label {
             name: label,
@@ -54,7 +46,7 @@ pub(super) fn with_iteration_tail(
         // `continue label` targeting this loop. Rust `continue` jumps straight
         // to the loop condition, so route matching continues through a body
         // block and emit the tail statements after that block.
-        let body_label = next_loop_body_label();
+        let body_label = synthetic_names::next_loop_body_label();
         rewrite_continue_for_post(&mut body.stmts, loop_label_name, true, &body_label);
 
         let labeled_body = syn::Stmt::Expr(
@@ -82,16 +74,6 @@ pub(super) fn with_iteration_tail(
     body.stmts.extend(per_iteration_stmts);
     body.stmts.extend(post_stmts);
     body
-}
-
-fn next_loop_body_label() -> syn::Lifetime {
-    let n = LOOP_BODY_COUNTER.with(|c| {
-        let mut val = c.borrow_mut();
-        let n = *val;
-        *val += 1;
-        n
-    });
-    syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
 }
 
 fn has_continue_for_post(
@@ -309,7 +291,7 @@ mod tests {
 
     #[test]
     fn iteration_tail_routes_continue_before_post_statements() {
-        reset_counter();
+        synthetic_names::reset_lowering_counters();
         let body: syn::Block = syn::parse_quote!({
             if ready {
                 continue;
@@ -330,7 +312,7 @@ mod tests {
 
     #[test]
     fn range_for_loop_labels_unlabeled_continue_only() {
-        reset_counter();
+        synthetic_names::reset_lowering_counters();
         let pat: syn::Pat = syn::parse_quote! { value };
         let iter_expr: syn::Expr = syn::parse_quote! { values };
         let body: syn::Block = syn::parse_quote!({

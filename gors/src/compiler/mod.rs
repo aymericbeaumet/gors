@@ -2792,7 +2792,6 @@ fn compile_error_expr(message: impl AsRef<str>) -> syn::Expr {
 /// ```
 fn reset_lowering_thread_state() {
     synthetic_names::reset_lowering_counters();
-    loop_control::reset_counter();
     goto_context::clear_state_contexts();
     active_names::clear();
     import_context::clear();
@@ -3916,7 +3915,6 @@ pub fn compile_with_source_map(
     source_map_context::start(go_file, "output.rs", Some(go_source));
 
     synthetic_names::reset_lowering_counters();
-    loop_control::reset_counter();
     goto_context::clear_state_contexts();
     import_context::clear();
     let mut type_env = typeinfer::TypeEnv::new();

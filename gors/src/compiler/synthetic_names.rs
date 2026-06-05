@@ -8,6 +8,7 @@ thread_local! {
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
@@ -18,6 +19,7 @@ pub(super) fn reset_lowering_counters() {
     GOTO_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     RANGE_FUNCTION_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    LOOP_BODY_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn reset_unnamed_arg_counter() {
@@ -89,6 +91,11 @@ fn next_named_return_id() -> usize {
     next_id(&NAMED_RETURN_COUNTER)
 }
 
+pub(super) fn next_loop_body_label() -> syn::Lifetime {
+    let n = next_id(&LOOP_BODY_COUNTER);
+    syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
+}
+
 fn next_unnamed_arg_id() -> usize {
     next_id(&UNNAMED_ARG_COUNTER)
 }
@@ -126,6 +133,10 @@ mod tests {
             named_return_temps.next().map(|ident| ident.to_string()),
             Some("__gors_named_return_1_0".to_string())
         );
+        assert_eq!(
+            next_loop_body_label().ident.to_string(),
+            "__gors_loop_body_0"
+        );
         assert_eq!(next_goto_state_names().0.to_string(), "__gors_goto_state_0");
 
         reset_lowering_counters();
@@ -139,6 +150,10 @@ mod tests {
         assert_eq!(
             next_named_return_label().ident.to_string(),
             "__gors_named_return_0"
+        );
+        assert_eq!(
+            next_loop_body_label().ident.to_string(),
+            "__gors_loop_body_0"
         );
     }
 
