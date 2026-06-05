@@ -100,6 +100,9 @@ gors-builtin/
   `gors:fmt-flush-source=...` and `gors:fmt-flush-method=...` doc markers so
   compiler post-helper flush insertion consumes the resolver's plan instead of
   rediscovering source fields or trigger methods from generated method bodies.
+  Generated marker strings and `syn::Attribute` parsing helpers belong in
+  `gors/src/generated_names.rs`; compiler passes should consume marker facts
+  there rather than re-parsing doc attributes locally.
   Resolver noop interface helper
   injection should derive method bodies from generated trait signatures, actual
   `__GorsNoopInterface::default()` uses, and signature dependencies rather than

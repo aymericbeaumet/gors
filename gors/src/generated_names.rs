@@ -35,6 +35,10 @@ pub fn fmt_flush_method_from_doc(doc: &str) -> Option<&str> {
         .filter(|method| !method.is_empty())
 }
 
+pub fn fmt_flush_method_from_attr(attr: &syn::Attribute) -> Option<String> {
+    doc_attr_value(attr).and_then(|doc| fmt_flush_method_from_doc(&doc).map(str::to_owned))
+}
+
 pub fn fmt_flush_source_doc(source_field: &str) -> String {
     format!("{FMT_FLUSH_SOURCE_DOC_PREFIX}{source_field}")
 }
@@ -42,6 +46,26 @@ pub fn fmt_flush_source_doc(source_field: &str) -> String {
 pub fn fmt_flush_source_from_doc(doc: &str) -> Option<&str> {
     doc.strip_prefix(FMT_FLUSH_SOURCE_DOC_PREFIX)
         .filter(|source| !source.is_empty())
+}
+
+pub fn fmt_flush_source_from_attr(attr: &syn::Attribute) -> Option<String> {
+    doc_attr_value(attr).and_then(|doc| fmt_flush_source_from_doc(&doc).map(str::to_owned))
+}
+
+pub fn doc_attr_value(attr: &syn::Attribute) -> Option<String> {
+    let syn::Meta::NameValue(meta) = &attr.meta else {
+        return None;
+    };
+    if !meta.path.is_ident("doc") {
+        return None;
+    }
+    let syn::Expr::Lit(expr_lit) = &meta.value else {
+        return None;
+    };
+    let syn::Lit::Str(doc) = &expr_lit.lit else {
+        return None;
+    };
+    Some(doc.value())
 }
 
 pub fn noop_interface_ident() -> syn::Ident {
@@ -67,10 +91,35 @@ mod tests {
     }
 
     #[test]
+    fn fmt_flush_marker_attrs_read_doc_attributes() {
+        let method: syn::Attribute = syn::parse_quote! {
+            #[doc = "gors:fmt-flush-method=emit"]
+        };
+        let source: syn::Attribute = syn::parse_quote! {
+            #[doc = "gors:fmt-flush-source=scratch"]
+        };
+
+        assert_eq!(fmt_flush_method_from_attr(&method).as_deref(), Some("emit"));
+        assert_eq!(
+            fmt_flush_source_from_attr(&source).as_deref(),
+            Some("scratch")
+        );
+    }
+
+    #[test]
     fn fmt_flush_docs_reject_empty_or_unrelated_docs() {
         assert_eq!(fmt_flush_method_from_doc(FMT_FLUSH_METHOD_DOC_PREFIX), None);
         assert_eq!(fmt_flush_method_from_doc("gors:other"), None);
         assert_eq!(fmt_flush_source_from_doc(FMT_FLUSH_SOURCE_DOC_PREFIX), None);
         assert_eq!(fmt_flush_source_from_doc("gors:other"), None);
+    }
+
+    #[test]
+    fn doc_attr_value_rejects_non_doc_attributes() {
+        let attr: syn::Attribute = syn::parse_quote! {
+            #[allow(dead_code)]
+        };
+
+        assert!(doc_attr_value(&attr).is_none());
     }
 }

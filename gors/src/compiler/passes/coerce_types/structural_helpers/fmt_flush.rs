@@ -4,7 +4,7 @@ type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
 use crate::compiler::syn_inspect::{is_self_expr, type_path_ident_name};
 use crate::generated_names::{
-    FMT_FLUSH_HOOK, fmt_flush_hook_ident, fmt_flush_method_from_doc, fmt_flush_source_from_doc,
+    FMT_FLUSH_HOOK, fmt_flush_hook_ident, fmt_flush_method_from_attr, fmt_flush_source_from_attr,
 };
 
 #[derive(Default)]
@@ -86,29 +86,11 @@ fn flush_trigger_methods(func: &syn::ImplItemFn) -> NameSet {
 fn has_flush_source_marker(func: &syn::ImplItemFn) -> bool {
     func.attrs
         .iter()
-        .filter_map(doc_attr_value)
-        .any(|doc| fmt_flush_source_from_doc(&doc).is_some())
+        .any(|attr| fmt_flush_source_from_attr(attr).is_some())
 }
 
 fn fmt_flush_method_attr(attr: &syn::Attribute) -> Option<String> {
-    let doc = doc_attr_value(attr)?;
-    fmt_flush_method_from_doc(&doc).map(str::to_owned)
-}
-
-fn doc_attr_value(attr: &syn::Attribute) -> Option<String> {
-    let syn::Meta::NameValue(meta) = &attr.meta else {
-        return None;
-    };
-    if !meta.path.is_ident("doc") {
-        return None;
-    }
-    let syn::Expr::Lit(expr_lit) = &meta.value else {
-        return None;
-    };
-    let syn::Lit::Str(doc) = &expr_lit.lit else {
-        return None;
-    };
-    Some(doc.value())
+    fmt_flush_method_from_attr(attr)
 }
 
 fn stmt_needs_flush(stmt: &syn::Stmt, methods: &NameSet) -> bool {

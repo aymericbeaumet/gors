@@ -54,19 +54,7 @@ pub(super) fn attribute_allows_dead_code(attr: &syn::Attribute) -> bool {
 }
 
 pub(super) fn attribute_preserves_for_dce(attr: &syn::Attribute) -> bool {
-    let syn::Meta::NameValue(meta) = &attr.meta else {
-        return false;
-    };
-    if !meta.path.is_ident("doc") {
-        return false;
-    }
-    let syn::Expr::Lit(expr_lit) = &meta.value else {
-        return false;
-    };
-    let syn::Lit::Str(doc) = &expr_lit.lit else {
-        return false;
-    };
-    doc.value() == DCE_PRESERVE_DOC
+    crate::generated_names::doc_attr_value(attr).is_some_and(|doc| doc == DCE_PRESERVE_DOC)
 }
 
 pub(super) fn attrs_preserve_for_dce(attrs: &[syn::Attribute]) -> bool {
