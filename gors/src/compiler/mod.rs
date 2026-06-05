@@ -9909,7 +9909,7 @@ fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Exp
     let source_name = ident.name;
     let ident = value_ident(source_name);
     if is_shared_capture_name(source_name) {
-        Some(syn::parse_quote! { &mut *#ident.lock().unwrap() })
+        Some(syn::parse_quote! { &mut (crate::builtin::GorsPtr::from_arc(#ident.clone())) })
     } else {
         Some(syn::parse_quote! { &mut #ident })
     }
@@ -12711,6 +12711,21 @@ fn compile_runtime_interface_nil_check(other_expr: syn::Expr, is_eq: bool) -> sy
     }
 }
 
+fn go_type_is_nilable_container(ty: &typeinfer::GoType) -> bool {
+    matches!(
+        resolved_go_type(ty),
+        typeinfer::GoType::Slice(_) | typeinfer::GoType::Map(_, _) | typeinfer::GoType::Chan { .. }
+    )
+}
+
+fn compile_container_nil_check(other_expr: syn::Expr, is_eq: bool) -> syn::Expr {
+    if is_eq {
+        syn::parse_quote! { (#other_expr).is_empty() }
+    } else {
+        syn::parse_quote! { !(#other_expr).is_empty() }
+    }
+}
+
 fn current_pointer_receiver_type_name() -> Option<String> {
     current_receiver::pointer_receiver_type_name()
 }
@@ -12930,17 +12945,13 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
             };
         }
 
-        if is_go_byte_slice_type(&other_ty) {
+        if go_type_is_nilable_container(&other_ty) {
             let other_expr = if left_nil {
                 syn::Expr::from(*binary_expr.y)
             } else {
                 syn::Expr::from(*binary_expr.x)
             };
-            return if is_eq {
-                syn::parse_quote! { (#other_expr).is_empty() }
-            } else {
-                syn::parse_quote! { !(#other_expr).is_empty() }
-            };
+            return compile_container_nil_check(other_expr, is_eq);
         }
 
         if other_ty.is_integer() || matches!(other_ty, typeinfer::GoType::Uintptr) {
@@ -15624,10 +15635,10 @@ impl TryFrom<ast::File<'_>> for syn::File {
         let mut emitted_interface_impls = std::collections::BTreeSet::new();
         let mut emitted_borrowed_pointer_interface_impls = std::collections::BTreeSet::new();
         for (trait_name, required_methods) in &trait_methods {
-            if required_methods.is_empty() {
+            let method_set = interface_method_sets::for_impl(trait_name, required_methods);
+            if method_set.required_methods.is_empty() && method_set.embedded_interfaces.is_empty() {
                 continue;
             }
-            let method_set = interface_method_sets::for_impl(trait_name, required_methods);
             for (struct_name, struct_method_list) in &struct_methods {
                 let pointer_methods = struct_pointer_methods.get(struct_name);
                 let has_borrowed_interface_field =
@@ -20002,6 +20013,24 @@ func main() {
                 "Node".to_string(),
             ))),
         );
+        env.set_var(
+            "s",
+            super::typeinfer::GoType::Slice(Box::new(super::typeinfer::GoType::Int)),
+        );
+        env.set_var(
+            "m",
+            super::typeinfer::GoType::Map(
+                Box::new(super::typeinfer::GoType::String),
+                Box::new(super::typeinfer::GoType::Int),
+            ),
+        );
+        env.set_var(
+            "ch",
+            super::typeinfer::GoType::Chan {
+                elem: Box::new(super::typeinfer::GoType::Int),
+                direction: super::typeinfer::GoChannelDirection::Bidirectional,
+            },
+        );
         super::set_type_env(env);
 
         let ident = |name| {
@@ -20011,16 +20040,27 @@ func main() {
                 obj: None,
             })
         };
-        let binary = crate::ast::BinaryExpr {
-            x: Box::new(ident("p")),
-            op_pos: crate::token::Position::default(),
-            op: crate::token::Token::EQL,
-            y: Box::new(ident("nil")),
+        let compile = |left, op, right| {
+            let binary = crate::ast::BinaryExpr {
+                x: Box::new(ident(left)),
+                op_pos: crate::token::Position::default(),
+                op,
+                y: Box::new(ident(right)),
+            };
+            let expr: syn::Expr = crate::ast::Expr::BinaryExpr(binary).into();
+            quote! { #expr }.to_string()
         };
-        let expr: syn::Expr = crate::ast::Expr::BinaryExpr(binary).into();
+
+        let pointer_eq = compile("p", crate::token::Token::EQL, "nil");
+        let slice_eq = compile("s", crate::token::Token::EQL, "nil");
+        let map_ne = compile("nil", crate::token::Token::NEQ, "m");
+        let chan_ne = compile("ch", crate::token::Token::NEQ, "nil");
         super::set_type_env(super::typeinfer::TypeEnv::new());
 
-        assert_eq!(quote! { #expr }.to_string(), "(p) . is_nil ()");
+        assert_eq!(pointer_eq, "(p) . is_nil ()");
+        assert_eq!(slice_eq, "(s) . is_empty ()");
+        assert_eq!(map_ne, "! (m) . is_empty ()");
+        assert_eq!(chan_ne, "! (ch) . is_empty ()");
     }
 
     #[test]
@@ -23216,6 +23256,50 @@ func main() {
         assert!(!output.contains("impl ReadWriter for Source"), "{output}");
         assert!(!output.contains("impl Reader for Source"), "{output}");
         assert!(!output.contains("impl Writer for Source"), "{output}");
+    }
+
+    #[test]
+    fn compile_emits_value_impls_for_embedded_only_interface_method_sets() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Namer interface {
+                    Label() string
+                }
+
+                type Detailer interface {
+                    Detail() string
+                }
+
+                type Describer interface {
+                    Namer
+                    Detailer
+                }
+
+                type Counter struct{}
+
+                func (Counter) Label() string { return "counter" }
+                func (Counter) Detail() string { return "detail" }
+
+                func main() {
+                    var i any = Counter{}
+                    _, _ = i.(Describer)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(output.contains("impl Describer for Counter"), "{output}");
+        assert!(
+            output.contains("impl<'__gors> Describer for &'__gors mut Counter"),
+            "{output}"
+        );
+        assert!(output.contains("impl Namer for Counter"), "{output}");
+        assert!(output.contains("impl Detailer for Counter"), "{output}");
     }
 
     #[test]
@@ -29104,7 +29188,7 @@ type Seq[V any] func(func(V) bool)
     }
 
     #[test]
-    fn it_should_borrow_address_taken_idents_for_interface_args() {
+    fn it_should_pass_address_taken_interface_args_as_pointer_cells() {
         let parsed = parse_file(
             "test.go",
             r#"
@@ -29133,7 +29217,12 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("use_ (& mut * s . lock () . unwrap ())"),
+            output
+                .contains("use_ (& mut (crate :: builtin :: GorsPtr :: from_arc (s . clone ())))"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("use_ (& mut * s . lock () . unwrap ())"),
             "{output}"
         );
         assert!(!output.contains("& mut s . clone ()"), "{output}");
