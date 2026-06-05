@@ -94,6 +94,22 @@ pub(super) fn vec_newtype_arg_temp_ident(index: usize) -> syn::Ident {
     )
 }
 
+pub(super) fn slice_base_index_ident() -> syn::Ident {
+    syn::Ident::new("__gors_slice_base_index", Span::mixed_site())
+}
+
+pub(super) fn slice_alias_offset_ident() -> syn::Ident {
+    syn::Ident::new("__gors_slice_alias_offset", Span::mixed_site())
+}
+
+pub(super) fn slice_alias_index_ident() -> syn::Ident {
+    syn::Ident::new("__gors_slice_alias_index", Span::mixed_site())
+}
+
+pub(super) fn slice_alias_value_ident() -> syn::Ident {
+    syn::Ident::new("__gors_slice_alias_value", Span::mixed_site())
+}
+
 pub(super) fn next_type_switch_value_ident() -> syn::Ident {
     let n = next_id(&SWITCH_COUNTER);
     syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
@@ -219,6 +235,22 @@ mod tests {
         assert_eq!(
             vec_newtype_arg_temp_ident(9).to_string(),
             "__gors_vec_newtype_arg_9"
+        );
+        assert_eq!(
+            slice_base_index_ident().to_string(),
+            "__gors_slice_base_index"
+        );
+        assert_eq!(
+            slice_alias_offset_ident().to_string(),
+            "__gors_slice_alias_offset"
+        );
+        assert_eq!(
+            slice_alias_index_ident().to_string(),
+            "__gors_slice_alias_index"
+        );
+        assert_eq!(
+            slice_alias_value_ident().to_string(),
+            "__gors_slice_alias_value"
         );
         assert_eq!(
             next_type_switch_value_ident().to_string(),

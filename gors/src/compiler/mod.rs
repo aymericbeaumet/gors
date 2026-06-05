@@ -18705,15 +18705,18 @@ fn slice_base_alias_sync_stmts(lhs: &ast::Expr) -> Vec<syn::Stmt> {
             let alias = syn::Ident::new(&rust_safe_ident_name(&alias_name), Span::mixed_site());
             let base = target.base_expr;
             let offset = target.offset;
+            let base_index_ident = synthetic_names::slice_base_index_ident();
+            let alias_offset_ident = synthetic_names::slice_alias_offset_ident();
+            let alias_index_ident = synthetic_names::slice_alias_index_ident();
             syn::parse_quote! {{
-                let __gors_slice_base_index = (#index_expr) as usize;
-                let __gors_slice_alias_offset = #offset;
-                if __gors_slice_base_index >= __gors_slice_alias_offset {
-                    let __gors_slice_alias_index =
-                        __gors_slice_base_index - __gors_slice_alias_offset;
-                    if __gors_slice_alias_index < #alias.len() {
-                        #alias[__gors_slice_alias_index] =
-                            #base[__gors_slice_base_index].clone();
+                let #base_index_ident = (#index_expr) as usize;
+                let #alias_offset_ident = #offset;
+                if #base_index_ident >= #alias_offset_ident {
+                    let #alias_index_ident =
+                        #base_index_ident - #alias_offset_ident;
+                    if #alias_index_ident < #alias.len() {
+                        #alias[#alias_index_ident] =
+                            #base[#base_index_ident].clone();
                     }
                 }
             }}
@@ -18727,7 +18730,7 @@ fn slice_alias_writeback_assignment_stmts(
     lhs_ty: &typeinfer::GoType,
 ) -> Option<Vec<syn::Stmt>> {
     let (alias_left, backing_left) = slice_alias_index_lvalues(lhs)?;
-    let value_ident = quote::format_ident!("__gors_slice_alias_value");
+    let value_ident = synthetic_names::slice_alias_value_ident();
     let alias_value: syn::Expr = if go_type_is_copy(lhs_ty) {
         syn::parse_quote! { #value_ident }
     } else {
