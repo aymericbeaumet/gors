@@ -5,6 +5,7 @@ pub const FMT_FLUSH_HOOK: &str = "__gors_flush_fmt";
 pub const FMT_FLUSH_METHOD_DOC_PREFIX: &str = "gors:fmt-flush-method=";
 pub const FMT_FLUSH_SOURCE_DOC_PREFIX: &str = "gors:fmt-flush-source=";
 pub const NOOP_INTERFACE: &str = "__GorsNoopInterface";
+pub const PRESERVE_IMPORTED_INTERFACE_IMPL_DOC: &str = "gors:preserve-imported-interface-impl";
 
 fn ident(name: &str) -> syn::Ident {
     syn::Ident::new(name, proc_macro2::Span::mixed_site())

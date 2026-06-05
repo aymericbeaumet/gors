@@ -1,5 +1,3 @@
-const DCE_PRESERVE_DOC: &str = "gors:preserve-imported-interface-impl";
-
 pub(super) fn allow_dead_code(attrs: &mut Vec<syn::Attribute>) {
     let has_attr = attrs.iter().any(attribute_allows_dead_code);
     if !has_attr {
@@ -10,7 +8,8 @@ pub(super) fn allow_dead_code(attrs: &mut Vec<syn::Attribute>) {
 pub(super) fn preserve_for_dce(attrs: &mut Vec<syn::Attribute>) {
     allow_dead_code(attrs);
     if !attrs.iter().any(attribute_preserves_for_dce) {
-        attrs.push(syn::parse_quote!(#[doc = #DCE_PRESERVE_DOC]));
+        let marker = crate::generated_names::PRESERVE_IMPORTED_INTERFACE_IMPL_DOC;
+        attrs.push(syn::parse_quote!(#[doc = #marker]));
     }
 }
 
@@ -54,7 +53,8 @@ pub(super) fn attribute_allows_dead_code(attr: &syn::Attribute) -> bool {
 }
 
 pub(super) fn attribute_preserves_for_dce(attr: &syn::Attribute) -> bool {
-    crate::generated_names::doc_attr_value(attr).is_some_and(|doc| doc == DCE_PRESERVE_DOC)
+    crate::generated_names::doc_attr_value(attr)
+        .is_some_and(|doc| doc == crate::generated_names::PRESERVE_IMPORTED_INTERFACE_IMPL_DOC)
 }
 
 pub(super) fn attrs_preserve_for_dce(attrs: &[syn::Attribute]) -> bool {
