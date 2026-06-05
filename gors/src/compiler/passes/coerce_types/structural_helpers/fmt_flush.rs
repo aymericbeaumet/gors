@@ -1,4 +1,5 @@
-type NameSet = std::collections::HashSet<String>;
+use super::local_names::NameSet;
+
 type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
 use crate::compiler::syn_inspect::{is_path_call_expr, is_self_expr, type_path_ident_name};
