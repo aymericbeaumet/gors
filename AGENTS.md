@@ -95,7 +95,11 @@ gors-builtin/
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
   inlining these policies. Resolver fmt flush injection should be driven by the
   generated receiver/source-buffer data flow, not by package-specific receiver
-  names or a literal `State` trait gate. Resolver noop interface helper
+  names or a literal `State` trait gate. When the resolver injects
+  `__gors_flush_fmt`, it must also attach the generated
+  `gors:fmt-flush-source=...` doc marker so compiler post-helper flush
+  insertion consumes the resolver's plan instead of rediscovering source fields
+  from the hook body. Resolver noop interface helper
   injection should derive method bodies from generated trait signatures, actual
   `__GorsNoopInterface::default()` uses, and signature dependencies rather than
   a package-specific trait-name condition. Shared no-op interface method body

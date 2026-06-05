@@ -11,27 +11,6 @@ pub(super) fn expr_mentions(expr: &syn::Expr, fields: &FieldSet) -> bool {
     finder.found
 }
 
-pub(super) fn collect_direct_self_fields(expr: &syn::Expr, fields: &mut FieldSet) {
-    struct Collector<'a> {
-        fields: &'a mut FieldSet,
-    }
-
-    impl syn::visit::Visit<'_> for Collector<'_> {
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            if is_self_expr(&field.base)
-                && let Some(ident) = member_ident_name(&field.member)
-            {
-                self.fields.insert(ident.to_string());
-                return;
-            }
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-
-    let mut collector = Collector { fields };
-    syn::visit::Visit::visit_expr(&mut collector, expr);
-}
-
 pub(super) fn is_self_field_in(field: &syn::ExprField, fields: &FieldSet) -> bool {
     is_self_expr(&field.base)
         && member_ident_name(&field.member)
@@ -72,18 +51,5 @@ mod tests {
         };
 
         assert!(expr_mentions(&expr, &fields));
-    }
-
-    #[test]
-    fn collects_direct_self_fields_from_nested_field_paths() {
-        let mut fields = FieldSet::new();
-        let expr: syn::Expr = syn::parse_quote! {
-            std::mem::take(&mut self.inner.buf.0)
-        };
-
-        collect_direct_self_fields(&expr, &mut fields);
-
-        assert!(fields.contains("inner"), "{fields:?}");
-        assert!(!fields.contains("buf"), "{fields:?}");
     }
 }

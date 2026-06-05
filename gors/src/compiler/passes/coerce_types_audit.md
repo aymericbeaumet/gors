@@ -28,7 +28,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | Area | Current trigger | Category | Generic rule to implement |
 | --- | --- | --- | --- |
 | Reflection fallback pruning in `structural_helpers/reflection_fallback.rs` | compiler-owned reflect-semantic path predicates plus generated `reflect::Value` self-field metadata | stdlib workaround | Represent reflect/type-switch support as compiler/runtime semantic facts; prune only unreachable IR/control-flow branches, not branches selected by generated token text. |
-| Format flush insertion in `structural_helpers/fmt_flush.rs` | generated `__gors_flush_fmt` hook source-field metadata plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
+| Format flush insertion in `structural_helpers/fmt_flush.rs` | resolver-emitted fmt-flush source marker plus receiver self-call graph | stdlib workaround | Flush side effects should be represented as method/lowering semantics for receiver-buffer aliasing, or removed by correctly modeling the buffer alias. |
 
 ## Other production hardcodes
 
@@ -98,8 +98,9 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | reflection fallback pruning mixed into `structural_helpers.rs` | Reflection fallback metadata, reflect-path detection, and dependency pruning now live in `structural_helpers/reflection_fallback.rs`; the parent structural helper module is a post-helper orchestration boundary. |
 | local binding/use scanning mixed into reflection fallback pruning | Structural-helper local-name binding and use detection now lives in `structural_helpers/local_names.rs`, leaving reflection fallback pruning responsible only for reflect fallback policy and dependency dropping. |
 | scope-blind fallback-local dependency pruning | Reflection fallback dependency pruning now tracks local shadowing in nested blocks, closures, match arms, and for-loop patterns, so dropping a generated reflect fallback local does not remove unrelated code that reuses the same local name in an inner scope. |
-| duplicated structural self-field visitors | `structural_helpers/self_fields.rs` now owns self-field detection and direct self-field collection shared by fmt flush metadata and reflection fallback pruning. |
+| duplicated structural self-field visitors | `structural_helpers/self_fields.rs` now owns self-field detection shared by structural-helper metadata and reflection fallback pruning. |
 | duplicated structural-helper name-set aliases | `structural_helpers/local_names.rs` now owns the shared `NameSet` alias consumed by both reflection fallback and fmt flush helper metadata. |
+| compiler rediscovery of fmt-flush source from hook body | Resolver fmt-flush injection now emits a generated `gors:fmt-flush-source=...` doc marker from its concrete plan, and compiler flush metadata consumes that marker instead of scanning the hook body for `std::mem::take`. |
 | string-encoded `& mut pp` resolver helper matching | Resolver structural-helper injection is split by responsibility, and impl self-type checks now use explicit `syn::Type` matching instead of a rendered self-type string. |
 | inline runtime primitive post-prune replacement in `compiler/mod.rs` | Reflect, `os.Stdout`, and `sync.Pool` replacement policy now lives in `compiler/runtime_primitives.rs`, leaving the main compiler pipeline responsible for orchestration and module pruning. |
 | mixed runtime primitive replacements in `runtime_primitives.rs` | The runtime primitive dispatcher now delegates reflect, os, and sync replacement bodies to focused modules under `compiler/runtime_primitives/`. |

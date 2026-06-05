@@ -157,8 +157,9 @@ mod tests {
         assert!(!has_method(&items, "pp", "__gors_flush_fmt"));
         assert!(
             tokens.contains("self . scratch . pending . lock () . unwrap () . 0")
-                && tokens.contains("self . out . 0 . extend (bytes)"),
-            "expected flush hook to use detected field names: {tokens}"
+                && tokens.contains("self . out . 0 . extend (bytes)")
+                && tokens.contains("gors:fmt-flush-source=scratch"),
+            "expected flush hook to use and mark detected field names: {tokens}"
         );
     }
 

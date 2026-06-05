@@ -432,6 +432,7 @@ mod tests {
             }
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 pub fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -485,6 +486,7 @@ mod tests {
             }
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 pub fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -539,6 +541,7 @@ mod tests {
             pub struct Buffer(pub Vec<u8>);
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 pub fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);

@@ -2,8 +2,8 @@ use super::local_names::NameSet;
 
 type ReceiverNameMap = std::collections::BTreeMap<String, NameSet>;
 
-use crate::compiler::syn_inspect::{is_path_call_expr, is_self_expr, type_path_ident_name};
-use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
+use crate::compiler::syn_inspect::{is_self_expr, type_path_ident_name};
+use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident, fmt_flush_source_from_doc};
 
 #[derive(Default)]
 pub(super) struct Metadata {
@@ -138,27 +138,26 @@ fn expand_transitive_methods(
 }
 
 fn flush_source_fields(func: &syn::ImplItemFn) -> NameSet {
-    struct Finder {
-        fields: NameSet,
-    }
+    func.attrs
+        .iter()
+        .filter_map(fmt_flush_source_attr)
+        .collect()
+}
 
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_call(&mut self, call: &syn::ExprCall) {
-            if is_path_call_expr(call.func.as_ref(), &["std", "mem", "take"]) {
-                for arg in &call.args {
-                    super::self_fields::collect_direct_self_fields(arg, &mut self.fields);
-                }
-                return;
-            }
-            syn::visit::visit_expr_call(self, call);
-        }
-    }
-
-    let mut finder = Finder {
-        fields: NameSet::new(),
+fn fmt_flush_source_attr(attr: &syn::Attribute) -> Option<String> {
+    let syn::Meta::NameValue(meta) = &attr.meta else {
+        return None;
     };
-    syn::visit::Visit::visit_block(&mut finder, &func.block);
-    finder.fields
+    if !meta.path.is_ident("doc") {
+        return None;
+    }
+    let syn::Expr::Lit(expr_lit) = &meta.value else {
+        return None;
+    };
+    let syn::Lit::Str(doc) = &expr_lit.lit else {
+        return None;
+    };
+    fmt_flush_source_from_doc(&doc.value()).map(str::to_owned)
 }
 
 fn self_method_calls(func: &syn::ImplItemFn) -> NameSet {
@@ -289,6 +288,7 @@ mod tests {
             }
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -367,6 +367,7 @@ mod tests {
             }
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -394,6 +395,7 @@ mod tests {
             struct Buffer(Vec<u8>);
 
             impl Printer {
+                #[doc = "gors:fmt-flush-source=inner"]
                 fn __gors_flush_fmt(&mut self) {
                     let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
@@ -417,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_requires_generated_std_mem_take_source() {
+    fn metadata_requires_generated_source_marker() {
         let file: syn::File = syn::parse_quote! {
             struct Printer {
                 inner: Inner,
@@ -436,7 +438,7 @@ mod tests {
 
             impl Printer {
                 fn __gors_flush_fmt(&mut self) {
-                    let bytes = take(&mut self.inner.buf.0);
+                    let bytes = std::mem::take(&mut self.inner.buf.0);
                     self.buf.0.extend(bytes);
                 }
 

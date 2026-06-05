@@ -302,6 +302,10 @@ fn is_byte_buffer_struct(item_struct: &syn::ItemStruct) -> bool {
 fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
     let hook = fmt_flush_hook_ident();
     let receiver = syn::Ident::new(&plan.receiver, proc_macro2::Span::mixed_site());
+    let source_doc = syn::LitStr::new(
+        &crate::generated_names::fmt_flush_source_doc(&plan.source_field),
+        proc_macro2::Span::mixed_site(),
+    );
     let source_field = syn::Ident::new(&plan.source_field, proc_macro2::Span::mixed_site());
     let source_buffer_field =
         syn::Ident::new(&plan.source_buffer_field, proc_macro2::Span::mixed_site());
@@ -317,6 +321,7 @@ fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {
     };
     syn::parse_quote! {
         impl #receiver {
+            #[doc = #source_doc]
             fn #hook(&mut self) {
                 let bytes = #take_bytes;
                 self.#destination_field.0.extend(bytes);
