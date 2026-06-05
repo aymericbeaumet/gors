@@ -87,7 +87,10 @@ gors-builtin/
   `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
   inlining these policies. Resolver fmt flush injection should be driven by the
   generated receiver/source-buffer data flow, not by package-specific receiver
-  names or a literal `State` trait gate. Within the `coerce_types` pass,
+  names or a literal `State` trait gate. Resolver noop interface helper
+  injection should derive method bodies from generated trait signatures and
+  gate target traits on their actual signature dependencies rather than a
+  package-specific trait-name condition. Within the `coerce_types` pass,
   generated fmt flush metadata lives in
   `gors/src/compiler/passes/coerce_types/structural_helpers/fmt_flush.rs`;
   reflection fallback pruning lives in

@@ -4,27 +4,15 @@ use crate::generated_names::{
     noop_interface_ident,
 };
 
-const STATE_TRAIT: &str = "State";
-
 #[derive(Clone, Copy)]
 struct FmtNoopTrait {
     name: &'static str,
-    requires_state: bool,
 }
 
 const FMT_NOOP_TRAITS: &[FmtNoopTrait] = &[
-    FmtNoopTrait {
-        name: "Formatter",
-        requires_state: true,
-    },
-    FmtNoopTrait {
-        name: "Stringer",
-        requires_state: false,
-    },
-    FmtNoopTrait {
-        name: "GoStringer",
-        requires_state: false,
-    },
+    FmtNoopTrait { name: "Formatter" },
+    FmtNoopTrait { name: "Stringer" },
+    FmtNoopTrait { name: "GoStringer" },
 ];
 
 pub(super) fn inject(items: &mut Vec<syn::Item>) {
@@ -146,18 +134,33 @@ fn noop_error_ext_impl(trait_ident: &syn::Ident, noop_ident: &syn::Ident) -> syn
 
 struct FmtInterfaceFacts {
     traits: std::collections::BTreeSet<String>,
+    item_names: std::collections::BTreeSet<String>,
+    signature_dependencies: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl FmtInterfaceFacts {
     fn collect(items: &[syn::Item]) -> Self {
-        let traits = items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Trait(item_trait) => Some(item_trait.ident.to_string()),
-                _ => None,
-            })
-            .collect();
-        Self { traits }
+        let mut traits = std::collections::BTreeSet::new();
+        let mut item_names = std::collections::BTreeSet::new();
+        let mut signature_dependencies = std::collections::BTreeMap::new();
+
+        for item in items {
+            if let Some(name) = item_name(item) {
+                item_names.insert(name);
+            }
+            let syn::Item::Trait(item_trait) = item else {
+                continue;
+            };
+            let name = item_trait.ident.to_string();
+            traits.insert(name.clone());
+            signature_dependencies.insert(name, trait_signature_dependencies(item_trait));
+        }
+
+        Self {
+            traits,
+            item_names,
+            signature_dependencies,
+        }
     }
 
     fn has_noop_targets(&self) -> bool {
@@ -168,6 +171,105 @@ impl FmtInterfaceFacts {
 
     fn should_inject(&self, target: &FmtNoopTrait) -> bool {
         self.traits.contains(target.name)
-            && (!target.requires_state || self.traits.contains(STATE_TRAIT))
+            && self
+                .signature_dependencies
+                .get(target.name)
+                .is_none_or(|dependencies| {
+                    dependencies
+                        .iter()
+                        .all(|dependency| self.item_names.contains(dependency))
+                })
     }
+}
+
+fn item_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Const(item_const) => Some(item_const.ident.to_string()),
+        syn::Item::Enum(item_enum) => Some(item_enum.ident.to_string()),
+        syn::Item::Fn(item_fn) => Some(item_fn.sig.ident.to_string()),
+        syn::Item::Static(item_static) => Some(item_static.ident.to_string()),
+        syn::Item::Struct(item_struct) => Some(item_struct.ident.to_string()),
+        syn::Item::Trait(item_trait) => Some(item_trait.ident.to_string()),
+        syn::Item::Type(item_type) => Some(item_type.ident.to_string()),
+        _ => None,
+    }
+}
+
+fn trait_signature_dependencies(item_trait: &syn::ItemTrait) -> std::collections::BTreeSet<String> {
+    struct Finder {
+        dependencies: std::collections::BTreeSet<String>,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_type_param_bound(&mut self, bound: &syn::TypeParamBound) {
+            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                collect_signature_dependency_path(&trait_bound.path, &mut self.dependencies);
+            }
+            syn::visit::visit_type_param_bound(self, bound);
+        }
+
+        fn visit_type_path(&mut self, type_path: &syn::TypePath) {
+            collect_signature_dependency_path(&type_path.path, &mut self.dependencies);
+            syn::visit::visit_type_path(self, type_path);
+        }
+    }
+
+    let mut finder = Finder {
+        dependencies: std::collections::BTreeSet::new(),
+    };
+    for item in &item_trait.items {
+        let syn::TraitItem::Fn(func) = item else {
+            continue;
+        };
+        syn::visit::Visit::visit_signature(&mut finder, &func.sig);
+    }
+    finder.dependencies
+}
+
+fn collect_signature_dependency_path(
+    path: &syn::Path,
+    dependencies: &mut std::collections::BTreeSet<String>,
+) {
+    if path.leading_colon.is_some() || path.segments.len() != 1 {
+        return;
+    }
+    let Some(name) = path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string())
+    else {
+        return;
+    };
+    if is_rust_signature_builtin(&name) {
+        return;
+    }
+    dependencies.insert(name);
+}
+
+fn is_rust_signature_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "Any"
+            | "Box"
+            | "Option"
+            | "Result"
+            | "Self"
+            | "String"
+            | "Vec"
+            | "bool"
+            | "char"
+            | "f32"
+            | "f64"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "isize"
+            | "str"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "usize"
+    )
 }

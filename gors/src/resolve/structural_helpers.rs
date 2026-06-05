@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn formatter_noop_interface_requires_state_trait() {
+    fn formatter_noop_interface_requires_signature_dependencies() {
         let mut items: Vec<syn::Item> = vec![syn::parse_quote! {
             trait Formatter {
                 fn Format(&mut self, f: &mut dyn State, verb: i32);
@@ -332,6 +332,25 @@ mod tests {
         assert!(!has_struct(&items, "__GorsNoopInterface"), "{tokens}");
         assert!(
             !has_impl(
+                &items,
+                "Formatter",
+                ImplSelfType::Named("__GorsNoopInterface")
+            ),
+            "{tokens}"
+        );
+
+        items.insert(
+            0,
+            syn::parse_quote! {
+                trait State {}
+            },
+        );
+        inject(&mut items);
+
+        let tokens = quote::quote!(#(#items)*).to_string();
+        assert!(has_struct(&items, "__GorsNoopInterface"), "{tokens}");
+        assert!(
+            has_impl(
                 &items,
                 "Formatter",
                 ImplSelfType::Named("__GorsNoopInterface")
