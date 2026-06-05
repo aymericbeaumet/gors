@@ -10388,10 +10388,8 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
             receiver
         }
     };
-    let receiver_ident = syn::Ident::new("__gors_method_receiver", Span::mixed_site());
-    let param_idents = (0..info.params.len())
-        .map(|idx| syn::Ident::new(&format!("__gors_method_arg_{idx}"), Span::mixed_site()))
-        .collect::<Vec<_>>();
+    let receiver_ident = synthetic_names::method_receiver_ident();
+    let param_idents = synthetic_names::method_arg_idents(info.params.len());
     let param_types = info.params.iter().map(rust_func_param_type_from_go_type);
     let param_pats = param_idents
         .iter()
@@ -13321,10 +13319,8 @@ fn compile_type_method_expression_value(selector: ast::SelectorExpr) -> syn::Exp
         return compile_error_expr("invalid method expression");
     };
     let method_ident: syn::Ident = selector.sel.into();
-    let receiver_ident = syn::Ident::new("__gors_method_receiver", Span::mixed_site());
-    let method_arg_idents = (0..info.params.len())
-        .map(|idx| syn::Ident::new(&format!("__gors_method_arg_{idx}"), Span::mixed_site()))
-        .collect::<Vec<_>>();
+    let receiver_ident = synthetic_names::method_receiver_ident();
+    let method_arg_idents = synthetic_names::method_arg_idents(info.params.len());
     let mut param_pats = vec![typed_ident_pat(
         receiver_ident.clone(),
         rust_type_from_inferred_go_type(&info.receiver_type),

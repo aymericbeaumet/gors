@@ -85,6 +85,16 @@ pub(super) fn next_range_function_return_idents() -> (syn::Ident, syn::Ident) {
     )
 }
 
+pub(super) fn method_receiver_ident() -> syn::Ident {
+    syn::Ident::new("__gors_method_receiver", Span::mixed_site())
+}
+
+pub(super) fn method_arg_idents(count: usize) -> Vec<syn::Ident> {
+    (0..count)
+        .map(|index| syn::Ident::new(&format!("__gors_method_arg_{index}"), Span::mixed_site()))
+        .collect()
+}
+
 pub(super) fn next_named_return_label() -> syn::Lifetime {
     let n = next_named_return_id();
     syn::Lifetime::new(&format!("'__gors_named_return_{n}"), Span::mixed_site())
@@ -148,6 +158,15 @@ mod tests {
         assert_eq!(
             range_return_for_yield.to_string(),
             "__gors_range_return_for_yield_0"
+        );
+        assert_eq!(
+            method_receiver_ident().to_string(),
+            "__gors_method_receiver"
+        );
+        let mut method_args = method_arg_idents(2).into_iter();
+        assert_eq!(
+            method_args.next().map(|ident| ident.to_string()),
+            Some("__gors_method_arg_0".to_string())
         );
         assert_eq!(
             next_named_return_label().ident.to_string(),
