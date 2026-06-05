@@ -4,15 +4,17 @@ use super::item_reachability::{
     impl_method_reachability_name, reachable_item_for_names,
     trait_impl_can_follow_self_reachability,
 };
+use super::reachability_names::{
+    expand_supertrait_method_names, expand_supertrait_names, exported_item_reachability_names,
+    item_reachability_names, top_level_item_names, trait_method_names, trait_supertrait_names,
+};
 use super::receiver_type_facts::{
     ReceiverTypeMap, top_level_collection_element_types, top_level_item_field_types,
     top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
 };
 use super::syn_inspect::{item_name, named_self_type, self_type_reachability_names};
 use super::{
-    CompiledModule, RefCollectionContext, collect_refs_from_item, expand_supertrait_method_names,
-    expand_supertrait_names, exported_item_reachability_names, generated_attrs, interface_hooks,
-    item_reachability_names, top_level_item_names, trait_method_names, trait_supertrait_names,
+    CompiledModule, RefCollectionContext, collect_refs_from_item, generated_attrs, interface_hooks,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
