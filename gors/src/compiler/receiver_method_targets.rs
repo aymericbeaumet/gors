@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use super::{ReceiverTypeRef, syn_inspect::named_self_type};
+use super::{receiver_type_facts::ReceiverTypeRef, syn_inspect::named_self_type};
 
 pub(super) type Supertraits = BTreeMap<(String, String), Vec<ReceiverTypeRef>>;
 

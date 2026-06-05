@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::{
-    CompiledModule, dce_pruning, external_roots::ExternalRootCollector, reachable_stdlib_items,
-    required_module_roots::RequiredModuleRoots,
+    CompiledModule, dce_pruning, dce_reachability::reachable_stdlib_items,
+    external_roots::ExternalRootCollector, required_module_roots::RequiredModuleRoots,
 };
 
 pub(super) fn resolve_required_stdlib_modules(

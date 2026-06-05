@@ -1,0 +1,82 @@
+use super::{
+    item_reachability::reachable_item_for_names,
+    reachability_cache::{self, ReachableItems},
+    reachability_names::{
+        expand_supertrait_method_names, expand_supertrait_names,
+        expand_top_level_receiver_method_names, item_reachability_names, top_level_item_names,
+        trait_method_names, trait_supertrait_names,
+    },
+    receiver_type_facts::{
+        top_level_collection_element_types, top_level_item_field_types,
+        top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
+    },
+    ref_collection::{RefCollectionContext, collect_refs_from_item},
+    required_module_roots,
+};
+
+pub(super) fn reachable_stdlib_items(
+    items: &[syn::Item],
+    roots: &std::collections::HashSet<String>,
+    module_names: &std::collections::HashSet<String>,
+) -> ReachableItems {
+    let cache_key = reachability_cache::cache_key(items, roots, module_names);
+    if let Some(entry) = reachability_cache::cached_items(&cache_key) {
+        return entry;
+    }
+
+    let mut names = roots.clone();
+    let mut keep = std::collections::HashSet::new();
+    let mut external_refs = std::collections::HashMap::new();
+    let item_names = item_reachability_names(items);
+    let top_level_names = top_level_item_names(items);
+    let top_level_types = top_level_item_types(items, module_names);
+    let top_level_field_types = top_level_item_field_types(items, module_names);
+    let top_level_element_types = top_level_collection_element_types(items, module_names);
+    let top_level_return_types = top_level_item_return_types(items, module_names);
+    let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
+    let trait_supertraits = trait_supertrait_names(items);
+    let trait_methods = trait_method_names(items);
+
+    loop {
+        let mut changed = false;
+        changed |= expand_supertrait_names(&mut names, &trait_supertraits, &trait_methods);
+        changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
+        changed |=
+            expand_top_level_receiver_method_names(&mut names, &top_level_types, &item_names);
+        for (idx, item) in items.iter().enumerate() {
+            let Some(mut reachable_item) =
+                reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
+            else {
+                continue;
+            };
+            changed |= keep.insert(idx);
+
+            let context = RefCollectionContext {
+                module_names,
+                item_names: &item_names,
+                top_level_names: &top_level_names,
+                top_level_types: &top_level_types,
+                top_level_field_types: &top_level_field_types,
+                top_level_element_types: &top_level_element_types,
+                top_level_return_types: &top_level_return_types,
+                top_level_tuple_return_types: &top_level_tuple_return_types,
+            };
+            let (local_names, refs) = collect_refs_from_item(&mut reachable_item, &context);
+            for name in local_names {
+                changed |= names.insert(name);
+            }
+            changed |= required_module_roots::merge_refs(&mut external_refs, refs);
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let entry = ReachableItems {
+        keep,
+        refs: external_refs,
+        names,
+    };
+    reachability_cache::store_items(cache_key, &entry);
+    entry
+}

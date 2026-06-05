@@ -430,6 +430,11 @@ length-delimited reachability fingerprinting live in
 `gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
 cache keys, cached entries, and fingerprint builders from that module instead
 of owning lock mechanics or hash serialization in `compiler/mod.rs`.
+Cached reachable-item computation lives in
+`gors/src/compiler/dce_reachability.rs`; it expands roots, collects item refs,
+merges external module roots, and stores `ReachableItems` cache entries. The
+compiler root should call `reachable_stdlib_items()` rather than owning that
+fixpoint body.
 Reachability root/name discovery and expansion live in
 `gors/src/compiler/reachability_names.rs`; DCE and semantic reachability should
 share main-module root selection, exported-root collection, item/top-level name discovery, trait

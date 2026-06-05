@@ -23,6 +23,7 @@ mod const_context;
 mod current_receiver;
 mod dce_iteration;
 mod dce_pruning;
+mod dce_reachability;
 mod defer_context;
 mod display_impls;
 mod embedded_interfaces;
@@ -92,6 +93,7 @@ use const_context::{
 };
 use current_receiver::{CurrentReceiver, CurrentReceiverGuard};
 use dce_iteration::DceIterationContext;
+use dce_reachability::reachable_stdlib_items;
 use defer_context::PanicReturnsThroughDeferGuard;
 use external_interface_implementors::ExternalInterfaceImplementorsGuard;
 use external_roots::ExternalRootCollector;
@@ -106,20 +108,19 @@ use import_context::{
     import_rust_name, is_import_local_name, selector_base_is_import, set_current_file_imports,
     set_dot_import_renames, set_import_package_names, set_import_renames,
 };
+#[cfg(test)]
 use item_reachability::reachable_item_for_names;
 use package_context::{CurrentGoPackageNameGuard, MainPackageVarModeGuard};
 use phantom_type_params::add_fields_for_unused_type_params;
 use proc_macro2::Span;
-use reachability_cache::ReachableItems;
+use reachability_names::main_module_root_names;
+#[cfg(test)]
 use reachability_names::{
-    expand_supertrait_method_names, expand_supertrait_names,
-    expand_top_level_receiver_method_names, item_reachability_names, main_module_root_names,
-    top_level_item_names, trait_method_names, trait_supertrait_names,
+    expand_top_level_receiver_method_names, item_reachability_names, top_level_item_names,
 };
-use receiver_type_facts::{
-    ReceiverTypeRef, top_level_collection_element_types, top_level_item_field_types,
-    top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
-};
+#[cfg(test)]
+use receiver_type_facts::ReceiverTypeRef;
+#[cfg(test)]
 use ref_collection::{RefCollectionContext, collect_refs_from_item};
 use required_module_roots::RequiredModuleRoots;
 use return_context::ReturnTypesGuard;
@@ -3877,73 +3878,6 @@ pub(crate) fn add_post_merge_interface_helpers(file: &mut syn::File) {
     .collect::<Vec<_>>();
     file.items.extend(additions);
     interface_hooks::add_missing_clone_hooks(&mut file.items);
-}
-
-fn reachable_stdlib_items(
-    items: &[syn::Item],
-    roots: &std::collections::HashSet<String>,
-    module_names: &std::collections::HashSet<String>,
-) -> ReachableItems {
-    let cache_key = reachability_cache::cache_key(items, roots, module_names);
-    if let Some(entry) = reachability_cache::cached_items(&cache_key) {
-        return entry;
-    }
-
-    let mut names = roots.clone();
-    let mut keep = std::collections::HashSet::new();
-    let mut external_refs = std::collections::HashMap::new();
-    let item_names = item_reachability_names(items);
-    let top_level_names = top_level_item_names(items);
-    let top_level_types = top_level_item_types(items, module_names);
-    let top_level_field_types = top_level_item_field_types(items, module_names);
-    let top_level_element_types = top_level_collection_element_types(items, module_names);
-    let top_level_return_types = top_level_item_return_types(items, module_names);
-    let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
-    let trait_supertraits = trait_supertrait_names(items);
-    let trait_methods = trait_method_names(items);
-
-    loop {
-        let mut changed = false;
-        changed |= expand_supertrait_names(&mut names, &trait_supertraits, &trait_methods);
-        changed |= expand_supertrait_method_names(&mut names, &trait_supertraits);
-        changed |=
-            expand_top_level_receiver_method_names(&mut names, &top_level_types, &item_names);
-        for (idx, item) in items.iter().enumerate() {
-            let Some(mut reachable_item) =
-                reachable_item_for_names(item, &names, &item_names, &top_level_names, roots)
-            else {
-                continue;
-            };
-            changed |= keep.insert(idx);
-
-            let context = RefCollectionContext {
-                module_names,
-                item_names: &item_names,
-                top_level_names: &top_level_names,
-                top_level_types: &top_level_types,
-                top_level_field_types: &top_level_field_types,
-                top_level_element_types: &top_level_element_types,
-                top_level_return_types: &top_level_return_types,
-                top_level_tuple_return_types: &top_level_tuple_return_types,
-            };
-            let (local_names, refs) = collect_refs_from_item(&mut reachable_item, &context);
-            for name in local_names {
-                changed |= names.insert(name);
-            }
-            changed |= required_module_roots::merge_refs(&mut external_refs, refs);
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    let entry = ReachableItems {
-        keep,
-        refs: external_refs,
-        names,
-    };
-    reachability_cache::store_items(cache_key, &entry);
-    entry
 }
 
 /// Compile a Go AST into a Rust `syn` AST with source mapping.
