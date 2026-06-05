@@ -289,7 +289,138 @@ impl std::fmt::Display for GorsNilPointer {
 impl std::error::Error for GorsNilPointer {}
 
 pub struct GorsPtr<T> {
-    inner: Option<Arc<Mutex<T>>>,
+    inner: Option<GorsPtrInner<T>>,
+}
+
+enum GorsPtrInner<T> {
+    Direct(Arc<Mutex<T>>),
+    Projected(Arc<dyn ProjectedCell<T> + Send + Sync>),
+}
+
+impl<T> Clone for GorsPtrInner<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Direct(inner) => Self::Direct(inner.clone()),
+            Self::Projected(cell) => Self::Projected(cell.clone()),
+        }
+    }
+}
+
+trait ProjectedCell<T>: Send + Sync {
+    fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_>;
+    fn owner_ptr(&self) -> *const ();
+    fn field_key(&self) -> usize;
+}
+
+pub trait ProjectedGuard<T>: std::ops::DerefMut<Target = T> {}
+
+impl<T, U> ProjectedGuard<T> for U where U: std::ops::DerefMut<Target = T> {}
+
+struct ProjectedFieldCell<Owner, T, F> {
+    owner: Arc<Mutex<Owner>>,
+    field_key: usize,
+    field: F,
+    _field_ty: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<Owner, T, F> ProjectedCell<T> for ProjectedFieldCell<Owner, T, F>
+where
+    Owner: Send + 'static,
+    T: Clone + 'static,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
+{
+    fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_> {
+        let value = {
+            let mut owner_guard = self
+                .owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (self.field)(&mut *owner_guard).clone()
+        };
+        Box::new(ProjectedFieldGuard {
+            owner: self.owner.clone(),
+            field: &self.field,
+            value,
+        })
+    }
+
+    fn owner_ptr(&self) -> *const () {
+        Arc::as_ptr(&self.owner).cast()
+    }
+
+    fn field_key(&self) -> usize {
+        self.field_key
+    }
+}
+
+struct ProjectedFieldGuard<'a, Owner, T: Clone, F>
+where
+    F: for<'b> Fn(&'b mut Owner) -> &'b mut T,
+{
+    owner: Arc<Mutex<Owner>>,
+    field: &'a F,
+    value: T,
+}
+
+impl<Owner, T, F> std::ops::Deref for ProjectedFieldGuard<'_, Owner, T, F>
+where
+    T: Clone,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<Owner, T, F> std::ops::DerefMut for ProjectedFieldGuard<'_, Owner, T, F>
+where
+    T: Clone,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<Owner, T, F> Drop for ProjectedFieldGuard<'_, Owner, T, F>
+where
+    T: Clone,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
+{
+    fn drop(&mut self) {
+        let mut owner = self
+            .owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *(self.field)(&mut *owner) = self.value.clone();
+    }
+}
+
+pub enum GorsPtrGuard<'a, T> {
+    Direct(MutexGuard<'a, T>),
+    Projected(Box<dyn ProjectedGuard<T> + 'a>),
+}
+
+impl<T> std::ops::Deref for GorsPtrGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Direct(guard) => guard,
+            Self::Projected(guard) => std::ops::Deref::deref(&**guard),
+        }
+    }
+}
+
+impl<T> std::ops::DerefMut for GorsPtrGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Direct(guard) => guard,
+            Self::Projected(guard) => std::ops::DerefMut::deref_mut(&mut **guard),
+        }
+    }
 }
 
 impl<T> Clone for GorsPtr<T> {
@@ -313,30 +444,57 @@ impl<T> GorsPtr<T> {
 
     pub fn new(value: T) -> Self {
         Self {
-            inner: Some(Arc::new(Mutex::new(value))),
+            inner: Some(GorsPtrInner::Direct(Arc::new(Mutex::new(value)))),
         }
     }
 
     pub fn from_arc(inner: Arc<Mutex<T>>) -> Self {
-        Self { inner: Some(inner) }
+        Self {
+            inner: Some(GorsPtrInner::Direct(inner)),
+        }
+    }
+
+    pub fn from_arc_field<Owner, F>(owner: Arc<Mutex<Owner>>, field_key: usize, field: F) -> Self
+    where
+        Owner: Send + 'static,
+        T: Clone + 'static,
+        F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
+    {
+        Self {
+            inner: Some(GorsPtrInner::Projected(Arc::new(ProjectedFieldCell {
+                owner,
+                field_key,
+                field,
+                _field_ty: std::marker::PhantomData,
+            }))),
+        }
     }
 
     pub fn is_nil(&self) -> bool {
         self.inner.is_none()
     }
 
-    pub fn lock(&self) -> Result<MutexGuard<'_, T>, GorsNilPointer> {
-        self.inner.as_ref().ok_or(GorsNilPointer).map(|inner| {
-            inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-        })
+    pub fn lock(&self) -> Result<GorsPtrGuard<'_, T>, GorsNilPointer> {
+        let inner = self.inner.as_ref().ok_or(GorsNilPointer)?;
+        match inner {
+            GorsPtrInner::Direct(inner) => Ok(GorsPtrGuard::Direct(
+                inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )),
+            GorsPtrInner::Projected(cell) => Ok(GorsPtrGuard::Projected(cell.lock_projected())),
+        }
     }
 
     pub fn ptr_eq(left: &Self, right: &Self) -> bool {
         match (&left.inner, &right.inner) {
             (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (Some(GorsPtrInner::Direct(left)), Some(GorsPtrInner::Direct(right))) => {
+                Arc::ptr_eq(left, right)
+            }
+            (Some(GorsPtrInner::Projected(left)), Some(GorsPtrInner::Projected(right))) => {
+                left.owner_ptr() == right.owner_ptr() && left.field_key() == right.field_key()
+            }
             _ => false,
         }
     }
@@ -1623,6 +1781,38 @@ mod tests {
         assert!(PartialEq::eq(&err_a, &err_b));
         assert!(!PartialEq::eq(&nil_a, &err_c));
         assert!(!PartialEq::eq(&err_b, &err_c));
+    }
+
+    #[test]
+    fn projected_field_pointers_alias_owner_fields() {
+        #[derive(Default)]
+        struct Holder {
+            value: isize,
+            other: isize,
+        }
+
+        let owner = Arc::new(Mutex::new(Holder { value: 1, other: 2 }));
+        let value_ptr = GorsPtr::from_arc_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, value),
+            |holder: &mut Holder| &mut holder.value,
+        );
+        let same_value_ptr = GorsPtr::from_arc_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, value),
+            |holder: &mut Holder| &mut holder.value,
+        );
+        let other_ptr = GorsPtr::from_arc_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, other),
+            |holder: &mut Holder| &mut holder.other,
+        );
+
+        *value_ptr.lock().unwrap() = 7;
+
+        assert_eq!(owner.lock().unwrap().value, 7);
+        assert!(GorsPtr::ptr_eq(&value_ptr, &same_value_ptr));
+        assert!(!GorsPtr::ptr_eq(&value_ptr, &other_ptr));
     }
 
     #[test]

@@ -204,13 +204,17 @@ gors-builtin/
   assigning an addressable same-type value into a field or local should be
   cloned from Go type facts there, not patched later by Rust identifier or field
   names.
-- Go pointer values lower to nil-aware `crate::builtin::GorsPtr<T>` cells backed
-  by `Option<Arc<Mutex<T>>>`. Locals whose address is taken are promoted through
-  the IR addressability analysis into shared `Arc<Mutex<T>>` storage and exposed
-  through `GorsPtr::from_arc`, so `p := &x`, `*p = v`, and later reads of `x`
-  observe the shared storage. Do not lower ordinary Go pointer parameters to
-  borrowed `&mut T`; the shared pointer model must carry nil and aliasing through
-  calls.
+- Go pointer values lower to nil-aware `crate::builtin::GorsPtr<T>` cells. Locals
+  whose address is taken are promoted through the IR addressability analysis into
+  shared `Arc<Mutex<T>>` storage and exposed through `GorsPtr::from_arc`, so
+  `p := &x`, `*p = v`, and later reads of `x` observe the shared storage.
+  Address-of fields on promoted local struct owners, such as `&h.value`, lower
+  through projected `GorsPtr::from_arc_field` cells so writes update the owner
+  field instead of a cloned field value. Do not blindly use projected field cells
+  for pointer-receiver field aliases such as `&p.buf` until receiver locking can
+  avoid re-locking the same pointer cell during method calls. Do not lower
+  ordinary Go pointer parameters to borrowed `&mut T`; the shared pointer model
+  must carry nil and aliasing through calls.
 - Nil pointer values must lower to the pointer zero value for assignments,
   fields, returns, and other value construction. Do not emit an immediate panic
   for `nil` itself; the panic belongs to dereference/use.

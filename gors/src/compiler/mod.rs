@@ -9927,6 +9927,40 @@ fn borrowed_interface_selector_reborrow_expr(expr: &ast::Expr) -> Option<syn::Ex
     Some(syn::parse_quote! { &mut *#lvalue })
 }
 
+fn address_of_shared_selector_field_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::SelectorExpr(selector) = ast_unparen_expr_ref(expr) else {
+        return None;
+    };
+    let ast::Expr::Ident(base_ident) = ast_unparen_expr_ref(&selector.x) else {
+        return None;
+    };
+    if !is_shared_capture_name(base_ident.name) || is_owning_pointer_cell_expr_ref(&selector.x) {
+        return None;
+    }
+    let owner_ty = shared_selector_owner_type(&selector.x)?;
+    let owner_ident = value_ident(base_ident.name);
+    let field_ident = syn::Ident::new(
+        &rust_safe_ident_name(selector.sel.name),
+        proc_macro2::Span::mixed_site(),
+    );
+
+    Some(syn::parse_quote! {
+        crate::builtin::GorsPtr::from_arc_field(
+            #owner_ident.clone(),
+            std::mem::offset_of!(#owner_ty, #field_ident),
+            |__gors_owner: &mut #owner_ty| &mut __gors_owner.#field_ident,
+        )
+    })
+}
+
+fn shared_selector_owner_type(expr: &ast::Expr) -> Option<syn::Type> {
+    let go_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()));
+    match resolved_go_type(&go_type) {
+        typeinfer::GoType::Named(name) => Some(named_go_type_path(&name)),
+        go_type => rust_type_from_go_type(&go_type),
+    }
+}
+
 fn compile_expr_with_expected(
     mut expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
@@ -14432,7 +14466,8 @@ impl TryFrom<ast::BlockStmt<'_>> for syn::Block {
         let for_clause_iteration_capture_names = TYPE_ENV.with(|env| {
             ir::for_clause_per_iteration_capture_names_in_block(&block_stmt, &env.borrow())
         });
-        let address_taken_names = ir::address_taken_names_in_block(&block_stmt);
+        let address_taken_names =
+            TYPE_ENV.with(|env| ir::address_taken_names_in_block(&block_stmt, &env.borrow()));
         let _shared_capture_names = SharedCaptureNamesGuard::extend(
             shared_capture_names
                 .into_iter()
@@ -15015,6 +15050,9 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 }
                 token::Token::AND => {
                     let target = *unary_expr.x;
+                    if let Some(expr) = address_of_shared_selector_field_expr(&target) {
+                        return expr;
+                    }
                     if let ast::Expr::Ident(ident) = &target
                         && is_shared_capture_name(ident.name)
                     {
@@ -26037,6 +26075,26 @@ func main() {
     }
 
     #[test]
+    fn builtin_root_expansion_keeps_projected_pointer_helpers() {
+        let roots = std::collections::HashSet::from(["GorsPtr::from_arc_field".to_string()]);
+        let expanded = super::builtin_roots::expand(&roots);
+
+        for root in [
+            "GorsPtr",
+            "GorsPtrGuard",
+            "GorsPtrInner",
+            "ProjectedCell",
+            "ProjectedFieldCell",
+            "ProjectedFieldGuard",
+            "ProjectedGuard",
+            "GorsPtr::lock",
+            "GorsPtr::ptr_eq",
+        ] {
+            assert!(expanded.contains(root), "{expanded:?}");
+        }
+    }
+
+    #[test]
     fn compile_program_multi_rejects_unreferenced_imported_package_modules() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -28732,6 +28790,52 @@ func main() {
                     let _ = p;
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_address_of_local_field_as_projected_shared_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	value int
+	other int
+}
+
+func main() {
+	h := holder{value: 1, other: 2}
+	p := &h.value
+	*p = 7
+	_ = h.value
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("GorsPtr::from_arc_field")
+                || main_rs.contains("GorsPtr :: from_arc_field"),
+            "expected address-of field to use projected GorsPtr constructor: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(holder, value)")
+                || main_rs.contains("std :: mem :: offset_of ! (holder , value)"),
+            "expected projected pointer to identify the selected field: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("|__gors_owner: &mut holder| &mut __gors_owner.value")
+                || main_rs.contains("| __gors_owner : & mut holder | & mut __gors_owner . value"),
+            "expected projected pointer to borrow the owner field: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("GorsPtr::new({") && !main_rs.contains("GorsPtr :: new ({"),
+            "expected address-of field not to wrap a copied field value: {main_rs}"
         );
     }
 

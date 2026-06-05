@@ -28,10 +28,17 @@ pub(super) fn expand(
     if needs_gors_ptr_methods(roots) {
         for root in [
             "GorsPtr",
+            "GorsPtrGuard",
+            "GorsPtrInner",
             "GorsNilPointer",
+            "ProjectedCell",
+            "ProjectedFieldCell",
+            "ProjectedFieldGuard",
+            "ProjectedGuard",
             "GorsPtr::nil",
             "GorsPtr::new",
             "GorsPtr::from_arc",
+            "GorsPtr::from_arc_field",
             "GorsPtr::is_nil",
             "GorsPtr::lock",
             "GorsPtr::ptr_eq",

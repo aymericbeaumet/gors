@@ -15736,10 +15736,10 @@ pub fn for_clause_per_iteration_capture_names(
     }
 
     let mut observed = func_lit_capture_names_in_block(&for_stmt.body, env);
-    collect_address_taken_names_in_block(&for_stmt.body, &mut observed);
+    collect_address_taken_names_in_block(&for_stmt.body, env, &mut observed);
     if let Some(post) = &for_stmt.post {
         collect_func_lit_capture_names_in_stmt(post, env, &mut observed);
-        collect_address_taken_names_in_stmt(post, &mut observed);
+        collect_address_taken_names_in_stmt(post, env, &mut observed);
     }
 
     init_names
@@ -16114,45 +16114,53 @@ fn collect_for_clause_per_iteration_capture_names_in_stmt(
     }
 }
 
-pub fn address_taken_names_in_block(block: &ast::BlockStmt<'_>) -> BTreeSet<String> {
+pub fn address_taken_names_in_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    collect_address_taken_names_in_block(block, &mut names);
+    collect_address_taken_names_in_block(block, env, &mut names);
     let mut declared = BTreeSet::new();
     collect_declared_names_in_block(block, &mut declared);
     names.retain(|name| declared.contains(name));
     names
 }
 
-fn collect_address_taken_names_in_block(block: &ast::BlockStmt<'_>, names: &mut BTreeSet<String>) {
+fn collect_address_taken_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
     for stmt in &block.list {
-        collect_address_taken_names_in_stmt(stmt, names);
+        collect_address_taken_names_in_stmt(stmt, env, names);
     }
 }
 
-fn collect_address_taken_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<String>) {
+fn collect_address_taken_names_in_stmt(
+    stmt: &ast::Stmt<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
             for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
-                collect_address_taken_names_in_expr(expr, names);
+                collect_address_taken_names_in_expr(expr, env, names);
             }
         }
-        ast::Stmt::BlockStmt(block) => collect_address_taken_names_in_block(block, names),
+        ast::Stmt::BlockStmt(block) => collect_address_taken_names_in_block(block, env, names),
         ast::Stmt::CaseClause(case_clause) => {
             if let Some(exprs) = &case_clause.list {
                 for expr in exprs {
-                    collect_address_taken_names_in_expr(expr, names);
+                    collect_address_taken_names_in_expr(expr, env, names);
                 }
             }
             for stmt in &case_clause.body {
-                collect_address_taken_names_in_stmt(stmt, names);
+                collect_address_taken_names_in_stmt(stmt, env, names);
             }
         }
         ast::Stmt::CommClause(comm_clause) => {
             if let Some(comm) = &comm_clause.comm {
-                collect_address_taken_names_in_stmt(comm, names);
+                collect_address_taken_names_in_stmt(comm, env, names);
             }
             for stmt in &comm_clause.body {
-                collect_address_taken_names_in_stmt(stmt, names);
+                collect_address_taken_names_in_stmt(stmt, env, names);
             }
         }
         ast::Stmt::DeclStmt(decl) => {
@@ -16161,186 +16169,212 @@ fn collect_address_taken_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSe
                     && let Some(values) = &value.values
                 {
                     for expr in values {
-                        collect_address_taken_names_in_expr(expr, names);
+                        collect_address_taken_names_in_expr(expr, env, names);
                     }
                 }
             }
         }
         ast::Stmt::DeferStmt(defer_stmt) => {
-            collect_address_taken_names_in_expr(&defer_stmt.call.fun, names);
+            collect_address_taken_names_in_expr(&defer_stmt.call.fun, env, names);
             if let Some(args) = &defer_stmt.call.args {
                 for arg in args {
-                    collect_address_taken_names_in_expr(arg, names);
+                    collect_address_taken_names_in_expr(arg, env, names);
                 }
             }
         }
-        ast::Stmt::ExprStmt(expr) => collect_address_taken_names_in_expr(&expr.x, names),
+        ast::Stmt::ExprStmt(expr) => collect_address_taken_names_in_expr(&expr.x, env, names),
         ast::Stmt::ForStmt(for_stmt) => {
             if let Some(init) = &for_stmt.init {
-                collect_address_taken_names_in_stmt(init, names);
+                collect_address_taken_names_in_stmt(init, env, names);
             }
             if let Some(cond) = &for_stmt.cond {
-                collect_address_taken_names_in_expr(cond, names);
+                collect_address_taken_names_in_expr(cond, env, names);
             }
             if let Some(post) = &for_stmt.post {
-                collect_address_taken_names_in_stmt(post, names);
+                collect_address_taken_names_in_stmt(post, env, names);
             }
-            collect_address_taken_names_in_block(&for_stmt.body, names);
+            collect_address_taken_names_in_block(&for_stmt.body, env, names);
         }
         ast::Stmt::GoStmt(go_stmt) => {
-            collect_address_taken_names_in_expr(&go_stmt.call.fun, names);
+            collect_address_taken_names_in_expr(&go_stmt.call.fun, env, names);
             if let Some(args) = &go_stmt.call.args {
                 for arg in args {
-                    collect_address_taken_names_in_expr(arg, names);
+                    collect_address_taken_names_in_expr(arg, env, names);
                 }
             }
         }
         ast::Stmt::IfStmt(if_stmt) => {
             if let Some(init) = if_stmt.init.as_ref().as_ref() {
-                collect_address_taken_names_in_stmt(init, names);
+                collect_address_taken_names_in_stmt(init, env, names);
             }
-            collect_address_taken_names_in_expr(&if_stmt.cond, names);
-            collect_address_taken_names_in_block(&if_stmt.body, names);
+            collect_address_taken_names_in_expr(&if_stmt.cond, env, names);
+            collect_address_taken_names_in_block(&if_stmt.body, env, names);
             if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
-                collect_address_taken_names_in_stmt(else_branch, names);
+                collect_address_taken_names_in_stmt(else_branch, env, names);
             }
         }
-        ast::Stmt::IncDecStmt(inc_dec) => collect_address_taken_names_in_expr(&inc_dec.x, names),
-        ast::Stmt::LabeledStmt(label) => collect_address_taken_names_in_stmt(&label.stmt, names),
+        ast::Stmt::IncDecStmt(inc_dec) => {
+            collect_address_taken_names_in_expr(&inc_dec.x, env, names)
+        }
+        ast::Stmt::LabeledStmt(label) => {
+            collect_address_taken_names_in_stmt(&label.stmt, env, names)
+        }
         ast::Stmt::RangeStmt(range) => {
             if let Some(key) = &range.key {
-                collect_address_taken_names_in_expr(key, names);
+                collect_address_taken_names_in_expr(key, env, names);
             }
             if let Some(value) = &range.value {
-                collect_address_taken_names_in_expr(value, names);
+                collect_address_taken_names_in_expr(value, env, names);
             }
-            collect_address_taken_names_in_expr(&range.x, names);
-            collect_address_taken_names_in_block(&range.body, names);
+            collect_address_taken_names_in_expr(&range.x, env, names);
+            collect_address_taken_names_in_block(&range.body, env, names);
         }
         ast::Stmt::ReturnStmt(ret) => {
             for expr in &ret.results {
-                collect_address_taken_names_in_expr(expr, names);
+                collect_address_taken_names_in_expr(expr, env, names);
             }
         }
         ast::Stmt::SendStmt(send) => {
-            collect_address_taken_names_in_expr(&send.chan, names);
-            collect_address_taken_names_in_expr(&send.value, names);
+            collect_address_taken_names_in_expr(&send.chan, env, names);
+            collect_address_taken_names_in_expr(&send.value, env, names);
         }
         ast::Stmt::SelectStmt(select_stmt) => {
-            collect_address_taken_names_in_block(&select_stmt.body, names)
+            collect_address_taken_names_in_block(&select_stmt.body, env, names)
         }
         ast::Stmt::SwitchStmt(switch_stmt) => {
             if let Some(init) = &switch_stmt.init {
-                collect_address_taken_names_in_stmt(init, names);
+                collect_address_taken_names_in_stmt(init, env, names);
             }
             if let Some(tag) = &switch_stmt.tag {
-                collect_address_taken_names_in_expr(tag, names);
+                collect_address_taken_names_in_expr(tag, env, names);
             }
-            collect_address_taken_names_in_block(&switch_stmt.body, names);
+            collect_address_taken_names_in_block(&switch_stmt.body, env, names);
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
             if let Some(init) = &type_switch.init {
-                collect_address_taken_names_in_stmt(init, names);
+                collect_address_taken_names_in_stmt(init, env, names);
             }
-            collect_address_taken_names_in_stmt(&type_switch.assign, names);
-            collect_address_taken_names_in_block(&type_switch.body, names);
+            collect_address_taken_names_in_stmt(&type_switch.assign, env, names);
+            collect_address_taken_names_in_block(&type_switch.body, env, names);
         }
         ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
     }
 }
 
-fn collect_address_taken_names_in_expr(expr: &ast::Expr<'_>, names: &mut BTreeSet<String>) {
+fn collect_address_taken_names_in_expr(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
     match expr {
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
-            if let ast::Expr::Ident(ident) = &*unary.x
-                && ident.name != "_"
-            {
-                names.insert(ident.name.to_string());
-            }
-            collect_address_taken_names_in_expr(&unary.x, names);
+            collect_address_taken_target_names(&unary.x, env, names);
+            collect_address_taken_names_in_expr(&unary.x, env, names);
         }
         ast::Expr::ArrayType(array) => {
             if let Some(len) = &array.len {
-                collect_address_taken_names_in_expr(len, names);
+                collect_address_taken_names_in_expr(len, env, names);
             }
-            collect_address_taken_names_in_expr(&array.elt, names);
+            collect_address_taken_names_in_expr(&array.elt, env, names);
         }
         ast::Expr::BinaryExpr(binary) => {
-            collect_address_taken_names_in_expr(&binary.x, names);
-            collect_address_taken_names_in_expr(&binary.y, names);
+            collect_address_taken_names_in_expr(&binary.x, env, names);
+            collect_address_taken_names_in_expr(&binary.y, env, names);
         }
         ast::Expr::CallExpr(call) => {
-            collect_address_taken_names_in_expr(&call.fun, names);
+            collect_address_taken_names_in_expr(&call.fun, env, names);
             if let Some(args) = &call.args {
                 for arg in args {
-                    collect_address_taken_names_in_expr(arg, names);
+                    collect_address_taken_names_in_expr(arg, env, names);
                 }
             }
         }
-        ast::Expr::ChanType(chan) => collect_address_taken_names_in_expr(&chan.value, names),
+        ast::Expr::ChanType(chan) => collect_address_taken_names_in_expr(&chan.value, env, names),
         ast::Expr::CompositeLit(comp) => {
             if let Some(ty) = &comp.type_ {
-                collect_address_taken_names_in_expr(ty, names);
+                collect_address_taken_names_in_expr(ty, env, names);
             }
             if let Some(elts) = &comp.elts {
                 for elt in elts {
-                    collect_address_taken_names_in_expr(elt, names);
+                    collect_address_taken_names_in_expr(elt, env, names);
                 }
             }
         }
         ast::Expr::Ellipsis(ellipsis) => {
             if let Some(elt) = &ellipsis.elt {
-                collect_address_taken_names_in_expr(elt, names);
+                collect_address_taken_names_in_expr(elt, env, names);
             }
         }
-        ast::Expr::FuncLit(func_lit) => collect_address_taken_names_in_block(&func_lit.body, names),
+        ast::Expr::FuncLit(func_lit) => {
+            collect_address_taken_names_in_block(&func_lit.body, env, names)
+        }
         ast::Expr::IndexExpr(index) => {
-            collect_address_taken_names_in_expr(&index.x, names);
-            collect_address_taken_names_in_expr(&index.index, names);
+            collect_address_taken_names_in_expr(&index.x, env, names);
+            collect_address_taken_names_in_expr(&index.index, env, names);
         }
         ast::Expr::IndexListExpr(index) => {
-            collect_address_taken_names_in_expr(&index.x, names);
+            collect_address_taken_names_in_expr(&index.x, env, names);
             for index in &index.indices {
-                collect_address_taken_names_in_expr(index, names);
+                collect_address_taken_names_in_expr(index, env, names);
             }
         }
         ast::Expr::KeyValueExpr(kv) => {
-            collect_address_taken_names_in_expr(&kv.key, names);
-            collect_address_taken_names_in_expr(&kv.value, names);
+            collect_address_taken_names_in_expr(&kv.key, env, names);
+            collect_address_taken_names_in_expr(&kv.value, env, names);
         }
         ast::Expr::MapType(map) => {
-            collect_address_taken_names_in_expr(&map.key, names);
-            collect_address_taken_names_in_expr(&map.value, names);
+            collect_address_taken_names_in_expr(&map.key, env, names);
+            collect_address_taken_names_in_expr(&map.value, env, names);
         }
-        ast::Expr::ParenExpr(paren) => collect_address_taken_names_in_expr(&paren.x, names),
+        ast::Expr::ParenExpr(paren) => collect_address_taken_names_in_expr(&paren.x, env, names),
         ast::Expr::SelectorExpr(selector) => {
-            collect_address_taken_names_in_expr(&selector.x, names)
+            collect_address_taken_names_in_expr(&selector.x, env, names)
         }
         ast::Expr::SliceExpr(slice) => {
-            collect_address_taken_names_in_expr(&slice.x, names);
+            collect_address_taken_names_in_expr(&slice.x, env, names);
             if let Some(low) = &slice.low {
-                collect_address_taken_names_in_expr(low, names);
+                collect_address_taken_names_in_expr(low, env, names);
             }
             if let Some(high) = &slice.high {
-                collect_address_taken_names_in_expr(high, names);
+                collect_address_taken_names_in_expr(high, env, names);
             }
             if let Some(max) = &slice.max {
-                collect_address_taken_names_in_expr(max, names);
+                collect_address_taken_names_in_expr(max, env, names);
             }
         }
-        ast::Expr::StarExpr(star) => collect_address_taken_names_in_expr(&star.x, names),
+        ast::Expr::StarExpr(star) => collect_address_taken_names_in_expr(&star.x, env, names),
         ast::Expr::TypeAssertExpr(assert) => {
-            collect_address_taken_names_in_expr(&assert.x, names);
+            collect_address_taken_names_in_expr(&assert.x, env, names);
             if let Some(ty) = &assert.type_ {
-                collect_address_taken_names_in_expr(ty, names);
+                collect_address_taken_names_in_expr(ty, env, names);
             }
         }
-        ast::Expr::UnaryExpr(unary) => collect_address_taken_names_in_expr(&unary.x, names),
+        ast::Expr::UnaryExpr(unary) => collect_address_taken_names_in_expr(&unary.x, env, names),
         ast::Expr::BasicLit(_)
         | ast::Expr::FuncType(_)
         | ast::Expr::Ident(_)
         | ast::Expr::InterfaceType(_)
         | ast::Expr::StructType(_) => {}
+    }
+}
+
+fn collect_address_taken_target_names(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    match expr {
+        ast::Expr::Ident(ident) if ident.name != "_" => {
+            names.insert(ident.name.to_string());
+        }
+        ast::Expr::ParenExpr(paren) => collect_address_taken_target_names(&paren.x, env, names),
+        ast::Expr::SelectorExpr(selector) => {
+            let base_ty = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
+            if !matches!(base_ty, GoType::Pointer(_)) {
+                collect_address_taken_target_names(&selector.x, env, names);
+            }
+        }
+        _ => {}
     }
 }
 
