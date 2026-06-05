@@ -1,8 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use super::CompiledModule;
 use super::item_reachability::impl_method_reachability_name;
 use super::receiver_type_facts::ReceiverTypeMap;
 use super::syn_inspect::{item_name, named_self_type, self_type_reachability_names};
+
+pub(super) fn main_module_root_names(module: &CompiledModule, has_main: bool) -> HashSet<String> {
+    if has_main {
+        HashSet::from(["main".to_string()])
+    } else {
+        exported_item_reachability_names(&module.file.items)
+    }
+}
 
 pub(super) fn exported_item_reachability_names(items: &[syn::Item]) -> HashSet<String> {
     let mut roots = HashSet::new();

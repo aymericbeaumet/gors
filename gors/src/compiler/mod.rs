@@ -110,8 +110,8 @@ use proc_macro2::Span;
 use reachability_cache::ReachableItems;
 use reachability_names::{
     expand_supertrait_method_names, expand_supertrait_names,
-    expand_top_level_receiver_method_names, exported_item_reachability_names,
-    item_reachability_names, top_level_item_names, trait_method_names, trait_supertrait_names,
+    expand_top_level_receiver_method_names, item_reachability_names, main_module_root_names,
+    top_level_item_names, trait_method_names, trait_supertrait_names,
 };
 use receiver_type_facts::{
     ReceiverFieldTypeMap, ReceiverTupleReturnMap, ReceiverTupleTypes, ReceiverTypeMap,
@@ -3693,17 +3693,6 @@ fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has
         if reachability_cache::modules_fingerprint(modules) == before {
             break;
         }
-    }
-}
-
-fn main_module_root_names(
-    module: &CompiledModule,
-    has_main: bool,
-) -> std::collections::HashSet<String> {
-    if has_main {
-        std::collections::HashSet::from(["main".to_string()])
-    } else {
-        exported_item_reachability_names(&module.file.items)
     }
 }
 

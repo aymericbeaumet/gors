@@ -428,7 +428,7 @@ cache keys, cached entries, and fingerprint builders from that module instead
 of owning lock mechanics or hash serialization in `compiler/mod.rs`.
 Reachability root/name discovery and expansion live in
 `gors/src/compiler/reachability_names.rs`; DCE and semantic reachability should
-share exported-root collection, item/top-level name discovery, trait
+share main-module root selection, exported-root collection, item/top-level name discovery, trait
 supertrait/method maps, and top-level receiver-method root expansion through
 that module rather than duplicating name logic.
 Ref-collection input state lives in `gors/src/compiler/ref_collection.rs`;
