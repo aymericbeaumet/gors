@@ -4909,7 +4909,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         let rust_type: syn::Type =
                             if let Some(trait_path) = &borrowed_interface_trait_path {
                                 has_borrowed_interface_field = true;
-                                syn::parse_quote! { &'__gors mut dyn #trait_path }
+                                let lifetime = synthetic_names::borrowed_interface_lifetime();
+                                syn::parse_quote! { &#lifetime mut dyn #trait_path }
                             } else {
                                 type_from_struct_field_expr(&field_type, &ident)
                             };
@@ -4956,11 +4957,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             }
 
             if has_borrowed_interface_field {
-                let lifetime = syn::GenericParam::Lifetime(syn::LifetimeParam::new(
-                    syn::Lifetime::new("'__gors", Span::mixed_site()),
-                ));
                 let mut params = syn::punctuated::Punctuated::new();
-                params.push(lifetime);
+                params.push(synthetic_names::borrowed_interface_lifetime_param());
                 params.extend(generics.params.clone());
                 generics.params = params;
                 type_decl_facts::record_borrowed_interface_struct(
@@ -5060,10 +5058,11 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 embedded_types.first().filter(|_| embedded_types.len() == 1)
             {
                 let deref_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+                    let lifetime = synthetic_names::borrowed_interface_lifetime();
                     syn::parse_quote! {
                         impl #impl_generics std::ops::Deref for #ident #ty_generics #where_clause {
-                            type Target = dyn #trait_path + '__gors;
-                            fn deref(&self) -> &(dyn #trait_path + '__gors) {
+                            type Target = dyn #trait_path + #lifetime;
+                            fn deref(&self) -> &(dyn #trait_path + #lifetime) {
                                 &*self.#emb_field
                             }
                         }
@@ -5079,9 +5078,10 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     }
                 };
                 let deref_mut_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+                    let lifetime = synthetic_names::borrowed_interface_lifetime();
                     syn::parse_quote! {
                         impl #impl_generics std::ops::DerefMut for #ident #ty_generics #where_clause {
-                            fn deref_mut(&mut self) -> &mut (dyn #trait_path + '__gors) {
+                            fn deref_mut(&mut self) -> &mut (dyn #trait_path + #lifetime) {
                                 self.#emb_field
                             }
                         }
@@ -15572,18 +15572,17 @@ impl TryFrom<ast::File<'_>> for syn::File {
             let has_borrowed_interface_field =
                 type_decl_facts::has_borrowed_interface_struct(type_name);
             let mut generics = method_impl_generics(&type_args, type_decl_generics.get(type_name));
+            let borrowed_lifetime = synthetic_names::borrowed_interface_lifetime();
             if has_borrowed_interface_field {
                 let mut params = syn::punctuated::Punctuated::new();
-                params.push(syn::GenericParam::Lifetime(syn::LifetimeParam::new(
-                    syn::Lifetime::new("'__gors", Span::mixed_site()),
-                )));
+                params.push(synthetic_names::borrowed_interface_lifetime_param());
                 params.extend(generics.params.clone());
                 generics.params = params;
             }
             let self_ty: syn::Type = if has_borrowed_interface_field && type_args.is_empty() {
-                syn::parse_quote! { #type_ident<'__gors> }
+                syn::parse_quote! { #type_ident<#borrowed_lifetime> }
             } else if has_borrowed_interface_field {
-                syn::parse_quote! { #type_ident<'__gors, #(#type_args),*> }
+                syn::parse_quote! { #type_ident<#borrowed_lifetime, #(#type_args),*> }
             } else if type_args.is_empty() {
                 syn::parse_quote! { #type_ident }
             } else {
@@ -15675,13 +15674,18 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
                             generics: if has_borrowed_interface_field {
-                                syn::parse_quote! { <'__gors> }
+                                let mut generics = syn::Generics::default();
+                                generics
+                                    .params
+                                    .push(synthetic_names::borrowed_interface_lifetime_param());
+                                generics
                             } else {
                                 syn::Generics::default()
                             },
                             trait_: Some((None, trait_path, <Token![for]>::default())),
                             self_ty: Box::new(if has_borrowed_interface_field {
-                                syn::parse_quote! { #struct_ident<'__gors> }
+                                let lifetime = synthetic_names::borrowed_interface_lifetime();
+                                syn::parse_quote! { #struct_ident<#lifetime> }
                             } else {
                                 syn::parse_quote! { #struct_ident }
                             }),
@@ -15732,13 +15736,18 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             unsafety: None,
                             impl_token: <Token![impl]>::default(),
                             generics: if has_borrowed_interface_field {
-                                syn::parse_quote! { <'__gors> }
+                                let mut generics = syn::Generics::default();
+                                generics
+                                    .params
+                                    .push(synthetic_names::borrowed_interface_lifetime_param());
+                                generics
                             } else {
                                 syn::Generics::default()
                             },
                             trait_: Some((None, trait_path, <Token![for]>::default())),
                             self_ty: Box::new(if has_borrowed_interface_field {
-                                syn::parse_quote! { #struct_ident<'__gors> }
+                                let lifetime = synthetic_names::borrowed_interface_lifetime();
+                                syn::parse_quote! { #struct_ident<#lifetime> }
                             } else {
                                 syn::parse_quote! { #struct_ident }
                             }),
@@ -15789,8 +15798,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             &methods,
                             pointer_methods,
                         );
+                        let lifetime = synthetic_names::borrowed_interface_lifetime();
                         items.push(syn::parse_quote! {
-                            impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                            impl<#lifetime> #trait_path for &#lifetime mut #struct_ident {
                                 #(#impl_items)*
                             }
                         });
@@ -15841,8 +15851,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 &methods,
                                 pointer_methods,
                             );
+                            let lifetime = synthetic_names::borrowed_interface_lifetime();
                             items.push(syn::parse_quote! {
-                                impl<'__gors> #trait_path for &'__gors mut #struct_ident {
+                                impl<#lifetime> #trait_path for &#lifetime mut #struct_ident {
                                     #(#impl_items)*
                                 }
                             });
