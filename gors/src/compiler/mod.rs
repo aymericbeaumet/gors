@@ -10747,7 +10747,7 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
             .unwrap_or_default()
             .into_iter()
             .map(|expr| {
-                let interface_name = interface_type_expr_name(&expr);
+                let interface_name = interface_name_from_type_expr(&expr);
                 let is_nil = is_nil_type_case_expr(&expr);
                 let go_type = if is_nil {
                     typeinfer::GoType::Unknown
@@ -10947,18 +10947,6 @@ fn is_string_syn_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(type_path)
         if type_path.path.segments.len() == 1
             && type_path.path.segments.first().is_some_and(|seg| seg.ident == "String"))
-}
-
-fn interface_type_expr_name(expr: &ast::Expr) -> Option<String> {
-    match expr {
-        ast::Expr::Ident(id) if id.name == "error" || is_type_interface(id.name) => {
-            Some(id.name.to_string())
-        }
-        ast::Expr::SelectorExpr(selector) => (selector.sel.name == "error"
-            || is_type_interface(selector.sel.name))
-        .then(|| selector.sel.name.to_string()),
-        _ => None,
-    }
 }
 
 fn is_nil_type_case_expr(expr: &ast::Expr) -> bool {
@@ -21012,6 +21000,63 @@ func main() {
         assert!(
             output.contains("fnvString (h , (v) . clone ())"),
             "expected narrowed binding to be accepted as a string argument: {output}"
+        );
+    }
+
+    #[test]
+    fn interface_type_expr_names_resolve_through_type_env() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main(x any) {
+                    switch x.(type) {
+                    case error:
+                    case io.Reader:
+                    case pkg.error:
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("io.Reader", super::typeinfer::TypeKind::Interface);
+        super::set_type_env(env);
+
+        let type_switch = parsed
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func_decl) => func_decl.body.as_ref().and_then(|body| {
+                    body.list.iter().find_map(|stmt| match stmt {
+                        crate::ast::Stmt::TypeSwitchStmt(type_switch) => Some(type_switch),
+                        _ => None,
+                    })
+                }),
+                crate::ast::Decl::GenDecl(_) => None,
+            })
+            .expect("type switch");
+        let interface_names = type_switch
+            .body
+            .list
+            .iter()
+            .filter_map(|stmt| match stmt {
+                crate::ast::Stmt::CaseClause(case) => Some(case),
+                _ => None,
+            })
+            .filter_map(|case| case.list.as_ref()?.first())
+            .map(super::interface_name_from_type_expr)
+            .collect::<Vec<_>>();
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert_eq!(
+            interface_names,
+            vec![
+                Some("error".to_string()),
+                Some("io.Reader".to_string()),
+                None
+            ]
         );
     }
 
