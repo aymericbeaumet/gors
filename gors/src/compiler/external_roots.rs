@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use super::ref_collection::RefCollectionContext;
+use super::ref_collection::{RefCollectionContext, collect_refs_from_item};
 use super::semantic_reachability::SemanticReachabilityGraph;
-use super::{
-    CompiledModule, collect_refs_from_item, reachable_stdlib_items, required_module_roots,
-};
+use super::{CompiledModule, reachable_stdlib_items, required_module_roots};
 
 pub(super) struct ExternalRootCollector<'a> {
     module_names: &'a HashSet<String>,

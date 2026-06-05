@@ -431,10 +431,11 @@ Reachability root/name discovery and expansion live in
 share main-module root selection, exported-root collection, item/top-level name discovery, trait
 supertrait/method maps, and top-level receiver-method root expansion through
 that module rather than duplicating name logic.
-Ref-collection input state lives in `gors/src/compiler/ref_collection.rs`;
-token DCE, semantic reachability, and external-root discovery should construct
-`RefCollectionContext` from that module rather than owning ad hoc context
-structs in the compiler root.
+Ref-collection traversal and input state live in
+`gors/src/compiler/ref_collection.rs`; token DCE, semantic reachability, and
+external-root discovery should construct `RefCollectionContext` and call
+`collect_refs_from_item` from that module rather than owning ad hoc visitors or
+context structs in the compiler root.
 Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
 the DCE loop should delegate builtin channel, complex, bitcast, and builtin
 trait retention policy there instead of carrying runtime-specific root lists in
