@@ -13574,7 +13574,7 @@ fn compile_defer_saved_args<'a>(
             param_types.get(idx)
         };
         let (init, temp_ty) = compile_defer_arg_init(arg, expected);
-        let temp_ident = quote::format_ident!("_defer_{}_arg_{}", n, idx);
+        let temp_ident = synthetic_names::defer_arg_temp_ident(n, idx);
         if let Some(temp_ty) = temp_ty {
             prelude.push(syn::parse_quote! {
                 let #temp_ident: #temp_ty = #init;
@@ -13677,7 +13677,7 @@ fn compile_defer_stmt(mut call: ast::CallExpr) -> Vec<syn::Stmt> {
         } = resolved_go_type(&fun_ty)
         && let Some(fun_ty) = shared_func_box_type_from_go_type(&fun_ty)
     {
-        let fun_temp_ident = quote::format_ident!("_defer_{}_fun", n);
+        let fun_temp_ident = synthetic_names::defer_fun_temp_ident(n);
         let fun_expr: syn::Expr = (*call.fun).into();
         let has_variadic_spread = call.ellipsis.is_some();
         let (mut prelude, saved_args, _) =

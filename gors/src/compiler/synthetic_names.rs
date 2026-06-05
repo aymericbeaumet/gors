@@ -35,6 +35,17 @@ pub(super) fn next_defer_id() -> usize {
     next_id(&DEFER_COUNTER)
 }
 
+pub(super) fn defer_arg_temp_ident(defer_id: usize, arg_index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("_defer_{defer_id}_arg_{arg_index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn defer_fun_temp_ident(defer_id: usize) -> syn::Ident {
+    syn::Ident::new(&format!("_defer_{defer_id}_fun"), Span::mixed_site())
+}
+
 pub(super) fn next_switch_label() -> syn::Lifetime {
     let n = next_id(&SWITCH_COUNTER);
     syn::Lifetime::new(&format!("'__gors_switch_{n}"), Span::mixed_site())
@@ -221,6 +232,8 @@ mod tests {
             "__gors_switch_selected"
         );
         assert_eq!(switch_tag_ident().to_string(), "__gors_switch_tag");
+        assert_eq!(defer_arg_temp_ident(1, 2).to_string(), "_defer_1_arg_2");
+        assert_eq!(defer_fun_temp_ident(3).to_string(), "_defer_3_fun");
         assert_eq!(comma_ok_value_ident().to_string(), "__gors_comma_ok_value");
         assert_eq!(comma_ok_ok_ident().to_string(), "__gors_comma_ok_ok");
         assert_eq!(multi_value_temp_ident(4).to_string(), "__gors_multi_4");
