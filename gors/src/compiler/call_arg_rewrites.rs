@@ -12,6 +12,7 @@ use super::{
         is_slice_range_index_expr, named_self_type, pat_ident_name, slice_type_inner,
         vec_type_inner, zero_arg_method_call_receiver_expr,
     },
+    synthetic_names,
 };
 
 #[derive(Clone, Copy)]
@@ -1380,7 +1381,7 @@ impl RestoreVecNewtypeMethodReceivers<'_> {
         let receiver =
             vec_newtype_receiver_call(&method_call.receiver, &self.module_name, self.vec_newtypes)?;
 
-        let temp = quote::format_ident!("__gors_vec_newtype_recv_{}", self.counter);
+        let temp = synthetic_names::vec_newtype_receiver_temp_ident(self.counter);
         self.counter += 1;
         let source = receiver.source;
         let from_func = receiver.from_func;
@@ -1466,7 +1467,7 @@ impl syn::visit_mut::VisitMut for VecNewtypeBorrowHoister<'_> {
         else {
             return;
         };
-        let temp = quote::format_ident!("__gors_vec_newtype_arg_{}", *self.counter);
+        let temp = synthetic_names::vec_newtype_arg_temp_ident(*self.counter);
         *self.counter += 1;
         self.bindings.push(VecNewtypeBorrowBinding {
             temp: temp.clone(),

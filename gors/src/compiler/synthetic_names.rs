@@ -80,6 +80,20 @@ pub(super) fn premethod_arg_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_premethod_arg_{index}"), Span::mixed_site())
 }
 
+pub(super) fn vec_newtype_receiver_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_vec_newtype_recv_{index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn vec_newtype_arg_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_vec_newtype_arg_{index}"),
+        Span::mixed_site(),
+    )
+}
+
 pub(super) fn next_type_switch_value_ident() -> syn::Ident {
     let n = next_id(&SWITCH_COUNTER);
     syn::Ident::new(&format!("__gors_type_switch_value_{n}"), Span::mixed_site())
@@ -198,6 +212,14 @@ mod tests {
         assert_eq!(shared_value_ident().to_string(), "__gors_shared_value");
         assert_eq!(preborrow_arg_ident(6).to_string(), "__gors_preborrow_arg_6");
         assert_eq!(premethod_arg_ident(7).to_string(), "__gors_premethod_arg_7");
+        assert_eq!(
+            vec_newtype_receiver_temp_ident(8).to_string(),
+            "__gors_vec_newtype_recv_8"
+        );
+        assert_eq!(
+            vec_newtype_arg_temp_ident(9).to_string(),
+            "__gors_vec_newtype_arg_9"
+        );
         assert_eq!(
             next_type_switch_value_ident().to_string(),
             "__gors_type_switch_value_1"
