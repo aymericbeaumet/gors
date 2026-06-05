@@ -16363,9 +16363,6 @@ fn generic_map_clone_func_block(
     func_decl: &ast::FuncDecl,
     type_param_info: &TypeParamInfo,
 ) -> Option<syn::Block> {
-    if func_decl.name.name != "Clone" {
-        return None;
-    }
     let [param] = func_decl.type_.params.list.as_slice() else {
         return None;
     };
@@ -16379,6 +16376,9 @@ fn generic_map_clone_func_block(
         return None;
     }
     let param_name = param.names.as_ref()?.first()?;
+    if !generic_map_clone_body_matches(func_decl.body.as_ref()?, param_name.name, result_type) {
+        return None;
+    }
     let param_ident = syn::Ident::new(&rust_safe_ident_name(param_name.name), Span::mixed_site());
     Some(syn::parse_quote!({
         let mut __gors_clone = std::collections::HashMap::new();
@@ -16387,6 +16387,73 @@ fn generic_map_clone_func_block(
         }
         __gors_clone
     }))
+}
+
+fn generic_map_clone_body_matches(
+    body: &ast::BlockStmt,
+    param_name: &str,
+    result_type: &ast::Expr,
+) -> bool {
+    let [
+        ast::Stmt::IfStmt(nil_guard),
+        ast::Stmt::ReturnStmt(clone_return),
+    ] = body.list.as_slice()
+    else {
+        return false;
+    };
+    nil_guard_preserves_map_nil(nil_guard, param_name)
+        && return_is_runtime_map_clone(clone_return, param_name, result_type)
+}
+
+fn nil_guard_preserves_map_nil(if_stmt: &ast::IfStmt, param_name: &str) -> bool {
+    if if_stmt.init.as_ref().is_some() || if_stmt.else_.as_ref().is_some() {
+        return false;
+    }
+    if !expr_is_ident_nil_equality(&if_stmt.cond, param_name) {
+        return false;
+    }
+    let [ast::Stmt::ReturnStmt(ret)] = if_stmt.body.list.as_slice() else {
+        return false;
+    };
+    matches!(ret.results.as_slice(), [expr] if is_nil_expr(expr))
+}
+
+fn expr_is_ident_nil_equality(expr: &ast::Expr, ident_name: &str) -> bool {
+    let ast::Expr::BinaryExpr(binary) = expr else {
+        return false;
+    };
+    binary.op == token::Token::EQL
+        && ((expr_is_ident_name(&binary.x, ident_name) && is_nil_expr(&binary.y))
+            || (is_nil_expr(&binary.x) && expr_is_ident_name(&binary.y, ident_name)))
+}
+
+fn return_is_runtime_map_clone(
+    ret: &ast::ReturnStmt,
+    param_name: &str,
+    result_type: &ast::Expr,
+) -> bool {
+    let [ast::Expr::TypeAssertExpr(assertion)] = ret.results.as_slice() else {
+        return false;
+    };
+    let Some(asserted_type) = assertion.type_.as_deref() else {
+        return false;
+    };
+    if type_env_name_from_type_expr(asserted_type) != type_env_name_from_type_expr(result_type) {
+        return false;
+    }
+    let ast::Expr::CallExpr(call) = assertion.x.as_ref() else {
+        return false;
+    };
+    let ast::Expr::Ident(fun) = call.fun.as_ref() else {
+        return false;
+    };
+    if fun.name != "clone" {
+        return false;
+    }
+    matches!(
+        call.args.as_deref(),
+        Some([arg]) if expr_is_ident_name(arg, param_name)
+    )
 }
 
 impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
@@ -19793,6 +19860,59 @@ var X int
             quote! { #map_ty }.to_string(),
             "std :: collections :: HashMap < String , u64 >"
         );
+    }
+
+    #[test]
+    fn generic_map_clone_intrinsic_uses_body_shape_not_exported_name() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func clone(m any) any
+
+func CopyMap[M ~map[K]V, K comparable, V any](m M) M {
+	if m == nil {
+		return nil
+	}
+	return clone(m).(M)
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(output.contains("pub fn CopyMap"), "{output}");
+        assert!(
+            output.contains("let mut __gors_clone = std :: collections :: HashMap :: new ()")
+                && output.contains("for (__gors_k , __gors_v) in (m) . iter ()")
+                && output
+                    .contains("__gors_clone . insert (__gors_k . clone () , __gors_v . clone ())"),
+            "expected runtime map clone lowering to come from the source body shape: {output}"
+        );
+    }
+
+    #[test]
+    fn generic_map_clone_intrinsic_rejects_name_only_match() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func Clone[M ~map[K]V, K comparable, V any](m M) M {
+	return m
+}
+"#,
+        )
+        .unwrap();
+        let crate::ast::Decl::FuncDecl(func) = parsed.decls.into_iter().next().unwrap() else {
+            panic!("expected function declaration");
+        };
+        let type_param_info = super::collect_type_param_info(func.type_.type_params.as_ref());
+
+        assert!(super::generic_map_clone_func_block(&func, &type_param_info).is_none());
     }
 
     #[test]

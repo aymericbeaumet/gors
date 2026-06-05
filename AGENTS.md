@@ -309,6 +309,11 @@ gors-builtin/
   not lower `make(MySlice, n)` or `make(MyMap, n)` to `Default::default()`,
   because Go expects the requested length/capacity to be observable through
   subsequent slice/map operations.
+- Generic map-clone lowering is a source-body semantic rewrite for the
+  nil-preserving `return clone(m).(M)` runtime-linkname pattern, not an exported
+  function-name special case. Do not reintroduce a `maps.Clone` or `Clone`
+  trigger; the replacement must depend on the generic map parameter/result and
+  the runtime clone body shape.
 - Named `string` types are also newtypes and must implement `StringValue` for
   owned, shared-reference, and mutable-reference receivers. Method receiver
   rewriting must avoid turning `string(r)` into `builtin::string(&self)` because
