@@ -212,6 +212,7 @@ runtime primitive ownership contracts. Tests and ordinary Rust names such as
 | duplicated switch-lowering synthetic names | `compiler/synthetic_names.rs` now owns fixed switch fallthrough, selected-case, and tag identifier spelling; switch lowering only owns control-flow construction. |
 | duplicated comma-ok synthetic names | `compiler/synthetic_names.rs` now owns comma-ok assignment temp spelling; comma-ok lowering only owns assignment decomposition. |
 | duplicated multi-assignment synthetic names | `compiler/synthetic_names.rs` now owns multi-value and parallel-assignment temp spelling; assignment lowering only owns evaluation and writeback order. |
+| duplicated shared-capture synthetic names | `compiler/synthetic_names.rs` now owns shared-value temp spelling; shared-capture helpers and assignment lowering only own lock/read/write semantics. |
 | duplicated Go `unsafe` selector inspection | `compiler/ast_inspect.rs` now owns exact Go AST detection for `unsafe` package members, including `unsafe.Pointer` conversions and compile-time unsafe constants, shared by type inference, IR validation, and lowering. |
 | duplicated Go package `init` function detection | `compiler/ast_inspect.rs` now owns package `init` function classification, shared by top-level Rust item discovery and body collection, while IR still owns signature validation. |
 | duplicated Go predeclared type-name tables | `compiler/predeclared.rs` now owns the Go predeclared type-name table, shared by type inference and IR validation/type-argument classification. |

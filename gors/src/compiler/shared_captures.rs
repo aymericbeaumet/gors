@@ -3,7 +3,10 @@ use std::collections::{BTreeSet, HashSet};
 
 use proc_macro2::Span;
 
-use super::{TYPE_ENV, ast, go_type_is_copy, ir, rust_safe_ident_name, typeinfer, value_ident};
+use super::{
+    TYPE_ENV, ast, go_type_is_copy, ir, rust_safe_ident_name, synthetic_names, typeinfer,
+    value_ident,
+};
 
 thread_local! {
     static SHARED_CAPTURE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -121,15 +124,16 @@ pub(super) fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
             .get_var(name)
             .unwrap_or(typeinfer::GoType::Unknown)
     });
+    let value_ident = synthetic_names::shared_value_ident();
     if go_type_is_copy(&go_type) {
         Some(syn::parse_quote! {{
-            let __gors_shared_value = *#ident.lock().unwrap();
-            __gors_shared_value
+            let #value_ident = *#ident.lock().unwrap();
+            #value_ident
         }})
     } else {
         Some(syn::parse_quote! {{
-            let __gors_shared_value = #ident.lock().unwrap().clone();
-            __gors_shared_value
+            let #value_ident = #ident.lock().unwrap().clone();
+            #value_ident
         }})
     }
 }

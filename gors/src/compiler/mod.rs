@@ -19263,7 +19263,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 let base_alias_sync_stmts = slice_base_alias_sync_stmts(&lhs_ast);
                 if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
                     let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
-                    let value_ident = quote::format_ident!("__gors_shared_value");
+                    let value_ident = synthetic_names::shared_value_ident();
                     let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
                     let value_stmt: syn::Stmt = syn::parse_quote! { let #value_ident = #right; };
                     let assign_stmt = assign_expr_stmt(left, value_expr);
@@ -19365,9 +19365,10 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             {
                 let right = compile_expr_with_expected(rhs_ast, Some(&typeinfer::GoType::String));
                 if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
+                    let value_ident = synthetic_names::shared_value_ident();
                     return Ok(vec![syn::parse_quote! {{
-                        let __gors_shared_value = #right;
-                        #shared_ident.lock().unwrap().push_str(&__gors_shared_value);
+                        let #value_ident = #right;
+                        #shared_ident.lock().unwrap().push_str(&#value_ident);
                     }}]);
                 }
                 let left = compile_assignment_lhs_checked(lhs_ast)?;
@@ -19395,7 +19396,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
             if let Some(shared_ident) = shared_capture_ident(&lhs_ast) {
                 let op: syn::BinOp = assign_stmt.tok.into();
                 let left: syn::Expr = syn::parse_quote! { *#shared_ident.lock().unwrap() };
-                let value_ident = quote::format_ident!("__gors_shared_value");
+                let value_ident = synthetic_names::shared_value_ident();
                 let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
                 let value_stmt: syn::Stmt = syn::parse_quote! { let #value_ident = #right; };
                 let assign_stmt = binary_expr_stmt(left, op, value_expr);
