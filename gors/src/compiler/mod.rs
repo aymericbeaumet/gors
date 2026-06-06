@@ -11411,7 +11411,7 @@ fn expr_should_clone_for_value_param(
     expected: &typeinfer::GoType,
     actual: &typeinfer::GoType,
 ) -> bool {
-    if !is_ir_addressable_expr(expr) {
+    if !is_ir_addressable_expr(expr) && !expr_is_reusable_value_ident(expr) {
         return false;
     }
     let expected = resolved_go_type(expected);
@@ -11443,6 +11443,14 @@ fn expr_should_clone_for_value_param(
         return false;
     }
     !go_type_is_copy(&expected) && !go_type_is_copy(&actual)
+}
+
+fn expr_is_reusable_value_ident(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => !matches!(ident.name, "_" | "nil"),
+        ast::Expr::ParenExpr(paren) => expr_is_reusable_value_ident(&paren.x),
+        _ => false,
+    }
 }
 
 fn cloneable_slice_value_type(ty: &typeinfer::GoType) -> bool {
@@ -11971,6 +11979,17 @@ fn compile_expr_with_expected(
             let owned = compile_owned_interface_expr(expr, &actual);
             return syn::parse_quote! { Box::new(#owned) as Box<dyn std::any::Any> };
         }
+        if matches!(resolved_go_type(&actual), typeinfer::GoType::Error) {
+            let should_clone =
+                expr_should_clone_for_value_param(&expr, &typeinfer::GoType::Error, &actual);
+            let expr: syn::Expr = expr.into();
+            let value = if should_clone {
+                syn::parse_quote! { (#expr).clone() }
+            } else {
+                expr
+            };
+            return syn::parse_quote! { Box::new(#value) as Box<dyn std::any::Any> };
+        }
         if go_type_points_to_nonclone_named_struct(&actual)
             && let ast::Expr::UnaryExpr(unary) = &expr
             && unary.op == token::Token::AND
@@ -12006,7 +12025,14 @@ fn compile_expr_with_expected(
     ) {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
         if go_type_is_interface_like(&actual) {
-            return expr.into();
+            let should_clone =
+                expr_should_clone_for_value_param(&expr, &typeinfer::GoType::Error, &actual);
+            let compiled: syn::Expr = expr.into();
+            return if should_clone {
+                syn::parse_quote! { (#compiled).clone() }
+            } else {
+                compiled
+            };
         }
         let compiled: syn::Expr = expr.into();
         return if is_box_new_call(&compiled) {
@@ -28576,6 +28602,124 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("h.err = (err).clone();"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_clones_error_values_boxed_as_any() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func keep(arg any) {}
+
+func save(err error) error {
+	keep(err)
+	return err
+}
+
+func main() {
+	_ = save(nil)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Box::new((err).clone()) as Box<dyn std::any::Any>")
+                || main_rs
+                    .contains("Box :: new ((err) . clone ()) as Box < dyn std :: any :: Any >"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn call_signature_param_types_reads_interface_method_params() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type canceler interface {
+	cancel(error, error)
+}
+
+func save(c canceler, err error) {
+	c.cancel(err, err)
+}
+"#,
+        )
+        .unwrap();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.scan_file(&parsed);
+        super::set_type_env(env);
+
+        let call = parsed
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "save" => func.body.as_ref(),
+                _ => None,
+            })
+            .and_then(|body| {
+                body.list.iter().find_map(|stmt| match stmt {
+                    crate::ast::Stmt::ExprStmt(expr_stmt) => match &expr_stmt.x {
+                        crate::ast::Expr::CallExpr(call) => Some(call),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            })
+            .expect("expected interface method call");
+
+        assert_eq!(
+            super::call_signature_param_types(call),
+            vec![
+                super::typeinfer::GoType::Error,
+                super::typeinfer::GoType::Error
+            ]
+        );
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+    }
+
+    #[test]
+    fn compile_program_multi_clones_error_args_for_interface_method_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type canceler interface {
+	cancel(error, error)
+}
+
+type source struct{}
+
+func (source) cancel(error, error) {}
+
+func save(c canceler, err error) error {
+	c.cancel(err, err)
+	return err
+}
+
+func main() {
+	save(source{}, nil)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("c.cancel((err).clone(), (err).clone())")
+                || main_rs.contains("c . cancel ((err) . clone () , (err) . clone ())"),
+            "{main_rs}"
+        );
     }
 
     #[test]

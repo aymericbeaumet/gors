@@ -12604,7 +12604,7 @@ fn type_method_expression_receiver_type(
 
 fn method_receiver_type_name(ty: GoType, env: &TypeEnv) -> Option<String> {
     match env.resolve_alias(&ty) {
-        GoType::Named(name) => Some(name),
+        GoType::Named(name) | GoType::Interface(name) => Some(name),
         GoType::Pointer(inner) => method_receiver_type_name(*inner, env),
         _ => None,
     }
