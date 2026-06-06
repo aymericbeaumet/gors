@@ -514,12 +514,10 @@ fn concrete_direct_method_item(
     struct_name: &str,
     method: &syn::ImplItemFn,
 ) -> syn::ImplItem {
-    let mut method = method.clone();
-    method.vis = syn::Visibility::Inherited;
-    let method_ident = method.sig.ident.clone();
+    let mut sig = method.sig.clone();
+    let method_ident = sig.ident.clone();
     let immutable_error_method = trait_name == "error" && method_ident == "Error";
-    let original_receiver = method
-        .sig
+    let original_receiver = sig
         .inputs
         .first()
         .and_then(|arg| match arg {
@@ -529,33 +527,38 @@ fn concrete_direct_method_item(
             syn::FnArg::Typed(_) => None,
         })
         .unwrap_or((true, false));
-    set_interface_receiver(&mut method.sig, immutable_error_method);
-    if immutable_error_method {
-        let struct_ident = syn::Ident::new(
-            &super::rust_safe_ident_name(struct_name),
-            Span::mixed_site(),
-        );
-        let arg_idents = signature_arg_idents(&method.sig);
-        let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
-        method.block = concrete_error_method_block(
-            &method.sig,
-            &struct_ident,
-            &method_ident,
-            original_receiver_is_ref,
-            original_receiver_is_mut,
-            &arg_idents,
-        );
-    }
-    syn::ImplItem::Fn(method)
+    set_interface_receiver(&mut sig, immutable_error_method);
+    set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+    let struct_ident = syn::Ident::new(
+        &super::rust_safe_ident_name(struct_name),
+        Span::mixed_site(),
+    );
+    let arg_idents = signature_arg_idents(&sig);
+    let arg_exprs = interface_forward_arg_exprs(
+        trait_name,
+        struct_name,
+        &method_ident.to_string(),
+        &arg_idents,
+    );
+    let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
+    let block = concrete_direct_method_block(
+        &sig,
+        &struct_ident,
+        &method_ident,
+        original_receiver_is_ref,
+        original_receiver_is_mut,
+        &arg_exprs,
+    );
+    impl_item_fn(sig, block)
 }
 
-fn concrete_error_method_block(
+fn concrete_direct_method_block(
     sig: &syn::Signature,
     struct_ident: &syn::Ident,
     method_ident: &syn::Ident,
     original_receiver_is_ref: bool,
     original_receiver_is_mut: bool,
-    arg_idents: &[syn::Ident],
+    arg_exprs: &[syn::Expr],
 ) -> syn::Block {
     if original_receiver_is_mut {
         let receiver: syn::Expr = if original_receiver_is_ref {
@@ -566,21 +569,21 @@ fn concrete_error_method_block(
         if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({
                 let mut __gors_receiver = (*self).clone();
-                #struct_ident::#method_ident(#receiver, #(#arg_idents),*);
+                #struct_ident::#method_ident(#receiver, #(#arg_exprs),*);
             })
         } else {
             syn::parse_quote!({
                 let mut __gors_receiver = (*self).clone();
-                #struct_ident::#method_ident(#receiver, #(#arg_idents),*)
+                #struct_ident::#method_ident(#receiver, #(#arg_exprs),*)
             })
         }
     } else if matches!(sig.output, syn::ReturnType::Default) {
         syn::parse_quote!({
-            #struct_ident::#method_ident(self, #(#arg_idents),*);
+            #struct_ident::#method_ident(self, #(#arg_exprs),*);
         })
     } else {
         syn::parse_quote!({
-            #struct_ident::#method_ident(self, #(#arg_idents),*)
+            #struct_ident::#method_ident(self, #(#arg_exprs),*)
         })
     }
 }

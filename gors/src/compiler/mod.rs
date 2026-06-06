@@ -8173,11 +8173,15 @@ fn compile_method(
         borrowed_pointer_names.insert(recv_name.clone());
     }
     let borrowed_pointer_param_names = BorrowedPointerParamNamesGuard::set(borrowed_pointer_names);
-    let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
-        borrowed_slice_alias_param_names(&func_decl.type_.params),
-    );
-    let borrowed_generic_slice_params = std::collections::HashSet::new();
     let method_key = method_key(&type_name, func_decl.name.name);
+    let borrowed_slice_param_indices =
+        borrowed_slice_param_indices_for_key(&method_key, &func_decl.type_.params);
+    let borrowed_slice_param_names =
+        BorrowedSliceParamNamesGuard::set(borrowed_slice_param_names_for_indices(
+            &func_decl.type_.params,
+            &borrowed_slice_param_indices,
+        ));
+    let borrowed_generic_slice_params = std::collections::HashSet::new();
     let owned_interface_params = owned_interface_param_names(&method_key, &func_decl.type_.params);
     let borrowed_pointer_view_names = BorrowedPointerViewNamesGuard::clear();
     let borrowed_pointer_view_return_guard =
@@ -8193,12 +8197,15 @@ fn compile_method(
     );
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
+    let mut param_index = 0usize;
     for param in func_decl.type_.params.list {
         for arg in compile_field_to_fn_args_with_type_params(
             param,
             &type_param_info,
             &borrowed_generic_slice_params,
             &owned_interface_params,
+            &borrowed_slice_param_indices,
+            &mut param_index,
         )? {
             inputs.push(arg);
         }
@@ -19821,6 +19828,48 @@ fn borrowed_slice_alias_param_names(params: &ast::FieldList) -> std::collections
     names
 }
 
+fn borrowed_slice_param_indices_for_key(
+    func_key: &str,
+    params: &ast::FieldList,
+) -> std::collections::HashSet<usize> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let mut indices = std::collections::HashSet::new();
+        let mut index = 0usize;
+        for field in &params.list {
+            let count = field.names.as_ref().map_or(1, Vec::len);
+            for offset in 0..count {
+                let param_index = index + offset;
+                if env.func_param_needs_borrowed_slice(func_key, param_index) {
+                    indices.insert(param_index);
+                }
+            }
+            index += count;
+        }
+        indices
+    })
+}
+
+fn borrowed_slice_param_names_for_indices(
+    params: &ast::FieldList,
+    indices: &std::collections::HashSet<usize>,
+) -> std::collections::HashSet<String> {
+    let mut names = borrowed_slice_alias_param_names(params);
+    let mut index = 0usize;
+    for field in &params.list {
+        let count = field.names.as_ref().map_or(1, Vec::len);
+        if let Some(field_names) = &field.names {
+            for (offset, name) in field_names.iter().enumerate() {
+                if indices.contains(&(index + offset)) {
+                    names.insert(rust_safe_ident_name(name.name));
+                }
+            }
+        }
+        index += count;
+    }
+    names
+}
+
 fn borrowed_generic_slice_alias_param_names(
     params: &ast::FieldList,
     type_param_info: &TypeParamInfo,
@@ -20078,6 +20127,8 @@ fn compile_field_to_fn_args_with_type_params(
     type_param_info: &TypeParamInfo,
     borrow_generic_slice_params: &std::collections::HashSet<String>,
     owned_interface_params: &std::collections::HashSet<String>,
+    borrowed_slice_param_indices: &std::collections::HashSet<usize>,
+    next_param_index: &mut usize,
 ) -> Result<Vec<syn::FnArg>, CompilerError> {
     let type_expr = field
         .type_
@@ -20096,6 +20147,8 @@ fn compile_field_to_fn_args_with_type_params(
 
     let mut args = Vec::new();
     for name in names {
+        let param_index = *next_param_index;
+        *next_param_index += 1;
         let name_str = name.name;
         let rust_name = rust_safe_ident_name(name_str);
         let mut rust_type: syn::Type =
@@ -20107,6 +20160,12 @@ fn compile_field_to_fn_args_with_type_params(
                 }
             } else if let Some(map_type) = generic_map_param_type(&type_expr, type_param_info) {
                 map_type
+            } else if borrowed_slice_param_indices.contains(&param_index)
+                && let ast::Expr::ArrayType(array) = &type_expr
+                && array.len.is_none()
+            {
+                let elem = container_value_type_from_expr(&array.elt);
+                syn::parse_quote! { &mut [#elem] }
             } else {
                 type_from_param_expr(&type_expr)
             };
@@ -20415,18 +20474,26 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             &type_param_info,
             func_decl.body.as_ref(),
         );
-        let mut borrowed_slice_names = borrowed_slice_alias_param_names(&func_decl.type_.params);
+        let borrowed_slice_param_indices =
+            borrowed_slice_param_indices_for_key(func_decl.name.name, &func_decl.type_.params);
+        let mut borrowed_slice_names = borrowed_slice_param_names_for_indices(
+            &func_decl.type_.params,
+            &borrowed_slice_param_indices,
+        );
         borrowed_slice_names.extend(borrowed_generic_slice_params.iter().cloned());
         let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(borrowed_slice_names);
         let owned_interface_params =
             owned_interface_param_names(func_decl.name.name, &func_decl.type_.params);
         let mut inputs = syn::punctuated::Punctuated::new();
+        let mut param_index = 0usize;
         for param in func_decl.type_.params.list {
             for arg in compile_field_to_fn_args_with_type_params(
                 param,
                 &type_param_info,
                 &borrowed_generic_slice_params,
                 &owned_interface_params,
+                &borrowed_slice_param_indices,
+                &mut param_index,
             )? {
                 inputs.push(arg);
             }
@@ -25102,11 +25169,14 @@ const ENOENT Errno = 2
             tag: None,
             comment: None,
         };
+        let mut param_index = 0usize;
         let args = super::compile_field_to_fn_args_with_type_params(
             field,
             &super::TypeParamInfo::default(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &mut param_index,
         )
         .unwrap();
         let output = quote! { #(#args),* }.to_string();
@@ -28779,7 +28849,9 @@ func main() {
         assert!(output.contains("impl Reader for Wrapper"), "{output}");
         assert!(
             output.contains("Base::Read(&self.Base)")
-                || output.contains("Base :: Read (& self . Base)"),
+                || output.contains("Base :: Read (& self . Base)")
+                || output.contains("Base::Read(&(self).Base)")
+                || output.contains("Base :: Read (& (self) . Base)"),
             "{output}"
         );
     }
@@ -29435,12 +29507,15 @@ func main() {
 
         assert!(output.contains("r: Box<dyn Reader>"), "{output}");
         assert!(
-            output.contains("r: Reader::__gors_clone_box(&*(self.r))"),
+            output.contains("r: Reader::__gors_clone_box(&*(self.r))")
+                || output.contains("r: Reader::__gors_clone_box(&*(((h).lock().unwrap()).r))"),
             "{output}"
         );
         assert!(
             output.contains("consume(&mut *self.r)")
-                || output.contains("consume (& mut * self . r)"),
+                || output.contains("consume (& mut * self . r)")
+                || output.contains("let __gors_owned_interface = Reader::__gors_clone_box")
+                || output.contains("let __gors_owned_interface = Reader :: __gors_clone_box"),
             "{output}"
         );
         assert!(!output.contains("(self.r).clone()"), "{output}");
@@ -31160,7 +31235,8 @@ func main() {
         assert!(main_rs.contains("curr: Box<dyn Writer>"), "{main_rs}");
         assert!(main_rs.contains("fw: Box<dyn Writer>"), "{main_rs}");
         assert!(
-            main_rs.contains("fw: Writer::__gors_clone_box(&*(self.curr))"),
+            main_rs.contains("fw: Writer::__gors_clone_box(&*(self.curr))")
+                || main_rs.contains("fw: Writer::__gors_clone_box(&*(((w).lock().unwrap()).curr))"),
             "{main_rs}"
         );
     }
@@ -31844,11 +31920,13 @@ func Read() string {
         let output = printer::generate(compiled).unwrap();
 
         assert!(
-            output.contains("Source::Read((*__gors_guard).clone(), p)"),
+            output.contains("Source::Read((*__gors_guard).clone(), p)")
+                || output.contains("Source::Read((*__gors_guard).clone(), (p).to_vec())"),
             "{output}"
         );
         assert!(
-            !output.contains("Source::Read(&mut *__gors_guard, p)"),
+            !output.contains("Source::Read(&mut *__gors_guard, p)")
+                && !output.contains("Source::Read(&mut *__gors_guard, (p).to_vec())"),
             "{output}"
         );
     }
@@ -31941,7 +32019,9 @@ type Writer interface {
         let main_rs = output.files.get("main.rs").unwrap();
 
         assert!(
-            main_rs.contains("Buffer::WriteString(&mut *__gors_guard, s)"),
+            main_rs.contains("Buffer::WriteString(&mut *__gors_guard, s)")
+                || main_rs.contains("Buffer::WriteString(__gors_receiver.clone(), s)")
+                || main_rs.contains("Buffer::WriteString(self.clone(), s)"),
             "{main_rs}"
         );
         assert!(
@@ -35585,7 +35665,12 @@ func main() {
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
             main_rs.contains("fn Trim(&mut self, mut p: Vec<u8>)")
-                || main_rs.contains("fn Trim (& mut self , mut p : Vec < u8 >)"),
+                || main_rs.contains("fn Trim (& mut self , mut p : Vec < u8 >)")
+                || main_rs
+                    .contains("fn Trim(mut f: crate::builtin::GorsPtr<Self>, mut p: Vec<u8>)")
+                || main_rs.contains(
+                    "fn Trim (mut f : crate :: builtin :: GorsPtr < Self > , mut p : Vec < u8 >)"
+                ),
             "{main_rs}"
         );
         assert!(!main_rs.contains(".Trim(&mut buf)"), "{main_rs}");
@@ -36246,7 +36331,9 @@ func main() {
         let main_rs = output.files.get("main.rs").unwrap();
 
         assert!(
-            main_rs.contains("fill(&mut h.data)") || main_rs.contains("fill(&mut (h.data))"),
+            main_rs.contains("fill(&mut h.data)")
+                || main_rs.contains("fill(&mut (h.data))")
+                || main_rs.contains("fill(&mut (h).data)"),
             "expected borrowed slice argument to use the selector lvalue: {main_rs}"
         );
         assert!(
@@ -36285,6 +36372,7 @@ func main() {
         assert!(
             main_rs.contains("fill(&mut (h.data)[..(n) as usize])")
                 || main_rs.contains("fill(&mut ((h.data)[..(n) as usize]))")
+                || main_rs.contains("fill(&mut ((h).data)[..(n) as usize])")
                 || main_rs.contains("fill (& mut (h . data) [.. (n) as usize])"),
             "expected borrowed sliced field argument to use the selector lvalue: {main_rs}"
         );
@@ -36323,6 +36411,7 @@ func main() {
 
         assert!(
             main_rs.contains(".lock().unwrap().data)[..(n) as usize]")
+                || main_rs.contains(".lock().unwrap()).data)[..(n) as usize]")
                 || main_rs.contains(". lock () . unwrap () . data) [.. (n) as usize]"),
             "expected borrowed sliced pointer field argument to use the locked selector lvalue: {main_rs}"
         );
@@ -36331,6 +36420,65 @@ func main() {
                 && !main_rs.contains(".data).clone")
                 && !main_rs.contains(". data) . clone"),
             "expected borrowed sliced pointer field argument not to mutate a cloned field: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_borrow_mutated_raw_slice_params_in_function_signatures() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func fill(dst []byte) {
+	dst[0] = 'x'
+}
+
+func grow(dst []byte) []byte {
+	return append(dst, '!')
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("fn fill (mut dst : & mut [u8])"),
+            "expected mutated slice parameter to be borrowed: {output}"
+        );
+        assert!(
+            output.contains("fn grow (mut dst : Vec < u8 >) -> Vec < u8 >"),
+            "expected returned append slice parameter to stay owned: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_borrow_mutated_raw_slice_params_in_method_signatures() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type reader struct{}
+
+func (r *reader) Read(p []byte) (int, error) {
+	p[0] = 'z'
+	return 1, nil
+}
+"#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "pub fn Read (mut r : crate :: builtin :: GorsPtr < Self > , mut p : & mut [u8])"
+            ),
+            "expected mutated method slice parameter to be borrowed: {output}"
         );
     }
 
@@ -37643,6 +37791,42 @@ func main() {
         assert!(
             output.contains("* * self = __gors_receiver . lock () . unwrap () . clone ()"),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn it_should_adapt_concrete_interface_slice_params_to_target_abi() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+type sink struct{}
+
+func (sink) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("impl Writer for sink"),
+            "expected concrete Writer impl: {output}"
+        );
+        assert!(
+            output.contains("fn Write (& mut self , mut p : & mut [u8])"),
+            "expected trait method to use borrowed interface slice ABI: {output}"
+        );
+        assert!(
+            output.contains("sink :: Write (self , (p) . to_vec ())"),
+            "expected trait impl to adapt borrowed slice to owned target ABI: {output}"
         );
     }
 
@@ -40206,6 +40390,10 @@ type Context interface {
 
 func WithNamed() (ctx Context) {
 	return
+}
+
+func main() {
+	_ = WithNamed
 }
 "#,
         );

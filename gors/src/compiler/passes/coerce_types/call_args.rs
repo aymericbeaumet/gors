@@ -66,6 +66,9 @@ pub(super) fn collect_mutable_ref_call_args(file: &syn::File) -> MutableRefCallA
                 }
             }
             syn::Item::Impl(item_impl) => {
+                if item_impl.trait_.is_some() {
+                    continue;
+                }
                 let Some(self_ty) = type_path_ident_name(&item_impl.self_ty) else {
                     continue;
                 };

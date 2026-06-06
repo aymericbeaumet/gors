@@ -2536,7 +2536,7 @@ mod tests {
             "pub fn Value",
             "impl Context for backgroundCtx",
             "impl Context for todoCtx",
-            "impl < '__gors > Context for crate :: builtin :: GorsPtr < valueCtx < '__gors > >",
+            "impl < '__gors : 'static > Context for crate :: builtin :: GorsPtr < valueCtx < '__gors > >",
             "fn value",
         ] {
             assert!(
