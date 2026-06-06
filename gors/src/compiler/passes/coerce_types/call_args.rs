@@ -1,5 +1,5 @@
 use super::super::super::syn_inspect::{
-    is_path_ident, pat_ident_name, path_ident_name, type_path_ident_name,
+    is_box_leak_expr, is_path_ident, pat_ident_name, path_ident_name, type_path_ident_name,
 };
 
 pub(super) type MutableRefCallArgs =
@@ -197,6 +197,9 @@ fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections
     if matches!(expr, syn::Expr::Reference(_)) {
         return;
     }
+    if expr_yields_mut_ref(expr) {
+        return;
+    }
     if is_path_ident(expr, "self") {
         return;
     }
@@ -210,6 +213,20 @@ fn borrow_mut_expr(expr: &mut syn::Expr, pointer_cell_statics: &std::collections
     }
     let inner = expr.clone();
     *expr = syn::parse_quote! { &mut #inner };
+}
+
+fn expr_yields_mut_ref(expr: &syn::Expr) -> bool {
+    if is_box_leak_expr(expr) {
+        return true;
+    }
+    let syn::Expr::Block(block) = expr else {
+        return false;
+    };
+    block
+        .block
+        .stmts
+        .last()
+        .is_some_and(|stmt| matches!(stmt, syn::Stmt::Expr(expr, None) if is_box_leak_expr(expr)))
 }
 
 fn clone_expr(expr: &mut syn::Expr) {

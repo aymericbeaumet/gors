@@ -5575,6 +5575,14 @@ fn signature_arg_idents(sig: &syn::Signature) -> Vec<syn::Ident> {
 }
 
 fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Option<syn::Item> {
+    interface_forwarding_impl(ident, trait_items, syn::parse_quote! { Box<T> })
+}
+
+fn interface_forwarding_impl(
+    ident: &syn::Ident,
+    trait_items: &[syn::TraitItem],
+    self_ty: syn::Type,
+) -> Option<syn::Item> {
     let mut impl_methods = Vec::new();
     for trait_item in trait_items {
         let syn::TraitItem::Fn(trait_fn) = trait_item else {
@@ -5613,7 +5621,7 @@ fn interface_box_impl(ident: &syn::Ident, trait_items: &[syn::TraitItem]) -> Opt
         return None;
     }
     Some(syn::parse_quote! {
-        impl<T: #ident + ?Sized> #ident for Box<T> {
+        impl<T: #ident + ?Sized> #ident for #self_ty {
             #(#impl_methods)*
         }
     })
@@ -10671,6 +10679,11 @@ fn compile_call_arg_with_expected_and_ownership(
     {
         return compile_owned_interface_expr(arg, expected);
     }
+    if let Some(expected) = expected
+        && let Some(arg) = compile_borrowed_interface_selector_call_arg(&arg, expected)
+    {
+        return arg;
+    }
     let should_clone = any_call_arg_needs_clone(&arg, expected, actual);
     let arg = compile_expr_with_expected(arg, expected);
     if should_clone {
@@ -10678,6 +10691,29 @@ fn compile_call_arg_with_expected_and_ownership(
     } else {
         arg
     }
+}
+
+fn compile_borrowed_interface_selector_call_arg(
+    arg: &ast::Expr,
+    expected: &typeinfer::GoType,
+) -> Option<syn::Expr> {
+    let interface_name = go_type_interface_name(expected)?;
+    if interface_name == "error" {
+        return None;
+    }
+    let ast::Expr::SelectorExpr(selector) = arg else {
+        return None;
+    };
+    let actual = selector_field_go_type(selector)
+        .unwrap_or_else(|| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(arg, &env.borrow())));
+    go_type_interface_name(&actual)?;
+    let lvalue = lvalue_expr_from_ref(arg)?;
+    let trait_path = interface_trait_path_from_name(&interface_name);
+    let clone_box = clone_box_method_ident();
+    Some(syn::parse_quote! {{
+        let __gors_owned_interface = #trait_path::#clone_box(&*(#lvalue));
+        Box::leak(__gors_owned_interface)
+    }})
 }
 
 fn call_arg_needs_owned_interface(call_abi: &ir::CallAbi, arg_index: usize) -> bool {
@@ -12045,6 +12081,9 @@ fn compile_expr_with_expected(
     if let Some(expected) = expected {
         if go_type_interface_name(expected).is_some() {
             let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+            if let Some(expr) = compile_borrowed_interface_selector_call_arg(&expr, expected) {
+                return expr;
+            }
             if let Some(expr) = borrowed_interface_address_of_ident_expr(&expr) {
                 return expr;
             }
@@ -28718,6 +28757,150 @@ func main() {
         assert!(
             main_rs.contains("c.cancel((err).clone(), (err).clone())")
                 || main_rs.contains("c . cancel ((err) . clone () , (err) . clone ())"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_scopes_borrowed_interface_field_call_args() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Context interface {
+	Done()
+}
+
+type canceler interface {
+	cancel()
+}
+
+type cancelCtx struct {
+	Context
+}
+
+func removeChild(parent Context, child canceler) {}
+
+func (c *cancelCtx) Done() {}
+
+func (c *cancelCtx) cancel() {
+	removeChild(c.Context, c)
+}
+"#,
+        )
+        .unwrap();
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.scan_file(&parsed);
+        env.set_var(
+            "c",
+            super::typeinfer::GoType::Pointer(Box::new(super::typeinfer::GoType::Named(
+                "cancelCtx".to_string(),
+            ))),
+        );
+        assert_eq!(
+            env.get_struct_fields("cancelCtx"),
+            vec![(
+                "Context".to_string(),
+                super::typeinfer::GoType::Named("Context".to_string())
+            )]
+        );
+        super::set_type_env(env);
+        let helper_arg = parsed
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "cancel" => {
+                    func.body.as_ref()
+                }
+                _ => None,
+            })
+            .and_then(|body| {
+                body.list.iter().find_map(|stmt| match stmt {
+                    crate::ast::Stmt::ExprStmt(expr_stmt) => match &expr_stmt.x {
+                        crate::ast::Expr::CallExpr(call) => {
+                            call.args.as_ref().and_then(|args| args.first())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            })
+            .expect("expected first call arg");
+        assert_eq!(
+            super::go_type_interface_name(&super::typeinfer::GoType::Named("Context".to_string())),
+            Some("Context".to_string())
+        );
+        let inferred_helper_arg = match helper_arg {
+            crate::ast::Expr::SelectorExpr(selector) => super::selector_field_go_type(selector)
+                .unwrap_or_else(|| {
+                    super::TYPE_ENV
+                        .with(|env| super::typeinfer::GoType::infer_expr(helper_arg, &env.borrow()))
+                }),
+            _ => super::TYPE_ENV
+                .with(|env| super::typeinfer::GoType::infer_expr(helper_arg, &env.borrow())),
+        };
+        assert_eq!(
+            inferred_helper_arg,
+            super::typeinfer::GoType::Named("Context".to_string())
+        );
+        assert!(
+            super::lvalue_expr_from_ref(helper_arg).is_some(),
+            "expected selector lvalue"
+        );
+        let helper_expr = super::compile_borrowed_interface_selector_call_arg(
+            helper_arg,
+            &super::typeinfer::GoType::Named("Context".to_string()),
+        )
+        .expect("expected scoped interface helper");
+        let helper_tokens = quote! { #helper_expr }.to_string();
+        assert!(!helper_tokens.starts_with("& mut"), "{helper_tokens}");
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Context interface {
+	Done()
+}
+
+type canceler interface {
+	cancel()
+}
+
+type cancelCtx struct {
+	Context
+}
+
+func removeChild(parent Context, child canceler) {}
+
+func (c *cancelCtx) Done() {}
+
+func (c *cancelCtx) cancel() {
+	removeChild(c.Context, c)
+}
+
+func main() {
+	c := &cancelCtx{}
+	c.cancel()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let __gors_owned_interface = Context::__gors_clone_box")
+                || main_rs.contains("let __gors_owned_interface = Context :: __gors_clone_box"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("removeChild(\n            &mut {")
+                && !main_rs.contains("removeChild (&mut {"),
             "{main_rs}"
         );
     }

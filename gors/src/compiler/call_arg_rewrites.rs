@@ -523,7 +523,7 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     if matches!(arg, syn::Expr::Reference(_)) {
         return;
     }
-    if is_box_leak_expr(arg) {
+    if expr_yields_mut_ref(arg) {
         return;
     }
     if let Some(source) = cloned_lvalue_source(arg) {
@@ -544,6 +544,20 @@ fn borrow_mut_vec_call_arg(arg: &mut syn::Expr) {
     }
     let inner = arg.clone();
     *arg = syn::parse_quote! { &mut #inner };
+}
+
+fn expr_yields_mut_ref(expr: &syn::Expr) -> bool {
+    if is_box_leak_expr(expr) {
+        return true;
+    }
+    let syn::Expr::Block(block) = expr else {
+        return false;
+    };
+    block
+        .block
+        .stmts
+        .last()
+        .is_some_and(|stmt| matches!(stmt, syn::Stmt::Expr(expr, None) if is_box_leak_expr(expr)))
 }
 
 fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
