@@ -1,6 +1,7 @@
 pub const AS_ANY_METHOD: &str = "__gors_as_any";
 pub const CLONE_BOX_METHOD: &str = "__gors_clone_box";
 pub const INTERFACE_KEY_METHOD: &str = "__gors_interface_key";
+pub const PACKAGE_INIT_FN: &str = "__gors_init";
 pub const ERROR_EXT_TRAIT: &str = "__GorsErrorExt";
 pub const FMT_FLUSH_HOOK: &str = "__gors_flush_fmt";
 pub const FMT_FLUSH_METHOD_DOC_PREFIX: &str = "gors:fmt-flush-method=";
@@ -23,6 +24,10 @@ pub fn clone_box_method_ident() -> syn::Ident {
 
 pub fn interface_key_method_ident() -> syn::Ident {
     ident(INTERFACE_KEY_METHOD)
+}
+
+pub fn package_init_ident() -> syn::Ident {
+    ident(PACKAGE_INIT_FN)
 }
 
 pub fn error_ext_trait_ident() -> syn::Ident {

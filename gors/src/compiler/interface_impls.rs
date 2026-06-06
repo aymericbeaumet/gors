@@ -201,7 +201,10 @@ fn items_for_target(
             interface_hooks::borrowed_pointer_interface_key_item(context.struct_name)
         }
     };
-    let mut impl_items = vec![pointer_as_any_item(exposes_any), interface_key_item];
+    let mut impl_items = vec![
+        pointer_as_any_item(pointer_exposes_any(target, exposes_any)),
+        interface_key_item,
+    ];
     if context.trait_name != "error" {
         impl_items.push(interface_hooks::clone_box_impl_item(
             context.trait_path,
@@ -480,6 +483,13 @@ pub(super) fn pointer_can_emit_methods(
 
 fn concrete_as_any_item(exposes_any: bool) -> syn::ImplItem {
     pointer_as_any_item(exposes_any)
+}
+
+fn pointer_exposes_any(target: PointerImplTarget, exposes_any: bool) -> bool {
+    match target {
+        PointerImplTarget::GorsPtr => true,
+        PointerImplTarget::BorrowedMut => exposes_any,
+    }
 }
 
 fn pointer_as_any_item(exposes_any: bool) -> syn::ImplItem {

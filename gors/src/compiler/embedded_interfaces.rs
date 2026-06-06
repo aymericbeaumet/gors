@@ -142,10 +142,11 @@ fn pointer_forwarding_impl_item(
     let has_pointer_inherent_method =
         pointer_methods.is_some_and(|methods| methods.contains(&method_name));
     let block = match method_name.as_str() {
-        interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ None }),
+        interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ Some(self) }),
         interface_hooks::CLONE_BOX_METHOD => {
             syn::parse_quote!({ Box::new(self.clone()) as Box<dyn #trait_path> })
         }
+        interface_hooks::INTERFACE_KEY_METHOD => syn::parse_quote!({ self.interface_key() }),
         _ if has_pointer_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
             syn::parse_quote!({
                 #struct_ident::#method_ident(self.clone(), #(#arg_idents),*);

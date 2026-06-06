@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::{
@@ -9,6 +10,7 @@ pub(super) fn resolve_required_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
     roots: &[String],
 ) {
+    let init_root_mod_names = init_root_module_names(roots);
     let mut import_path_by_module: HashMap<String, String> = crate::resolve::list_packages()
         .into_iter()
         .map(|path| (crate::resolve::module_name(&path), path))
@@ -119,7 +121,8 @@ pub(super) fn resolve_required_stdlib_modules(
             let refs = if module.mod_name == "builtin" {
                 external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
-                external_root_collector.refs_from_reachable_module_roots(module, roots)
+                let roots = roots_with_package_init(module, roots, &init_root_mod_names);
+                external_root_collector.refs_from_reachable_module_roots(module, roots.as_ref())
             } else {
                 continue;
             };
@@ -150,8 +153,9 @@ fn format_reachability_roots<'a>(roots: impl IntoIterator<Item = &'a String>) ->
 
 pub(super) fn prune_dependency_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
-    _roots: &[String],
+    roots: &[String],
 ) {
+    let init_root_mod_names = init_root_module_names(roots);
     let stdlib_mod_names: HashSet<String> = modules
         .values()
         .filter(|module| module.is_stdlib)
@@ -196,7 +200,8 @@ pub(super) fn prune_dependency_stdlib_modules(
             let refs = if root_mod_names.contains(&module.mod_name) {
                 external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
-                external_root_collector.refs_from_reachable_module_roots(module, roots)
+                let roots = roots_with_package_init(module, roots, &init_root_mod_names);
+                external_root_collector.refs_from_reachable_module_roots(module, roots.as_ref())
             } else {
                 continue;
             };
@@ -230,16 +235,53 @@ pub(super) fn prune_dependency_stdlib_modules(
             continue;
         }
         let roots = required.get_or_empty(&module.mod_name, &empty);
-        let reachable = reachable_stdlib_items(&module.file.items, roots, &stdlib_mod_names);
+        let roots = roots_with_package_init(module, roots, &init_root_mod_names);
+        let reachable =
+            reachable_stdlib_items(&module.file.items, roots.as_ref(), &stdlib_mod_names);
         if reachable.keep.is_empty() {
             module.file.items.clear();
             module.content_hash = String::new();
             continue;
         }
-        dce_pruning::retain_reachable_items(&mut module.file.items, roots, &reachable);
+        dce_pruning::retain_reachable_items(&mut module.file.items, roots.as_ref(), &reachable);
         module.content_hash = String::new();
     }
     prune_unreferenced_stdlib_modules(modules, &preserved_mod_names);
+}
+
+fn init_root_module_names(roots: &[String]) -> HashSet<String> {
+    roots
+        .iter()
+        .map(|path| crate::resolve::module_name(path))
+        .collect()
+}
+
+fn roots_with_package_init<'a>(
+    module: &CompiledModule,
+    roots: &'a HashSet<String>,
+    init_root_mod_names: &HashSet<String>,
+) -> Cow<'a, HashSet<String>> {
+    if !init_root_mod_names.contains(&module.mod_name)
+        || !module_has_nonempty_package_init(module)
+        || roots.contains(crate::generated_names::PACKAGE_INIT_FN)
+    {
+        return Cow::Borrowed(roots);
+    }
+
+    let mut expanded = roots.clone();
+    expanded.insert(crate::generated_names::PACKAGE_INIT_FN.to_string());
+    Cow::Owned(expanded)
+}
+
+fn module_has_nonempty_package_init(module: &CompiledModule) -> bool {
+    module.file.items.iter().any(|item| {
+        matches!(
+            item,
+            syn::Item::Fn(func)
+                if func.sig.ident == crate::generated_names::PACKAGE_INIT_FN
+                    && !func.block.stmts.is_empty()
+        )
+    })
 }
 
 pub(super) fn prune_unreferenced_stdlib_modules(

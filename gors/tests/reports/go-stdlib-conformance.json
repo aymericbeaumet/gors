@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 4,
     "caseCount": 12418,
-    "passingCaseCount": 261,
-    "unsupportedCaseCount": 12157,
+    "passingCaseCount": 264,
+    "unsupportedCaseCount": 12154,
     "fixtureCount": 83
   },
   "groups": [
@@ -4069,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 9,
-        "unsupportedCaseCount": 8,
+        "passingCaseCount": 12,
+        "unsupportedCaseCount": 5,
         "fixtureCount": 0
       },
       "cases": [
@@ -4101,9 +4101,11 @@
           "title": "CancelCauseFunc",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: CancelCauseFunc behavior depends on stored function values mutating shared cancelCtx state with optional error causes."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::CancelFunc",
@@ -4132,9 +4134,11 @@
           "title": "Cause",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Cause depends on interface Value lookup, pointer type assertions to cancelCtx, mutex-protected state, and atomic.Value error storage."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::Context",
@@ -4185,9 +4189,11 @@
           "title": "WithCancelCause",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithCancelCause depends on WithCancel plus cause-carrying error interface state shared through derived contexts."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithDeadline",

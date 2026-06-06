@@ -4243,6 +4243,8 @@ fn compile_program_impl(
     }
     drop(stdlib_timer);
 
+    prepend_stdlib_package_init_calls(&mut modules, &graph.stdlib_imports);
+
     let dce_timer = ProfileTimer::start("compiler.dce");
     prune_generated_dead_code(&mut modules, has_main_fn);
     inject_post_prune_stdlib_helpers(&mut modules, &graph.stdlib_imports);
@@ -4301,17 +4303,76 @@ fn prefix_final_module_paths(modules: &mut BTreeMap<String, CompiledModule>) {
     }
 }
 
+fn prepend_stdlib_package_init_calls(
+    modules: &mut BTreeMap<String, CompiledModule>,
+    roots: &[String],
+) {
+    let init_root_mod_names = roots
+        .iter()
+        .map(|path| crate::resolve::module_name(path))
+        .collect::<std::collections::HashSet<_>>();
+    let module_names = modules
+        .values()
+        .filter(|module| module.is_stdlib && module.mod_name != "builtin")
+        .filter(|module| init_root_mod_names.contains(&module.mod_name))
+        .filter(|module| module_has_nonempty_init(module))
+        .map(|module| module.mod_name.clone())
+        .collect::<Vec<_>>();
+    let Some(main_module) = modules.get_mut("__main__") else {
+        return;
+    };
+    prepend_init_calls_to_file(&mut main_module.file, &module_names);
+}
+
+fn module_has_nonempty_init(module: &CompiledModule) -> bool {
+    module.file.items.iter().any(|item| {
+        matches!(
+            item,
+            syn::Item::Fn(func)
+                if func.sig.ident == crate::generated_names::PACKAGE_INIT_FN
+                    && !func.block.stmts.is_empty()
+        )
+    })
+}
+
+pub(crate) fn merge_package_init_items(items: &mut Vec<syn::Item>) {
+    let mut merged = Vec::with_capacity(items.len());
+    let mut init_stmts = Vec::new();
+    let mut insert_at = None;
+
+    for item in std::mem::take(items) {
+        match item {
+            syn::Item::Fn(mut func)
+                if func.sig.ident == crate::generated_names::PACKAGE_INIT_FN =>
+            {
+                insert_at.get_or_insert(merged.len());
+                init_stmts.extend(std::mem::take(&mut func.block.stmts));
+            }
+            item => merged.push(item),
+        }
+    }
+
+    if let Some(index) = insert_at {
+        let package_init = crate::generated_names::package_init_ident();
+        let init_fn: syn::Item = syn::parse_quote! {
+            pub fn #package_init() {
+                #(#init_stmts)*
+            }
+        };
+        merged.insert(index, init_fn);
+    }
+
+    *items = merged;
+}
+
 fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String]) {
+    prepend_init_calls_to_file(file, module_names);
+}
+
+fn prepend_init_calls_to_file(file: &mut syn::File, module_names: &[String]) {
     if module_names.is_empty() {
         return;
     }
-    let init_calls: Vec<syn::Stmt> = module_names
-        .iter()
-        .map(|module_name| {
-            let module = syn::Ident::new(&rust_safe_ident_name(module_name), Span::mixed_site());
-            syn::parse_quote! { #module::__gors_init(); }
-        })
-        .collect();
     for item in &mut file.items {
         let syn::Item::Fn(func) = item else {
             continue;
@@ -4319,11 +4380,49 @@ fn prepend_local_package_init_calls(file: &mut syn::File, module_names: &[String
         if func.sig.ident != "main" {
             continue;
         }
+        let existing_modules = func
+            .block
+            .stmts
+            .iter()
+            .filter_map(init_call_module_name)
+            .collect::<std::collections::HashSet<_>>();
+        let init_calls = module_names
+            .iter()
+            .filter(|module_name| !existing_modules.contains(module_name.as_str()))
+            .map(|module_name| {
+                let module =
+                    syn::Ident::new(&rust_safe_ident_name(module_name), Span::mixed_site());
+                let package_init = crate::generated_names::package_init_ident();
+                syn::parse_quote! { #module::#package_init(); }
+            })
+            .collect::<Vec<syn::Stmt>>();
+        if init_calls.is_empty() {
+            return;
+        }
         let existing = std::mem::take(&mut func.block.stmts);
         func.block.stmts = init_calls;
         func.block.stmts.extend(existing);
         break;
     }
+}
+
+fn init_call_module_name(stmt: &syn::Stmt) -> Option<String> {
+    let syn::Stmt::Expr(syn::Expr::Call(call), _) = stmt else {
+        return None;
+    };
+    if !call.args.is_empty() {
+        return None;
+    }
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.path.leading_colon.is_some() || path.path.segments.len() != 2 {
+        return None;
+    }
+    let mut segments = path.path.segments.iter();
+    let module = segments.next()?;
+    let function = segments.next()?;
+    (function.ident == crate::generated_names::PACKAGE_INIT_FN).then(|| module.ident.to_string())
 }
 
 fn prune_generated_dead_code(modules: &mut BTreeMap<String, CompiledModule>, has_main: bool) {
@@ -8731,6 +8830,9 @@ fn shared_func_box_type_from_go_parts(
 }
 
 fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
+    if matches!(resolved_go_type(go_type), typeinfer::GoType::Error) {
+        return syn::parse_quote! { Box<dyn crate::builtin::error> };
+    }
     if let Some(interface_name) = go_type_interface_name(go_type) {
         let trait_path = named_go_type_path(&interface_name);
         return syn::parse_quote! { &mut dyn #trait_path };
@@ -17468,6 +17570,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     if let Some(expr) = address_of_shared_selector_field_expr(&target) {
                         return expr;
                     }
+                    if let Some((path, _go_type, name)) =
+                        top_level_var_expr_and_type_from_ref(&target)
+                        && is_mutable_top_level_var(&name)
+                    {
+                        return syn::parse_quote! { crate::builtin::GorsPtr::from_arc((*#path).clone()) };
+                    }
                     if let ast::Expr::Ident(ident) = &target
                         && is_shared_capture_name(ident.name)
                     {
@@ -17934,6 +18042,9 @@ fn collect_mutable_top_level_vars_from_expr(
             }
         }
         ast::Expr::UnaryExpr(unary) => {
+            if unary.op == token::Token::AND {
+                mark_mutable_top_level_lvalue(&unary.x, top_level_vars, mutable);
+            }
             collect_mutable_top_level_vars_from_expr(&unary.x, top_level_vars, mutable);
         }
         ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
@@ -26592,6 +26703,38 @@ func main() {
     }
 
     #[test]
+    fn it_should_use_owned_error_params_in_function_value_cells() {
+        let go_source = r#"
+package main
+
+type Cancel func(error)
+
+type causeError string
+
+func (e causeError) Error() string {
+	return string(e)
+}
+
+func main() {
+	var cancel Cancel = func(err error) {
+		_ = err.Error()
+	}
+	cancel(causeError("cause"))
+}
+"#;
+        let parsed = parse_file("test.go", go_source).unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = printer::generate(compiled).unwrap();
+
+        assert!(
+            output.contains("dyn Fn(Box<dyn crate::builtin::error>)")
+                || output.contains("dyn Fn (Box < dyn crate :: builtin :: error >)"),
+            "{output}"
+        );
+        assert!(!output.contains("&mut dyn error"), "{output}");
+    }
+
+    #[test]
     fn it_should_specialize_generic_callback_function_literal_cells_from_literal_signature() {
         let go_source = r#"
 package main
@@ -28145,7 +28288,7 @@ func wrap(parent Context) canceler {
         );
         assert!(
             output.contains(
-                "fn __gors_as_any (& self) -> Option < & dyn std :: any :: Any > { None }"
+                "fn __gors_as_any (& self) -> Option < & dyn std :: any :: Any > { Some (self) }"
             ),
             "{output}"
         );
@@ -28276,6 +28419,22 @@ func Wrap(data Interface) Interface {
                 || output.contains("wrapper::Value(self.clone()"),
             "{output}"
         );
+        assert!(
+            output.contains(
+                "fn __gors_as_any (& self) -> Option < & dyn std :: any :: Any > { Some (self) }"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains(
+                "fn __gors_interface_key (& self) -> crate :: builtin :: GorsInterfaceKey { self . interface_key () }"
+            ),
+            "{output}"
+        );
+        assert!(
+            !output.contains("__gors_guard . Interface . __gors_interface_key"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -28391,6 +28550,34 @@ var Value = "qualified"
         let lib_rs = output.files.get("example__lib.rs").unwrap();
         assert!(lib_rs.contains("std::sync::LazyLock<String>"), "{lib_rs}");
         assert!(lib_rs.contains("\"qualified\".to_string()"), "{lib_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_prepends_stdlib_init_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "context"
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = ctx.Err()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("context::__gors_init();"), "{main_rs}");
+        assert!(!main_rs.contains("sync::__gors_init();"), "{main_rs}");
+        let context_rs = output.files.get("context.rs").unwrap();
+        assert!(context_rs.contains("pub fn __gors_init()"), "{context_rs}");
+        assert!(context_rs.contains("close(&(*closedchan)"), "{context_rs}");
     }
 
     #[test]
@@ -29940,6 +30127,71 @@ func Read() int {
         let mutable = super::mutable_top_level_var_names_for_files([&vars, &init], false);
 
         assert!(mutable.contains("Local"), "{mutable:?}");
+    }
+
+    #[test]
+    fn mutable_top_level_var_analysis_tracks_address_taken_package_vars() {
+        let file = parse_file(
+            "state.go",
+            r#"
+                package state
+
+                var Key int
+
+                func Same() bool {
+                    return &Key == &Key
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mutable = super::mutable_top_level_var_names_for_files([&file], false);
+
+        assert!(mutable.contains("Key"), "{mutable:?}");
+    }
+
+    #[test]
+    fn compile_program_multi_uses_stable_cells_for_package_var_addresses() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/state"
+
+func main() {
+	_ = state.Same()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("state/state.go").as_path(),
+            r#"
+package state
+
+var Key int
+
+func Same() bool {
+	return &Key == &Key
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let state_rs = output.files.get("example__state.rs").unwrap();
+        assert!(
+            state_rs.contains(
+                "pub static Key: std::sync::LazyLock<std::sync::Arc<std::sync::Mutex<isize>>>"
+            ),
+            "{state_rs}"
+        );
+        assert!(
+            state_rs.contains("crate::builtin::GorsPtr::from_arc((*Key).clone())"),
+            "{state_rs}"
+        );
+        assert!(!state_rs.contains("GorsPtr::new(*Key)"), "{state_rs}");
     }
 
     #[test]

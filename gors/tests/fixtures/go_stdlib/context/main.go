@@ -7,6 +7,12 @@ import (
 
 type contextKey string
 
+type causeError string
+
+func (e causeError) Error() string {
+	return string(e)
+}
+
 func main() {
 	// gors:stdlib-cover context::Canceled
 	fmt.Println(context.Canceled.Error())
@@ -76,5 +82,33 @@ func main() {
 		runCancel()
 		<-runDone
 		fmt.Println("afterfunc-ran", runCtx.Err().Error(), runStop())
+	}
+
+	// gors:stdlib-cover context::CancelCauseFunc
+	// gors:stdlib-cover context::Cause
+	// gors:stdlib-cover context::WithCancelCause
+	{
+		causeCtx, causeCancel := context.WithCancelCause(bg)
+		fmt.Println("with-cancel-cause-before", causeCtx.Err() == nil, context.Cause(causeCtx) == nil)
+		causeCancel(causeError("manual cause"))
+		fmt.Println("with-cancel-cause-after", causeCtx.Err().Error(), context.Cause(causeCtx).Error())
+		causeCancel(causeError("ignored cause"))
+		fmt.Println("with-cancel-cause-idempotent", context.Cause(causeCtx).Error())
+
+		nilCtx, nilCancel := context.WithCancelCause(bg)
+		nilCancel(nil)
+		fmt.Println("with-cancel-cause-nil", nilCtx.Err().Error(), context.Cause(nilCtx).Error())
+
+		parentFirst, cancelParentFirst := context.WithCancelCause(bg)
+		childAfterParent, cancelChildAfterParent := context.WithCancelCause(parentFirst)
+		cancelParentFirst(causeError("parent cause"))
+		cancelChildAfterParent(causeError("child cause"))
+		fmt.Println("with-cancel-cause-parent-first", context.Cause(parentFirst).Error(), context.Cause(childAfterParent).Error())
+
+		parentAfterChild, cancelParentAfterChild := context.WithCancelCause(bg)
+		childFirst, cancelChildFirst := context.WithCancelCause(parentAfterChild)
+		cancelChildFirst(causeError("child cause"))
+		cancelParentAfterChild(causeError("parent cause"))
+		fmt.Println("with-cancel-cause-child-first", context.Cause(parentAfterChild).Error(), context.Cause(childFirst).Error())
 	}
 }

@@ -394,6 +394,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         all_items.extend(compiled.items);
     }
     runtime_primitives::supplement_items(import_path, roots, &mut all_items);
+    crate::compiler::merge_package_init_items(&mut all_items);
 
     if all_items.is_empty() {
         cache_resolved_imports(import_path, roots, Vec::new());
@@ -1498,7 +1499,9 @@ fn spec_names(spec: &crate::ast::Spec<'_>) -> Vec<String> {
 fn decl_is_reachable(decl: &crate::ast::Decl<'_>, reachable: &HashSet<String>) -> bool {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
-            if func.recv.is_none() {
+            if func_decl_is_package_init(func) {
+                true
+            } else if func.recv.is_none() {
                 reachable.contains(func.name.name)
             } else {
                 receiver_method_name(func).is_some_and(|name| reachable.contains(&name))
@@ -1509,6 +1512,10 @@ fn decl_is_reachable(decl: &crate::ast::Decl<'_>, reachable: &HashSet<String>) -
             .iter()
             .any(|spec| spec_names(spec).iter().any(|name| reachable.contains(name))),
     }
+}
+
+fn func_decl_is_package_init(func: &crate::ast::FuncDecl<'_>) -> bool {
+    func.recv.is_none() && func.name.name == "init"
 }
 
 fn receiver_type_name(func: &crate::ast::FuncDecl<'_>) -> Option<String> {
@@ -1552,7 +1559,9 @@ fn filter_decl_to_reachable<'a>(
 ) -> Option<crate::ast::Decl<'a>> {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
-            let keep = if func.recv.is_none() {
+            let keep = if func_decl_is_package_init(&func) {
+                true
+            } else if func.recv.is_none() {
                 reachable.contains(func.name.name)
             } else {
                 receiver_method_name(&func).is_some_and(|name| reachable.contains(&name))
@@ -2485,6 +2494,50 @@ mod tests {
             );
         }
         assert!(!tokens.contains("impl stringer for timerCtx"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
+    fn reachable_names_include_context_package_init_dependencies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let files = package_files("context").ok_or_else(|| std::io::Error::other("files"))?;
+        let mut parsed_files = Vec::new();
+        for (filename, content) in files.iter() {
+            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
+        }
+        let roots = HashSet::from(["WithCancel".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        for expected in ["init", "closedchan"] {
+            assert!(
+                reachable.contains(expected),
+                "{expected} missing from {reachable:?}"
+            );
+        }
+
+        let module = resolve_with_roots("context", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve context"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        for expected in ["pub fn __gors_init", "closedchan", "close"] {
+            assert!(
+                tokens.contains(expected),
+                "{expected} missing from {tokens}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_roots_merge_multiple_package_init_functions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["Args".to_string()]);
+        let module =
+            resolve_with_roots("os", &roots).ok_or_else(|| std::io::Error::other("resolve os"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert_eq!(tokens.matches("pub fn __gors_init").count(), 1, "{tokens}");
+        assert!(tokens.contains("runtime_args"), "{tokens}");
         Ok(())
     }
 
